@@ -95,6 +95,32 @@ license, the upstream paths and commit, and our paths.
   commit `df46f69` (2026-11-16).
 - **Ours:** `packages/tui/src/util/renderer.ts`, `packages/tui/test/util/renderer.test.ts`,
   `packages/tui/test/app-lifecycle.test.tsx`.
+- **What:** an open instrument's views. Ported:
+  - the terminal pane around OpenTUI's `EmbeddedTerminalRenderable`: its queue that writes bytes only once the
+    terminal is at the size they were meant for, its throttled intermediate renders and its column of margin. Its
+    WebSocket gives way to the office's screen read, `instrument.output` events and size route, and its palette is cut
+    to the theme's text and background;
+  - the pane resize and its handle, whole, with `clampSessionPaneWidth`;
+  - from the session frame: the right pane beside the session, its width dragged with the handle; the overlay that
+    hands the session the keys on a click and passes the wheel to the transcript; focus followed through
+    `FOCUSED_RENDERABLE`;
+  - the interactivity provider that mutes the session while the pane has the keys, which the keymap's layers honour,
+    as its `createLayer` does, and the prompt honours too;
+  - the shell-output dialog's layout, for a pipes shell: the command, a note when earlier output is gone, and the
+    output following its end with its escapes stripped;
+  - `TextBoundary.tail`, which keeps a pipes shell's newest output without half a character, and its test's cases.
+
+  The floating view is our own.
+- **Upstream:** `packages/tui/src/component/terminal-pane.tsx`, `packages/tui/src/component/session-frame.tsx`,
+  `packages/tui/src/context/interactivity.tsx`, `packages/tui/src/context/keymap.tsx` (`createLayer`),
+  `packages/tui/src/ui/pane-resize.ts`, `packages/tui/src/ui/pane-resize-handle.tsx`, `packages/tui/src/ui/layout.ts`
+  (`clampSessionPaneWidth`), `packages/tui/src/component/dialog-shell-output.tsx`, `packages/util/src/text-boundary.ts`
+  and `packages/util/src/text-boundary.test.ts`, read at commit `df46f69` (2026-11-16).
+- **Ours:** `packages/tui/src/routes/session/terminal-pane.tsx`, `packages/tui/src/routes/session/instrument-view.tsx`,
+  `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/context/interactivity.tsx`,
+  `packages/tui/src/keymap.tsx` (`useBindings`), `packages/tui/src/ui/pane-resize.ts`,
+  `packages/tui/src/ui/pane-resize-handle.tsx`, `packages/tui/src/util/text-boundary.ts`,
+  `packages/tui/test/util/text-boundary.test.ts`.
 
 ## Paperclip
 

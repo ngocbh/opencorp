@@ -51,6 +51,7 @@ import { useTuiConfig } from "../../config"
 import { readLocalAttachment } from "./local-attachment"
 import { display } from "../../util/printable"
 import { InstrumentLine, InstrumentWarning, waitingInstrument } from "../../routes/session/instrument-line"
+import { useInteractivity } from "../../context/interactivity"
 
 registerOpenCorpSpinner()
 
@@ -108,6 +109,9 @@ export function Prompt(props: PromptProps) {
   let input: TextareaRenderable
   let anchor: BoxRenderable
   const [inputTarget, setInputTarget] = createSignal<TextareaRenderable | undefined>()
+  // A disabled interactivity provider above it, as while an open instrument has the keys, mutes it as `inactive` does.
+  const interactive = useInteractivity()
+  const inactive = () => props.inactive || !interactive()
 
   const leader = useLeaderActive()
   const local = useLocal()
@@ -400,7 +404,7 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    if (props.visible === false || props.inactive || dialog.stack.length > 0) {
+    if (props.visible === false || inactive() || dialog.stack.length > 0) {
       if (input.focused) input.blur()
       return
     }
@@ -1032,7 +1036,7 @@ export function Prompt(props: PromptProps) {
                   if (tuiConfig.cursor) input.cursorStyle = tuiConfig.cursor
                 }, 0)
               }}
-              onMouseDown={(r: MouseEvent) => !props.inactive && r.target?.focus()}
+              onMouseDown={(r: MouseEvent) => !inactive() && r.target?.focus()}
               focusedBackgroundColor={theme.backgroundElement}
               cursorColor={props.disabled ? theme.backgroundElement : theme.text}
               cursorStyle={tuiConfig.cursor}
@@ -1160,7 +1164,7 @@ export function Prompt(props: PromptProps) {
       </box>
       <Autocomplete
         sessionID={props.sessionID}
-        inactive={props.inactive}
+        inactive={inactive()}
         ref={(r) => {
           setAuto(() => r)
         }}

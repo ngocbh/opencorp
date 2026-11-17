@@ -14,14 +14,22 @@ import {
 } from "solid-js"
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
-import type { ErrorPart, FilePart, Message, Part, TextPart, ToolPart } from "@opencorp/protocol"
+import type { ErrorPart, FilePart, Instrument, Message, Part, TextPart, ToolPart } from "@opencorp/protocol"
 import { createTwoFilesPatch } from "diff"
 import { useRoute, useRouteData } from "../../context/route"
 import { SplitBorder } from "../../ui/border"
 import { useTuiPaths } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
 import { useTheme } from "../../context/theme"
-import { BoxRenderable, ScrollBoxRenderable, TextAttributes, RGBA } from "@opentui/core"
+import {
+  BoxRenderable,
+  CliRenderEvents,
+  MouseEvent,
+  ScrollBoxRenderable,
+  TextAttributes,
+  RGBA,
+  type Renderable,
+} from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import { Locale } from "../../util/locale"
 import { Dynamic, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
@@ -60,6 +68,12 @@ import { HarnessCard } from "../chat/harness-card"
 import { SideChat, SideHeader } from "../chat/side"
 import { freeze, frozenList, unfreeze, type Freeze } from "../chat/freeze"
 import { display } from "../../util/printable"
+import { InteractivityProvider } from "../../context/interactivity"
+import { clampPaneWidth, createPaneResize } from "../../ui/pane-resize"
+import { PaneResizeHandle } from "../../ui/pane-resize-handle"
+import { DialogInstruments, DialogInstrumentView } from "./dialog-instruments"
+import { waitingInstrument } from "./instrument-line"
+import { InstrumentView, nextPlacement, PLACEMENTS, type InstrumentPlacement } from "./instrument-view"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
@@ -256,14 +270,88 @@ export function Session() {
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
+  // This device's choice of how an instrument opens; the open one and how it shows; and whether it has the keys.
+  const [instrumentView, setInstrumentView] = kv.signal<InstrumentPlacement>("instrument_view", "floating")
+  const defaultPlacement = () => (PLACEMENTS.includes(instrumentView()) ? instrumentView() : "floating")
+  const [opened, setOpened] = createSignal<{ id: string; view: InstrumentPlacement } | null>(null)
+  const [instrumentFocused, setInstrumentFocused] = createSignal(false)
+  const split = () => opened()?.view === "split"
+  // The chat's own keys, which the open instrument mutes while it has the keys, as the provider mutes the chat's view.
+  const chatKeys = () => !instrumentFocused()
+  // A split starts at half the screen; its handle drags it.
+  const [paneWidth, setPaneWidth] = createSignal<number>()
+  const defaultPaneWidth = () => Math.max(1, Math.floor(dimensions().width / 2))
+  const paneResize = createPaneResize({
+    value: () => paneWidth() ?? defaultPaneWidth(),
+    defaultValue: defaultPaneWidth,
+    clamp: (width) => clampPaneWidth(width, dimensions().width),
+    fromMouse: (event) => dimensions().width - event.x - 1,
+    contains: (event, width) => event.x >= dimensions().width - width - 1 && event.x <= dimensions().width - width,
+    onCommit: (width) => setPaneWidth(width),
+  })
+  let resizeRelease = false
+  const finishPaneResize = (event: MouseEvent) => {
+    if (paneResize.resizing()) {
+      // A captured drag-end can be followed by mouse-up on the focus overlay.
+      resizeRelease = true
+      queueMicrotask(() => {
+        resizeRelease = false
+      })
+    }
+    paneResize.onMouseUp(event)
+  }
+  /** Where the open instrument sits: 80% of the screen, centred, floating; the right pane of a split; or all of the
+   *  screen but the line under the prompt and the row below it. */
+  const placement = createMemo(() => {
+    const { width, height } = dimensions()
+    const view = opened()?.view
+    if (view === "split") return { width: paneResize.size(), height: undefined, left: undefined, top: undefined }
+    if (view === "full") return { width, height: Math.max(1, height - 2), left: 0, top: 0 }
+    const w = Math.floor(width * 0.8)
+    const h = Math.floor(height * 0.8)
+    return { width: w, height: h, left: Math.floor((width - w) / 2), top: Math.floor((height - h) / 2) }
+  })
+  // An ended or failed shell stays in the list, with its scrollback, until the session next goes idle.
+  const [retired, setRetired] = createSignal<ReadonlySet<string>>(new Set())
+  const instruments = createMemo(() =>
+    (office.state.instruments[route.sessionID] ?? []).filter((i) => i.kind === "terminal" && !retired().has(i.id)),
+  )
+  createEffect(
+    on(
+      () => session()?.status,
+      (status, prev) => {
+        if (status !== "idle" || prev === undefined || prev === "idle") return
+        const ended = (office.state.instruments[route.sessionID] ?? []).filter(
+          (i) => i.status === "ended" || i.status === "failed",
+        )
+        if (ended.length) setRetired((r) => new Set([...r, ...ended.map((i) => i.id)]))
+      },
+    ),
+  )
+  // The open instrument, kept while it closes.
+  const openInstrument = createMemo<Instrument | undefined>((last) => {
+    const id = opened()?.id
+    if (!id) return undefined
+    return instruments().find((i) => i.id === id) ?? (last?.id === id ? last : undefined)
+  })
+  // It closes when it leaves the list: its host removed it, or its turn ended after it did.
+  createEffect(() => {
+    const id = opened()?.id
+    if (id && !instruments().some((i) => i.id === id)) closeInstrument()
+  })
+
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
+    // A split takes the sidebar's place while it shows.
+    if (split()) return false
     if (sidebarOpen()) return true
     if (sidebar() === "auto" && wide()) return true
     return false
   })
   const showTimestamps = createMemo(() => timestamps() === "show")
-  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - 4)
+  const contentWidth = createMemo(
+    () => dimensions().width - (sidebarVisible() ? 42 : 0) - (split() ? paneResize.size() : 0) - 4,
+  )
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const toast = useToast()
@@ -310,6 +398,68 @@ export function Session() {
   }
   const dialog = useDialog()
   const renderer = useRenderer()
+
+  let chatNode: BoxRenderable | undefined
+  let viewNode: BoxRenderable | undefined
+  // What had the keys in the chat when the open instrument took them, given back after.
+  let chatFocus: Renderable | null = null
+  function focusInstrument() {
+    if (instrumentFocused()) return
+    const current = renderer.currentFocusedRenderable
+    if (current && within(current, chatNode)) {
+      chatFocus = current
+      current.blur()
+    }
+    setInstrumentFocused(true)
+  }
+  function focusChat() {
+    if (!instrumentFocused()) return
+    const current = renderer.currentFocusedRenderable
+    if (current && within(current, viewNode)) current.blur()
+    setInstrumentFocused(false)
+    const saved = chatFocus
+    chatFocus = null
+    if (saved && !saved.isDestroyed && within(saved, chatNode)) saved.focus()
+  }
+  // Focus that lands in the open instrument gives it the keys. While it has them, focus that lands in the chat (a
+  // dialog handing it back to the prompt) is dropped.
+  const onFocused = () => {
+    const current = renderer.currentFocusedRenderable
+    if (!current || !opened()) return
+    if (within(current, viewNode)) focusInstrument()
+    else if (instrumentFocused() && within(current, chatNode)) current.blur()
+  }
+  renderer.on(CliRenderEvents.FOCUSED_RENDERABLE, onFocused)
+  onCleanup(() => renderer.off(CliRenderEvents.FOCUSED_RENDERABLE, onFocused))
+
+  /** Opens instrument `id` in `view`, the setting's unless given, with the keys. */
+  function showInstrument(id: string, view = defaultPlacement()) {
+    setOpened({ id, view })
+    focusInstrument()
+  }
+  /** Puts the open instrument back in the list; the chat gets the keys. */
+  function closeInstrument() {
+    if (!opened()) return
+    setOpened(null)
+    focusChat()
+  }
+  /** Opens the shell waiting on the owner, else the one that changed last; with one open, moves it to its next view,
+   *  and after full screen back to the list. */
+  function cycleInstrument() {
+    const current = opened()
+    if (!current) {
+      const list = instruments()
+      const next =
+        waitingInstrument(list) ??
+        list.reduce<Instrument | undefined>((a, b) => (!a || b.updated_at >= a.updated_at ? b : a), undefined)
+      if (next) showInstrument(next.id)
+      return
+    }
+    const view = nextPlacement(current.view)
+    if (!view) return closeInstrument()
+    setOpened({ ...current, view })
+    focusInstrument()
+  }
 
   /** The id of the next or previous message with text, relative to the scroll position. */
   const findNextVisibleMessage = (direction: "next" | "prev"): string | null => {
@@ -381,6 +531,20 @@ export function Session() {
       run: () => dialog.replace(() => <DialogMode sessionID={route.sessionID} />),
     },
     {
+      title: "Open an instrument…",
+      value: "session.instrument.list",
+      category: "Session",
+      enabled: instruments().length > 0,
+      run: () =>
+        dialog.replace(() => (
+          <DialogInstruments
+            instruments={instruments()}
+            current={opened()?.id}
+            onOpen={(id) => showInstrument(id)}
+          />
+        )),
+    },
+    {
       title: "List the chat's rules",
       value: "session.rules",
       category: "Session",
@@ -445,6 +609,15 @@ export function Session() {
         setShowGenericToolOutput((prev) => !prev)
         dialog.clear()
       },
+    },
+    {
+      title: "Choose how instruments open…",
+      value: "session.instrument.view",
+      category: "Session",
+      run: () =>
+        dialog.replace(() => (
+          <DialogInstrumentView current={defaultPlacement()} onPick={(view) => setInstrumentView(() => view)} />
+        )),
     },
     ...(
       [
@@ -581,7 +754,7 @@ export function Session() {
         title: "Move between the open card and the prompt",
         category: "Session",
         hidden: true,
-        enabled: codex() && cards().length > 0 && dialog.stack.length === 0,
+        enabled: chatKeys() && codex() && cards().length > 0 && dialog.stack.length === 0,
         run: () => setFocus((f) => (f === "card" ? "prompt" : "card")),
       },
     ],
@@ -598,7 +771,7 @@ export function Session() {
         title: "Cycle the chat's mode",
         category: "Session",
         hidden: true,
-        enabled: switchable() && dialog.stack.length === 0,
+        enabled: chatKeys() && switchable() && dialog.stack.length === 0,
         run: () =>
           void permission
             .cycle(route.sessionID)
@@ -608,17 +781,43 @@ export function Session() {
     bindings: tuiConfig.keybinds.gather("session.mode", ["session.mode.cycle"]),
   }))
 
+  // No mode, so they work from a card as from the prompt; above the prompt's Esc, which clears a draft or interrupts.
   useBindings(() => ({
+    priority: 2,
+    commands: [
+      {
+        name: "session.instrument.cycle",
+        title: "Open an instrument, or switch how it shows",
+        category: "Session",
+        hidden: true,
+        enabled: dialog.stack.length === 0 && (opened() !== null || instruments().length > 0),
+        run: cycleInstrument,
+      },
+      {
+        name: "session.instrument.close",
+        title: "Put the open instrument back in the list",
+        category: "Session",
+        hidden: true,
+        enabled: opened() !== null && instrumentFocused() && dialog.stack.length === 0,
+        run: closeInstrument,
+      },
+    ],
+    bindings: tuiConfig.keybinds.gather("session.instrument", ["session.instrument.cycle", "session.instrument.close"]),
+  }))
+
+  useBindings(() => ({
+    enabled: chatKeys(),
     bindings: tuiConfig.keybinds.gather("session.global", sessionGlobalBindingCommands),
   }))
 
   useBindings(() => ({
-    enabled: () => renderer.currentFocusedEditor === null,
+    enabled: () => chatKeys() && renderer.currentFocusedEditor === null,
     bindings: tuiConfig.keybinds.gather("session.global.unfocused", sessionGlobalUnfocusedBindingCommands),
   }))
 
   useBindings(() => ({
     mode: OPENCORP_BASE_MODE,
+    enabled: chatKeys(),
     bindings: tuiConfig.keybinds.gather("session", sessionBindingCommands),
   }))
 
@@ -639,160 +838,235 @@ export function Session() {
         tui: tuiConfig,
       }}
     >
-      <box flexDirection="row" flexGrow={1} minHeight={0}>
-        <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1}>
-          <Show when={session()}>
-            {(current) => (
-              <>
-                <Show when={sideQuestion()}>{(q) => <SideHeader question={q()} session={sideSession()} />}</Show>
-                <box flexShrink={0} paddingTop={1} visible={!sideOf()}>
-                  <text fg={theme.text} wrapMode="none">
-                    <b>{person()}</b>
-                    <span
-                      style={{ fg: ["busy", "waiting"].includes(current().status) ? theme.warning : theme.textMuted }}
-                    >
-                      {" "}
-                      · {statusLabel(current())}
-                    </span>
-                    <Show when={costLabel(current(), office.connections())}>
-                      {(cost) => <span style={{ fg: theme.textMuted }}> · {cost()}</span>}
-                    </Show>
-                    <span style={{ fg: theme.textMuted }}>
-                      {" · "}
-                      {display(modelLabel(current(), office.connections()))}
-                    </span>
-                  </text>
-                  <Show when={current().model_note}>
-                    {(note) => (
-                      <text fg={theme.warning} wrapMode="word">
-                        {display(note())}
-                      </text>
-                    )}
-                  </Show>
-                </box>
-                <scrollbox
-                  ref={(r) => (scroll = r)}
-                  viewportOptions={{
-                    paddingRight: showScrollbar() ? 1 : 0,
-                  }}
-                  verticalScrollbarOptions={{
-                    paddingLeft: 1,
-                    visible: showScrollbar(),
-                    trackOptions: {
-                      backgroundColor: theme.backgroundElement,
-                      foregroundColor: theme.border,
-                    },
-                  }}
-                  stickyScroll={true}
-                  stickyStart="bottom"
-                  flexGrow={1}
-                  // Under an approval card the transcript takes what the card leaves, and keeps a few rows.
-                  flexBasis={approval() ? 0 : "auto"}
-                  minHeight={approval() ? 3 : 0}
-                  scrollAcceleration={scrollAcceleration()}
-                >
-                  <For each={shown()}>
-                    {(message, index) => (
-                      <Switch>
-                        <Match when={message.role === "user"}>
-                          <UserMessage
-                            index={index()}
-                            onMouseUp={() => {
-                              if (renderer.getSelection()?.getSelectedText()) return
-                              dialog.replace(() => <DialogMessage messageID={message.id} sessionID={route.sessionID} />)
-                            }}
-                            message={message}
-                          />
-                        </Match>
-                        <Match when={message.role === "assistant"}>
-                          <AssistantMessage message={message} last={lastAssistant()?.id === message.id} />
-                        </Match>
-                      </Switch>
-                    )}
-                  </For>
-                </scrollbox>
-                {/* An approval card may shrink to what the chat leaves it: its body scrolls in what remains. */}
-                <box flexShrink={approval() ? 1 : 0}>
-                  <Show
-                    when={codex()}
-                    fallback={
-                      <Show
-                        when={question()?.id}
-                        keyed
-                        fallback={
-                          <Prompt
-                            visible={true}
-                            ref={bind}
-                            onSend={lift}
-                            onSubmit={() => toBottom()}
-                            onInterrupt={interrupt}
-                            sessionID={route.sessionID}
-                          />
-                        }
+      <box
+        flexDirection="row"
+        flexGrow={1}
+        minHeight={0}
+        position="relative"
+        onMouseDrag={paneResize.onMouseDrag}
+        onMouseDragEnd={finishPaneResize}
+        onMouseUp={finishPaneResize}
+      >
+        <box
+          ref={(r: BoxRenderable) => (chatNode = r)}
+          flexGrow={1}
+          minWidth={0}
+          minHeight={0}
+          paddingBottom={1}
+          paddingLeft={2}
+          paddingRight={2}
+          gap={1}
+        >
+          {/* While the open instrument has the keys, the chat's prompt and cards have none. */}
+          <InteractivityProvider enabled={!instrumentFocused()}>
+            <Show when={session()}>
+              {(current) => (
+                <>
+                  <Show when={sideQuestion()}>{(q) => <SideHeader question={q()} session={sideSession()} />}</Show>
+                  <box flexShrink={0} paddingTop={1} visible={!sideOf()}>
+                    <text fg={theme.text} wrapMode="none">
+                      <b>{person()}</b>
+                      <span
+                        style={{ fg: ["busy", "waiting"].includes(current().status) ? theme.warning : theme.textMuted }}
                       >
-                        {/* Keyed and untracked: a card's source never changes, so the choice is made once. */}
-                        {(_id) =>
-                          question()?.source === "approval" ? (
-                            <PermissionPrompt question={question()} />
-                          ) : (
-                            <>
-                              <QuestionCard
-                                question={question()}
-                                hidden={!!sideOf()}
-                                onChat={() => setSideOf(question()?.id)}
-                              />
-                              <Show when={sideQuestion()}>
-                                {(q) => (
-                                  <SideChat
-                                    question={q()}
-                                    session={sideSession()}
-                                    onBack={() => setSideOf(undefined)}
-                                    onSend={() => {
-                                      const undo = lift()
-                                      toBottom()
-                                      return undo
-                                    }}
-                                    onInterrupt={interrupt}
-                                  />
-                                )}
-                              </Show>
-                            </>
-                          )
-                        }
+                        {" "}
+                        · {statusLabel(current())}
+                      </span>
+                      <Show when={costLabel(current(), office.connections())}>
+                        {(cost) => <span style={{ fg: theme.textMuted }}> · {cost()}</span>}
                       </Show>
-                    }
+                      <span style={{ fg: theme.textMuted }}>
+                        {" · "}
+                        {display(modelLabel(current(), office.connections()))}
+                      </span>
+                    </text>
+                    <Show when={current().model_note}>
+                      {(note) => (
+                        <text fg={theme.warning} wrapMode="word">
+                          {display(note())}
+                        </text>
+                      )}
+                    </Show>
+                  </box>
+                  <scrollbox
+                    ref={(r) => (scroll = r)}
+                    viewportOptions={{
+                      paddingRight: showScrollbar() ? 1 : 0,
+                    }}
+                    verticalScrollbarOptions={{
+                      paddingLeft: 1,
+                      visible: showScrollbar(),
+                      trackOptions: {
+                        backgroundColor: theme.backgroundElement,
+                        foregroundColor: theme.border,
+                      },
+                    }}
+                    stickyScroll={true}
+                    stickyStart="bottom"
+                    flexGrow={1}
+                    // Under an approval card the transcript takes what the card leaves, and keeps a few rows.
+                    flexBasis={approval() ? 0 : "auto"}
+                    minHeight={approval() ? 3 : 0}
+                    scrollAcceleration={scrollAcceleration()}
                   >
-                    {/* Keyed by id, so a card whose question is re-read (a reconnect) keeps its state. */}
-                    <For each={cards().map((q) => q.id)}>
-                      {(id, i) => (
-                        <Show when={office.state.questions[id]}>
-                          {(q) => (
-                            <HarnessCard
-                              question={q()}
-                              active={i() === 0 && cardFocused()}
-                              waiting={i() > 0}
-                              onInterrupt={interrupt}
+                    <For each={shown()}>
+                      {(message, index) => (
+                        <Switch>
+                          <Match when={message.role === "user"}>
+                            <UserMessage
+                              index={index()}
+                              onMouseUp={() => {
+                                if (renderer.getSelection()?.getSelectedText()) return
+                                dialog.replace(() => <DialogMessage messageID={message.id} sessionID={route.sessionID} />)
+                              }}
+                              message={message}
                             />
-                          )}
-                        </Show>
+                          </Match>
+                          <Match when={message.role === "assistant"}>
+                            <AssistantMessage message={message} last={lastAssistant()?.id === message.id} />
+                          </Match>
+                        </Switch>
                       )}
                     </For>
-                    <Prompt
-                      visible={true}
-                      inactive={cardFocused()}
-                      ref={bind}
-                      onSend={lift}
-                      onSubmit={() => toBottom()}
-                      onInterrupt={interrupt}
-                      sessionID={route.sessionID}
-                    />
-                  </Show>
-                </box>
-              </>
-            )}
-          </Show>
+                  </scrollbox>
+                  {/* An approval card may shrink to what the chat leaves it: its body scrolls in what remains. */}
+                  <box flexShrink={approval() ? 1 : 0}>
+                    <Show
+                      when={codex()}
+                      fallback={
+                        <Show
+                          when={question()?.id}
+                          keyed
+                          fallback={
+                            <Prompt
+                              visible={true}
+                              ref={bind}
+                              onSend={lift}
+                              onSubmit={() => toBottom()}
+                              onInterrupt={interrupt}
+                              sessionID={route.sessionID}
+                            />
+                          }
+                        >
+                          {/* Keyed and untracked: a card's source never changes, so the choice is made once. */}
+                          {(_id) =>
+                            question()?.source === "approval" ? (
+                              <PermissionPrompt question={question()} />
+                            ) : (
+                              <>
+                                <QuestionCard
+                                  question={question()}
+                                  hidden={!!sideOf()}
+                                  onChat={() => setSideOf(question()?.id)}
+                                />
+                                <Show when={sideQuestion()}>
+                                  {(q) => (
+                                    <SideChat
+                                      question={q()}
+                                      session={sideSession()}
+                                      onBack={() => setSideOf(undefined)}
+                                      onSend={() => {
+                                        const undo = lift()
+                                        toBottom()
+                                        return undo
+                                      }}
+                                      onInterrupt={interrupt}
+                                    />
+                                  )}
+                                </Show>
+                              </>
+                            )
+                          }
+                        </Show>
+                      }
+                    >
+                      {/* Keyed by id, so a card whose question is re-read (a reconnect) keeps its state. */}
+                      <For each={cards().map((q) => q.id)}>
+                        {(id, i) => (
+                          <Show when={office.state.questions[id]}>
+                            {(q) => (
+                              <HarnessCard
+                                question={q()}
+                                active={i() === 0 && cardFocused()}
+                                waiting={i() > 0}
+                                onInterrupt={interrupt}
+                              />
+                            )}
+                          </Show>
+                        )}
+                      </For>
+                      <Prompt
+                        visible={true}
+                        inactive={cardFocused()}
+                        ref={bind}
+                        onSend={lift}
+                        onSubmit={() => toBottom()}
+                        onInterrupt={interrupt}
+                        sessionID={route.sessionID}
+                      />
+                    </Show>
+                  </box>
+                </>
+              )}
+            </Show>
+          </InteractivityProvider>
           <Toast />
+          {/* A click in the chat beside a split gives it the keys; over a floating view it does nothing. */}
+          <Show when={opened() && instrumentFocused()}>
+            <box
+              position="absolute"
+              left={0}
+              top={0}
+              width="100%"
+              height="100%"
+              zIndex={1}
+              onMouseScroll={(event) => {
+                if (!scroll || scroll.isDestroyed) return
+                const viewport = scroll.viewport
+                if (event.x < viewport.x || event.x >= viewport.x + viewport.width) return
+                if (event.y < viewport.y || event.y >= viewport.y + viewport.height) return
+                // Keep the focus-only click guard, but let the transcript handle its own wheel events.
+                event.stopPropagation()
+                scroll.processMouseEvent(new MouseEvent(scroll, event))
+              }}
+              // Consume the release before revealing permission buttons underneath.
+              onMouseUp={() => {
+                if (paneResize.resizing() || resizeRelease) return
+                if (split()) focusChat()
+              }}
+            />
+          </Show>
         </box>
+        {/* Keyed by the instrument, so cycling its views keeps its screen. */}
+        <Show when={opened()?.id} keyed>
+          {(_id) => (
+            <box
+              ref={(r: BoxRenderable) => (viewNode = r)}
+              position={split() ? "relative" : "absolute"}
+              zIndex={split() ? 0 : 2000}
+              flexShrink={0}
+              left={placement().left}
+              top={placement().top}
+              width={placement().width}
+              height={placement().height}
+            >
+              <Show when={openInstrument()}>
+                {(instrument) => (
+                  <InstrumentView
+                    sessionID={route.sessionID}
+                    instrument={instrument()}
+                    view={opened()?.view ?? "floating"}
+                    focused={instrumentFocused()}
+                    onFocus={focusInstrument}
+                  />
+                )}
+              </Show>
+            </box>
+          )}
+        </Show>
+        <Show when={split() && dimensions().width >= 3}>
+          <PaneResizeHandle resize={paneResize} left={dimensions().width - paneResize.size() - 1} highlight="right" />
+        </Show>
         <Show when={sidebarVisible()}>
           <Switch>
             <Match when={wide()}>
@@ -816,6 +1090,15 @@ export function Session() {
       </box>
     </context.Provider>
   )
+}
+
+/** Whether `node` is `root` or inside it. */
+function within(node: Renderable | null | undefined, root: Renderable | undefined) {
+  if (!root) return false
+  for (let current = node; current; current = current.parent) {
+    if (current === root) return true
+  }
+  return false
 }
 
 function UserMessage(props: { message: Message; onMouseUp: () => void; index: number }) {

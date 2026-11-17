@@ -12,10 +12,17 @@ import {
   formatCommandBindings as formatCommandBindingsExtra,
   formatKeySequence as formatKeySequenceExtra,
 } from "@opentui/keymap/extras"
-import { KeymapProvider, useKeymap, useKeymapSelector, useBindings } from "@opentui/keymap/solid"
+import {
+  KeymapProvider,
+  useKeymap,
+  useKeymapSelector,
+  useBindings as useKeymapBindings,
+  type UseBindingsLayer,
+} from "@opentui/keymap/solid"
 import { createMemo, type Accessor } from "solid-js"
 import { useTuiConfig } from "./config"
 import { TuiKeybind } from "./config/keybind"
+import { useInteractivity } from "./context/interactivity"
 
 export const LEADER_TOKEN = "leader"
 export const OPENCORP_BASE_MODE = "base"
@@ -26,7 +33,16 @@ const OPENCORP_MODE_KEY = "opencorp.mode"
 export const OpenCorpKeymapProvider = KeymapProvider
 export const useOpenCorpKeymap = useKeymap
 
-export { useBindings, useKeymapSelector }
+export { useKeymapSelector }
+
+/** Registers a keymap layer, which is off while an interactivity provider above the caller is disabled. */
+export function useBindings<T extends Renderable = Renderable>(createLayer: () => UseBindingsLayer<T>) {
+  const interactive = useInteractivity()
+  useKeymapBindings(() => {
+    const layer = createLayer()
+    return interactive() ? layer : { ...layer, enabled: false }
+  })
+}
 
 export type OpenTuiKeymap = ReturnType<typeof useKeymap>
 type OpenCorpModeStack = ReturnType<typeof createOpenCorpModeStack>
