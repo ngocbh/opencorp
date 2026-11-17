@@ -465,9 +465,13 @@ test("the gate runs an allowed action, refuses a denied one, and holds one that 
   expect(gated.run).toBe(false)
   expect(!gated.run && isPending(gated.result)).toBe(true)
   expect(held).toEqual([{
-    card: { kind: "command", tool: "shell", action: "ls", why: "", reason: "Ask mode", rules: ["ls *"], args: {} },
+    card: { kind: "command", tool: "shell", action: "ls", why: "", reason: "Ask mode", rules: ["ls *"], args: {},
+      partial: false, into: null },
     callId: "r/n/1/0",
   }])
+  // A typed line's card keeps what it was decided with, so it can be decided again from the card alone.
+  await gate(perms, { kind: "input", text: "y", partial: true, into: "ssh u@node" }, call({ callId: "r/n/2/0" }))
+  expect(held[1]!.card).toMatchObject({ kind: "input", action: "y", partial: true, into: "ssh u@node" })
 })
 
 test("in auto the gate runs what Auto's check says run, and holds what it says ask, showing its reason", async () => {
@@ -479,7 +483,7 @@ test("in auto the gate runs what Auto's check says run, and holds what it says a
   expect(!gated.run && isPending(gated.result)).toBe(true)
   expect(asks.held).toEqual([{
     card: { kind: "command", tool: "shell", action: "scancel 42", why: "the job hangs",
-      reason: "Auto's check: it cancels a job", rules: ["scancel 42"], args: {} },
+      reason: "Auto's check: it cancels a job", rules: ["scancel 42"], args: {}, partial: false, into: null },
     callId: "r/n/1/0",
   }])
 })

@@ -15,7 +15,7 @@ import {
   withOwnerOrStop,
 } from "../learning.ts"
 import { beforeSaving, HAND_OVER_TEST } from "../risks.ts"
-import { lineCount, numberedLines, oddCharacter } from "../show.ts"
+import { lineCount, numberedLines, oddCharacter } from "../../../util/show.ts"
 import { quietStdin, wellFormed } from "../ssh.ts"
 import { type Access, AccessError, readAccess, sha256, writeAccess } from "../state.ts"
 import { MAX_SCRIPT_BYTES, runBytes } from "./replay.ts"

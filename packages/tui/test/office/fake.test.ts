@@ -63,3 +63,52 @@ test("hold delays a route until release", async () => {
   release()
   expect((await res).status).toBe(200)
 })
+
+test("an approval card has no side chat or send back, and its stop answers it interrupted, as the office's", async () => {
+  office = createFakeOffice()
+  const sid = office.state.sessions[0].id
+  const post = (path: string, body?: unknown) =>
+    fetch(BASE + path, {
+      unix: office.socket,
+      method: "POST",
+      ...(body !== undefined && { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+    })
+  const q = office.addApproval(sid, {
+    kind: "command",
+    tool: "shell",
+    action: "rm -rf build",
+    reason: "Ask mode",
+    rules: ["rm -rf build"],
+  })
+  expect([q.source, q.asker, q.title, q.question, q.options]).toEqual([
+    "approval",
+    "minh",
+    "@minh wants to run a command",
+    "rm -rf build",
+    ["Yes", "Yes, and don't ask again this session for: rm -rf build"],
+  ])
+  expect(q.approval).toEqual({
+    kind: "command", tool: "shell", action: "rm -rf build", args: {}, why: "", reason: "Ask mode",
+    rules: ["rm -rf build"], partial: false, into: null,
+  })
+  const typed = office.addApproval(sid, { kind: "input", tool: "terminal_type", action: "y", reason: "" })
+  expect([typed.title, typed.options, typed.call_id === q.call_id]).toEqual([
+    "@minh wants to type into a running command",
+    ["Yes"],
+    false,
+  ])
+  // The action shows as the office shows it: escaped, and numbered when it has more than one line.
+  expect(office.addApproval(sid, { kind: "command", tool: "shell", action: "ls\nrm \u202Ex", reason: "" }).question)
+    .toBe("  1  ls\n  2  rm <U+202E>x")
+  const refusals = [
+    [`/questions/${q.id}/side`, { text: "why?" }],
+    [`/questions/${q.id}/send-back`, { note: "" }],
+  ] as const
+  for (const [path, body] of refusals) {
+    const r = await post(path, body)
+    expect([r.status, ((await r.json()) as { error: string }).error]).toEqual([422, "approval_card"])
+  }
+  const r = await post(`/questions/${q.id}/stop`)
+  expect(r.status).toBe(200)
+  expect(office.state.questions[q.id]).toMatchObject({ status: "answered", answer_kind: "interrupted" })
+})

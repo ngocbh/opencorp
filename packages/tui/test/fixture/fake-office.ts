@@ -2,8 +2,14 @@
 // socket that speaks the office's HTTP routes and SSE framing. `bun run dev` and the tests that
 // check office behaviour use the real office; `test/office/contract.test.ts` checks this fake
 // against the real office.
-import { Person as PersonSchema, Session as SessionSchema, SessionMode } from "@opencorp/protocol"
+import {
+  Approval as ApprovalSchema,
+  Person as PersonSchema,
+  Session as SessionSchema,
+  SessionMode,
+} from "@opencorp/protocol"
 import type {
+  Approval,
   BrowserSession,
   Comment,
   Connection,
@@ -27,6 +33,7 @@ import type {
   Session,
   WorkItem,
 } from "@opencorp/protocol"
+import { shownAction } from "@opencorp/office/util/show"
 import { createTwoFilesPatch } from "diff"
 import { createHash, randomBytes } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
@@ -456,14 +463,15 @@ export function createFakeOffice(
     for (const fn of prompts) fn(sessionId, { text })
   }
   /**
-   * Esc: answers the open `ask_user` questions (of one run, when given) and stops the reply. The
+   * Esc: answers the open `ask_user` questions and approval cards (of one run, when given) and stops the reply. The
    * session stays busy until the stopped reply ends (`onInterrupt` drivers call `replyEnded`), and
    * messages sent meanwhile wait for the next reply.
    */
   function interrupt(s: Session, runId?: string) {
     if (s.status === "busy") interrupted.add(s.id)
+    const held = (q: Question) => q.source === "ask_user" || q.source === "approval"
     for (const q of Object.values(state.questions))
-      if (q.session_id === s.id && q.status === "open" && q.source === "ask_user" && (!runId || q.run_id === runId))
+      if (q.session_id === s.id && q.status === "open" && held(q) && (!runId || q.run_id === runId))
         close(q.id, { answer: "[interrupted by the user]", answer_kind: "interrupted" })
     for (const fn of interrupts) fn(s.id)
   }
@@ -535,6 +543,11 @@ export function createFakeOffice(
     if (q.source === "ask") throw fail(422, code, `question ${q.id} is a flow's ask node question`)
     return q
   }
+  /** Refuses a side chat or send back on an approval card, as the office does. */
+  function notApproval(q: Question) {
+    if (q.source === "approval")
+      throw fail(422, "approval_card", "An approval card takes only Yes or what the agent should do instead.")
+  }
   /** Opens a question in a session (the seeded one by default), as a harness `ask_user` would. */
   function addQuestion(fields: Partial<Question>) {
     const at = now()
@@ -552,6 +565,30 @@ export function createFakeOffice(
       ...fields,
     }
     return updateQuestion(q, "question.created")
+  }
+  let approvals = 0
+  /**
+   * Opens an approval card in session `sessionId` holding `approval` for a new call of its run, as the office's
+   * gate does for an agent's command: asked by the session's agent, titled by what it wants, its action as the
+   * question (escaped and numbered with the office's own `shownAction`), and Yes, then "don't ask again this
+   * session" when it has rules to add.
+   */
+  function addApproval(sessionId: string, approval: Approval, fields: Partial<Question> = {}) {
+    const asker = session(sessionId).person
+    const held = ApprovalSchema.parse(approval)
+    const rules = held.rules
+    const what = held.kind === "input" ? "type into a running command" : "run a command"
+    return addQuestion({
+      session_id: sessionId,
+      call_id: `run-1/reply/${++approvals}/0`,
+      source: "approval",
+      asker,
+      title: `@${asker} wants to ${what}`,
+      question: shownAction(held.action),
+      options: rules.length ? ["Yes", `Yes, and don't ask again this session for: ${rules.join(", ")}`] : ["Yes"],
+      approval: held,
+      ...fields,
+    })
   }
   /**
    * Ends a session's reply (or its start): the session goes idle, or the queued messages start one
@@ -1146,6 +1183,7 @@ export function createFakeOffice(
         check(str(body?.text), "text must be a non-empty string")
         const q = question(params.id)
         if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
+        notApproval(q)
         if (SIDE_EXIT.has(body.text.trim().toLowerCase())) throw refused()
         // One side session per question: later messages reach it too, and an ended one restarts.
         let side = state.sessions.find((x) => x.id === q.side_session_id)
@@ -1168,6 +1206,7 @@ export function createFakeOffice(
       ({ params, body }) => {
         check(typeof body?.note === "string", "note must be a string")
         const q = openModelQuestion(params.id, "cannot_send_back")
+        notApproval(q)
         if (!q.discussion?.length && !q.carried_from)
           throw fail(422, "no_discussion", `question ${q.id} has no discussion to send back`)
         // A non-blank note becomes the discussion's last entry.
@@ -1181,9 +1220,10 @@ export function createFakeOffice(
       "/questions/:id/stop",
       ({ params }) => {
         const q = openModelQuestion(params.id, "cannot_stop")
-        // Stopping a live main chat's ask_user is Esc on that chat, for every open ask_user of its run.
+        // Stopping a live main chat's ask_user or approval card is Esc on that chat, for every open one of its run.
         const asker = session(q.session_id)
-        if (q.source === "ask_user" && asker.kind === "main" && LIVE.includes(asker.status)) {
+        const esc = q.source === "ask_user" || q.source === "approval"
+        if (esc && asker.kind === "main" && LIVE.includes(asker.status)) {
           interrupt(asker, q.run_id)
           return Response.json(question(q.id))
         }
@@ -1394,6 +1434,7 @@ export function createFakeOffice(
     emit,
     live,
     addQuestion,
+    addApproval,
     newSession,
     replyEnded,
     expire,

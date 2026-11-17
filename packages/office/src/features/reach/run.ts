@@ -47,7 +47,7 @@ import {
   writeSshFiles,
 } from "./ssh.ts"
 import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "./risks.ts"
-import { lineCount, numberedLines, shownCode } from "./show.ts"
+import { lineCount, numberedLines, shownCode } from "../../util/show.ts"
 import { safePath, Spec } from "./spec.ts"
 import {
   type Access,

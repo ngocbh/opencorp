@@ -78,3 +78,9 @@ export function numberedLines(text: string, show: (line: string) => string = sho
   }
   return out
 }
+
+/** An action to approve as the owner reads it: one line as `shownCode` shows it, more as `numberedLines`, one per
+ *  line. A final newline makes it a script of one numbered line. */
+export function shownAction(text: string): string {
+  return text.includes("\n") ? numberedLines(text).join("\n") : shownCode(text)
+}

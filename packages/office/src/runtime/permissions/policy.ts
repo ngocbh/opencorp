@@ -189,7 +189,8 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
 }
 
 /** What an approval card holds: the action as it would run, the tool and arguments that run it, the agent's own
- *  reason (untrusted), why policy asks, and the allow rules "don't ask again" may add (none: it may add none). */
+ *  reason (untrusted), why policy asks, and the allow rules "don't ask again" may add (none: it may add none).
+ *  `partial` and `into` are the action's, so the card alone can be decided again, after a new rule or a restart. */
 export interface ApprovalCard {
   readonly kind: Action["kind"]
   readonly tool: string
@@ -198,6 +199,8 @@ export interface ApprovalCard {
   readonly why: string
   readonly reason: string
   readonly rules: readonly string[]
+  readonly partial: boolean
+  readonly into: string | null
 }
 
 /** A session's permissions as its host binds them; the model sets none of them. */
@@ -252,7 +255,7 @@ export async function gate(
     return { run: false, result: "Not run: this call can't wait for the owner's approval." }
   const card: ApprovalCard = {
     kind: action.kind, tool: call.tool, action: action.text, args: call.args, why: call.why, reason: asked.reason,
-    rules: asked.rules,
+    rules: asked.rules, partial: action.partial ?? false, into: action.into ?? null,
   }
   return { run: false, result: perms.hold(card, call.callId) }
 }

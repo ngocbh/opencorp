@@ -2,7 +2,9 @@
 import { AnswerRequest, Question, SendBackRequest, Session, SideChatRequest } from "@opencorp/protocol"
 import { z } from "zod"
 import { strip } from "../../util/redact.ts"
+import { loadRepo } from "../../company/loader.ts"
 import type { Cards } from "../../features/questions/cards.ts"
+import { approverOf } from "../../runtime/sessions/harness.ts"
 import { InvalidTransition } from "../../runtime/store/store.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, type Params, type Route } from "../http.ts"
@@ -45,8 +47,23 @@ export function getQuestion(ctx: RequestContext, params: Params) {
   return found
 }
 
+/** Refuses 403 `forbidden` unless `by` is the approver of approval card `id`'s session: its opener, else the CEO at
+ *  its pinned commit. Any other question, or none, passes. */
+async function onlyApprover(ctx: RequestContext, id: string, by: string): Promise<void> {
+  const { store, git } = ctx.office
+  const question = store.getQuestion(id)
+  if (question?.source !== "approval") return
+  const session = store.getSession(question.session_id)
+  // The pinned company is read only when it names the approver: for a session nobody opened.
+  const pinned = session?.opened_by === null ? loadRepo(await git.pin(session.repo_commit)) : undefined
+  const approver = session === undefined ? null : approverOf(session, pinned?.company?.ceo ?? null)
+  if (approver === null) throw new HttpError(403, "forbidden", "nobody may answer this approval card")
+  if (by !== approver) throw new HttpError(403, "forbidden", `only @${approver} may answer this approval card`)
+}
+
 /** Answer an open question as the request's person; the first answer wins, a second gets 409 `not_open`. It goes
- *  through the cards when the office has them, else through the session actor, else straight to the store.
+ *  through the cards when the office has them, else through the session actor, else straight to the store. Only the
+ *  session's approver may answer an approval card (403 `forbidden`).
  *
  *  On a Codex card the answer is Codex's reply. An answer Codex no longer waits for, or that no reply can be made
  *  from, gets 200 with the question `stale`, and Codex gets nothing from it. That covers a resolved request, an
@@ -56,6 +73,7 @@ export async function answerQuestion(ctx: RequestContext, params: Params, body: 
   const { office } = ctx
   const by = actingPerson(ctx)
   const id = params.id!
+  await onlyApprover(ctx, id, by)
   // The cards check the answer against its card and keep the side chat's discussion.
   const found = office.cards
   if (found !== undefined) return harnessCall(() => found.answer(id, answer, kind, { by }))
@@ -83,10 +101,13 @@ export function sendBack(ctx: RequestContext, params: Params, body: unknown) {
   return harnessCall(() => found.sendBack(params.id!, note, { by: actingPerson(ctx) }))
 }
 
-/** Stop the asker from its card: it gets `[interrupted by the user]` with the discussion. */
-export function stop(ctx: RequestContext, params: Params) {
+/** Stop the asker from its card: it gets `[interrupted by the user]` with the discussion. Only the session's
+ *  approver may stop an approval card (403 `forbidden`). */
+export async function stop(ctx: RequestContext, params: Params) {
   const found = cards(ctx, "/questions/:id/stop")
-  return harnessCall(() => found.stop(params.id!, { by: actingPerson(ctx) }))
+  const by = actingPerson(ctx)
+  await onlyApprover(ctx, params.id!, by)
+  return harnessCall(() => found.stop(params.id!, { by }))
 }
 
 /** Stop carrying an expired question's discussion into this one. */

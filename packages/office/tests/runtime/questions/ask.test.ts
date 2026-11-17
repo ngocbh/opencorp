@@ -474,6 +474,38 @@ test("a closed call on a flow question goes stale", () => {
   expect([store.getQuestion(q.id)!.status, store.getQuestion(q.id)!.answer_kind]).toEqual(["stale", null])
 })
 
+/** An approval card of session `sid` holding call `CALL`. */
+function approvalCard(sid: string) {
+  return question(sid, {
+    source: "approval",
+    call_id: CALL,
+    question: "rm -rf build",
+    options: ["Yes"],
+    approval: { kind: "command", tool: "shell", action: "rm -rf build", reason: "Ask mode" },
+  })
+}
+
+test("an interrupted approval call answers its card interrupted, as an ask_user's does", () => {
+  const { store, sid, answers } = setup()
+  const q = answers.ask(approvalCard(sid))
+  const got = answers.closedCall("run-1", CALL, "interrupted")!
+  const stored = store.getQuestion(q.id)!
+  expect([stored.answer, stored.answer_kind, stored.answered_by, stored.status]).toEqual([
+    INTERRUPTED,
+    "interrupted",
+    null,
+    "consumed",
+  ])
+  expect(got).toEqual(stored)
+})
+
+test("a crashed approval call makes its card stale", () => {
+  const { store, sid, answers } = setup()
+  const q = answers.ask(approvalCard(sid))
+  answers.closedCall("run-1", CALL, "crashed")
+  expect([store.getQuestion(q.id)!.status, store.getQuestion(q.id)!.answer_kind]).toEqual(["stale", null])
+})
+
 test("a closed call interrupts an ask manager question and closes its item", () => {
   const { store, sid, answers, lines } = setup()
   const { item, q } = managerQuestion(sid)

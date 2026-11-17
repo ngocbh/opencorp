@@ -85,8 +85,9 @@ class StandIn implements CardActor {
     this.interrupted.push(sessionId)
     this.interruptedFor.push(question)
     if (!this.interruptCloses) return
+    // The interrupt closes the run's held calls, which answers their model questions and approval cards.
     for (const q of this.store.listQuestions({ sessionId, status: "open" })) {
-      if (q.source !== "ask_user" && q.source !== "ask_manager") continue
+      if (q.source !== "ask_user" && q.source !== "ask_manager" && q.source !== "approval") continue
       try {
         this.store.answerQuestion(q.id, INTERRUPTED, "interrupted")
       } catch (error) {
@@ -276,6 +277,50 @@ test("a harness card takes only an answer", async () => {
     expect([error.status, error.code]).toEqual([422, "harness_card"])
   }
   expect(office.store.getQuestion(q.id)!.status).toBe("open")
+})
+
+/** An approval card in a new stored session, holding `rm -rf build` for the `n`th call of run-1's node `n`. */
+function approvalCard(office: Office, n = 1): QuestionRecord {
+  return card(office, {
+    source: "approval",
+    call_id: `run-1/n/${n}/0`,
+    question: "rm -rf build",
+    options: ["Yes"],
+    approval: { kind: "command", tool: "shell", action: "rm -rf build", reason: "Ask mode" },
+  })
+}
+
+test("an approval card has no side chat or send back", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  const q = approvalCard(office)
+  office.store.updateQuestion(q.id, { discussion: [{ role: "user", text: "why?" }] })
+  for (const action of [() => cards.openSide(q.id, "why?"), () => cards.sendBack(q.id, "note")]) {
+    const error = await refusal(action)
+    expect([error.status, error.code]).toEqual([422, "approval_card"])
+  }
+  expect(office.store.getQuestion(q.id)!.status).toBe("open")
+  expect(office.store.getQuestion(q.id)!.side_session_id).toBeNull()
+  expect(actor.answered).toEqual([])
+  const yes = await cards.answer(q.id, "Yes", "option", { by: CEO })
+  expect([yes.answer, yes.answer_kind, yes.answered_by]).toEqual(["Yes", "option", CEO])
+})
+
+test("stopping an approval card interrupts its asker, as an ask_user card's stop does", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  const q = approvalCard(office)
+  const stopped = await cards.stop(q.id, { by: CEO })
+  expect(actor.interrupted).toEqual([q.session_id])
+  expect(actor.interruptedFor).toEqual([q.id])
+  expect(actor.answered).toEqual([])
+  expect([stopped.answer, stopped.answer_kind, stopped.answered_by]).toEqual([INTERRUPTED, "interrupted", null])
+
+  // With no run to interrupt, the stop answers the card itself, as who clicked.
+  actor.interruptFails = true
+  const alone = approvalCard(office, 2)
+  const answered = await cards.stop(alone.id, { by: CEO })
+  expect([answered.answer, answered.answer_kind, answered.answered_by]).toEqual([INTERRUPTED, "interrupted", CEO])
 })
 
 test("stop on a live main chats model question is esc on that chat", async () => {

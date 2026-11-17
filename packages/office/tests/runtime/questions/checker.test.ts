@@ -56,6 +56,20 @@ test("a model question takes text and checks options", () => {
   }
 })
 
+test("an approval card takes one of its options or text, never a send back", () => {
+  const card = q("approval", {
+    options: ["Yes", "Yes, and don't ask again this session for: ls *"],
+    approval: { kind: "command", tool: "shell", action: "ls -la", reason: "Ask mode", rules: ["ls *"] },
+  })
+  expect(checkAnswer(card, "Yes", "option")).toBe("Yes")
+  expect(checkAnswer(card, "use rg instead", "text")).toBe("use rg instead")
+  expect(checkAnswer(card, "[interrupted by the user]", "interrupted")).toBe("[interrupted by the user]")
+  refused(() => checkAnswer(card, "Maybe", "option"), /^the answer is not one of the options$/)
+  refused(() => checkAnswer(card, " \t", "text"), /^the answer must be text$/)
+  refused(() => checkAnswer(card, { a: 1 }, "text"), /^the answer must be text$/)
+  refused(() => checkAnswer(card, null, "sent_back"), /^an approval card takes Yes or what to do instead$/)
+})
+
 test("office answers pass unchanged", () => {
   expect(checkAnswer(q("ask_manager"), null, "sent_back")).toBeNull()
   expect(checkAnswer(q("ask", { questions: PAGES }), "[interrupted by the user]", "interrupted")).toBe(
