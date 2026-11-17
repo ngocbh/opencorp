@@ -312,9 +312,11 @@ export function TerminalPane(props: {
       focused: () => !!terminal?.focused && live(),
       press: (event) => {
         // The key goes first: a line's end may put the view away, and its last keys go out as it does.
-        terminal?.handleKeyPress(event)
+        const sent = terminal?.handleKeyPress(event)
+        // A key that types counts only once it sends the shell something.
         const effect = lineEffect(event)
-        if (effect) props.onLine?.(effect === "types")
+        if (effect === "ends") props.onLine?.(false)
+        else if (effect === "types" && sent) props.onLine?.(true)
       },
     }),
   )

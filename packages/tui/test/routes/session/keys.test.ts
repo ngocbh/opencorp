@@ -169,10 +169,24 @@ test("a key types into the owner's line, ends it, or neither", async () => {
       "ends",
       "ends",
       "ends",
-      "undefined",
+      "types",
     ])
   } finally {
     setup.renderer.keyInput.off("keypress", listener)
     setup.renderer.destroy()
   }
+})
+
+test("under the kitty keyboard protocol the numpad types, and a key the TUI doesn't know types too", () => {
+  const key = (name: string, mods: Partial<KeyEvent> = {}) =>
+    lineEffect({ name, ctrl: false, meta: false, shift: false, super: false, ...mods } as KeyEvent)
+  for (const name of ["kp1", "kp0", "kpdecimal", "kpminus", "kpplus"]) expect(key(name)).toBe("types")
+  // A name the list of keys that type nothing doesn't hold errs toward a line under way.
+  expect(key("mediaplay")).toBe("types")
+  // The keys that type nothing.
+  for (const name of ["pageup", "pagedown", "up", "home", "end", "insert", "delete", "f5", "f12", "tab", "backspace"])
+    expect(key(name)).toBeUndefined()
+  for (const name of ["shift", "leftshift", "rightctrl", "alt", "capslock"]) expect(key(name)).toBeUndefined()
+  expect(key("tab", { shift: true })).toBeUndefined()
+  expect(key("kpenter")).toBe("ends")
 })

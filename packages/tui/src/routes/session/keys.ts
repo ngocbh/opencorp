@@ -43,19 +43,25 @@ export function routeShellKeys(
   }
 }
 
-/** Whether `event` ends the owner's line: Enter, or Ctrl-C or Ctrl-D, which give it up. */
+/** Whether `event` ends the owner's line: Enter (the numpad's too), or Ctrl-C or Ctrl-D, which give it up. */
 export function endsLine(event: KeyEvent) {
-  if (["return", "enter", "linefeed"].includes(event.name)) return true
+  if (["return", "enter", "linefeed", "kpenter"].includes(event.name)) return true
   return event.ctrl && (event.name === "c" || event.name === "d")
 }
 
-/** What `event` does to the owner's line: ends it, types text into it, or neither (a cursor, editing or function
- *  key), so moving about a full-screen program leaves no line under way. */
+/** The keys that type nothing into a line: the cursor and paging keys, Home and End, Insert and Delete, the function
+ *  keys, Tab, Backspace, and modifiers pressed alone. */
+const NOT_TEXT = new RegExp(
+  "^(up|down|left|right|pageup|pagedown|home|end|insert|delete|tab|backspace|f\\d+" +
+    "|(left|right)?(shift|ctrl|control|alt|option|meta|super|hyper)|capslock|numlock|scrolllock)$",
+)
+
+/** What `event` does to the owner's line: ends it, types into it, or neither. Only the keys known to type nothing
+ *  leave it as it was, so moving about a full-screen program starts no line, and any other key, the numpad's or one
+ *  this list doesn't know, counts as typing. */
 export function lineEffect(event: KeyEvent): "ends" | "types" | undefined {
   if (endsLine(event)) return "ends"
-  if (event.ctrl || event.meta || event.super) return undefined
-  if (event.name === "space" || [...event.name].length === 1) return "types"
-  return undefined
+  return NOT_TEXT.test(event.name) ? undefined : "types"
 }
 
 /**
