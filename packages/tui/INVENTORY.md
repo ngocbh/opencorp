@@ -83,6 +83,7 @@ change that rewires a kept file.
 | Session view | `routes/session/{index,sidebar,dialog-message}.tsx` | keep | Renders protocol messages and live parts. The header and sidebar add `(subscription, unpriced)` to the cost of a chat on a subscription connection, whose tokens the office records at $0. |
 | Question view | `routes/session/question.tsx` | keep | Shows a session's open office question and answers it. |
 | Prompt | `component/prompt/{index,autocomplete,frecency,history,stash,local-attachment}.ts(x)`, `prompt/**` | keep | The chat screen (Enter to steer, Esc to interrupt). |
+| Instrument line | `routes/session/instrument-line.tsx` (new) | restored, adapted | Under the prompt: after the folder, or the spinner and `esc interrupt`, a count per kind of the chat's instruments that haven't ended and how many failed; what waits for the owner takes the shortcuts' place, in the warning colour of the session footer's permission count (`routes/session/footer.tsx`, deleted). |
 | Dialog and UI kit | `ui/**`, `component/{command-palette,dialog-session-list,dialog-stash,dialog-theme-list,dialog-debug,error-component,spinner,register-spinner}.ts(x)` | keep | Used by every later screen. The session list reads office sessions. |
 | Theme | `theme/**`, `context/theme.tsx` | keep | |
 | Keymap and config | `keymap.tsx`, `config/**` | keep | Plugin, attention, model, provider, MCP, share and workspace entries go with their features. |

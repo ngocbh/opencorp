@@ -63,6 +63,13 @@ license, the upstream paths and commit, and our paths.
 - **Upstream:** `packages/core/src/tool/plugin/shell.ts` (`description`, `DEFAULT_TIMEOUT_MS`,
   `BACKGROUND_INSTRUCTION`, and `prepare`'s `permission.assert`), read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/office/src/tools/terminal/tools.ts`, `packages/office/src/tools/terminal/terminal.ts`.
+- **What:** the line under the prompt keeps the fork's layout: the spinner and `esc interrupt` (or the folder) on the
+  left, the shortcuts on the right. The chat's instrument counts follow the left side, and what waits for the owner
+  takes the shortcuts' place in the warning colour, as the fork's session footer showed its open permissions
+  (`△ N Permissions`).
+- **Upstream:** `packages/tui/src/component/prompt/index.tsx` and `packages/tui/src/routes/session/footer.tsx` at
+  commit `b471c2b`.
+- **Ours:** `packages/tui/src/routes/session/instrument-line.tsx`, `packages/tui/src/component/prompt/index.tsx`.
 
 ## Paperclip
 

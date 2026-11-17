@@ -50,6 +50,7 @@ import { OPENCORP_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, u
 import { useTuiConfig } from "../../config"
 import { readLocalAttachment } from "./local-attachment"
 import { display } from "../../util/printable"
+import { InstrumentLine, InstrumentWarning, waitingInstrument } from "../../routes/session/instrument-line"
 
 registerOpenCorpSpinner()
 
@@ -122,6 +123,10 @@ export function Prompt(props: PromptProps) {
   const session = createMemo(() => office.state.sessions.find((s) => s.id === props.sessionID))
   const canInterrupt = createMemo(() => interruptible(session()?.status))
   const busy = createMemo(() => working(session()?.status))
+  // The instrument waiting on the owner, which the line names in place of the shortcuts.
+  const waiting = createMemo(() =>
+    props.sessionID ? waitingInstrument(office.state.instruments[props.sessionID]) : undefined,
+  )
   /** An ended Codex session, which a message continues in a new session on the same thread. */
   const continues = createMemo(() => {
     const s = session()
@@ -1105,7 +1110,7 @@ export function Prompt(props: PromptProps) {
               )
             }
           >
-            <box flexDirection="row" gap={1} flexGrow={1}>
+            <box flexDirection="row" gap={1}>
               {/* A waiting session can be interrupted but isn't working, so it has no spinner. */}
               <Show when={busy()}>
                 <box marginLeft={1}>
@@ -1119,21 +1124,29 @@ export function Prompt(props: PromptProps) {
               </text>
             </box>
           </Show>
-          <box gap={2} flexDirection="row">
-            <Show when={mode() && modeShortcut()}>
-              <text fg={theme.text}>
-                {modeShortcut()} <span style={{ fg: theme.textMuted }}>mode</span>
-              </text>
-            </Show>
-            <Show when={peopleShortcut()}>
-              <text fg={theme.text}>
-                {peopleShortcut()} <span style={{ fg: theme.textMuted }}>people</span>
-              </text>
-            </Show>
-            <text fg={theme.text}>
-              {paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
-            </text>
-          </box>
+          <Show when={props.sessionID}>{(id) => <InstrumentLine sessionID={id()} />}</Show>
+          <Show
+            when={waiting()}
+            fallback={
+              <box gap={2} flexDirection="row">
+                <Show when={mode() && modeShortcut()}>
+                  <text fg={theme.text}>
+                    {modeShortcut()} <span style={{ fg: theme.textMuted }}>mode</span>
+                  </text>
+                </Show>
+                <Show when={peopleShortcut()}>
+                  <text fg={theme.text}>
+                    {peopleShortcut()} <span style={{ fg: theme.textMuted }}>people</span>
+                  </text>
+                </Show>
+                <text fg={theme.text}>
+                  {paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
+                </text>
+              </box>
+            }
+          >
+            {(instrument) => <InstrumentWarning instrument={instrument()} />}
+          </Show>
         </box>
       </box>
       <Autocomplete
