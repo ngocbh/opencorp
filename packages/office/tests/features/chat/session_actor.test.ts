@@ -149,6 +149,31 @@ test("a message sent while the next turn's history is compacted is a turn and ma
   expect(status(o, sid)).toBe("busy")
 })
 
+test("a message sent while the reply runs a flow it called, or after a failure ended that call, steers the reply", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const { worker, handlers, deliveries } = workers[0]!
+  const frame = (name: string, data: Record<string, unknown>) => handlers.event(worker, { type: "event", name, data })
+  const steered = async (text: string) => {
+    const sent = actor.prompt(text)
+    await waitFor(() => deliveries.length > 0, { what: "the send" })
+    handlers.deliverReply(worker, { type: "deliver_reply", id: deliveries.shift()!.id, seq: 7 })
+    return await sent
+  }
+  frame("NodeStarted", { node_id: "chat#0/reply" })
+  // The called flow's nodes run under the call's scope while the reply goes on.
+  frame("NodeExpanded", { node_id: "chat#0/reply", grow: { seed: null, prune: [] }, call_id: "t1" })
+  frame("NodeStarted", { node_id: "chat#0/reply/helper#0/work" })
+  await waitFor(() => status(o, sid) === "busy", { what: "busy while the reply runs" })
+  expect(await steered("one")).toBe("steer")
+  frame("NodeFailed", { failure: { node_id: "chat#0/reply/helper#0/work" }, call_id: "t1", scope: "chat#0/reply/helper#0" })
+  expect(await steered("two")).toBe("steer")
+})
+
 test("a prompt whose send comes back unsent after close is refused as stopping", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)

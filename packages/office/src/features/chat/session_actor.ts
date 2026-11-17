@@ -25,7 +25,7 @@ import { type Answers, isAskManagerCall, makeAskUser, type OnQuestion } from "..
 import { approvalResult } from "../../runtime/questions/approval.ts"
 import { formatAnswer, MAX_ANSWER_BYTES } from "../../runtime/questions/format.ts"
 import type { RunIndexer } from "../../runtime/runs/indexer.ts"
-import { OpenNodes } from "../../runtime/runs/nodes.ts"
+import { endedScopes, growsFlowCall, inScopes, OpenNodes } from "../../runtime/runs/nodes.ts"
 import { LINE_CAP } from "../../runtime/runs/reader.ts"
 import {
   COULDNT_RESUME,
@@ -345,6 +345,12 @@ class WorkerRun {
     this.given = given
     for (const wait of waits) this.waiting.set(wait.node, [...(this.waiting.get(wait.node) ?? []), wait.call_id])
     this.turnPending = sent || given.some((p) => p.delivery.op === "send")
+  }
+
+  /** Forgets the nodes in flight or waiting inside the flow call scopes `scopes`, which left the run with them. */
+  endScopes(scopes: readonly string[]): void {
+    for (const node of [...this.inFlight]) if (inScopes(node, scopes)) this.inFlight.delete(node)
+    for (const node of [...this.waiting.keys()]) if (inScopes(node, scopes)) this.waiting.delete(node)
   }
 }
 
@@ -2186,14 +2192,24 @@ export class SessionActor implements LiveCalls {
           }
         }
         break
-      // A container expands and never succeeds.
+      // A container expands and never succeeds; an agent that calls a flow goes on beside it.
       case "NodeSkipped":
       case "NodeExpanded":
-        if (node !== null) run.inFlight.delete(node)
+        if (node !== null && !growsFlowCall(String(frame.name), data)) run.inFlight.delete(node)
         break
       case "NodeFailed": {
+        // A failure inside an agent's flow call ends only that call's scope: its nodes, the failing one if it is one.
+        const scopes = endedScopes("NodeFailed", data)
         const failure = data.failure as { node_id?: unknown } | null | undefined
-        if (typeof failure?.node_id === "string") run.inFlight.delete(failure.node_id)
+        if (scopes.length > 0) run.endScopes(scopes)
+        else if (typeof failure?.node_id === "string") run.inFlight.delete(failure.node_id)
+        break
+      }
+      // The interrupted agents end with their own frames; the nodes of their open flow calls end with none.
+      case "Interrupted": {
+        const scopes = endedScopes("Interrupted", data)
+        if (scopes.length === 0) return
+        run.endScopes(scopes)
         break
       }
       case "NodeWaiting":

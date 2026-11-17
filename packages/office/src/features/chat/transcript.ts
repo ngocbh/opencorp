@@ -512,7 +512,8 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
     }
     if (reply !== null) state.settled.add(keep(state, reply))
   } else if (kind === "node_failed") {
-    if (reply !== null) state.settled.add(keep(state, reply))
+    // A failure that names the reply inside its flow call's scope (the scope couldn't grow) fails only that call.
+    if (reply !== null && (record as { scope: string | null }).scope === null) state.settled.add(keep(state, reply))
   } else if (kind === "node_started") {
     // A run resumed after a crash starts the reply again; its message opened at the first start.
     if (reply !== null && !state.started.has(reply)) {
