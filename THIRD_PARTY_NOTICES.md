@@ -72,19 +72,21 @@ license, the upstream paths and commit, and our paths.
 - **Ours:** `packages/tui/src/routes/session/instrument-line.tsx`, `packages/tui/src/component/prompt/index.tsx`.
 - **What:** the TUI's move to OpenTUI 0.8.4, the version current upstream runs: the spinner renderable, which replaces
   the `opentui-spinner` package; and, as upstream does, a text area's size invalidated with
-  `invalidateIntrinsicSize`, syntax styles given the renderer's scene, awaited suspends and resumes, nothing printed
-  before the renderer has closed, and test renderers whose terminal is set up. The test of OpenTUI's embedded
-  terminal registers it as upstream's terminal pane does.
+  `invalidateIntrinsicSize`, syntax styles given the renderer's scene, awaited suspends and resumes, the renderer's
+  own `requestAnimationFrame` (0.8 sets no global one), nothing printed before the renderer has closed, and test
+  renderers whose terminal is set up. The test of OpenTUI's embedded terminal registers it as upstream's terminal
+  pane does.
 - **Upstream:** `packages/tui/src/component/spinner-renderable.ts`, `packages/tui/src/component/prompt/index.tsx`,
   `packages/theme/src/tui/syntax.ts`, `packages/tui/src/editor.ts`, `packages/tui/src/app.tsx`,
-  `packages/tui/test/app-lifecycle.test.tsx` and `packages/tui/src/component/terminal-pane.tsx`, read at commit
-  `df46f69` (2026-11-16).
+  `packages/tui/src/feature-plugins/system/diff-viewer.tsx`, `packages/tui/test/app-lifecycle.test.tsx` and
+  `packages/tui/src/component/terminal-pane.tsx`, read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/tui/src/component/spinner-renderable.ts`, `packages/tui/src/component/register-spinner.ts`,
   `packages/tui/src/component/prompt/index.tsx`, `packages/tui/src/theme/index.ts`,
   `packages/tui/src/context/theme.tsx`, `packages/tui/src/editor.ts`, `packages/tui/src/app.tsx`,
-  `packages/tui/src/setup/screen.tsx`, `packages/tui/src/setup/run.tsx`, `packages/tui/test/fixture/frame.ts`,
-  `packages/tui/test/setup/boot.tsx`, `packages/tui/test/setup/in-process-frame.test.tsx`,
-  `packages/tui/test/app-lifecycle.test.tsx` and `packages/tui/test/ui/embedded-terminal.test.tsx`.
+  `packages/tui/src/setup/screen.tsx`, `packages/tui/src/setup/run.tsx`, `packages/tui/src/ui/dialog-select.tsx`,
+  `packages/tui/test/fixture/frame.ts`, `packages/tui/test/setup/boot.tsx`,
+  `packages/tui/test/setup/in-process-frame.test.tsx`, `packages/tui/test/app-lifecycle.test.tsx` and
+  `packages/tui/test/ui/embedded-terminal.test.tsx`.
 - **What:** the terminal title and renderer teardown, ported whole: a title is never set on a destroyed or suspended
   renderer and has its control characters replaced with spaces, and a destroyed renderer is left alone. Its tests
   come with it, and the SIGHUP test reads the cleared title from what the renderer writes, as upstream's does.

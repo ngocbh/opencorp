@@ -11,7 +11,7 @@ import { useTheme, selectedForeground } from "../context/theme"
 import { entries, filter, flatMap, groupBy, pipe } from "remeda"
 import { batch, createEffect, createMemo, createSignal, For, Show, type JSX, on, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
-import { useTerminalDimensions } from "@opentui/solid"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import * as fuzzysort from "fuzzysort"
 import { isDeepEqual } from "remeda"
 import { useDialog, type DialogContext } from "./dialog"
@@ -85,6 +85,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   type VisibleAction = (Action & { label: string }) | FooterHint
 
   const dialog = useDialog()
+  const renderer = useRenderer()
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
@@ -252,8 +253,8 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
           if (!moved) return
           const value = option.value
           const generation = ++visibilityGeneration
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
+          renderer.requestAnimationFrame(() => {
+            renderer.requestAnimationFrame(() => {
               if (generation !== visibilityGeneration) return
               if (!props.preserveSelection || store.filter.length > 0) return
               if (!isDeepEqual(selected()?.value, value)) return
