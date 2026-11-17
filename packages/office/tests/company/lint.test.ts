@@ -513,6 +513,22 @@ test("system paths through a merge key is refused", async () => {
   await systemPathsIssue("x-base: &base\n  paths: [lib]\nsystem:\n  <<: *base\n")
 })
 
+test("a company flow that uses a tool module is a lint error naming it", async () => {
+  const flow = "id: chat\nname: chat\nuses:\n  crm: ./crm.ts\nnodes:\n  reply:\n    kind: agent\n    tools: [crm]\n"
+    + "    output: !str\n    prompt: hi\noutput: ${reply.output}\n"
+  const root = makeCompany({
+    "shared/flows/chat.yaml": flow,
+    "shared/flows/crm.ts": "export function lookup(input: { name: string }): string {\n  return input.name\n}\n",
+  })
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.path).toBe("people/minh/person.yaml")
+  expect(issue!.message).toBe(
+    "../../shared/flows/chat.yaml: RangeError: shared/flows/chat.yaml: uses: crm is a tool module; company flows"
+      + " can't use tool modules until the office can ask before their calls",
+  )
+})
+
 test("unknown skill", async () => {
   const root = makeCompany({ "people/minh/person.yaml": person("minh", { skills: ["nope"] }) })
   expect(await issues(root)).toContain("person.unknown_skill people/minh/person.yaml")

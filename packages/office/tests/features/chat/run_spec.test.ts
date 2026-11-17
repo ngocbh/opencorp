@@ -1,5 +1,6 @@
 /** The run specs of a person's main chat, a side chat and the profile manager, and the jobs built from them. */
 import { expect, setDefaultTimeout, test } from "bun:test"
+import fs from "node:fs"
 import path from "node:path"
 import { stringify } from "yaml"
 import { personInputs, talkingTo } from "../../../src/features/chat/identity.ts"
@@ -318,4 +319,22 @@ test("a job built from a spec runs its flow in a worker", async () => {
   expect(JSON.stringify(fake.requests()[0])).toContain("Ship it.")
   expect(next.outcome?.status).toBe("waiting")
   expect(waitsOf(next).map((wait) => wait.node)).toEqual(["chat#1/heard"])
+})
+
+test("a chat flow that grants a tool group the office doesn't serve, such as an MCP server's, fails before its run starts", async () => {
+  // The office passes yian only its own groups, so a group it doesn't serve, as an MCP server's, is missing.
+  const o = await office()
+  const file = path.join(o.root, "shared/flows/chat.yaml") // the job's pin is the company folder
+  const granted = "tools: [toolbox, workspace, company, ask_user]"
+  const text = fs.readFileSync(file, "utf8")
+  expect(text.split(granted)).toHaveLength(2)
+  fs.writeFileSync(file, text.replace(granted, "tools: [toolbox, workspace, company, ask_user, github]"))
+  const fake = await fakeLlm()
+  const spec = main(o)
+  const tools = spec.groups({ session: o.session, runId: "r1" })
+  const rec = await run(job(o, spec, tools), new Recorder({ tools, memories: spec.memories }), { env: fake.env() })
+  expect(rec.outcome?.type).toBe("error")
+  expect(String(rec.outcome?.message)).toContain("github")
+  expect(rec.names()).not.toContain("RunStarted")
+  expect(fake.requests()).toEqual([])
 })
