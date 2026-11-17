@@ -264,7 +264,8 @@ function chatShapeProblems(ref: string, flow: ComposedFlow): string[] {
 }
 
 /** Agents have a main flow; every main, SOP, and routine flow is a relative path to a file inside the repo
- *  that compiles; a main flow declares the inputs the office passes it and has the template chat's shape. */
+ *  that compiles and isn't a library; a main flow declares the inputs the office passes it and has the template
+ *  chat's shape. */
 async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
     const file = personPath(handle)
@@ -305,6 +306,12 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
           const what = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
           yield repoIssue(file, "person.flow_invalid", `${ref}: ${what}`)
         }
+        continue
+      }
+      // yian loads a library (a file of defs) but won't run one.
+      if (flow.library !== null) {
+        yield repoIssue(file, "person.flow_invalid",
+          `${ref} is a library (defs: and no nodes:), which can't run; import it with uses: and call a def`)
         continue
       }
       if (!isMain) continue
