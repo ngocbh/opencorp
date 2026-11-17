@@ -1161,8 +1161,12 @@ function InlineTool(props: {
   const [hover, setHover] = createSignal(false)
   const [errorExpanded, setErrorExpanded] = createSignal(false)
 
-  // A call held on an open approval card shows in the warning colour until the card is answered.
-  const waiting = createMemo(() => permission.waiting(ctx.sessionID, props.part.call_id))
+  // A call held on an open approval card shows in the warning colour until the card is answered. The card names the
+  // call by yian's id, which the part carries once the call waited; its `call_id` is the model's.
+  const waiting = createMemo(() => {
+    const id = props.part.yian_call_id
+    return !!id && permission.waiting(ctx.sessionID, id)
+  })
   const error = createMemo(() => (props.part.state === "error" ? (props.part.error ?? "failed") : undefined))
   const note = createMemo(() => approvalNote(props.part.input ?? {}))
   const interrupted = createMemo(() => props.part.state === "interrupted")

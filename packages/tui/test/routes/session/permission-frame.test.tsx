@@ -360,25 +360,30 @@ test("the transcript's tool row waiting on an open card is drawn in the warning 
       created_at: at,
       parts: [
         { id: "p1", type: "tool", call_id: "other", tool: "shell", state: "completed", input: { command: "ls -la" } },
+        // The held call: the model's id, and yian's, which the card names.
         {
           id: "p2",
           type: "tool",
-          call_id: q.call_id!,
+          call_id: "call_model_2",
+          yian_call_id: q.call_id!,
           tool: "shell",
           state: "running",
           input: { command: "rm -rf build" },
         },
+        // A model id that happens to equal the card's, with no yian id: not the held call.
+        { id: "p3", type: "tool", call_id: q.call_id!, tool: "shell", state: "running", input: { command: "make all" } },
       ],
     },
   ] satisfies Message[]
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
-    await app.until((f) => f.includes("ls -la") && f.includes(CHOICES))
+    await app.until((f) => f.includes("ls -la") && f.includes("make all") && f.includes(CHOICES))
     const warning = fgOf(app, "△")
     expect(warning).toBeDefined()
     // The card's own body says "$ rm -rf build"; the transcript's row doesn't.
     expect(fgOf(app, "rm -rf build", ["$ rm -rf build"])?.equals(warning!)).toBe(true)
     expect(fgOf(app, "ls -la")?.equals(warning!)).toBe(false)
+    expect(fgOf(app, "make all")?.equals(warning!)).toBe(false)
   } finally {
     await app.stop()
     office.stop()
