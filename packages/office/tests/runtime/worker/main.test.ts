@@ -649,6 +649,13 @@ test("an event with no value field gets only the minimal stub", () => {
     { node_id: "chat#1/heard", call_ids: ["c1"] },
   ])
   expect(eventStubs({ error_type: "LoadError" })).toEqual([{ error_type: "LoadError" }])
+  // A failure inside a flow call keeps the call and the scope it ends.
+  expect(eventStubs({ failure: { node_id: "r/f#0/a", message: big }, call_id: "c1", scope: "r/f#0" })).toEqual([
+    { failure: { node_id: "r/f#0/a" }, call_id: "c1", scope: "r/f#0" },
+  ])
+  expect(eventStubs({ inbox: "messages", nodes: ["r"], scopes: ["r/f#0"] })).toEqual([
+    { nodes: ["r"], scopes: ["r/f#0"] },
+  ])
 })
 
 test("the minimal stub keeps every event field the office reads", () => {

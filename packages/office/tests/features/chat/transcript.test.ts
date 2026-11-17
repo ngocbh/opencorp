@@ -11,7 +11,7 @@ import { newId } from "../../../src/runtime/store/store.ts"
 import type { FakeLLM } from "../../../src/testing/fake_llm.ts"
 import type { Delivery, Job } from "../../../src/runtime/worker/job.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
-import { line, RUN, runStarted, started } from "../../runtime/runs/helpers.ts"
+import { failed, line, RUN, runStarted, started } from "../../runtime/runs/helpers.ts"
 import { advanceJob, inProcessWorker, run, type TestWorker } from "../../runtime/worker/helpers.ts"
 import {
   advance,
@@ -901,6 +901,18 @@ test("a run end over the line cap ends the run, and another node's line over it 
   expect(transcript.runningReply(RUN)).toBe(`${RUN}:${String(1).padStart(12, "0")}`)
   expect(messages(runs, newId(), [RUN], { transcript })).toEqual([])
   fs.appendFileSync(log, line(3, "run_failed", { failure: { code: "x", message: big } }))
+  expect(transcript.runningReply(RUN)).toBeNull()
+})
+
+test("a failure naming the reply whose flow call's scope couldn't grow leaves the reply running", () => {
+  const runs = tempDir()
+  const log = path.join(runs, RUN, "log.jsonl")
+  fs.mkdirSync(path.dirname(log), { recursive: true })
+  const call = { callId: "t1", scope: `${REPLY}/helper#0` }
+  fs.writeFileSync(log, Buffer.concat([runStarted(0), started(1, REPLY), failed(2, REPLY, "no scope", call)]))
+  const transcript = new Transcript(runs)
+  expect(transcript.runningReply(RUN)).toBe(`${RUN}:${String(1).padStart(12, "0")}`)
+  fs.appendFileSync(log, failed(3, REPLY, "boom"))
   expect(transcript.runningReply(RUN)).toBeNull()
 })
 

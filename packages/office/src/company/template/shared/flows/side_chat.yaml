@@ -67,8 +67,8 @@ defs:
     nodes:
       # The turn: everything sent since the last one. Messages read along with a close aren't answered.
       heard:
-        kind: tool
-        tool_id: take
+        kind: call
+        call: take
         input:
           from: ${input.messages}
           take: all

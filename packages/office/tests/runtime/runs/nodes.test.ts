@@ -42,6 +42,40 @@ test("a loop driver clone opens and ends like any node", () => {
   expect(n.current()).toEqual([])
 })
 
+test("an agent's flow call keeps the agent open, and a failure in it or an interrupt ends only its scope", () => {
+  const n = new OpenNodes()
+  const grow = { seed: null, prune: [] }
+  frames(
+    n,
+    ["NodeStarted", { node_id: "chat#0/reply" }], ["NodeStarted", { node_id: "chat#0/other" }],
+    // As yian sends a flow call: the agent grows the call's scope, then waits on the call.
+    ["NodeExpanded", { node_id: "chat#0/reply", grow, call_id: "c1" }],
+    ["NodeWaiting", { node_id: "chat#0/reply", call_ids: ["c1"] }],
+    ["NodeStarted", { node_id: "chat#0/reply/helper#0/a" }], ["NodeStarted", { node_id: "chat#0/reply/helper#0/b" }],
+  )
+  expect(n.current()).toEqual(["chat#0/other", "chat#0/reply/helper#0/a", "chat#0/reply/helper#0/b"])
+  const failure = { node_id: "chat#0/reply/helper#0/a" }
+  expect(frames(n, ["NodeFailed", { failure, call_id: "c1", scope: "chat#0/reply/helper#0" }])).toEqual([true])
+  expect(n.current()).toEqual(["chat#0/reply", "chat#0/other"])
+  // The agent wakes to read the failure; it was open all along.
+  expect(frames(n, ["NodeWoken", { node_id: "chat#0/reply", timed_out: [] }])).toEqual([false])
+  // A failure that names the agent (its scope couldn't grow) leaves it running.
+  const agent = { node_id: "chat#0/reply" }
+  expect(frames(n, ["NodeFailed", { failure: agent, call_id: "c2", scope: "chat#0/reply/helper#1" }])).toEqual([false])
+  frames(
+    n,
+    ["NodeExpanded", { node_id: "chat#0/reply", grow, call_id: "c3" }],
+    ["NodeWaiting", { node_id: "chat#0/reply", call_ids: ["c3"] }],
+    ["NodeStarted", { node_id: "chat#0/reply/helper#2/a" }],
+  )
+  const interrupted = { inbox: "messages", nodes: ["chat#0/reply"], scopes: ["chat#0/reply/helper#2"] }
+  expect(frames(n, ["Interrupted", interrupted], ["NodeWoken", { node_id: "chat#0/reply" }])).toEqual([true, false])
+  expect(n.current()).toEqual(["chat#0/reply", "chat#0/other"])
+  // A failure with no scope fails the run and ends its node, as before.
+  frames(n, ["NodeFailed", { failure: agent, call_id: null, scope: null }])
+  expect(n.current()).toEqual(["chat#0/other"])
+})
+
 test("only the deepest open nodes show", () => {
   const n = new OpenNodes()
   frames(

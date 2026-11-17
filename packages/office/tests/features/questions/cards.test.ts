@@ -603,8 +603,8 @@ async function atTheGate(gate = GATE, { asleep = false, fake }: { asleep?: boole
 const TYPED_GATE = GATE.replace(
   /  setup:[\s\S]*?(?=output: )/,
   `  setup:
-    kind: tool
-    tool_id: ask
+    kind: call
+    call: ask
     input:
       questions:
         - question: How many replicas?

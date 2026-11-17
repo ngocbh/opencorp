@@ -82,7 +82,7 @@ test("the seed frames the chat then gives context and the card", () => {
     "# Who asked",
     "Minh (@minh), Engineer",
     "people/minh/../../shared/flows/chat.yaml",
-    "tool_id: take",
+    "call: take",
     '"Fix the build"',
     "CI is red since Monday",
     '"Ship v2"',

@@ -530,6 +530,26 @@ test("a company flow that uses a tool module is a lint error naming it", async (
   )
 })
 
+test.each([
+  ["main", { main: "../../shared/flows/billing.yaml" }],
+  ["SOP", { sops: [{ flow: "../../shared/flows/billing.yaml" }] }],
+  ["routine", { routines: [{ name: "nightly", flow: "../../shared/flows/billing.yaml" }] }],
+])("a library named as a person's %s flow is a lint error, since it can't run", async (_, changes) => {
+  const billing = "id: billing\nname: billing\ndefs:\n  quote:\n    input:\n      qty: !int\n    kind: code\n"
+    + "    code: 'return inputs.qty * 2.5'\n    output: !float\n"
+  const root = makeCompany({
+    "people/minh/person.yaml": person("minh", changes),
+    "shared/flows/billing.yaml": billing,
+  })
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.message).toBe(
+    "../../shared/flows/billing.yaml is a library (defs: and no nodes:), which can't run; import it with uses:"
+      + " and call a def",
+  )
+  expect(await codes(root)).toEqual(new Set(["person.flow_invalid"]))
+})
+
 test("unknown skill", async () => {
   const root = makeCompany({ "people/minh/person.yaml": person("minh", { skills: ["nope"] }) })
   expect(await issues(root)).toContain("person.unknown_skill people/minh/person.yaml")

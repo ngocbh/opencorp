@@ -5,7 +5,8 @@ import { loadRecordedFlow, staticNodes, staticPathOf } from "@ngocbh/yian/run"
 
 // A woken node runs again, and a new worker advancing a waiting run emits NodeWoken, not NodeStarted.
 export const STARTED: ReadonlySet<string> = new Set(["NodeStarted", "NodeWoken"])
-/** Every frame that ends a node: a case ends routed, a loop or map spawner expanded (yian's events). */
+/** Every frame that ends a node: a case ends routed, a loop or map spawner expanded (yian's events). An agent's flow
+ *  call expands too, and a failure inside it fails only the call: see `growsFlowCall` and `endedScopes`. */
 export const ENDED: ReadonlySet<string> = new Set([
   "NodeSucceeded",
   "NodeRouted",
@@ -15,6 +16,27 @@ export const ENDED: ReadonlySet<string> = new Set([
 ])
 /** The most open nodes kept by default: a run's open nodes are bounded by its widest map. */
 export const CAP = 64
+
+/** Whether event frame `name` with `data` is an agent's flow call growing the called flow under its scope, while the
+ *  agent keeps running: a `NodeExpanded` that names the call. */
+export function growsFlowCall(name: string, data: Record<string, unknown>): boolean {
+  return name === "NodeExpanded" && typeof data.call_id === "string"
+}
+
+/** The flow call scopes (`<agent>/<flow>#<k>`) event frame `name` with `data` ends, whose unfinished nodes leave the
+ *  run with no event of their own: a failure inside an agent's flow call ends that call's scope, and an interrupt
+ *  ends its agents' open flow calls. Empty for every other frame, and for a failure that fails the run. */
+export function endedScopes(name: string, data: Record<string, unknown>): string[] {
+  if (name === "NodeFailed") return typeof data.scope === "string" ? [data.scope] : []
+  if (name !== "Interrupted" || !Array.isArray(data.scopes)) return []
+  return data.scopes.filter((scope): scope is string => typeof scope === "string")
+}
+
+/** Whether node `nodeId` runs inside one of `scopes`, a nested flow call's nodes included. The agent that made a call
+ *  is outside it, so a failure that names the agent (its scope couldn't grow) leaves it running. */
+export function inScopes(nodeId: string, scopes: readonly string[]): boolean {
+  return scopes.some((scope) => nodeId.startsWith(`${scope}/`))
+}
 
 /** Node ids started and not yet ended, in start order. */
 export class OpenNodes {
@@ -27,6 +49,13 @@ export class OpenNodes {
 
   /** Folds one event frame in; returns whether the open nodes changed. */
   apply(name: string, data: Record<string, unknown>): boolean {
+    if (growsFlowCall(name, data)) return false
+    const scopes = endedScopes(name, data)
+    if (scopes.length > 0) {
+      const ended = [...this.ids].filter((id) => inScopes(id, scopes))
+      for (const id of ended) this.ids.delete(id)
+      return ended.length > 0
+    }
     const failure = data.failure
     const failed = failure !== null && typeof failure === "object" && !Array.isArray(failure)
       ? (failure as Record<string, unknown>).node_id : undefined

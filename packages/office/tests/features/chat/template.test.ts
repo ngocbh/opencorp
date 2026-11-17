@@ -77,7 +77,7 @@ test("every chat template takes its turns and steers from its messages inbox", (
       "!Inbox(Message)",
       "${input.messages}",
     ])
-    expect(turn.nodes.heard).toEqual({ kind: "tool", tool_id: "take", input: { from: "${input.messages}", take: "all" } })
+    expect(turn.nodes.heard).toEqual({ kind: "call", call: "take", input: { from: "${input.messages}", take: "all" } })
     expect([reply.steer_inbox, reply.output, reply.prompt]).toEqual([
       "${input.messages}",
       "!Optional(str)",

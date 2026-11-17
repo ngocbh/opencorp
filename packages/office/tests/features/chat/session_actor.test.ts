@@ -44,6 +44,7 @@ import {
   capItem,
   card,
   type ChatOffice,
+  CHAT_FLOW,
   chatOffice,
   EMPTY,
   errors,
@@ -147,6 +148,141 @@ test("a message sent while the next turn's history is compacted is a turn and ma
   expect(await sent).toBe("turn")
   // The take is still to wake, but it has the message: no longer at the turn.
   expect(status(o, sid)).toBe("busy")
+})
+
+/** A scripted actor's session: `frame` tells it an event, `call` an agent's flow call as yian sends it (the agent
+ *  grows the call's scope, then waits on the call), and `sent` the reply a message gets once the worker took it. */
+async function flowCalls() {
+  const o = await chatOffice(await fakeLlm())
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const { worker, handlers, deliveries } = workers[0]!
+  const frame = (name: string, data: Record<string, unknown>) => handlers.event(worker, { type: "event", name, data })
+  const call = (agent: string, callId: string) => {
+    frame("NodeExpanded", { node_id: agent, grow: { seed: null, prune: [] }, call_id: callId })
+    frame("NodeWaiting", { node_id: agent, call_ids: [callId] })
+  }
+  const sent = async (text: string) => {
+    const reply = actor.prompt(text)
+    await waitFor(() => deliveries.length > 0, { what: "the send" })
+    handlers.deliverReply(worker, { type: "deliver_reply", id: deliveries.shift()!.id, seq: 7 })
+    return await reply
+  }
+  return { o, sid, actor, deliveries, frame, call, sent }
+}
+
+const REPLY = "chat#0/reply"
+
+test("a message sent while the reply waits on its flow call steers it, through a failure, a success and an interrupt", async () => {
+  const { o, sid, frame, call, sent } = await flowCalls()
+  frame("NodeStarted", { node_id: REPLY })
+  call(REPLY, "c1")
+  frame("NodeStarted", { node_id: `${REPLY}/lookup#0/find` })
+  await waitFor(() => status(o, sid) === "busy", { what: "busy while the reply's flow runs" })
+  expect(await sent("during the call")).toBe("steer")
+  // A failure inside the flow ends its scope; yian wakes the reply to read the error.
+  frame("NodeFailed", { failure: { node_id: `${REPLY}/lookup#0/find` }, call_id: "c1", scope: `${REPLY}/lookup#0` })
+  frame("NodeWoken", { node_id: REPLY, timed_out: [] })
+  expect(await sent("after the failure")).toBe("steer")
+  call(REPLY, "c2")
+  frame("NodeStarted", { node_id: `${REPLY}/lookup#1/find` })
+  frame("NodeSucceeded", { node_id: `${REPLY}/lookup#1/find` })
+  frame("NodeWoken", { node_id: REPLY, timed_out: [] })
+  expect(await sent("after the wake")).toBe("steer")
+  call(REPLY, "c3")
+  frame("NodeStarted", { node_id: `${REPLY}/lookup#2/find` })
+  frame("Interrupted", { inbox: "messages", nodes: [REPLY], scopes: [`${REPLY}/lookup#2`] })
+  frame("NodeWoken", { node_id: REPLY, timed_out: [] })
+  expect(await sent("after the interrupt")).toBe("steer")
+  frame("NodeSucceeded", { node_id: REPLY, interrupted: true })
+  frame("NodeStarted", { node_id: "chat#1/heard" })
+  frame("NodeWaiting", { node_id: "chat#1/heard", call_ids: ["t1"] })
+  await waitFor(() => status(o, sid) === "idle", { what: "idle at the next turn" })
+  expect(await sent("the next turn")).toBe("turn")
+})
+
+test("a reply waits on its flow call while an agent in that flow waits on a flow of its own, and it still steers", async () => {
+  const { frame, call, sent } = await flowCalls()
+  const inner = `${REPLY}/lookup#0/dig`
+  frame("NodeStarted", { node_id: REPLY })
+  call(REPLY, "c1")
+  frame("NodeStarted", { node_id: inner })
+  call(inner, "c2")
+  frame("NodeStarted", { node_id: `${inner}/deep#0/x` })
+  expect(await sent("one")).toBe("steer")
+  frame("NodeFailed", { failure: { node_id: `${inner}/deep#0/x` }, call_id: "c2", scope: `${inner}/deep#0` })
+  frame("NodeWoken", { node_id: inner, timed_out: [] })
+  expect(await sent("two")).toBe("steer")
+  frame("NodeSucceeded", { node_id: inner })
+  frame("NodeWoken", { node_id: REPLY, timed_out: [] })
+  expect(await sent("three")).toBe("steer")
+})
+
+test.each([
+  [
+    "fails",
+    "NodeFailed",
+    { failure: { node_id: `${REPLY}/lookup#0/find` }, call_id: "c1", scope: `${REPLY}/lookup#0` },
+  ],
+  ["is interrupted", "Interrupted", { inbox: "messages", nodes: [REPLY], scopes: [`${REPLY}/lookup#0`] }],
+])("a reply whose flow call %s no longer counts as replying for it, even before its wake", async (_, name, data) => {
+  const { frame, call, sent } = await flowCalls()
+  frame("NodeStarted", { node_id: REPLY })
+  call(REPLY, "c1")
+  frame("NodeStarted", { node_id: `${REPLY}/lookup#0/find` })
+  expect(await sent("one")).toBe("steer")
+  frame(name, data)
+  expect(await sent("two")).toBe("queued")
+})
+
+test("End while the reply waits on its flow call interrupts the reply before closing its inbox", async () => {
+  const { actor, deliveries, frame, call } = await flowCalls()
+  frame("NodeStarted", { node_id: REPLY })
+  call(REPLY, "c1")
+  await actor.end()
+  expect(deliveries.map((d) => d.op)).toEqual(["interrupt", "close"])
+})
+
+/** The template chat with a `lookup` def the reply may call as a tool, whose own agent answers. */
+const LOOKUP_CHAT = CHAT_FLOW
+  .replace("\ndefs:\n", [
+    "",
+    "defs:",
+    "  lookup:",
+    "    description: Look a topic up.",
+    "    input:",
+    "      topic: !str",
+    "    nodes:",
+    "      find:",
+    "        kind: agent",
+    "        input:",
+    "          topic: ${input.topic}",
+    "        output: !str",
+    '        prompt: "Look up ${topic}"',
+    "    output: ${find.output}",
+    "",
+  ].join("\n"))
+  .replace("tools: [toolbox, workspace, company, ask_user]", "tools: [toolbox, workspace, company, ask_user, lookup]")
+
+test("a message sent while a real reply's flow call runs steers the reply, on the events yian sends", async () => {
+  expect(LOOKUP_CHAT).toContain("ask_user, lookup]")
+  expect(LOOKUP_CHAT).toContain("\ndefs:\n  lookup:\n")
+  const fake = await fakeLlm()
+  fake.script(
+    { tool_calls: [{ id: "call-a", name: "lookup", arguments: { topic: "the build" } }] },
+    { match: "Look up the build", content: "it is red", hold: true },
+    { content: "The build is red." },
+  )
+  const o = await chatOffice(fake, { files: { "shared/flows/chat.yaml": LOOKUP_CHAT } })
+  const { actor, sid } = await startActor(o)
+  expect(await actor.prompt("how is the build?")).toBe("turn")
+  // The flow's agent holds its model call: the reply waits on its flow call meanwhile.
+  await fake.waitForRequests(2, 30_000)
+  expect(await actor.prompt("and the tests?")).toBe("steer")
+  fake.release()
+  await waitFor(() => texts(o, sid).includes("The build is red.") && status(o, sid) === "idle", { what: "the reply" })
 })
 
 test("a prompt whose send comes back unsent after close is refused as stopping", async () => {

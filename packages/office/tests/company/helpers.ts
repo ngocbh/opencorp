@@ -29,8 +29,8 @@ export const CHAT = `id: chat
 name: chat
 nodes:
   ask:
-    kind: tool
-    tool_id: ask
+    kind: call
+    call: ask
     input:
       prompt: "you> "
     output: !str
@@ -55,8 +55,8 @@ ${MAIN_INPUTS}defs:
       max_turns: !int
     nodes:
       heard:
-        kind: tool
-        tool_id: take
+        kind: call
+        call: take
         input:
           from: \${input.messages}
           take: all
@@ -262,7 +262,7 @@ export const CHILD = "id: echo\nname: echo\ninput:\n  text: !str\noutput: !str\n
 /** A flow `chat` that imports `ref` as `echo` and calls it. */
 export function parentFlow(ref: string): string {
   return (
-    "id: chat\nname: chat\nuses:\n  echo: " + ref + "\nnodes:\n  ask:\n    kind: tool\n    tool_id: ask\n" +
+    "id: chat\nname: chat\nuses:\n  echo: " + ref + "\nnodes:\n  ask:\n    kind: call\n    call: ask\n" +
     "    input:\n      prompt: \"you> \"\n    output: !str\n  reply:\n    kind: call\n    call: echo\n" +
     "    input:\n      text: ${ask.output}\noutput: ${reply.output}\n"
   )

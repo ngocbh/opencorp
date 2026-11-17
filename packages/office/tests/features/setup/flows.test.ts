@@ -1,4 +1,4 @@
-/** `opencorp init`'s setup flows on TS yian: they load, use only agent, code, loop and tool nodes, and run. */
+/** `opencorp init`'s setup flows on TS yian: they load, use only agent, code, loop and call nodes, and run. */
 import { expect, setDefaultTimeout, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
@@ -37,13 +37,13 @@ test.each(FLOWS)("every setup flow loads on ts yian [%s]", async (name) => {
   expect((await load(name)).name).toBe(base)
 })
 
-test("the setup flows use only agent code loop and tool nodes", () => {
+test("the setup flows use only agent code loop and call nodes", () => {
   for (const name of FLOWS) {
     for (const node of nodes(read(name))) {
-      expect(["agent", "code", "loop", "tool"]).toContain(node.kind)
+      expect(["agent", "code", "loop", "call"]).toContain(node.kind)
       expect(node).not.toHaveProperty("steerable")
-      // yian's built-ins (`ask_user` is `ask`'s old name): the setup flows' TOOL nodes call only office tools.
-      if (node.kind === "tool") expect(["ask", "ask_user", "sleep", "take"]).not.toContain(node.tool_id)
+      // yian's built-ins (`ask_user` is `ask`'s old name): the setup flows' call nodes call only office tools.
+      if (node.kind === "call") expect(["ask", "ask_user", "sleep", "take"]).not.toContain(node.call)
     }
   }
 })
@@ -54,8 +54,8 @@ test("the model never sees the password or the remote", () => {
   expect(interview.kind).toBe("agent")
   expect(Object.keys(interview.input)).toEqual(["known", "draft", "changes"])
   expect(interview.tools).toEqual(["ask_user", "check_company"])
-  expect([flow.nodes.password.kind, flow.nodes.password.tool_id]).toEqual(["tool", "ask_password"])
-  expect([flow.nodes.remote.kind, flow.nodes.remote.tool_id]).toEqual(["tool", "ask_remote"])
+  expect([flow.nodes.password.kind, flow.nodes.password.call]).toEqual(["call", "ask_password"])
+  expect([flow.nodes.remote.kind, flow.nodes.remote.call]).toEqual(["call", "ask_remote"])
 })
 
 const OWNER = { name: "Hong Ngoc Bui", handle: "ngocbh", title: "CEO" }

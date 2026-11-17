@@ -25,7 +25,7 @@ test("reach_hq has no agent node, so a replay resolves no model", () => {
   const flow = readFlow(fs.readFileSync(path.join(DIR, "reach_hq.yaml"), "utf8")) as Record<string, any>
   const nodes = Object.values<Record<string, unknown>>(flow.nodes)
   expect(nodes.length).toBeGreaterThan(0)
-  for (const node of nodes) expect([node.kind, node.tool_id]).toEqual(["tool", "replay_access"])
+  for (const node of nodes) expect([node.kind, node.call]).toEqual(["call", "replay_access"])
 })
 
 test("learn_hq's agent sees only the old notes, script and failure, with shell, ask_user and save_access, and 30 turns", () => {

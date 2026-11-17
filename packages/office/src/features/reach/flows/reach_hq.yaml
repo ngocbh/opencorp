@@ -16,8 +16,8 @@ typedefs:
     detail: str
 nodes:
   replay:
-    kind: tool
-    tool_id: replay_access
+    kind: call
+    call: replay_access
     input: {}
     output: !Reached
 output: ${replay.output}
