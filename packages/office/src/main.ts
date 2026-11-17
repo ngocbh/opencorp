@@ -23,9 +23,11 @@ export const daemonMain: ModeMain = async (argv) => {
  *  settings. */
 export const workerMain: ModeMain = async (argv) => {
   const env = Object.freeze({ ...process.env })
-  // The check's module loads only for a check job, so a chat worker doesn't load it.
+  // Each check's module loads only for its own job, so a chat worker loads neither.
   return (await import("./runtime/worker/main.ts")).main(argv, env, {
     check: async (job, jobEnv, signal) => (await import("./models/check.ts")).runCheck(job, jobEnv, signal),
+    classify: async (job, jobEnv, signal) =>
+      (await import("./runtime/permissions/classifier.ts")).runClassify(job, jobEnv, signal),
   })
 }
 /** One file operation inside the sandbox. */

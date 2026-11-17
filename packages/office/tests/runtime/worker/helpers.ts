@@ -333,8 +333,11 @@ export interface WorkerOut {
   code?: number
 }
 
-/** Job handlers for a worker that never runs a check job in the test. */
-export const NO_CHECKS: JobHandlers = { check: () => Promise.reject(new Error("this test runs no check job")) }
+/** Job handlers for a worker that never runs a check or classify job in the test. */
+export const NO_CHECKS: JobHandlers = {
+  check: () => Promise.reject(new Error("this test runs no check job")),
+  classify: () => Promise.reject(new Error("this test runs no classify job")),
+}
 
 /**
  * Runs the worker's `serve` in process over a connected channel pair, with `jobHandlers`; returns the office's channel,

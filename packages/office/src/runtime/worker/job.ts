@@ -52,20 +52,22 @@ export type Parent = z.output<typeof Parent>
  *
  * `kind` is `chat` (runs the flow afresh), `advance` (moves the run `run_id` on from its log with yian's
  * `advance`, which uses the recorded flow, inputs and worker bound, so `flow`, `inputs` and `num_workers` are
- * ignored), or `check` (runs the office's one-reply model check (`models/flows/check_model.yaml`) on
- * `llm_config`, and reads no other field but `session_id`). `flow` is relative to `pin`. `deliver` lists host calls
+ * ignored), `check` (runs the office's one-reply model check (`models/flows/check_model.yaml`) on
+ * `llm_config`, and reads no other field but `session_id`), or `classify` (runs Auto's check
+ * (`runtime/permissions/flows/classify_command.yaml`) on the command in `inputs` with `llm_config`, its run log at
+ * `log` under the id `run_id`). `flow` is relative to `pin`. `deliver` lists host calls
  * applied to the run in order, each answered by one `deliver_reply`; `advance: false` applies them without moving
  * the run. `seed` names the run of the same session a fresh `chat` run replaces (its log, the env that run had,
  * whether to cancel it); the worker seeds the flow's `summary` and `history` inputs from it and moves its unread
  * messages. `parent` names the run (and node) a fresh `chat` run nests under in yian's run index; an `advance`
  * resumes a log that already records it. `memory` names the flow's memory inputs the office keeps: the worker binds
  * each, by that name, to the office's memory of the name, on the run call and every `advance`. With `keep`, a worker
- * whose run call comes back `waiting` stays up for the run's next `advance` job (`serve` says how); a `check` job
- * never keeps. A `Job` holds the provider key in `llm_config`, so it is never logged.
+ * whose run call comes back `waiting` stays up for the run's next `advance` job (`serve` says how); a `check` or
+ * `classify` job never keeps. A `Job` holds the provider key in `llm_config`, so it is never logged.
  */
 export const Job = z
   .strictObject({
-    kind: z.enum(["chat", "advance", "check"]),
+    kind: z.enum(["chat", "advance", "check", "classify"]),
     session_id: z.string(),
     run_id: z.string(),
     person: z.string(),
@@ -99,7 +101,10 @@ export const Job = z
     message: "a parent needs kind chat",
     path: ["parent"],
   })
-  .refine((job) => !job.keep || job.kind !== "check", { message: "a check job never keeps", path: ["keep"] })
+  .refine((job) => !job.keep || (job.kind !== "check" && job.kind !== "classify"), {
+    message: "a check or classify job never keeps",
+    path: ["keep"],
+  })
 export type Job = z.output<typeof Job>
 export type JobInput = z.input<typeof Job>
 

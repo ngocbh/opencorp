@@ -422,16 +422,41 @@ function nextOf(previous: Job, job: Job): boolean {
   )
 }
 
-/** The jobs a worker runs outside a yian run, by kind, passed in by the office's entry (`main.ts`) so this module
- *  loads none of them. Each resolves to the job's problem, or null when there is none. */
+/** The jobs a worker runs outside a yian run of its own, by kind, passed in by the office's entry (`main.ts`) so this
+ *  module loads none of them. */
 export interface JobHandlers {
-  /** A `check` job: the one-reply model check. */
+  /** A `check` job: the one-reply model check; the job's problem, or null when there is none. */
   check(job: Job, env: WorkerEnv, signal: AbortSignal): Promise<string | null>
+  /** A `classify` job: Auto's check on one command; the flow's raw output, the model that answered and the calls'
+   *  token usage. Rejects when the check couldn't judge, with an error whose `model` and `usage` say what it spent. */
+  classify(job: Job, env: WorkerEnv, signal: AbortSignal): Promise<{ output: unknown } & Spent>
+}
+
+/** What a `classify` job spent: the model that answered and its calls' token usage. */
+interface Spent {
+  model: string | null
+  usage: { input_tokens: number; output_tokens: number } | null
+}
+
+/** The `model` and `usage` of a failed `classify` job's `error`, each only when it reads as one, so the office can
+ *  charge what the job spent. */
+function spentFields(error: unknown): Partial<Spent> {
+  const { model, usage } = (typeof error === "object" && error !== null ? error : {}) as Record<string, unknown>
+  const fields: Partial<Spent> = {}
+  if (model === null || typeof model === "string") fields.model = model
+  const counts = (typeof usage === "object" && usage !== null ? usage : {}) as Record<string, unknown>
+  if (usage === null) fields.usage = null
+  else if (Number.isFinite(counts.input_tokens) && Number.isFinite(counts.output_tokens)) {
+    fields.usage = { input_tokens: counts.input_tokens as number, output_tokens: counts.output_tokens as number }
+  }
+  return fields
 }
 
 /**
  * Runs the jobs the office sends on `channel`; returns the exit code. A `check` job runs `handlers.check` and sends
- * only its result frame, `{type: "result", problem}`, or its `error` frame when a `stop` frame ended it. A seeded chat
+ * only its result frame, `{type: "result", problem}`, or its `error` frame when a `stop` frame ended it; a `classify`
+ * job runs `handlers.classify` the same way, its result frame `{type: "result", output, model, usage}`, and its error
+ * frame carrying what it spent (`model`, `usage`). A seeded chat
  * job whose replaced run's history can't be read sends `{type: "event", name: "history_not_seeded", data:
  * {error_type}}` before its run starts.
  *
@@ -546,10 +571,13 @@ async function serveJob(
       throw new TypeError("a kept worker runs only its run's next advance")
     }
     deliveries.pushFront(job.deliver)
-    if (job.kind === "check") {
-      // A check job has no run to deliver to.
+    if (job.kind === "check" || job.kind === "classify") {
+      // A check or classify job has no run to deliver to.
       deliveries.refuse()
-      last = { type: "result", problem: await handlers.check(job, env, stopper.signal) }
+      last =
+        job.kind === "check"
+          ? { type: "result", problem: await handlers.check(job, env, stopper.signal) }
+          : { type: "result", ...(await handlers.classify(job, env, stopper.signal)) }
     } else {
       last = {
         type: "result",
@@ -566,6 +594,7 @@ async function serveJob(
       message: `${errorName(error)}: ${shownMessage(error)}`,
       traceback: stackFrames(error),
       ...errnoFields(error),
+      ...(job?.kind === "classify" ? spentFields(error) : {}),
     }
     code = EXIT_FAILED
   }
@@ -792,8 +821,8 @@ async function readFrames(
         if (!job.finished) job.stopper.abort(new Error(STOP_REASON))
         else state.mail.put(frame)
       } else if (frame.type === "follow") {
-        // A no-op before the run's first frame and for a check job; after the run call it sends one last snapshot and
-        // nothing after it.
+        // A no-op before the run's first frame and for a check or classify job; after the run call it sends one last
+        // snapshot and nothing after it.
         if (!state.parked) job.follow.again()
       } else if (frame.type === "done" || frame.type === "start") {
         state.mail.put(frame)

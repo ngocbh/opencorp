@@ -252,3 +252,9 @@ test("a job keeps its worker only when asked and never for a check", () => {
   expect(parseJob({ ...BASE, kind: "advance", keep: true }).keep).toBe(true)
   expect(() => parseJob({ ...BASE, kind: "check", keep: true })).toThrow(/^keep: /)
 })
+
+test("a classify job never keeps", () => {
+  expect(parseJob({ ...BASE, kind: "classify" }).kind).toBe("classify")
+  expect(() => parseJob({ ...BASE, kind: "classify", keep: true })).toThrow(JobError)
+  expect(() => parseJob({ ...BASE, kind: "classify", keep: true })).toThrow(/^keep: /)
+})
