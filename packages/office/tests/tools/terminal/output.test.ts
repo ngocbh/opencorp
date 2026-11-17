@@ -1,6 +1,6 @@
 /** The model's view of a shell: the screen's text, as it is, read in pages. */
 import { expect, test } from "bun:test"
-import { ModelView, PlainText, VIEW_KEEP } from "../../../src/tools/terminal/output.ts"
+import { ModelView, PAGE_SIZE, PlainText, VIEW_KEEP } from "../../../src/tools/terminal/output.ts"
 
 /** The whole of `view`'s text. */
 const textOf = (view: ModelView): string => view.page(0, view.length + 1).output
@@ -28,6 +28,13 @@ test("escape sequences and the shell's markers never reach the model's view", ()
     ["\x1b7saved\x1b8\x1b=\x1b>\x1b(B\x1bM", "saved"],
     ["\x1b[?2004h\x1b[?1049hfull\x1b[?1049l\x1b[?2004l", "full"],
     ["\x1bPq#0;2;0;0;0\x1b\\after\x07", "after"],
+    // An OSC left open at a newline hides the output until its terminator, as xterm does.
+    ["\x1b]0;title\nhidden\x07shown", "shown"],
+    // A stray C1 control ends a CSI; NEL and IND, in either form, move down a line as LF does.
+    ["x\x1b[1\x80m", "xm"],
+    ["red\x1b[31\x85next", "red\nnext"],
+    ["a\x1b[1\x84b", "a\nb"],
+    ["one\x85two\x1bEthree\x1bDfour", "one\ntwo\nthree\nfour"],
     // Plain text, tabs and brackets stay.
     ["[31mnot an escape\tok", "[31mnot an escape\tok"],
   ]
@@ -104,6 +111,36 @@ test("a long output comes in pages with where the next starts, never cut", () =>
   expect(seen).toEqual({ output: "10%", next: 0, more: false })
   bar.append("\r100%\r\ndone\r\n")
   expect(bar.page(seen.next, 1000)).toEqual({ output: "100%\ndone\n", next: 10, more: false })
+
+  // A negative offset reads from the start, with nothing said skipped; no size, or a bad one, is a full page.
+  const small = viewOf("hello\r\n")
+  expect(small.page(-5, 10)).toEqual({ output: "hello\n", next: 6, more: false })
+  expect(small.page(0, 0)).toEqual({ output: "hello\n", next: 6, more: false })
+  expect(small.page(2, Number.NaN)).toEqual({ output: "llo\n", next: 6, more: false })
+  const big = viewOf(`${"a".repeat(PAGE_SIZE + 10)}\n`)
+  expect(big.page(0, 0)).toEqual({ output: "a".repeat(PAGE_SIZE), next: PAGE_SIZE, more: true })
+})
+
+test("a page never ends inside the unfinished last line, so its redraw is never read stale or lost", () => {
+  for (const [redraw, shown] of [
+    ["\rprogress 100%", "progress 100%"],
+    ["\rok", "ok"],
+  ]) {
+    const view = viewOf(`${"x".repeat(9)}\r\n`, "progress  10%")
+    const first = view.page(0, 15)
+    expect(first).toEqual({ output: "xxxxxxxxx\n", next: 10, more: true })
+    const second = view.page(first.next, 15)
+    expect(second).toEqual({ output: "progress  10%", next: 10, more: false })
+    view.append(redraw!)
+    expect(view.page(second.next, 15)).toEqual({ output: shown, next: 10, more: false })
+  }
+
+  // A reader whose offset is inside that line goes back to its start.
+  expect(viewOf("ab\r\n", "progress  10%").page(8, 100)).toEqual({ output: "ess  10%", next: 3, more: false })
+  // A line longer than a page is cut where it must be, and its last piece sends the reader back to its start.
+  const long = viewOf("0123456789")
+  expect(long.page(0, 4)).toEqual({ output: "0123", next: 4, more: true })
+  expect(long.page(8, 4)).toEqual({ output: "89", next: 0, more: false })
 })
 
 test("past its cap the view keeps only the last output, at the same offsets, and says what is gone", () => {

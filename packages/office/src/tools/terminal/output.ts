@@ -18,7 +18,9 @@ type State = "ground" | "escape" | "intermediate" | "csi" | "osc" | "string"
 
 /** Text a model may read from a terminal's bytes; keeps an unfinished escape for the next chunk.
  *
- *  Its text holds `\n` for each line end, `\r` for a lone CR and `\b` for a backspace, for the reader to apply. */
+ *  Its text holds `\n` for each line end, `\r` for a lone CR and `\b` for a backspace, for the reader to apply.
+ *  An OSC or other string that is never closed hides the output after it until ESC, ST, CAN or SUB (or BEL, for
+ *  an OSC), as xterm does: the screen shows none of it either. */
 export class PlainText {
   private state: State = "ground"
   /** A CR whose next character tells a line end (LF) from a redraw. */
@@ -60,15 +62,18 @@ export class PlainText {
     return out
   }
 
-  /** A control character in any state but a string's: line ends, CR, tab and backspace are text; ESC, CAN, SUB and
-   *  the C1 introducers change the state; the rest show nothing. */
+  /** A control character: line ends, CR, tab and backspace are text; ESC, CAN, SUB and the C1 controls change the
+   *  state; the rest show nothing. */
   private control(code: number): string {
     switch (code) {
+      case 0x84: // IND and NEL end any sequence, as every C1 control does
+      case 0x85:
+        this.state = "ground"
+        return this.newline()
       case 0x0a: // LF, and VT and FF, which move down a line as LF does
       case 0x0b:
       case 0x0c:
-        this.cr = false
-        return "\n"
+        return this.newline()
       case 0x0d:
         this.cr = true
         return ""
@@ -81,21 +86,25 @@ export class PlainText {
     return ""
   }
 
-  /** The state an ESC, CAN, SUB or C1 control leads to, from any state. */
+  /** A line end, which settles a held CR as part of it. */
+  private newline(): string {
+    this.cr = false
+    return "\n"
+  }
+
+  /** The state an ESC, CAN, SUB or C1 control leads to, from any state: the C1 introducers start their sequence,
+   *  and CAN, SUB, ST and every other C1 control end any sequence. */
   private introduce(code: number): void {
     if (code === 0x1b) this.state = "escape"
-    else if (code === 0x18 || code === 0x1a || code === 0x9c) this.state = "ground"
     else if (code === 0x9b) this.state = "csi"
     else if (code === 0x9d) this.state = "osc"
     else if (code === 0x90 || code === 0x98 || code === 0x9e || code === 0x9f) this.state = "string"
+    else if (code === 0x18 || code === 0x1a || code >= 0x80) this.state = "ground"
   }
 
   /** One character inside an escape, a CSI or a string. */
   private inside(code: number): string {
-    if (code === 0x1b || code === 0x18 || code === 0x1a || (code >= 0x80 && code <= 0x9f)) {
-      this.introduce(code)
-      return ""
-    }
+    if (code === 0x1b || code === 0x18 || code === 0x1a || (code >= 0x80 && code <= 0x9f)) return this.control(code)
     if (this.state === "osc" || this.state === "string") {
       if (this.state === "osc" && code === 0x07) this.state = "ground"
       return ""
@@ -108,6 +117,11 @@ export class PlainText {
       return this.text(String.fromCharCode(code))
     }
     if (this.state === "escape") {
+      // ESC D and ESC E, the 7-bit IND and NEL.
+      if (code === 0x44 || code === 0x45) {
+        this.state = "ground"
+        return this.newline()
+      }
       if (code <= 0x2f) this.state = "intermediate"
       else if (code === 0x5b) this.state = "csi"
       else if (code === 0x5d) this.state = "osc"
@@ -141,6 +155,9 @@ function dropLast(line: string): string {
  *  session would otherwise grow without limit; the shell's record keeps all of it. */
 export const VIEW_KEEP = 4 * 1024 * 1024
 
+/** A page's size when its caller gives none, in UTF-16 code units: 64 Ki, as OpenCode's shell output pages. */
+export const PAGE_SIZE = 64 * 1024
+
 /** How far past `VIEW_KEEP` a view grows before it trims back to it, so a busy shell copies its tail once a
  *  mebi-unit, not on every chunk. */
 const VIEW_SLACK = VIEW_KEEP / 4
@@ -158,8 +175,9 @@ export interface Page {
  *
  *  Offsets count UTF-16 code units of the view's text from the shell's start, and stay so once older text leaves
  *  memory (past `VIEW_KEEP`). The finished lines never change; the last, unfinished line (a prompt, a progress bar)
- *  can still be redrawn, so a page that reaches the end holds it whole, and its `next` is that line's start: the next
- *  page shows it again, as it then is, and never a stale piece of it. */
+ *  can still be redrawn, so a page never ends inside it: it stops at the line's start or holds the line whole, and
+ *  then its `next` is that line's start. The next page shows the line again, as it then is, and never a stale or
+ *  lost piece of it. */
 export class ModelView {
   private readonly plain = new PlainText()
   /** How much text, from the start, is no longer in memory. */
@@ -197,21 +215,25 @@ export class ModelView {
     this.trim()
   }
 
-  /** The text from `from` (an earlier page's `next`, or 0), at most `max` code units of it, and whether more
-   *  follows. A page is never cut silently, nor inside a character: `more` says there is more to read from `next`,
-   *  and `skipped` says when text from `from` on is no longer in memory, so the page starts at the oldest kept. */
-  page(from: number, max: number): Page {
+  /** The text from `from` (an earlier page's `next`, or 0; a negative one is 0), at most `max` code units of it
+   *  (`PAGE_SIZE` when `max` is missing or under 1), and whether more follows. A page is never cut silently, nor
+   *  inside a character: `more` says there is more to read from `next`, and `skipped` says when text from `from`
+   *  on is no longer in memory, so the page starts at the oldest kept.
+   *
+   *  A page never ends inside the unfinished last line: it stops at that line's start, and a page that reaches the
+   *  end gives that start as `next`, whatever its own start. Only a line longer than a page is cut, where it must. */
+  page(from: number, max: number = PAGE_SIZE): Page {
+    const at = Number.isFinite(from) && from > 0 ? Math.floor(from) : 0
+    const size = Number.isFinite(max) && max >= 1 ? Math.floor(max) : PAGE_SIZE
     const length = this.length
-    const start = Math.min(Math.max(this.dropped, from), length)
-    let end = Math.min(length, start + Math.max(0, max))
-    if (end > start && end < length && highSurrogate(this.codeAt(end - 1))) end = end - 1 > start ? end - 1 : end + 1
+    const lineStart = this.dropped + this.done.length
+    const start = Math.min(Math.max(this.dropped, at), length)
+    let end = Math.min(length, start + size)
+    if (start < lineStart && end > lineStart && end < length) end = lineStart
+    else if (end > start && end < length && highSurrogate(this.codeAt(end - 1))) end = end - 1 > start ? end - 1 : end + 1
     const more = end < length
-    const page: Page = {
-      output: this.slice(start, end),
-      next: more ? end : Math.max(start, this.dropped + this.done.length),
-      more,
-    }
-    if (from < this.dropped)
+    const page: Page = { output: this.slice(start, end), next: more ? end : lineStart, more }
+    if (at < this.dropped)
       page.skipped = `Output before offset ${this.dropped} is no longer in memory; the shell's record keeps all of it.`
     return page
   }

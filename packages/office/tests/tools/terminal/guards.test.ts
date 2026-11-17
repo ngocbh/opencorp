@@ -1,6 +1,7 @@
 /** The terminal's prompt guards: what only the owner may answer. */
 import { expect, test } from "bun:test"
 import { ownerPrompt } from "../../../src/tools/terminal/guards.ts"
+import { PlainText } from "../../../src/tools/terminal/output.ts"
 
 /** A shell at its prompt, or a local program reading a line with echo on. */
 const LINES = { echo: true, canonical: true }
@@ -82,4 +83,10 @@ test("a long last line is checked in linear time, since a command's output picks
   expect(ownerPrompt(line, RAW)).toBeNull()
   expect(ownerPrompt(`${line}:`, RAW)).toBe("secret")
   expect(performance.now() - started).toBeLessThan(1000)
+})
+
+test("a prompt drawn with escapes counts once PlainText has stripped them", () => {
+  const raw = "\x1b[1mPassword:\x1b[0m "
+  expect(ownerPrompt(new PlainText().push(raw), RAW)).toBe("secret")
+  expect(ownerPrompt(raw, RAW)).toBeNull()
 })

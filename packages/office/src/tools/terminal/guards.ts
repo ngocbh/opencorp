@@ -14,7 +14,8 @@ const SECRET_WORD = /\b(password|passphrase|PIN|OTP|token|one-time (code|passwor
 const BARE_RESPONSE = /^Response:$/i
 
 /** Whether the screen waits for a secret: echo off with whole lines on (a local password, passphrase or code read,
- *  such as ssh's own), or a last line that asks for one. Only the text after `lastLine`'s last newline counts.
+ *  such as ssh's own), or a last line that asks for one. `lastLine` is the view's plain text, its escapes stripped
+ *  (`PlainText`, `ModelView`); only the text after its last newline counts.
  *
  *  The text rule is `\b(password|…)\b[^\n]*:\s*$`, checked as "ends in a colon, and holds a secret word": the
  *  single pattern backtracks quadratically on a long line, and a command's output picks the line. */
