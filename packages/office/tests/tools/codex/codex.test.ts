@@ -1,4 +1,4 @@
-/** Starting and stopping one app-server: command, environment, process group, worker record. */
+/** Starting and stopping one app-server: command, environment, process group, and its tracking. */
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -16,11 +16,8 @@ import {
 } from "../../../src/tools/codex/codex.ts"
 import { RpcClosed } from "../../../src/tools/codex/rpc.ts"
 import { killGroup, sameProcess, startTime } from "../../../src/util/proc.ts"
-import type { Store } from "../../../src/runtime/store/store.ts"
-import { reap } from "../../../src/runtime/worker/reaper.ts"
 import { workerEnv } from "../../../src/runtime/worker/spawn.ts"
-import { NO_GROUP, isGone, tempDir, waitFor } from "../../helpers.ts"
-import { openStore } from "../../runtime/store/helpers.ts"
+import { isGone, tempDir, waitFor } from "../../helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -154,13 +151,15 @@ function entries(dir: string): Entry[] {
     .map((line) => JSON.parse(line))
 }
 
-/** Watches what `store` records: when the test finishes, each recorded group whose leader still has its start time
- *  is killed, as is each process passed to the returned `track` (by pid and start time, never by name). */
-function tracked(store: Store): (pid: number, started: number | null) => void {
-  const spy = spyOn(store, "recordWorker")
+/** A `track` spy and what it saw: `tracks` holds each app-server it was given (pid and start time), and `cleaned` the
+ *  pid of each cleanup it returned, every time one runs. When the test finishes, each tracked group whose leader
+ *  still has its start time is killed, as is each process passed to `also` (by pid and start time, never by name). */
+function tracked() {
+  const tracks: Spawned[] = []
+  const cleaned: number[] = []
   const others: Spawned[] = []
   onTestFinished(() => {
-    for (const [, { pid, startTime: started }] of spy.mock.calls) {
+    for (const { pid, started } of tracks) {
       spawned.push({ pid, started })
       if (started && sameProcess(pid, started)) killGroup(pid)
     }
@@ -172,7 +171,11 @@ function tracked(store: Store): (pid: number, started: number | null) => void {
         } catch {}
     }
   })
-  return (pid, started) => others.push({ pid, started })
+  const track = (pid: number) => {
+    tracks.push({ pid, started: startTime(pid) })
+    return () => void cleaned.push(pid)
+  }
+  return { track, tracks, cleaned, also: (pid: number, started: number | null) => void others.push({ pid, started }) }
 }
 
 /** The fixed environment every app-server in these tests runs with. */
@@ -180,13 +183,18 @@ function env(dir: string): Record<string, string> {
   return { PATH: "/usr/bin:/bin", HOME: dir }
 }
 
-/** A `CodexProcess` under `harness:S1` running the fake in `dir`; `exits` resolves when its `onExit` runs, and `lines`
+/** A `CodexProcess` running the fake in `dir`, tracked by `track`; `exits` resolves when its `onExit` runs, and `lines`
  *  holds what it logged. */
-function proc(dir: string, store: Store, script?: object, over: Partial<CodexProcessOptions> = {}) {
+function proc(
+  dir: string,
+  track: CodexProcessOptions["track"],
+  script?: object,
+  over: Partial<CodexProcessOptions> = {},
+) {
   const lines: string[] = []
   let exited!: () => void
   const exits = new Promise<void>((resolve) => (exited = resolve))
-  const p = new CodexProcess(store, "harness:S1", {
+  const p = new CodexProcess({
     command: fake(dir, script),
     cwd: dir,
     env: env(dir),
@@ -196,6 +204,7 @@ function proc(dir: string, store: Store, script?: object, over: Partial<CodexPro
     onExit: () => exited(),
     environ: {},
     logLine: (line) => lines.push(line),
+    track,
     ...over,
   })
   return { p, exits, lines }
@@ -211,11 +220,17 @@ async function rejection(promise: Promise<unknown>): Promise<Error> {
   throw new Error("did not reject")
 }
 
-test("start initializes and records the group close removes it", async () => {
+test("start tracks the app server and close untracks it once it has exited", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
-  const { p, lines } = proc(dir, store)
+  const t = tracked()
+  let goneAtCleanup: boolean | undefined
+  const { p, lines } = proc(dir, (pid) => {
+    const untrack = t.track(pid)
+    return () => {
+      goneAtCleanup = !p.alive
+      untrack()
+    }
+  })
   await p.start()
   const sent = entries(dir)
     .filter((e) => e.dir === "in")
@@ -225,25 +240,21 @@ test("start initializes and records the group close removes it", async () => {
   // What the office sends must be what Codex takes.
   for (const request of sent.filter((m) => "method" in m && "id" in m))
     expect(CLIENT(request), ajv.errorsText(CLIENT.errors)).toBe(true)
-  const records = store.listWorkers()
-  expect(records).toHaveLength(1)
-  const [record] = records
-  expect(record!.key).toBe("harness:S1")
-  expect(record!.pgid).toBe(p.pid)
+  expect(t.tracks).toEqual([{ pid: p.pid, started: startTime(p.pid) }])
+  expect(t.cleaned).toEqual([])
   expect(p.alive).toBe(true)
   expect(fs.statSync(path.join(dir, "codex.log")).mode & 0o777).toBe(0o600)
   await p.close(1000)
   expect(p.alive).toBe(false)
-  expect(store.listWorkers()).toEqual([])
-  expect(isGone(p.pid, record!.startTime)).toBe(true)
+  expect(t.cleaned).toEqual([p.pid])
+  expect(goneAtCleanup).toBe(true)
+  expect(isGone(p.pid, t.tracks[0]!.started)).toBe(true)
   expect(lines).toEqual([])
 })
 
 test("a server that dies calls on exit and leaves its stderr in its log", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
-  const { p, exits } = proc(dir, store, { stderr: "boom: bad config", turns: [[{ exit: 3 }]] })
+  const { p, exits } = proc(dir, tracked().track, { stderr: "boom: bad config", turns: [[{ exit: 3 }]] })
   await p.start()
   await p.rpc!.request("thread/start", { cwd: dir })
   await p.rpc!.request("turn/start", { threadId: "thr_fake", input: [] })
@@ -254,87 +265,81 @@ test("a server that dies calls on exit and leaves its stderr in its log", async 
 
 test("a command that cant be run says to run opencorp doctor and leaves nothing", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
+  const t = tracked()
   const codex = path.join(dir, "codex")
   fs.writeFileSync(codex, "not a program")
   fs.chmodSync(codex, 0o644)
-  const { p } = proc(dir, store, undefined, { command: [codex] })
+  const { p } = proc(dir, t.track, undefined, { command: [codex] })
   const e = await rejection(p.start())
   expect(e).toBeInstanceOf(CodexStartError)
   expect(e.message).toContain("Codex couldn't start")
   expect(e.message).toContain("opencorp doctor")
   expect(p.proc).toBeNull()
-  expect(store.listWorkers()).toEqual([])
+  expect(t.tracks).toEqual([])
 })
 
 test("a refused handshake or sign in raises and leaves nothing", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
+  const t = tracked()
   const log = path.join(dir, "codex.log")
-  const refused = proc(dir, store, { initialize_error: { code: -32600, message: "bad" }, stderr: "why" }).p
+  const refused = proc(dir, t.track, { initialize_error: { code: -32600, message: "bad" }, stderr: "why" }).p
   const e = await rejection(refused.start())
   expect(e).toBeInstanceOf(CodexStartError)
   expect(e.message).toContain(log)
   expect(e.message).not.toContain("why")
   expect(fs.readFileSync(log, "utf8")).toContain("why")
-  expect(store.listWorkers()).toEqual([])
+  expect(t.cleaned).toEqual([refused.pid])
   expect(refused.alive).toBe(false)
-  const signedOut = proc(dir, store, { account: null }).p
+  const signedOut = proc(dir, t.track, { account: null }).p
   expect(await rejection(signedOut.start())).toBeInstanceOf(CodexSignedOut)
-  expect(store.listWorkers()).toEqual([])
+  expect(t.cleaned).toEqual([refused.pid, signedOut.pid])
 })
 
 test("a process killed before it starts never spawns", async () => {
   // Office stop can kill a session's app-server while the session is still about to start it.
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
-  const { p } = proc(dir, store)
+  const t = tracked()
+  const { p } = proc(dir, t.track)
   await p.kill()
   expect(await rejection(p.start())).toBeInstanceOf(CodexStartError)
   expect(p.proc).toBeNull()
-  expect(store.listWorkers()).toEqual([])
+  expect(t.tracks).toEqual([])
 })
 
 test("killing an old app server again leaves the new ones record", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
-  const old = proc(dir, store).p
+  const t = tracked()
+  const old = proc(dir, t.track).p
   await old.start()
   await old.kill()
-  const fresh = proc(dir, store).p // a reload: the same key
+  const fresh = proc(dir, t.track).p // a reload: the same session
   await fresh.start()
   await old.kill()
-  expect(store.listWorkers().map((r) => r.pid)).toEqual([fresh.pid])
+  expect(t.cleaned).toEqual([old.pid])
   await fresh.close(1000)
-  expect(store.listWorkers()).toEqual([])
+  expect(t.cleaned).toEqual([old.pid, fresh.pid])
 })
 
 test("an old app server that died by itself leaves its replacements record", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
-  const { p: old, exits } = proc(dir, store, { turns: [[{ exit: 1 }]] })
+  const t = tracked()
+  const { p: old, exits } = proc(dir, t.track, { turns: [[{ exit: 1 }]] })
   await old.start()
   await old.rpc!.request("thread/start", { cwd: dir })
   await old.rpc!.request("turn/start", { threadId: "thr_fake", input: [] })
   await exits
-  const fresh = proc(dir, store).p // restarted under the same key before the old one was cleaned up
+  const fresh = proc(dir, t.track).p // restarted for the same session before the old one was cleaned up
   await fresh.start()
   await old.kill()
-  expect(store.listWorkers().map((r) => r.pid)).toEqual([fresh.pid])
+  expect(t.cleaned).toEqual([old.pid])
   expect(fresh.alive).toBe(true)
   await fresh.close(1000)
 })
 
 test("close kills the commands left in its group", async () => {
   const dir = tempDir()
-  const store = openStore()
-  const track = tracked(store)
-  const { p } = proc(dir, store, { turns: [[{ spawn: 300 }, { sleep: 30 }]] })
+  const t = tracked()
+  const { p } = proc(dir, t.track, { turns: [[{ spawn: 300 }, { sleep: 30 }]] })
   await p.start()
   await p.rpc!.request("thread/start", { cwd: dir })
   await p.rpc!.request("turn/start", { threadId: "thr_fake", input: [] })
@@ -342,28 +347,14 @@ test("close kills the commands left in its group", async () => {
     what: "the command",
   })
   const childStarted = startTime(child)
-  track(child, childStarted)
+  t.also(child, childStarted)
   await p.close(1000)
   await waitFor(() => isGone(child, childStarted), { timeout: 5000, what: "the command to die" })
 })
 
-test("reaping a session never touches its app server", async () => {
-  const dir = tempDir()
-  const store = openStore()
-  tracked(store)
-  const { p } = proc(dir, store)
-  await p.start()
-  store.recordWorker("S1", { pid: process.pid, pgid: NO_GROUP, startTime: 0 }) // a stale debrief record
-  reap(store, "S1") // what the worker spawn does before the debrief worker starts
-  expect(store.listWorkers().map((r) => r.key)).toEqual(["harness:S1"])
-  expect(p.alive).toBe(true)
-  await p.close(1000)
-})
-
 test("the app server gets the offices codex home when it is set", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
+  const t = tracked()
   const seen = path.join(dir, "codex_home.txt")
   // A shell in front of the fake writes down the CODEX_HOME the app-server was given.
   const command = ["/bin/sh", "-c", `printf %s "\${CODEX_HOME-unset}" > "${seen}"; exec "$0" "$@"`, ...fake(dir)]
@@ -372,7 +363,7 @@ test("the app server gets the offices codex home when it is set", async () => {
     [{ CODEX_HOME: home }, home],
     [{}, "unset"],
   ] as const) {
-    const { p } = proc(dir, store, undefined, { command, environ })
+    const { p } = proc(dir, t.track, undefined, { command, environ })
     await p.start()
     expect(fs.readFileSync(seen, "utf8")).toBe(expected)
     await p.close(1000)
@@ -381,8 +372,7 @@ test("the app server gets the offices codex home when it is set", async () => {
 
 test("the app server keeps where tls finds ca certificates only when set", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
+  const t = tracked()
   const seen = path.join(dir, "certs.txt")
   // A shell in front of the fake writes down the certificate settings the app-server was given.
   const command = [
@@ -396,7 +386,7 @@ test("the app server keeps where tls finds ca certificates only when set", async
     [{}, "unset unset"],
   ] as const) {
     // workerEnv() is the environment the Codex sessions give each app-server.
-    const { p } = proc(dir, store, undefined, { command, env: workerEnv({ ...env(dir), ...certs }) })
+    const { p } = proc(dir, t.track, undefined, { command, env: workerEnv({ ...env(dir), ...certs }) })
     await p.start()
     expect(fs.readFileSync(seen, "utf8")).toBe(expected)
     await p.close(1000)
@@ -405,9 +395,8 @@ test("the app server keeps where tls finds ca certificates only when set", async
 
 test("a kill during the handshake says codex was stopped", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
-  const { p } = proc(dir, store, { initialize_delay: 2 })
+  const t = tracked()
+  const { p } = proc(dir, t.track, { initialize_delay: 2 })
   const starting = p.start()
   // start() spawns before its first await.
   expect(p.proc).not.toBeNull()
@@ -415,14 +404,12 @@ test("a kill during the handshake says codex was stopped", async () => {
   expect(started.status).toBe("rejected")
   expect((started as PromiseRejectedResult).reason.message).toBe("Codex was stopped before it started.")
   expect(killed.status).toBe("fulfilled")
-  expect(store.listWorkers()).toEqual([])
+  expect(t.cleaned).toEqual([p.pid])
 })
 
 test("only the first kill signals the group", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
-  const { p, lines } = proc(dir, store)
+  const { p, lines } = proc(dir, tracked().track)
   await p.start()
   const kill = spyOn(process, "kill")
   try {
@@ -437,9 +424,7 @@ test("only the first kill signals the group", async () => {
 
 test("a closed app server leaves no open pipes", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
-  const { p, exits } = proc(dir, store)
+  const { p, exits } = proc(dir, tracked().track)
   await p.start()
   await p.close(1000)
   await exits
@@ -450,10 +435,9 @@ test("a closed app server leaves no open pipes", async () => {
 
 test("a line over the cap signals the group once", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
+  const t = tracked()
   const command = ["/bin/sh", "-c", "head -c 17000000 /dev/zero | tr '\\0' a; exec sleep 30"]
-  const { p, lines } = proc(dir, store, undefined, { command })
+  const { p, lines } = proc(dir, t.track, undefined, { command })
   const kill = spyOn(process, "kill")
   const groupSignals = () => kill.mock.calls.filter(([pid]) => pid === -p.pid).length
   try {
@@ -467,36 +451,35 @@ test("a line over the cap signals the group once", async () => {
   } finally {
     kill.mockRestore()
   }
-  expect(store.listWorkers()).toEqual([])
+  expect(t.cleaned).toEqual([p.pid])
   expect(lines).toEqual(["codex: a line over the 16 MiB limit; stopping the app-server"])
 })
 
-test("a store that cannot record the app server leaves it dead", async () => {
+test("a track that throws leaves the app server dead and start rejects with its error", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
-  // The same spy as tracked's, so the failed call is still captured for cleanup by pid and start time.
-  const record = spyOn(store, "recordWorker").mockImplementationOnce(() => {
+  const t = tracked()
+  // Through tracked's spy, so the failed call is still captured for cleanup by pid and start time.
+  const { p } = proc(dir, (pid) => {
+    t.track(pid)
     throw new Error("disk full")
   })
-  const { p } = proc(dir, store)
   expect((await rejection(p.start())).message).toBe("disk full")
-  expect(record.mock.calls.map(([, w]) => w.pid)).toEqual([p.pid])
+  expect(t.tracks.map((s) => s.pid)).toEqual([p.pid])
   await waitFor(() => !p.alive, { timeout: 5000, what: "the app-server to die" })
-  expect(store.listWorkers()).toEqual([])
+  await p.kill()
+  expect(t.cleaned).toEqual([])
   expect(p.proc!.stdout!.destroyed).toBe(true)
 })
 
 test("a linked codex log refuses to start", async () => {
   const dir = tempDir()
-  const store = openStore()
-  tracked(store)
+  const t = tracked()
   const outside = path.join(tempDir(), "notes.txt")
   fs.writeFileSync(outside, "keep\n")
   fs.symlinkSync(outside, path.join(dir, "codex.log"))
-  const { p } = proc(dir, store)
+  const { p } = proc(dir, t.track)
   expect((await rejection(p.start())).message).toContain("Codex couldn't start")
   expect(fs.readFileSync(outside, "utf8")).toBe("keep\n")
   expect(p.proc).toBeNull()
-  expect(store.listWorkers()).toEqual([])
+  expect(t.tracks).toEqual([])
 })

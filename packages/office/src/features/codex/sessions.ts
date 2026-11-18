@@ -29,6 +29,7 @@ import {
   newId,
 } from "../../runtime/store/store.ts"
 import type { OfficePaths } from "../../util/home.ts"
+import { startTime } from "../../util/proc.ts"
 import { workerEnv } from "../../runtime/worker/spawn.ts"
 import type { HarnessEvent } from "../../tools/codex/adapter.ts"
 import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from "../../tools/codex/codex.ts"
@@ -462,8 +463,9 @@ export class CodexSessions implements SessionHarness {
     const command = this.#command
       ? this.#command()
       : appServerCommand(this.office.tools.codex, process.env.OPENCORP_CODEX_BIN)
+    const key = `harness:${live.sessionId}`
     // Each callback says which app-server it came from, so the session drops what an earlier one still sends.
-    const proc: CodexProcess = new CodexProcess(this.store, `harness:${live.sessionId}`, {
+    const proc: CodexProcess = new CodexProcess({
       command,
       cwd: live.cwd,
       env,
@@ -472,6 +474,12 @@ export class CodexSessions implements SessionHarness {
       onRequest: (id, method, params) => live.requested(proc, id, method, params),
       onExit: (p) => live.exited(p),
       logLine: this.log,
+      track: (pid) => {
+        // A 0 start time never matches a process, so the reaper never signals such a row.
+        this.store.recordWorker(key, { pid, pgid: pid, startTime: startTime(pid) ?? 0 })
+        // Only its own record: a later app-server of the same session has the same key.
+        return () => this.store.removeWorker(key, pid)
+      },
     })
     // Before it spawns, so office stop can kill it mid-handshake.
     if (!live.launchingAs(proc)) throw new CodexStartError("The office is stopping.")

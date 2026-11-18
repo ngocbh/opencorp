@@ -1,11 +1,10 @@
-/** One `codex app-server --listen stdio://`: its command, owner-load params, process group and worker record. */
+/** One `codex app-server --listen stdio://`: its command, owner-load params, process group and its tracking. */
 import { type ChildProcess, spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import type { HarnessPolicy } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
-import { killGroup, startTime } from "../../util/proc.ts"
-import type { Store } from "../../runtime/store/store.ts"
+import { killGroup } from "../../util/proc.ts"
 import { which } from "../../util/env.ts"
 import { JsonRpc, nameOf } from "./rpc.ts"
 
@@ -97,9 +96,13 @@ export type CodexProcessOptions = {
   /** Where warnings go (default `console.error`); also the `JsonRpc`'s log. Must not throw: `kill()` never rejects
    *  and logs through it. */
   logLine?: (line: string) => void
+  /** Records the app-server for the start-up reaper, as `run`'s `track` does: called right after the spawn with the
+   *  leader's pid (its group id); the cleanup it returns runs once its exit is seen, or 5 s passed. A `track` that
+   *  throws has the group killed, and `start` rejects with its error. */
+  track?: (pid: number) => () => void
 }
 
-/** One app-server in its own process group, recorded in the store's workers under `key` for `reap`.
+/** One app-server in its own process group, recorded for the start-up reaper through `track`.
  *
  *  `onExit(process)` runs once after its stdout ends, whoever ended it, once the process has exited (or 5 s passed).
  *  The app-server runs with `env` and the office's `CODEX_HOME` (from `environ`) when it is set. */
@@ -110,18 +113,14 @@ export class CodexProcess {
   proc: ChildProcess | null = null
   rpc: JsonRpc | null = null
   closing = false
-  readonly #store: Store
-  readonly #key: string
   readonly #options: CodexProcessOptions
   readonly #log: (line: string) => void
   #exited: Promise<void> = Promise.resolve()
-  #recorded = false
+  #untrack: (() => void) | null = null
   #killed = false
   #killing: Promise<void> | null = null
 
-  constructor(store: Store, key: string, options: CodexProcessOptions) {
-    this.#store = store
-    this.#key = key
+  constructor(options: CodexProcessOptions) {
     this.#options = options
     this.#log = options.logLine ?? ((line) => console.error(line))
     // Codex finds its config and sign-in through CODEX_HOME when the owner sets one, and ~/.codex otherwise.
@@ -141,11 +140,11 @@ export class CodexProcess {
     return this.proc !== null && this.proc.exitCode === null && this.proc.signalCode === null
   }
 
-  /** Spawns, records, initializes with `experimentalApi`, and checks the sign-in; resolves with initialize's result.
+  /** Spawns, tracks, initializes with `experimentalApi`, and checks the sign-in; resolves with initialize's result.
    *
    *  Rejects with `CodexStartError` (or `CodexSignedOut`): a command that can't be run says to run `opencorp doctor`,
-   *  and a failed handshake also names the log, where Codex's output is; a store error from recording the worker is
-   *  rethrown as is, after the group is killed. Nothing is left running or recorded.
+   *  and a failed handshake also names the log, where Codex's output is; an error from `track` is rethrown as is,
+   *  after the group is killed. Nothing is left running or tracked.
    *  A process already killed never spawns. */
   async start(): Promise<unknown> {
     const { command, cwd, log } = this.#options
@@ -171,15 +170,13 @@ export class CodexProcess {
     this.proc = proc
     this.#exited = new Promise((resolve) => proc.once("exit", () => resolve()))
     try {
-      // A 0 start time never matches a process, so the reaper never signals such a row.
-      this.#store.recordWorker(this.#key, { pid, pgid: pid, startTime: startTime(pid) ?? 0 })
+      this.#untrack = this.#options.track?.(pid) ?? null
     } catch (error) {
-      // No record was written, so there is none to remove; only the process must not outlive the failed start.
+      // Nothing was tracked, so there is nothing to untrack; only the process must not outlive the failed start.
       this.#signal()
       proc.stdout?.destroy()
       throw error
     }
-    this.#recorded = true
     const options = this.#options
     const rpc = (this.rpc = new JsonRpc(proc.stdin!, proc.stdout!, {
       onNotification: (method, params) => options.onNotification(method, params),
@@ -216,7 +213,7 @@ export class CodexProcess {
     return result
   }
 
-  /** Closes stdin, gives it `graceMs`, then kills the group (its command children too) and forgets the record. */
+  /** Closes stdin, gives it `graceMs`, then kills the group (its command children too) and untracks it. */
   async close(graceMs = CLOSE_GRACE_MS): Promise<void> {
     this.closing = true
     const stdin = this.proc?.stdin
@@ -225,10 +222,10 @@ export class CodexProcess {
     await this.kill()
   }
 
-  /** Kills the group now (the app-server may leave command children) and forgets its own record.
+  /** Kills the group now (the app-server may leave command children) and runs its own `track` cleanup.
    *
    *  Safe more than once and before `start`: a process killed first never spawns. Every call resolves when the first
-   *  one's work is done (the exit seen, or 5 s passed, then the record removed); it never rejects. */
+   *  one's work is done (the exit seen, or 5 s passed, then the cleanup run); it never rejects. */
   kill(): Promise<void> {
     this.closing = true
     return (this.#killing ??= this.#killOnce())
@@ -263,17 +260,16 @@ export class CodexProcess {
   }
 
   async #killOnce(): Promise<void> {
-    const recorded = this.#recorded
-    this.#recorded = false
+    const untrack = this.#untrack
+    this.#untrack = null
     const proc = this.proc
     this.#signal()
     if (proc?.pid === undefined) return
     const pid = proc.pid
     if (!(await this.#waitExit(EXIT_WAIT_MS))) this.#log(`codex app-server ${pid} outlived SIGKILL`)
-    if (!recorded) return
-    // Only its own record: a later app-server of the same session has the same key.
+    if (untrack === null) return
     try {
-      this.#store.removeWorker(this.#key, pid)
+      untrack()
     } catch (error) {
       this.#log(`codex: couldn't forget app-server ${pid}'s record (${nameOf(error)})`)
     }

@@ -1,6 +1,5 @@
 /** The office's SQLite store: opening the database, 0600, in WAL mode, migrated; synchronous write
  *  transactions whose events reach listeners after the commit. */
-import { randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
@@ -25,7 +24,11 @@ import {
   validationMessage,
 } from "@opencorp/protocol"
 import type { z } from "zod"
+import { newId } from "../../util/ids.ts"
 import { migrate } from "./migrate.ts"
+
+// Ids come from util, so code that loads no store makes them too; the store's importers keep taking them here.
+export { newId }
 
 /** How long a connection waits for another writer's lock, in ms. */
 export const BUSY_TIMEOUT_MS = 10_000
@@ -346,36 +349,6 @@ export function enableWal(
       delay = Math.min(delay * 2, 250)
     }
   }
-}
-
-const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-const RANDOM_LIMIT = 1n << 80n
-let lastTime = -1
-let lastRandom = 0n
-
-/** `n` in Crockford base32, `length` chars, zero-padded. */
-function base32(n: bigint, length: number): string {
-  let out = ""
-  for (let i = 0; i < length; i++) {
-    out = CROCKFORD[Number(n & 31n)] + out
-    n >>= 5n
-  }
-  return out
-}
-
-/** A new ULID: 48-bit ms time + 80 random bits, Crockford base32, strictly increasing within this process.
- *  When the clock hasn't moved past the last id's time (same ms, or it went back), the id keeps the last
- *  time and takes the last random part plus one. */
-export function newId(): string {
-  const t = Date.now()
-  if (t > lastTime) {
-    lastTime = t
-    lastRandom = BigInt(`0x${randomBytes(10).toString("hex")}`)
-  } else if (++lastRandom === RANDOM_LIMIT) {
-    lastTime += 1
-    lastRandom = BigInt(`0x${randomBytes(10).toString("hex")}`)
-  }
-  return base32(BigInt(lastTime), 10) + base32(lastRandom, 16)
 }
 
 /** Throws `StoreError` if `result` is a promise or other thenable: an awaiting callback would run its
