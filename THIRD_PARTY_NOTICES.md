@@ -128,6 +128,13 @@ license, the upstream paths and commit, and our paths.
   `packages/tui/src/keymap.tsx` (`useBindings`), `packages/tui/src/ui/pane-resize.ts`,
   `packages/tui/src/ui/pane-resize-handle.tsx`, `packages/tui/src/util/text-boundary.ts`,
   `packages/tui/test/util/text-boundary.test.ts`.
+- **What:** an agent's terminal commands in the transcript take the fork's shell view (`$ <command>`, its output
+  folded to 10 lines that a click expands, a spinner while it runs), and, as current upstream's shell view does, the
+  command takes the warning colour while the call waits on the owner. What the views read from the terminal tools'
+  replies, the typed-line row and the one-line read, interrupt and close are our own.
+- **Upstream:** `packages/tui/src/routes/session/index.tsx` (`Shell`) at commit `b471c2b`, and its `Shell` and
+  `ShellDisplay`, read at commit `df46f69` (2026-11-16).
+- **Ours:** `packages/tui/src/routes/session/index.tsx` (`toolView`, `Shell`, `TypedLine`, `ShellCall`).
 
 ## Paperclip
 

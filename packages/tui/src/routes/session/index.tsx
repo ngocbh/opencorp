@@ -1336,20 +1336,84 @@ function ErrorPartView(props: { last: boolean; part: ErrorPart }) {
   )
 }
 
-export type ToolView = "shell" | "read" | "write" | "edit" | "patch" | "list" | "search" | "question" | "generic"
+export type ToolView =
+  | "shell"
+  | "typed"
+  | "terminal"
+  | "read"
+  | "write"
+  | "edit"
+  | "patch"
+  | "list"
+  | "search"
+  | "question"
+  | "generic"
 
 const pick = (input: Record<string, unknown>, map: Record<string, string>) =>
   Object.fromEntries(
     Object.entries(map).flatMap(([to, from]) => (input[from] === undefined ? [] : [[to, input[from]]])),
   )
 
+/** A terminal tool's reply: the one JSON object the office returns for every call, empty while the call hasn't
+ *  replied (its output is nothing, or `{}`); undefined when it isn't one. */
+function terminalReply(output: string | undefined): Record<string, unknown> | undefined {
+  if (!output?.trim()) return {}
+  try {
+    const reply: unknown = JSON.parse(output)
+    return reply !== null && typeof reply === "object" && !Array.isArray(reply)
+      ? (reply as Record<string, unknown>)
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** A terminal tool's view, from its input and its reply: the shell by the reply's name, else the input's, else a
+ *  new one (`run` alone may start one); the shell's state; and in place of the JSON, a command's output. */
+function terminalView(
+  tool: string,
+  input: Record<string, unknown>,
+  reply: Record<string, unknown>,
+): { view: ToolView; input: Record<string, unknown>; output: string } {
+  const named = stringValue(input.shell)
+  const shell =
+    stringValue(reply.shell) ?? (named && named !== "new" ? named : tool === "run" ? "a new shell" : "a shell")
+  const state = {
+    shell,
+    status: stringValue(reply.status),
+    waiting: stringValue(reply.waiting),
+    refused: stringValue(reply.refused),
+    error: stringValue(reply.error),
+  }
+  if (tool === "run")
+    return {
+      view: "shell",
+      input: { command: input.command, exit_code: reply.exit, ...state },
+      output: stringValue(reply.output) ?? "",
+    }
+  if (tool === "type")
+    return { view: "typed", input: { text: input.text, enter: input.enter !== false, ...state }, output: "" }
+  return { view: "terminal", input: { action: tool, ...state }, output: "" }
+}
+
 /** The renderer for an office tool, by the name the model called it (a workspace tool as `workspace_<tool>` when
- *  its flow grants the group, else by its own name), and its input renamed to the fields that renderer reads. */
+ *  its flow grants the group, else by its own name), and its input renamed to the fields that renderer reads. A
+ *  terminal tool's view reads its reply too, given as `output`, and says what to show in its place. */
 export function toolView(
   tool: string,
   input: Record<string, unknown> = {},
-): { view: ToolView; input: Record<string, unknown>; title?: string } {
+  output?: string,
+): { view: ToolView; input: Record<string, unknown>; title?: string; output?: string } {
   switch (tool) {
+    case "terminal_run":
+    case "terminal_type":
+    case "terminal_read":
+    case "terminal_interrupt":
+    case "terminal_close": {
+      const reply = terminalReply(output)
+      if (reply !== undefined) return terminalView(tool.slice("terminal_".length), input, reply)
+      break
+    }
     case "workspace_read_file":
     case "read_file":
       return { view: "read", input: pick(input, { filePath: "path", offset: "offset", limit: "limit" }) }
@@ -1444,7 +1508,7 @@ const PART_MAPPING = {
 
 function ToolPartView(props: { last: boolean; part: ToolPart }) {
   const ctx = use()
-  const view = createMemo(() => toolView(props.part.tool, props.part.input ?? {}))
+  const view = createMemo(() => toolView(props.part.tool, props.part.input ?? {}, outputText(props.part.output)))
 
   // Completed tools fold away when tool details are hidden.
   const shouldHide = createMemo(() => !ctx.showDetails() && props.part.state === "completed")
@@ -1454,7 +1518,7 @@ function ToolPartView(props: { last: boolean; part: ToolPart }) {
       return view().input
     },
     get output() {
-      return outputText(props.part.output) || undefined
+      return (view().output ?? outputText(props.part.output)) || undefined
     },
     get tool() {
       return props.part.tool
@@ -1472,6 +1536,12 @@ function ToolPartView(props: { last: boolean; part: ToolPart }) {
       <Switch>
         <Match when={view().view === "shell"}>
           <Shell {...toolprops} />
+        </Match>
+        <Match when={view().view === "typed"}>
+          <TypedLine {...toolprops} />
+        </Match>
+        <Match when={view().view === "terminal"}>
+          <ShellCall {...toolprops} />
         </Match>
         <Match when={view().view === "list"}>
           <List {...toolprops} />
@@ -1765,9 +1835,23 @@ function exitNote(input: Record<string, unknown>) {
   return typeof code === "number" && code !== 0 ? ` (exit ${code})` : ""
 }
 
+/** What a terminal tool's reply says the owner should read: why nothing was done, a prompt only they answer, or why
+ *  the shell failed. */
+function shellNote(input: Record<string, unknown>) {
+  const refused = stringValue(input.refused)
+  if (refused) return `refused: ${refused}`
+  if (input.waiting === "secret") return "waiting for your password"
+  const error = stringValue(input.error)
+  if (input.status === "failed" && error) return `failed: ${error}`
+  return undefined
+}
+
+/** A shell command: `$ <command>`, `in <shell>` for an agent's terminal, and its output folded to 10 lines. While a
+ *  terminal's command still runs or waits, its reply says so. */
 function Shell(props: ToolProps) {
   const { theme } = useTheme()
   const ctx = use()
+  const permission = usePermission()
   const output = createMemo(() => stripAnsi(props.output?.trim() ?? ""))
   const [expanded, setExpanded] = createSignal(false)
   const maxLines = 10
@@ -1777,26 +1861,49 @@ function Shell(props: ToolProps) {
     if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
+  const command = createMemo(() => {
+    const command = stringValue(props.input.command)
+    const shell = stringValue(props.input.shell)
+    return command !== undefined && shell ? `${command} in ${shell}` : command
+  })
+  const live = createMemo(
+    () => running(props.part) || props.input.status === "running" || props.input.status === "waiting",
+  )
+  const note = createMemo(() => shellNote(props.input))
+  const noteColor = () =>
+    props.input.refused ? theme.textMuted : props.input.waiting === "secret" ? theme.warning : theme.error
+  // As the upstream TUI's shell view: the command in the warning colour while it waits on the owner, on an open
+  // approval card or at a prompt only they answer.
+  const color = createMemo(() => {
+    const id = props.part.yian_call_id
+    const held = !!id && permission.waiting(ctx.sessionID, id)
+    return held || props.input.status === "waiting" ? theme.warning : theme.text
+  })
 
   return (
     <Switch>
-      <Match when={output()}>
+      <Match when={output() || note()}>
         <BlockTool part={props.part} onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}>
           <box gap={1}>
             <Show
-              when={running(props.part)}
+              when={live()}
               fallback={
                 <text fg={theme.text}>
-                  $ {stringValue(props.input.command)}
+                  $ {command()}
                   {exitNote(props.input)}
                 </text>
               }
             >
-              <Spinner color={theme.text}>{stringValue(props.input.command)}</Spinner>
+              <Spinner color={color()}>{command()}</Spinner>
             </Show>
-            <text fg={theme.text}>{limited()}</text>
+            <Show when={output()}>
+              <text fg={theme.text}>{limited()}</text>
+            </Show>
             <Show when={collapsed().overflow}>
               <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+            </Show>
+            <Show when={note()}>
+              <text fg={noteColor()}>{note()}</text>
             </Show>
           </box>
         </BlockTool>
@@ -1805,15 +1912,51 @@ function Shell(props: ToolProps) {
         <InlineTool
           icon="$"
           pending="Writing command…"
-          complete={stringValue(props.input.command)}
-          spinner={running(props.part) && !!stringValue(props.input.command)}
+          complete={command()}
+          spinner={live() && !!command()}
           part={props.part}
         >
-          {stringValue(props.input.command)}
+          {command()}
           {exitNote(props.input)}
         </InlineTool>
       </Match>
     </Switch>
+  )
+}
+
+/** A line an agent typed into a shell: `⌨ <text> into <shell>`, and `⏎` when it pressed Enter after it. */
+function TypedLine(props: ToolProps) {
+  const text = createMemo(() => stringValue(props.input.text))
+  const line = createMemo(() =>
+    [display(text() ?? ""), "into", stringValue(props.input.shell), props.input.enter ? "⏎" : ""]
+      .filter(Boolean)
+      .join(" "),
+  )
+  const note = createMemo(() => shellNote(props.input))
+  return (
+    <InlineTool
+      icon="⌨"
+      pending="Typing…"
+      complete={text() !== undefined}
+      spinner={running(props.part)}
+      part={props.part}
+    >
+      {line()}
+      {note() ? ` · ${note()}` : ""}
+    </InlineTool>
+  )
+}
+
+const SHELL_CALLS: Record<string, string> = { read: "Read", interrupt: "Interrupt", close: "Close" }
+
+/** A read, interrupt or close of an agent's shell, on one line: the shell, and what its reply says of it. */
+function ShellCall(props: ToolProps) {
+  const state = createMemo(() => shellNote(props.input) ?? stringValue(props.input.status))
+  return (
+    <InlineTool icon="$" pending="" complete={true} spinner={running(props.part)} part={props.part}>
+      {SHELL_CALLS[stringValue(props.input.action) ?? ""]} {stringValue(props.input.shell)}
+      {state() ? ` · ${state()}` : ""}
+    </InlineTool>
   )
 }
 
