@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, onTestFinished, setDefaultTimeou
 import fs from "node:fs"
 import path from "node:path"
 import { FakeLLM, LLM_CONFIG } from "@opencorp/office/testing/fake_llm"
+import { fakeControlName } from "@opencorp/office/testing/fake_ssh"
 import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
 import { builtApp, type Client, client, pidsNaming, reachScript, removeClient } from "./remote"
 import { type Terminal, TMUX, terminal as tmuxTerminal } from "./tmux"
@@ -66,6 +67,33 @@ describe.skipIf(!TMUX)("on a real terminal", () => {
     expect(await t.exit()).toBe("exit=0")
     expect(c.fake.masters()).toEqual([])
     expect(pidsNaming(c.hq)).toEqual([])
+  }, 120_000)
+
+  test("with the client's own ControlPath, a visit asks once and leaves the login master in that folder", async () => {
+    const c = await client(remote)
+    onTestFinished(() => removeClient(c))
+    const mine = path.join(c.root, "mine")
+    fs.mkdirSync(mine, { mode: 0o700 })
+    // The client's ~/.ssh/config, which the fake reads where the visit's config includes it.
+    c.fake.set({
+      hosts: { login1: { login: "tty" } },
+      userConfig: ["Host login1", "  ControlMaster auto", `  ControlPath ${mine}/%C`, "  ControlPersist 60"],
+    })
+    const t = terminal(c)
+    await t.see("fake password for login1:")
+    t.type("hunter2")
+    await t.see("Connected.")
+    expect(c.fake.tty()).toEqual(["hunter2"])
+    // The node's hop rode the client's own login master: hq/cm holds only OpenCorp's node master.
+    expect(fs.readdirSync(c.cm)).toEqual(["node"])
+    t.keys("C-c")
+    expect(await t.exit()).toBe("exit=0")
+    expect(fs.readdirSync(c.cm)).toEqual([])
+    expect(fs.lstatSync(path.join(mine, fakeControlName("login1"))).isSocket()).toBe(true)
+    // What's left is the client's login master alone, for their terminals to reuse.
+    const left = c.fake.masters()
+    expect(left).toHaveLength(1)
+    expect(pidsNaming(c.hq)).toEqual(left)
   }, 120_000)
 })
 

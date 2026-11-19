@@ -1,9 +1,12 @@
 /** A stand-in for ssh in tests, run through a sh shim with this Bun: it logs each argv and acts, on this machine, as a
  *  plain session, a master, a mux client or an `-O` command.
  *
- *  Each host logs in by its mode (`FakeHost`); a session's command runs here under `/bin/sh -c`. From the `-F` file
- *  (and `-o`) it reads only `ControlMaster`, `ControlPath` (`%C` is `fakeControlName`) and `BatchMode`; `-G` accepts
- *  every option, as a current ssh would. A master
+ *  Each host logs in by its mode (`FakeHost`); a session's command runs here under `/bin/sh -c`. It reads `-o`, then
+ *  the `-F` file, the first value of each option winning; it acts on `ControlMaster`, `ControlPath` (`%C` is
+ *  `fakeControlName`), `BatchMode` and `RemoteCommand` (a command beside one is refused, as ssh does). It never reads
+ *  an included file: the first `Include` stands for the owner's config, `userConfig`. A `Host` line's options apply
+ *  when one of its names is `*` or the destination's host; `Match` turns them off. `-G` accepts every option, as a
+ *  current ssh would, and prints those it read, `%C` expanded, without logging the call. A master
  *  listens on its control socket and takes one JSON line per connection: `{"op":"check"|"exit"|"session"}` or
  *  `{"op":"forward","port":P,"target":T}`, answering `ok` or `error <why>`. */
 import { spawn, spawnSync } from "node:child_process"
@@ -37,6 +40,8 @@ export interface FakeSshBehavior extends FakeHost {
   persistMs?: number
   /** Written to stderr after each login that succeeds, as sshd's Banner or a node's login shell would. */
   banner?: string
+  /** The lines of the owner's own ssh config, read where the `-F` file's first `Include` stands. */
+  userConfig?: string[]
 }
 export interface FakeSsh {
   /** The folder holding `ssh`, to put first on PATH. */
@@ -144,21 +149,55 @@ function parse(argv: readonly string[]): Parsed {
   return { values, flags, host: argv[i], command: argv.slice(i + 1).join(" ") }
 }
 
-/** The options the fake reads: `-o` first, then the `-F` file; the first value of each wins, as in ssh. */
-function options(p: Parsed): { controlMaster: string; controlPath: string | null; batch: boolean } {
+/** Every option the fake reads for `target` (`p`'s destination unless given), by lowercase name: `-o` first, then
+ *  the `-F` file, with `userConfig` at its first `Include`; the first value of each wins, as in ssh. After the include
+ *  the file reads on as before it, as in ssh. */
+function settings(p: Parsed, behavior: FakeSshBehavior, target = p.host ?? ""): Map<string, string> {
   const found = new Map<string, string>()
-  const take = (line: string) => {
-    const m = /^\s*([A-Za-z]+)\s*(?:=|\s)\s*(.*?)\s*$/.exec(line)
-    if (m && !found.has(m[1]!.toLowerCase())) found.set(m[1]!.toLowerCase(), m[2]!)
+  const host = hostName(target)
+  const option = (line: string) => /^\s*([A-Za-z]+)\s*(?:=|\s)\s*(.*?)\s*$/.exec(line)
+  const take = (key: string, value: string) => {
+    if (!found.has(key)) found.set(key, value)
   }
-  for (const o of p.values.get("o") ?? []) take(o)
+  for (const o of p.values.get("o") ?? []) {
+    const m = option(o)
+    if (m) take(m[1]!.toLowerCase(), m[2]!)
+  }
+  let included = false
+  const read = (lines: readonly string[]) => {
+    let active = true
+    for (const line of lines) {
+      const m = line.trim().startsWith("#") ? null : option(line)
+      if (!m) continue
+      const key = m[1]!.toLowerCase()
+      if (key === "host") active = m[2]!.split(/\s+/).some((name) => name === "*" || name === host)
+      else if (key === "match") active = false
+      else if (key === "include") {
+        if (!included) {
+          included = true
+          read(behavior.userConfig ?? [])
+        }
+      } else if (active) take(key, m[2]!)
+    }
+  }
   const file = p.values.get("F")?.at(-1)
-  if (file !== undefined && file !== "/dev/null" && fs.existsSync(file))
-    for (const line of fs.readFileSync(file, "utf8").split("\n")) if (!line.trim().startsWith("#")) take(line)
+  if (file !== undefined && file !== "/dev/null" && fs.existsSync(file)) read(fs.readFileSync(file, "utf8").split("\n"))
+  return found
+}
+
+/** The options the fake acts on, from `settings`. */
+function options(found: Map<string, string>): {
+  controlMaster: string
+  controlPath: string | null
+  batch: boolean
+  remoteCommand: string | null
+} {
+  const remote = found.get("remotecommand")
   return {
     controlMaster: (found.get("controlmaster") ?? "no").toLowerCase(),
     controlPath: found.get("controlpath") ?? null,
     batch: (found.get("batchmode") ?? "no").toLowerCase() === "yes",
+    remoteCommand: remote === undefined || remote.toLowerCase() === "none" ? null : remote,
   }
 }
 
@@ -302,13 +341,15 @@ class Run {
     return controlPath === null ? null : controlPath.replaceAll("%C", fakeControlName(hostName(target)))
   }
 
-  /** Reaches the last of `hops`: rides the nearest one with a live master (a session held on it), then logs in to
-   *  each after it; with `logIn` false only rides. Null when a login is refused. */
-  async hops(hops: readonly string[], controlPath: string | null, batch: boolean, logIn = true): Promise<net.Socket[] | null> {
+  /** Reaches the last of `p`'s jump hosts: rides the nearest one with a live master (a session held on it) at the
+   *  ControlPath the config gives that hop, as a hop's own ssh would read it, then logs in to each after it; with
+   *  `logIn` false only rides. Null when a login is refused. */
+  async hops(p: Parsed, batch: boolean, logIn = true): Promise<net.Socket[] | null> {
+    const hops = (p.values.get("J") ?? []).flatMap((j) => j.split(","))
     const held: net.Socket[] = []
     let from = 0
     for (let i = hops.length - 1; i >= 0; i--) {
-      const sock = this.socketFor(controlPath, hops[i]!)
+      const sock = this.socketFor(options(settings(p, this.behavior, hops[i]!)).controlPath, hops[i]!)
       const c = sock === null ? null : await session(sock)
       if (c !== null) {
         held.push(c)
@@ -392,29 +433,38 @@ class Run {
 
   async main(): Promise<number> {
     if (this.argv[0] === "--auto-master") return await this.autoMaster(this.argv[1]!, this.argv.slice(2))
-    // `ssh -G` only checks options, as a newer ssh does; it isn't a call worth logging.
-    if (this.argv.includes("-G")) return 0
-    fs.appendFileSync(path.join(this.state, "log.jsonl"), JSON.stringify(this.argv) + "\n")
     const p = parse(this.argv)
-    const { controlMaster, controlPath, batch } = options(p)
+    const found = settings(p, this.behavior)
+    // `ssh -G` only prints the options, as a newer ssh would take them; it isn't a call worth logging.
+    if (this.argv.includes("-G")) {
+      const target = p.host === undefined ? "" : hostName(p.host)
+      for (const [key, value] of found)
+        process.stdout.write(`${key} ${key === "controlpath" ? value.replaceAll("%C", fakeControlName(target)) : value}\n`)
+      return 0
+    }
+    fs.appendFileSync(path.join(this.state, "log.jsonl"), JSON.stringify(this.argv) + "\n")
+    const { controlMaster, controlPath, batch, remoteCommand } = options(found)
     if (p.host === undefined) {
       process.stderr.write("usage: ssh destination [command]\r\n")
       return 255
     }
-    const hops = (p.values.get("J") ?? []).flatMap((j) => j.split(","))
     const sock = p.values.get("S")?.at(-1) ?? this.socketFor(controlPath, p.host)
     const op = p.values.get("O")?.at(-1)
     if (op !== undefined) return sock === null ? 255 : await this.control(sock, op, p.values.get("L")?.at(-1))
+    if (remoteCommand !== null && p.command !== "") {
+      process.stderr.write("Cannot execute command-line and remote command.\r\n")
+      return 255
+    }
     if (p.flags.has("M")) {
       if (sock === null) return 255
-      const held = await this.hops(hops, controlPath, batch)
+      const held = await this.hops(p, batch)
       if (held === null || !(await this.login(p.host, batch))) return 255
       return await new Master(this.state, sock, false, held).run()
     }
     if (p.values.has("S")) return await this.mux(sock!, p.command)
     // A plain session: over a live master for its host, else after logging in.
     if (sock !== null && (await live(sock))) return await this.mux(sock, p.command)
-    const held = await this.hops(hops, controlPath, batch)
+    const held = await this.hops(p, batch)
     if (held === null) return 255
     if (!(await this.login(p.host, batch))) return 255
     if (sock !== null && controlMaster === "auto") {
@@ -437,8 +487,8 @@ class Run {
    *  session logged in to the rest) and ends `persistMs` after its last connection. */
   async autoMaster(sock: string, argv: readonly string[]): Promise<number> {
     const p = parse(argv)
-    const { controlPath, batch } = options(p)
-    const held = await this.hops((p.values.get("J") ?? []).flatMap((j) => j.split(",")), controlPath, batch, false)
+    const { batch } = options(settings(p, this.behavior))
+    const held = await this.hops(p, batch, false)
     return await new Master(this.state, sock, true, held ?? []).run()
   }
 }

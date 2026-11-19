@@ -21,38 +21,36 @@ export const defaultIncludes = (home: string) => [
   "/etc/ssh/ssh_config",
 ]
 
-/** How long a login master stays after its last session (ControlPersist), in seconds, on a visit. */
+/** How long a login master of ours stays after its last session (ControlPersist), in seconds. */
 export const PERSIST_S = 60
-/** The same while learning: the owner and the model may take minutes between commands, and each new login would ask
- *  for Duo again. */
-export const LEARNING_PERSIST_S = 600
 
-/** `hq/ssh/config` (`config.batch` with `batch`): our options first, since ssh keeps the first value it reads, so the
- *  owner's ControlPath can't win and our `-O exit` never ends their masters. With `sessionOptions` (an ssh that knows
- *  them, OpenSSH 8.7 on) it also pins the session options whose `none`, `yes` and `yes` would defeat the master's cat
- *  lifeline. Each include is double-quoted (a home may hold a space); there's no default, so a test can't include the
- *  real `~/.ssh/config` by leaving it out. */
+/** `hq/ssh/config` (`config.batch` with `batch`): the owner's config and the system's first, then ours. ssh keeps the
+ *  first value it reads, so the owner's settings win wherever they set one, and ours are defaults: sharing in `cm`
+ *  (so a socket there is one an ssh of ours bound, the owner having set no ControlPath), keep-alives, and, with
+ *  `sessionOptions` (an ssh that knows them, OpenSSH 8.7 on), the session options a visit needs. After an Include ssh
+ *  reads on as before it, so a `Host` block the owner's file ends in doesn't take ours. Each include is double-quoted
+ *  (a home may hold a space); there's no default, so a test can't include the real `~/.ssh/config` by leaving it
+ *  out. */
 export function configText(
   cm: string,
   {
     batch = false,
     includes,
     sessionOptions = false,
-    persist = PERSIST_S,
-  }: { batch?: boolean; includes: readonly string[]; sessionOptions?: boolean; persist?: number },
+  }: { batch?: boolean; includes: readonly string[]; sessionOptions?: boolean },
 ): string {
   if (includes.some((file) => /["\n]/.test(file))) throw new Error("an included ssh config's path can't hold \" or a newline")
   return [
     "# Written by opencorp hq on each visit; edits are lost.",
+    ...includes.map((file) => `Include "${file}"`),
     ...(batch ? ["BatchMode yes"] : []),
     "ControlMaster auto",
     `ControlPath ${cm}/%C`,
-    `ControlPersist ${persist}`,
+    `ControlPersist ${PERSIST_S}`,
     "ServerAliveInterval 15",
     "ServerAliveCountMax 3",
-    // Not behind IgnoreUnknown for older ssh: the first IgnoreUnknown read wins, so ours would void the owner's.
+    // Only where ssh knows them, not behind an IgnoreUnknown: the owner's may already have set one, and the first wins.
     ...(sessionOptions ? ["SessionType default", "StdinNull no", "ForkAfterAuthentication no"] : []),
-    ...includes.map((file) => `Include "${file}"`),
     "",
   ].join("\n")
 }
@@ -76,10 +74,85 @@ export function knowsSessionOptions(ssh: string): boolean {
   return known
 }
 
+/** Where the settings a visit can't work with are explained. */
+const TROUBLESHOOTING = "https://opencorp.readthedocs.io/hq/#troubleshooting"
+
+/** Of the options `ssh -G` printed for a host, the ones a visit can't work with, as the owner would write them: a
+ *  RemoteCommand (ssh refuses a command of its own beside it), RequestTTY force, SessionType none or subsystem,
+ *  StdinNull or ForkAfterAuthentication yes (OpenSSH 8.7 on; an older ssh prints none of the three), and a ControlPath
+ *  a master would bind in a folder that is missing or not writable (ssh logs in, then exits 255). */
+export function breakingOptions(printed: string): string[] {
+  const options = new Map<string, string>()
+  for (const line of printed.split("\n")) {
+    const m = /^(\S+) (.*)$/.exec(line.trim())
+    if (m !== null && !options.has(m[1]!.toLowerCase())) options.set(m[1]!.toLowerCase(), m[2]!)
+  }
+  const yes = (key: string) => ["yes", "true"].includes(options.get(key) ?? "")
+  const found: string[] = []
+  if ((options.get("remotecommand") ?? "none") !== "none") found.push("RemoteCommand")
+  if (options.get("requesttty") === "force") found.push("RequestTTY force")
+  const session = options.get("sessiontype")
+  if (session === "none" || session === "subsystem") found.push(`SessionType ${session}`)
+  if (yes("stdinnull")) found.push("StdinNull yes")
+  if (yes("forkafterauthentication")) found.push("ForkAfterAuthentication yes")
+  const controlPath = options.get("controlpath") ?? "none"
+  if (!["false", "no"].includes(options.get("controlmaster") ?? "false") && controlPath !== "none") {
+    // ssh prints the path with its tokens expanded; one it left can't be checked here.
+    const folder = path.dirname(controlPath.replace(/^~(?=\/)/, () => os.userInfo().homedir))
+    const problem = path.isAbsolute(folder) && !folder.includes("%") ? folderProblem(folder) : null
+    if (problem !== null) found.push(`a ControlPath whose folder ${cleanOutput(folder)} ${problem}`)
+  }
+  return found
+}
+
+/** Why ssh can't bind a socket in `folder`, as the end of a sentence, or null when it can. */
+function folderProblem(folder: string): string | null {
+  try {
+    if (!fs.statSync(folder).isDirectory()) return "doesn't exist"
+    fs.accessSync(folder, fs.constants.W_OK)
+    return null
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code === "ENOENT" || code === "ENOTDIR" ? "doesn't exist" : "you can't write to"
+  }
+}
+
+/** A host a visit's ssh reaches: `[user@]host`, and its port when the spec names one. */
+export interface SshHost {
+  readonly host: string
+  readonly port?: number
+}
+
+/** After a failed visit: `ssh -G` with the visit's config for each of `hosts`, once (a read; it connects nowhere),
+ *  and a line for each host naming what the owner's config sets for it that a visit can't work with. A host ssh
+ *  prints no options for names nothing. */
+export async function configProblems(ctx: ReachContext, hosts: readonly SshHost[]): Promise<string[]> {
+  const lines: string[] = []
+  const seen = new Set<string>()
+  for (const { host, port } of hosts) {
+    const key = `${host} ${port ?? ""}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const ported = port === undefined ? [] : ["-p", String(port)]
+    const argv: [string, ...string[]] = [ctx.ssh, "-F", ctx.paths.config, "-G", ...ported, "--", host]
+    const ran = await runChild(argv, { env: sshEnv(ctx), cwd: ctx.paths.dir, timeoutMs: CONTROL_MS })
+    if (ran.code !== 0 || ran.timedOut) continue
+    const found = breakingOptions(ran.stdout)
+    if (found.length === 0) continue
+    lines.push(`opencorp hq: your ssh config sets ${listed(found)} for ${host}, which a visit can't work with; see ${TROUBLESHOOTING}`)
+  }
+  return lines
+}
+
+/** `items` as a sentence's list: "a", "a and b", "a, b and c". */
+const listed = (items: readonly string[]) =>
+  items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`
+
 /** `hq/ssh/bin/ssh`, first on PATH for reach.sh and the shell tool: the real ssh by absolute path (so ProxyJump's hop,
  *  built from the program name ssh was run as and `-F`, shares the config) with our config; each exit status but a
  *  control command's (`-O`) is appended to $OPENCORP_SSH_STATUS, so a 255 counts where a pipeline or `|| true` hides
- *  it. */
+ *  it, followed by the host it named when that's a plain `[user@]host`, which a failed visit checks the owner's config
+ *  for. */
 export function wrapperText(realSsh: string): string {
   // The hop's command holds the program name unquoted.
   if (!safePath(realSsh)) throw new Error(`ssh's path can't be used unquoted: ${realSsh}`)
@@ -92,33 +165,33 @@ export function wrapperText(realSsh: string): string {
     // at `--` or the destination; these take a value, which may look like an option.
     "control=",
     "skip=",
+    "last=",
+    "host=",
     'for a in "$@"; do',
     '  if [ -n "$skip" ]; then skip=; continue; fi',
+    '  if [ -n "$last" ]; then host=$a; break; fi',
     "  case $a in",
-    "    --) break ;;",
+    "    --) last=1 ;;",
     "    -O*) control=1; break ;;",
     "    -[BbcDEeFIiJLlmopQRSWw]) skip=1 ;;",
     "    -*) ;;",
-    "    *) break ;;",
+    "    *) host=$a; break ;;",
     "  esac",
     "done",
+    // Only a name no option or shell word could be goes on the line.
+    "case $host in -*|*[!A-Za-z0-9_.@-]*) host= ;; esac",
     // Single-quoted TS strings: `${…-}` is sh, not a template.
-    'if [ -z "$control" ] && [ -n "${OPENCORP_SSH_STATUS-}" ]; then printf \'%s\\n\' "$status" >>"$OPENCORP_SSH_STATUS"; fi',
+    'if [ -z "$control" ] && [ -n "${OPENCORP_SSH_STATUS-}" ]; then printf \'%s\\n\' "$status${host:+ $host}" >>"$OPENCORP_SSH_STATUS"; fi',
     'exit "$status"',
     "",
   ].join("\n")
 }
 
-/** Writes both configs (0600), with `persist` as their ControlPersist, and the wrapper (0700) for this visit. */
-export async function writeSshFiles(
-  paths: ReachPaths,
-  realSsh: string,
-  includes: readonly string[],
-  { persist = PERSIST_S }: { persist?: number } = {},
-): Promise<void> {
+/** Writes both configs (0600) and the wrapper (0700) for this visit. */
+export async function writeSshFiles(paths: ReachPaths, realSsh: string, includes: readonly string[]): Promise<void> {
   const sessionOptions = knowsSessionOptions(realSsh)
-  await writePrivate(paths.config, configText(paths.cm, { includes, sessionOptions, persist }))
-  await writePrivate(paths.batchConfig, configText(paths.cm, { batch: true, includes, sessionOptions, persist }))
+  await writePrivate(paths.config, configText(paths.cm, { includes, sessionOptions }))
+  await writePrivate(paths.batchConfig, configText(paths.cm, { batch: true, includes, sessionOptions }))
   await writePrivate(paths.wrapper, wrapperText(realSsh))
   fs.chmodSync(paths.wrapper, 0o700)
 }
@@ -185,8 +258,8 @@ export function resetStatus(ctx: ReachContext): void {
   replaceFile(ctx.paths.ssh, path.basename(ctx.paths.status(process.pid)), "")
 }
 
-/** The exit statuses the wrapper recorded since `resetStatus`, in order. */
-export function readStatuses(ctx: ReachContext): number[] {
+/** The lines the wrapper recorded since `resetStatus`, in order: each exit status, and the host its ssh named. */
+function statusLines(ctx: ReachContext): { status: number; host: string | null }[] {
   let text: string
   try {
     text = fs.readFileSync(ctx.paths.status(process.pid), "utf8")
@@ -194,11 +267,19 @@ export function readStatuses(ctx: ReachContext): number[] {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
     throw error
   }
-  return text
-    .split("\n")
-    .filter((line) => /^[0-9]+$/.test(line.trim()))
-    .map((line) => Number(line.trim()))
+  return text.split("\n").flatMap((line) => {
+    const m = /^([0-9]+)(?: ([A-Za-z0-9_.@-]+))?$/.exec(line.trim())
+    return m === null ? [] : [{ status: Number(m[1]), host: m[2] ?? null }]
+  })
 }
+
+/** The exit statuses the wrapper recorded since `resetStatus`, in order. */
+export const readStatuses = (ctx: ReachContext): number[] => statusLines(ctx).map((line) => line.status)
+
+/** The hosts the wrapper's ssh calls named since `resetStatus`, each once, in order. */
+export const readHosts = (ctx: ReachContext): string[] => [
+  ...new Set(statusLines(ctx).flatMap((line) => (line.host === null ? [] : [line.host]))),
+]
 
 /** Leaves raw mode on a terminal and pauses `stdin`, so this process holds no read that would take the keys meant for
  *  ssh's prompt on /dev/tty; after each answer, before each child that may prompt. */
@@ -367,13 +448,23 @@ function send(pid: number, sig: NodeJS.Signals): void {
   } catch {}
 }
 
-/** The node master's argv: a master on `socket` whose session is a remote `cat` reading our pipe. */
-export function masterArgv(ssh: string, spec: Spec, { config, socket }: { config: string; socket: string }): [string, ...string[]] {
+/** The node master's argv: a master on `socket` whose session is a remote `cat` reading our pipe. Its options here
+ *  beat the owner's config, which a visit's reads first; with `sessionOptions` (an ssh that knows them) it pins those
+ *  too. */
+export function masterArgv(
+  ssh: string,
+  spec: Spec,
+  { config, socket, sessionOptions }: { config: string; socket: string; sessionOptions: boolean },
+): [string, ...string[]] {
   return [
     ssh, "-F", config,
     "-M", "-S", socket,
     // Ends with its session, which ends when our pipe closes: no ControlPersist detach.
     "-o", "ControlPersist=no",
+    // The owner's RemoteCommand would refuse our cat, and their SessionType, StdinNull or ForkAfterAuthentication
+    // would run no session or detach: the cat is the lifeline.
+    "-o", "RemoteCommand=none",
+    ...(sessionOptions ? ["-o", "SessionType=default", "-o", "StdinNull=no", "-o", "ForkAfterAuthentication=no"] : []),
     // The owner's LocalForward, ExitOnForwardFailure or RequestTTY can't break it; -O forward still works.
     "-o", "ClearAllForwardings=yes", "-o", "RequestTTY=no",
     // ClearAllForwardings leaves these: a long-lived master needn't hand the node the owner's agent or display.
@@ -403,7 +494,11 @@ export function startMaster(ctx: ReachContext, spec: Spec, { quiet = false } = {
   // The lock holder owns cm/node. A leftover there would read as up before login, and ssh would refuse to bind over
   // it ("already exists, disabling multiplexing").
   fs.rmSync(paths.node, { force: true })
-  const argv = masterArgv(ctx.ssh, spec, { config: ctx.batch ? paths.batchConfig : paths.config, socket: paths.node })
+  const argv = masterArgv(ctx.ssh, spec, {
+    config: ctx.batch ? paths.batchConfig : paths.config,
+    socket: paths.node,
+    sessionOptions: knowsSessionOptions(ctx.ssh),
+  })
   const child = spawn(argv[0], argv.slice(1), {
     cwd: paths.dir,
     env: sshEnv(ctx),
@@ -487,8 +582,23 @@ export function controlArgv(ssh: string, socket: string, op: "check" | "exit"): 
 /** How long a `-O` command may take. */
 export const CONTROL_MS = 5000
 
+/** Whether `socket` is one of our own control sockets: a file straight in `cm` that isn't a link. Only an ssh of ours
+ *  binds there (`-S`, or the visit config's ControlPath where the owner set none); a link could name a master of the
+ *  owner's. */
+function ownSocket(paths: ReachPaths, socket: string): boolean {
+  if (path.dirname(path.resolve(socket)) !== path.resolve(paths.cm)) return false
+  return !(fs.lstatSync(socket, { throwIfNoEntry: false })?.isSymbolicLink() ?? false)
+}
+
+/** What a step on a socket that isn't ours answers, without running ssh: the owner's masters are theirs to keep. */
+function notOurs(paths: ReachPaths, socket: string): Promise<Ran> {
+  const why = `${socket} isn't OpenCorp's own control socket in ${paths.cm}; left alone\n`
+  return Promise.resolve({ code: 255, stdout: "", stderr: why, timedOut: false })
+}
+
 /** Runs `opencorp <args>` on HQ's machine over the node master; its output isn't echoed. */
 export function mux(ctx: ReachContext, spec: Spec, args: readonly string[]): Promise<Ran> {
+  if (!ownSocket(ctx.paths, ctx.paths.node)) return notOurs(ctx.paths, ctx.paths.node)
   const argv = muxArgv(ctx.ssh, ctx.paths.node, spec.host, remoteCommand(spec, args))
   return runChild(argv, {
     env: sshEnv(ctx),
@@ -500,12 +610,14 @@ export function mux(ctx: ReachContext, spec: Spec, args: readonly string[]): Pro
 
 /** Forwards 127.0.0.1:`port` here to the unix socket `target` on HQ's machine, over the node master. */
 export function forward(ctx: ReachContext, spec: Spec, port: number, target: string): Promise<Ran> {
+  if (!ownSocket(ctx.paths, ctx.paths.node)) return notOurs(ctx.paths, ctx.paths.node)
   const argv = forwardArgv(ctx.ssh, ctx.paths.node, spec.host, port, target)
   return runChild(argv, { env: sshEnv(ctx), cwd: ctx.paths.dir, timeoutMs: CONTROL_MS, signal: ctx.signal })
 }
 
-/** `-O check` or `-O exit` on the master at `socket`. */
+/** `-O check` or `-O exit` on the master at `socket`, only when it's one of ours (`ownSocket`). */
 export function control(ctx: ReachContext, socket: string, op: "check" | "exit"): Promise<Ran> {
+  if (!ownSocket(ctx.paths, socket)) return notOurs(ctx.paths, socket)
   const argv = controlArgv(ctx.ssh, socket, op)
   return runChild(argv, { env: sshEnv(ctx), cwd: ctx.paths.dir, timeoutMs: CONTROL_MS, signal: ctx.signal })
 }

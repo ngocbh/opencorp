@@ -443,3 +443,49 @@ test("a hop's connection keeps it past persistMs", async () => {
   expect(await node.exited).toBe(0)
   await waitFor(() => !fs.existsSync(login) && fake.masters().length === 0, { timeout: 3000, what: "login1's master to end" })
 })
+
+test("the owner's config stands at the first Include, its Host blocks by name, and -G prints what the fake read", async () => {
+  const dir = shortDir()
+  const mine = path.join(dir, "mine")
+  fs.mkdirSync(mine)
+  fs.mkdirSync(path.join(dir, "cm"))
+  const fake = fakeSsh({
+    userConfig: ["Host login1 gw", "  ControlPath " + `${mine}/%C`, "  RemoteCommand tmux attach", "Host *", "  ServerAliveInterval 5"],
+  })
+  // The includes name files the fake never reads; after one, the file reads on for every host.
+  const file = config(dir, [
+    "# ours",
+    'Include "/nowhere/owner"',
+    'Include "/nowhere/system"',
+    "ControlMaster auto",
+    `ControlPath ${dir}/cm/%C`,
+    "ServerAliveInterval 15",
+  ])
+  const g = (host: string) => run(fake, ["-F", file, "-G", "-p", "2222", "--", host])
+  expect(g("login1")).toEqual({
+    code: 0,
+    stdout: [
+      `controlpath ${mine}/${fakeControlName("login1")}`,
+      "remotecommand tmux attach",
+      "serveraliveinterval 5",
+      "controlmaster auto",
+      "",
+    ].join("\n"),
+    stderr: "",
+  })
+  expect(g("node1").stdout).toBe(
+    ["serveraliveinterval 5", "controlmaster auto", `controlpath ${dir}/cm/${fakeControlName("node1")}`, ""].join("\n"),
+  )
+  // -G connects nowhere, so it isn't logged.
+  expect(fake.calls()).toEqual([])
+  // As ssh does, a command beside the owner's RemoteCommand is refused before any login; -o wins over it.
+  const refused = run(fake, ["-F", file, "u@login1", "true"])
+  expect([refused.code, refused.stderr]).toEqual([255, "Cannot execute command-line and remote command.\r\n"])
+  expect(fake.logins()).toEqual([])
+  expect((await runAsync(fake, ["-F", file, "-o", "RemoteCommand=none", "login1", "echo hi"])).stdout).toBe("hi\n")
+  // The owner's ControlPath is where the auto master went.
+  expect(isSocket(path.join(mine, fakeControlName("login1")))).toBe(true)
+  // A -J hop reads its own host's options, as the hop's own ssh would, so it rides that master.
+  expect((await runAsync(fake, ["-F", file, "-J", "login1", "--", "node1", "echo there"])).stdout).toBe("there\n")
+  expect(fake.logins()).toEqual(["login1", "node1"])
+})

@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test"
 import { ReachPaths } from "../../../src/features/reach/paths.ts"
 import { beforeLearning, beforeSaving, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../../src/features/reach/risks.ts"
-import { LEARNING_PERSIST_S, PERSIST_S } from "../../../src/features/reach/ssh.ts"
+import { PERSIST_S } from "../../../src/features/reach/ssh.ts"
 
 /** Each line holds every one of its phrases, in the design's order of risks. */
 function expectRisks(lines: readonly string[], phrases: string[][]): void {
@@ -26,8 +26,10 @@ test("the fixed risks are the design's, and the provider file is named", () => {
       "While `opencorp hq` runs",
       "anything running as you on this machine",
       "SSH connections without Duo",
+      "the ones it keeps itself",
       "the login node's for 60 s more",
-      "10 minutes on a visit that learned its path",
+      "your own ssh config shares",
+      "as long as its ControlPersist says",
     ],
     [
       "reach the port reaches HQ",
@@ -58,8 +60,8 @@ const HELD = {
   ],
   beforeSaving: (paths: ReachPaths): string[] => [
     "The script, and `opencorp hq --check` on HQ's machine, run now and on every visit.",
-    "While `opencorp hq` runs, anything running as you on this machine can reuse its SSH connections without Duo. A crash or `kill -9` closes them within seconds; only if its watcher dies too (`kill -9` of its process group) do they stay while an HQ tab is open, " +
-      `the login node's for ${PERSIST_S} s more (${LEARNING_PERSIST_S / 60} minutes on a visit that learned its path).`,
+    "While `opencorp hq` runs, anything running as you on this machine can reuse its SSH connections without Duo. A crash or `kill -9` closes the ones it keeps itself within seconds; only if its watcher dies too (`kill -9` of its process group) do they stay while an HQ tab is open, " +
+      `the login node's for ${PERSIST_S} s more. A connection your own ssh config shares (ControlMaster and ControlPath) stays as long as its ControlPersist says, as from your terminal.`,
     "Anything on this machine that can reach the port reaches HQ, though HQ still asks it to sign in (its cookie is SameSite=Strict, and the Host header is checked). So don't run `opencorp hq` on a machine others share, such as a cluster login node: they share 127.0.0.1.",
     "Each new node HQ runs on asks you to accept its host key; check it the way your cluster documents.",
     "The saved files record the cluster's layout, and backups copy them.",
