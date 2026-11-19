@@ -47,7 +47,6 @@ import { interruptible } from "../../util/status"
 import { Toast, useToast } from "../../ui/toast"
 import { useCostCap } from "../../component/cost-cap"
 import { useKV } from "../../context/kv.tsx"
-import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
 import { useEpilogue } from "../../context/epilogue"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
@@ -57,7 +56,7 @@ import { setPreLayoutSiblingMargin } from "../../util/layout"
 import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { getScrollAcceleration } from "../../util/scroll"
-import { collapseToolOutput } from "../../util/collapse-tool-output"
+import { collapseShellOutput, collapseToolOutput } from "../../util/collapse-tool-output"
 import { OPENCORP_BASE_MODE, useBindings, useOpenCorpKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
@@ -1369,7 +1368,8 @@ function terminalReply(output: string | undefined): Record<string, unknown> | un
 }
 
 /** A terminal tool's view, from its input and its reply: the shell by the reply's name, else the input's, else a
- *  new one (`run` alone may start one); the shell's state; and in place of the JSON, a command's output. */
+ *  new one (`run` alone may start one); the shell's state; and in place of the JSON, a command's output. `terminal`
+ *  marks the input as a terminal's, so a view reads a shell and its state only there, not from any tool's arguments. */
 function terminalView(
   tool: string,
   input: Record<string, unknown>,
@@ -1379,6 +1379,7 @@ function terminalView(
   const shell =
     stringValue(reply.shell) ?? (named && named !== "new" ? named : tool === "run" ? "a new shell" : "a shell")
   const state = {
+    terminal: true,
     shell,
     status: stringValue(reply.status),
     waiting: stringValue(reply.waiting),
@@ -1835,75 +1836,109 @@ function exitNote(input: Record<string, unknown>) {
   return typeof code === "number" && code !== 0 ? ` (exit ${code})` : ""
 }
 
-/** What a terminal tool's reply says the owner should read: why nothing was done, a prompt only they answer, or why
- *  the shell failed. */
+/** What a terminal tool's reply says the owner should read: why nothing was done, or why the shell failed. */
 function shellNote(input: Record<string, unknown>) {
   const refused = stringValue(input.refused)
-  if (refused) return `refused: ${refused}`
-  if (input.waiting === "secret") return "waiting for your password"
+  if (refused) return `refused: ${display(refused)}`
   const error = stringValue(input.error)
-  if (input.status === "failed" && error) return `failed: ${error}`
+  if (input.status === "failed" && error) return `failed: ${display(error)}`
   return undefined
 }
 
-/** A shell command: `$ <command>`, `in <shell>` for an agent's terminal, and its output folded to 10 lines. While a
- *  terminal's command still runs or waits, its reply says so. */
+/** The shell a terminal tool's view names, as drawn; none for any other tool. */
+const shellName = (input: Record<string, unknown>) =>
+  input.terminal === true ? display(stringValue(input.shell) ?? "") : ""
+
+/** A command's output as drawn: escapes and control characters gone, and a lone CR starting a line, as in a shell's
+ *  own view. */
+const shownOutput = (output: string) => display(output.replace(/\r\n?/g, "\n")).trim()
+
+/**
+ * A shell command: `$ <command>` and its output, folded to 10 lines that a click expands. An agent's terminal
+ * command names its shell, muted, and folds as the upstream TUI's shell view does: the command to two rows and the
+ * output to its end. Its reply is a snapshot, so a command it left running or waiting spins, or takes the warning
+ * colour, only while its shell still runs it.
+ */
 function Shell(props: ToolProps) {
   const { theme } = useTheme()
   const ctx = use()
+  const office = useOffice()
   const permission = usePermission()
-  const output = createMemo(() => stripAnsi(props.output?.trim() ?? ""))
+  const output = createMemo(() => shownOutput(props.output ?? ""))
   const [expanded, setExpanded] = createSignal(false)
   const maxLines = 10
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
-  const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
-  const limited = createMemo(() => {
-    if (expanded() || !collapsed().overflow) return output()
-    return collapsed().output
-  })
-  const command = createMemo(() => {
-    const command = stringValue(props.input.command)
-    const shell = stringValue(props.input.shell)
-    return command !== undefined && shell ? `${command} in ${shell}` : command
-  })
-  const live = createMemo(
-    () => running(props.part) || props.input.status === "running" || props.input.status === "waiting",
+  const terminal = () => props.input.terminal === true
+  const command = createMemo(() => display(stringValue(props.input.command) ?? ""))
+  const shell = createMemo(() => shellName(props.input))
+  const collapsed = createMemo(() =>
+    terminal()
+      ? collapseShellOutput(command(), output(), maxLines, maxChars())
+      : { input: command(), ...collapseToolOutput(output(), maxLines, maxChars()) },
   )
-  const note = createMemo(() => shellNote(props.input))
-  const noteColor = () =>
-    props.input.refused ? theme.textMuted : props.input.waiting === "secret" ? theme.warning : theme.error
+  const shownCommand = () => (expanded() ? command() : collapsed().input)
+  const shownText = () => (expanded() ? output() : collapsed().output)
+  const toggle = () => setExpanded((prev) => !prev)
+  // The session's shell still running the command the reply left running or waiting, if one is.
+  const instrument = createMemo(() => {
+    const { status } = props.input
+    if (!terminal() || (status !== "running" && status !== "waiting")) return undefined
+    const name = stringValue(props.input.shell)
+    return office.state.instruments[ctx.sessionID]?.find(
+      (i) =>
+        i.kind === "terminal" &&
+        i.name === name &&
+        i.command === props.input.command &&
+        (i.status === "running" || i.status === "waiting"),
+    )
+  })
+  const live = createMemo(() => running(props.part) || instrument() !== undefined)
+  const secret = () => instrument()?.waiting === "secret"
+  const note = createMemo(() => (terminal() ? shellNote(props.input) : undefined))
   // As the upstream TUI's shell view: the command in the warning colour while it waits on the owner, on an open
-  // approval card or at a prompt only they answer.
+  // approval card or in its shell.
   const color = createMemo(() => {
     const id = props.part.yian_call_id
     const held = !!id && permission.waiting(ctx.sessionID, id)
-    return held || props.input.status === "waiting" ? theme.warning : theme.text
+    return held || instrument()?.status === "waiting" ? theme.warning : theme.text
   })
+  const where = () => (
+    <Show when={shell()}>
+      <span style={{ fg: theme.textMuted }}> in {shell()}</span>
+    </Show>
+  )
 
   return (
     <Switch>
-      <Match when={output() || note()}>
-        <BlockTool part={props.part} onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}>
+      <Match when={output() || note() || secret()}>
+        <BlockTool part={props.part} onClick={collapsed().overflow ? toggle : undefined}>
           <box gap={1}>
             <Show
               when={live()}
               fallback={
                 <text fg={theme.text}>
-                  $ {command()}
+                  $ {shownCommand()}
+                  {where()}
                   {exitNote(props.input)}
                 </text>
               }
             >
-              <Spinner color={color()}>{command()}</Spinner>
+              <Spinner color={color()}>
+                {shownCommand()}
+                {where()}
+              </Spinner>
             </Show>
             <Show when={output()}>
-              <text fg={theme.text}>{limited()}</text>
+              <text fg={theme.text}>{shownText()}</text>
             </Show>
             <Show when={collapsed().overflow}>
               <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
             </Show>
+            <Show when={secret()}>
+              <text fg={theme.warning}>waiting for your password</text>
+            </Show>
             <Show when={note()}>
-              <text fg={noteColor()}>{note()}</text>
+              <text fg={props.input.refused ? theme.textMuted : theme.error}>{note()}</text>
             </Show>
           </box>
         </BlockTool>
@@ -1915,8 +1950,10 @@ function Shell(props: ToolProps) {
           complete={command()}
           spinner={live() && !!command()}
           part={props.part}
+          onClick={collapsed().overflow ? toggle : undefined}
         >
-          {command()}
+          {shownCommand()}
+          {where()}
           {exitNote(props.input)}
         </InlineTool>
       </Match>
@@ -1924,11 +1961,12 @@ function Shell(props: ToolProps) {
   )
 }
 
-/** A line an agent typed into a shell: `⌨ <text> into <shell>`, and `⏎` when it pressed Enter after it. */
+/** A line an agent typed into a shell: `⌨ <text> into <shell>`, and `⏎` when it pressed Enter after it. A newline in
+ *  the text is an Enter, and shows as `⏎` too, so the line stays one row. */
 function TypedLine(props: ToolProps) {
   const text = createMemo(() => stringValue(props.input.text))
   const line = createMemo(() =>
-    [display(text() ?? ""), "into", stringValue(props.input.shell), props.input.enter ? "⏎" : ""]
+    [display((text() ?? "").replace(/\n/g, "⏎")), "into", shellName(props.input), props.input.enter ? "⏎" : ""]
       .filter(Boolean)
       .join(" "),
   )
@@ -1951,10 +1989,10 @@ const SHELL_CALLS: Record<string, string> = { read: "Read", interrupt: "Interrup
 
 /** A read, interrupt or close of an agent's shell, on one line: the shell, and what its reply says of it. */
 function ShellCall(props: ToolProps) {
-  const state = createMemo(() => shellNote(props.input) ?? stringValue(props.input.status))
+  const state = createMemo(() => shellNote(props.input) ?? display(stringValue(props.input.status) ?? ""))
   return (
     <InlineTool icon="$" pending="" complete={true} spinner={running(props.part)} part={props.part}>
-      {SHELL_CALLS[stringValue(props.input.action) ?? ""]} {stringValue(props.input.shell)}
+      {SHELL_CALLS[stringValue(props.input.action) ?? ""]} {shellName(props.input)}
       {state() ? ` · ${state()}` : ""}
     </InlineTool>
   )

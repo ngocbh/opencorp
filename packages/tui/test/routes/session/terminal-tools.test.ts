@@ -22,10 +22,15 @@ test("toolView maps the five terminal tools, and no plain run, read or close", (
   for (const tool of ["terminal_read", "terminal_interrupt", "terminal_close"]) {
     expect(toolView(tool, { shell: "shell 1" }, reply())).toEqual({
       view: "terminal",
-      input: { action: tool.slice("terminal_".length), shell: "shell 1", status: "idle" },
+      input: { terminal: true, action: tool.slice("terminal_".length), shell: "shell 1", status: "idle" },
       output: "",
     })
   }
+  // A shell tool's arguments that a terminal reply also names are only its input: it isn't flagged.
+  expect(toolView("workspace_shell", { command: "make", status: "running", shell: "shell 9" }, "done")).toEqual({
+    view: "shell",
+    input: { command: "make", status: "running", shell: "shell 9" },
+  })
   // Only the terminal group's names: a tool called run, read or close is some other tool.
   for (const tool of ["run", "type", "read", "interrupt", "close"]) {
     expect(toolView(tool, { shell: "shell 1" }, reply())).toEqual({ view: "generic", input: { shell: "shell 1" } })
@@ -39,12 +44,12 @@ test("a run's view takes its output, exit and shell from the reply", () => {
     toolView("terminal_run", { command: "make", why: "build" }, reply({ shell: "shell 2", exit: 2, output })),
   ).toEqual({
     view: "shell",
-    input: { command: "make", shell: "shell 2", exit_code: 2, status: "idle" },
+    input: { terminal: true, command: "make", shell: "shell 2", exit_code: 2, status: "idle" },
     output,
   })
   // A command still running past its wait, and one stopped at a password prompt.
   expect(toolView("terminal_run", { command: "sleep 99", why: "w" }, reply({ status: "running", exit: null })).input)
-    .toEqual({ command: "sleep 99", shell: "shell 1", exit_code: null, status: "running" })
+    .toEqual({ terminal: true, command: "sleep 99", shell: "shell 1", exit_code: null, status: "running" })
   expect(
     toolView(
       "terminal_run",
@@ -53,7 +58,14 @@ test("a run's view takes its output, exit and shell from the reply", () => {
     ),
   ).toEqual({
     view: "shell",
-    input: { command: "sudo ls", shell: "shell 1", exit_code: null, status: "waiting", waiting: "secret" },
+    input: {
+      terminal: true,
+      command: "sudo ls",
+      shell: "shell 1",
+      exit_code: null,
+      status: "waiting",
+      waiting: "secret",
+    },
     output: "[sudo] password for minh: ",
   })
   // A shell that failed says why.
@@ -64,7 +76,7 @@ test("a run's view takes its output, exit and shell from the reply", () => {
   // A typed line's text, whether it pressed Enter, and its shell.
   expect(toolView("terminal_type", { shell: "shell 1", text: "n", enter: false, why: "w" }, reply())).toEqual({
     view: "typed",
-    input: { text: "n", enter: false, shell: "shell 1", status: "idle" },
+    input: { terminal: true, text: "n", enter: false, shell: "shell 1", status: "idle" },
     output: "",
   })
   expect(toolView("terminal_type", { shell: "shell 1", text: "y", why: "w" }, reply()).input.enter).toBe(true)
@@ -75,13 +87,14 @@ test("a refused or non-JSON reply falls back", () => {
   const refused = JSON.stringify({ refused: "shell 3 isn't open" })
   expect(toolView("terminal_run", { command: "ls", why: "w", shell: "shell 3" }, refused)).toEqual({
     view: "shell",
-    input: { command: "ls", shell: "shell 3", refused: "shell 3 isn't open" },
+    input: { terminal: true, command: "ls", shell: "shell 3", refused: "shell 3 isn't open" },
     output: "",
   })
   for (const shell of [undefined, "new"]) {
     expect(toolView("terminal_run", { command: "ls", why: "w", shell }, refused).input.shell).toBe("a new shell")
   }
   expect(toolView("terminal_close", { shell: "shell 3" }, refused).input).toEqual({
+    terminal: true,
     action: "close",
     shell: "shell 3",
     refused: "shell 3 isn't open",
@@ -90,7 +103,7 @@ test("a refused or non-JSON reply falls back", () => {
   for (const output of [undefined, "", "{}"]) {
     expect(toolView("terminal_run", { command: "ls", why: "w" }, output)).toEqual({
       view: "shell",
-      input: { command: "ls", shell: "a new shell" },
+      input: { terminal: true, command: "ls", shell: "a new shell" },
       output: "",
     })
   }
