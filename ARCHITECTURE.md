@@ -80,7 +80,7 @@ Each category is a top-level folder of `packages/office/src/`. The order, lowest
 
 | Category | Is | Does | Depends on | Used by |
 |---|---|---|---|---|
-| `util/` | Helpers that know nothing of the company, models, flows or the office's state | Files that never follow links, private files, processes, the inherited env, finding a program on `PATH`, scrubbing, error texts, the office home's paths, sockets, the checkout's path, a redirect page that keeps a link out of an opener's arguments, how a command is shown to the owner. `platform.ts` holds every Bun call | — | every layer |
+| `util/` | Helpers that know nothing of the company, models, flows or the office's state | Files that never follow links, private files, processes, the inherited env, finding a program on `PATH`, scrubbing, error texts, ids, the office home's paths, sockets, the checkout's path, a redirect page that keeps a link out of an opener's arguments, how a command is shown to the owner. `platform.ts` holds every Bun call | — | every layer |
 | `company/` | The company | Loads, lints, commits and watches its repo; people, org chart, SOP flows, profiles, hiring; the agents' and the company's command rules (`rules.yaml`, read at HEAD); the chat flow's paths; the starting company | util | runtime, tools, features, server |
 | `runtime/` | What runs agents safely | The database, the sandbox, who is acting, worker processes, the record of runs, what sessions share, permissions, held questions, the event bus, asset secrets, the office as a service | util, company | models, tools, features, server, `main.ts` |
 | `models/` | The office's model connections and their policy | Connections, ChatGPT logins, model lists, prices and cost caps, the model check | util, runtime | features, server, `main.ts` |
@@ -110,7 +110,7 @@ imports and what imports it").
 |---|---|---|---|---|
 | `company/template/` | The starting company (data) | The files `init` writes into a new repo; `template.ts` reads them | — | `company/template.ts` |
 | `runtime/` root files | Asset secrets and the event bus | `secrets.ts`: asset secrets under `office/secrets`. `bus.ts`: the office's events and live events | util | runtime/permissions, features/{chat, codex}, server (root, daemon, hq, routes) |
-| `runtime/store/` | The office's database | Opens and migrates SQLite; rows for sessions, questions, runs, workers, HQ sessions; which statuses are live | util | runtime/{permissions, questions, runs, sessions, worker}, models, tools (root, codex), features/{chat, codex, doctor, profile, questions}, server (root, daemon, hq, routes) |
+| `runtime/store/` | The office's database | Opens and migrates SQLite; rows for sessions, questions, runs, workers, HQ sessions; which statuses are live | util | runtime/{permissions, questions, runs, sessions, worker}, models, tools, features/{chat, codex, doctor, profile, questions}, server (root, daemon, hq, routes) |
 | `runtime/sandbox/` | The fence around an agent's commands | bubblewrap and Seatbelt profiles; runs a command in one; `fs_helper.ts`, the file helper that runs inside | util | runtime/service, tools (root, terminal), features/{chat, codex, doctor}, server (root, daemon), main.ts |
 | `runtime/auth/` | Who is acting | This device's identity; devices, tokens, passwords; the roster at HEAD | util, company | runtime/service, features/{doctor, setup}, server (root, commands, hq, routes) |
 | `runtime/worker/` | The processes that run flows | Spawns workers, hands them jobs, serves their memories, reaps strays; the worker's entry, its job handlers injected; what a fresh chat run takes from the run it replaces | util, company, runtime/store | runtime/{permissions, questions, runs, sessions}, models, tools, features/{chat, codex, doctor, profile, questions, reach, setup}, server (root, daemon, routes), main.ts |
@@ -121,7 +121,7 @@ imports and what imports it").
 | `runtime/questions/` | Questions held for an answer | Holds an `ask_user`, `ask_manager` or an approval until answered; checks, normalizes and formats answers | util, company, runtime/{store, worker} | tools, features/{chat, questions} |
 | `models/` | Model connections and policy | As its category card; `flows/check_model.yaml` is the check's flow | util, runtime/{store, worker} | features/{chat, codex, doctor, reach, setup}, server (root, commands, daemon, routes), main.ts |
 | `tools/` root files | The typed tools | Builds each run's tool groups: company (`ask_manager`, work items), workspace (files and shell in the sandbox), toolbox (asset tools) | util, company, runtime/{permissions, questions, sandbox, store, worker} | features/chat |
-| `tools/codex/` | The Codex instrument's driver | Runs `codex app-server`, speaks its JSON-RPC, translates its events and approvals | util, runtime/store | features/{chat, codex, doctor} |
+| `tools/codex/` | The Codex instrument's driver | Runs `codex app-server`, speaks its JSON-RPC, translates its events and approvals | util | features/{chat, codex, doctor} |
 | `tools/terminal/` | The terminal instrument | The PTY shell an agent and the owner share (`shell.ts`), its prompt guards, the workspace's pipes shell (`pipes.ts`), the model's view of a shell (the screen as it is), and its record (`meta.json`, `output.log`); the terminal tool group (`terminal.ts`, `tools.ts`): shells by name, each command and each whole typed line through the session's permissions, held on a card when they ask | util, runtime/{permissions, sandbox} | server/daemon |
 | `features/chat/` | Conversations with an employee | Drives a session's runs: run specs, transcripts, the live relay. Its flows are in `company/template/shared/flows/` | util, company, runtime (root, permissions, questions, runs, sandbox, sessions, store, worker), models, tools (root, codex), features/{codex, profile} | features/questions, server (root, daemon, routes) |
 | `features/codex/` | The owner's Codex sessions (#144) | A session harness beside the chat harness | util, company, runtime (root, sandbox, service, sessions, store, worker), models, tools/codex | features/chat, server (root, daemon) |
@@ -147,7 +147,6 @@ imports and what imports it").
   office-free policy;
 - `runtime/permissions/` gains modes and rules, as a module that needs no store, beside `monitor.ts`, which needs
   the store and asset secrets;
-- `tools/codex/` loses `runtime/store`: its process records become injected;
 - `features/reach/tools/shell.ts` goes, replaced by `tools/terminal/`;
 - the session-folder checks (`checkFolder`, `folderOf`, `checkOverlap`, `unsafeWorkspace`) move to
   `runtime/sessions/` once a second harness needs them;

@@ -3,10 +3,11 @@ import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
+import { reap } from "../../../src/runtime/worker/reaper.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
 import { person } from "../../company/helpers.ts"
 import { CEO, ULID } from "../../server/helpers.ts"
-import { tempDir, unusableFolders, waitFor } from "../../helpers.ts"
+import { NO_GROUP, tempDir, unusableFolders, waitFor } from "../../helpers.ts"
 import { question, session } from "../../runtime/store/helpers.ts"
 import { type Codex, allGone, makeCodex, start, startSession, status, texts, turnRunning } from "./helpers.ts"
 
@@ -72,6 +73,16 @@ test("a steer and messages queued during a load join the turn they come in", asy
   await waitFor(() => turnRunning(h, sid), { what: "the queued turn" })
   expect(await h.sessions.prompt(sid, "c")).toBe("steer")
   expect(userTexts(h, sid)).toEqual(["a", "b", "c"])
+})
+
+test("reaping a session never touches its app server", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  const app = h.sessions.get(sid)!.process!
+  h.store.recordWorker(sid, { pid: process.pid, pgid: NO_GROUP, startTime: 0 }) // a stale debrief record
+  reap(h.store, sid) // what the worker spawn does before the debrief worker starts
+  expect(h.store.listWorkers().map((r) => [r.key, r.pid])).toEqual([[`harness:${sid}`, app.pid]])
+  expect(app.alive).toBe(true)
 })
 
 test("the current turn is a copy and empty for a session that is not live", async () => {

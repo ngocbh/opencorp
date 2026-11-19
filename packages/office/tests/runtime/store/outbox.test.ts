@@ -2,8 +2,8 @@
 import type { z } from "zod"
 import { expect, onTestFinished, spyOn, test } from "bun:test"
 import { openSqlite } from "@ngocbh/yian/platform"
-import { Event, Ulid, now, type WorkItem } from "@opencorp/protocol"
-import { Store, StoreError, Tx, newId } from "../../../src/runtime/store/store.ts"
+import { Event, now, type WorkItem } from "@opencorp/protocol"
+import { Store, StoreError, Tx } from "../../../src/runtime/store/store.ts"
 import { openStore, recordEvents, thrown, workItem } from "./helpers.ts"
 
 type Item = z.output<typeof WorkItem>
@@ -336,14 +336,4 @@ test("one task nests transactions", async () => {
   const item = workItem()
   store.transaction(() => createItem(store, item))
   expect(getItem(store, item.id)).toBeDefined()
-})
-
-test("new ids are monotonic ULIDs", () => {
-  const ids = Array.from({ length: 1000 }, () => newId())
-  expect(new Set(ids).size).toBe(ids.length)
-  for (const id of ids) expect(Ulid.safeParse(id).success).toBe(true)
-  expect(ids.toSorted()).toEqual(ids)
-  const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-  const time = [...ids[0]!.slice(0, 10)].reduce((t, c) => t * 32 + alphabet.indexOf(c), 0)
-  expect(Math.abs(time - Date.now())).toBeLessThan(5000)
 })
