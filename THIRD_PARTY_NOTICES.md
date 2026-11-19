@@ -128,6 +128,17 @@ license, the upstream paths and commit, and our paths.
   `packages/tui/src/keymap.tsx` (`useBindings`), `packages/tui/src/ui/pane-resize.ts`,
   `packages/tui/src/ui/pane-resize-handle.tsx`, `packages/tui/src/util/text-boundary.ts`,
   `packages/tui/test/util/text-boundary.test.ts`.
+- **What:** an agent's terminal commands in the transcript take the fork's shell view (`$ <command>`, its output
+  folded to 10 lines that a click expands, a spinner while it runs). From current upstream's shell view: the
+  command takes the warning colour while the call waits on the owner, spins only while its shell still runs it, and
+  folds with `collapseShellOutput`, ported whole with its helpers (the command to two rows, the output to its last
+  lines after a count of the rest). What the views read from the terminal tools' replies, the typed-line row and the
+  one-line read, interrupt and close are our own.
+- **Upstream:** `packages/tui/src/routes/session/index.tsx` (`Shell`) at commit `b471c2b`; its `Shell` and
+  `ShellDisplay`, and `packages/tui/src/util/collapse-tool-output.ts` (`collapseShellOutput`,
+  `collapseShellCommand`, `collapseTail`), read at commit `df46f69` (2026-11-16).
+- **Ours:** `packages/tui/src/routes/session/index.tsx` (`toolView`, `Shell`, `TypedLine`, `ShellCall`),
+  `packages/tui/src/util/collapse-tool-output.ts`, `packages/tui/test/util/collapse-tool-output.test.ts`.
 
 ## Paperclip
 
