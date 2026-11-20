@@ -54,6 +54,7 @@ function standIns(dir: string) {
     stderr,
     doctor: {
       probe: async () => null,
+      terminal: async () => null,
       codex: async () => ({ name: "codex", status: "ok" as const, detail: "stand-in" }),
     },
     listers: NO_LISTING,

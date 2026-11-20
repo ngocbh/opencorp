@@ -21,12 +21,15 @@ test("the hq folder holds every file the design names", () => {
     ssh: paths.ssh,
     config: paths.config,
     batchConfig: paths.batchConfig,
+    agentConfig: paths.agentConfig,
     bin: paths.bin,
     wrapper: paths.wrapper,
     status: paths.status(42),
+    agentStatus: paths.agentStatus(42),
     cm: paths.cm,
     node: paths.node,
     lock: paths.lock,
+    sessions: paths.sessions,
   }).toEqual({
     script: "/h/hq/reach.sh",
     approved: "/h/hq/reach.approved.sh",
@@ -38,13 +41,23 @@ test("the hq folder holds every file the design names", () => {
     ssh: "/h/hq/ssh",
     config: "/h/hq/ssh/config",
     batchConfig: "/h/hq/ssh/config.batch",
+    agentConfig: "/h/hq/ssh/agent.config",
     bin: "/h/hq/ssh/bin",
     wrapper: "/h/hq/ssh/bin/ssh",
     status: "/h/hq/ssh/status.42",
+    agentStatus: "/h/hq/ssh/agent-status.42",
     cm: "/h/hq/cm",
     node: "/h/hq/cm/node",
     lock: "/h/hq/lock",
+    sessions: "/h/hq/sessions",
   })
+})
+
+test("a session's folder is hq/sessions/<id>", () => {
+  const paths = new ReachPaths("/h")
+  expect(paths.session("01JD7Z0Q2K")).toBe("/h/hq/sessions/01JD7Z0Q2K")
+  // An id is one plain name: it can't lead out of hq/sessions.
+  for (const id of ["", ".", "..", "../x", "a/b", "a\nb"]) expect(() => paths.session(id)).toThrow("a session's id")
 })
 
 test("a home of 39 bytes fits the control sockets and one of 40 doesn't", () => {

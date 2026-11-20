@@ -1,5 +1,5 @@
 /** `opencorp doctor`: check the office home (there and private), company repo, provider and connections, the run and
- *  session folders (writable), service, daemon, HQ, sandbox, worked folders, and Codex. */
+ *  session folders (writable), service, daemon, HQ, sandbox and its terminals, worked folders, and Codex. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -16,6 +16,7 @@ import { lint } from "../../company/lint.ts"
 import { loadRepo } from "../../company/loader.ts"
 import { companyState, missingFiles } from "../../company/template.ts"
 import { CodexMissing, codexCommand } from "../../tools/codex/codex.ts"
+import { SANDBOX_FIX } from "../../tools/terminal/terminal.ts"
 import { selfCommand, tuiAssetRoot } from "../../platform.ts"
 import {
   checkClearOf,
@@ -24,7 +25,7 @@ import {
   SandboxPolicy,
   UnsafeWorkspace,
 } from "../../runtime/sandbox/policy.ts"
-import { fsHelper, run } from "../../runtime/sandbox/run.ts"
+import { fsHelper, run, startOnTerminal } from "../../runtime/sandbox/run.ts"
 import { latestVersion, newerStore, userVersion } from "../../runtime/store/migrate.ts"
 import { storeProblem } from "../../runtime/store/problem.ts"
 import { StoreError } from "../../runtime/store/store.ts"
@@ -835,6 +836,42 @@ export async function sandboxProblem(officeHome: string): Promise<string | null>
   }
 }
 
+/** Why a sandboxed program can't run on a terminal of its own, or null when one does: in a fresh temp folder, under a
+ *  read-only policy as the sandbox probe's, `/bin/sh -c 'test -t 0'` must find its input a terminal. */
+export async function terminalProblem(): Promise<string | null> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-doctor-"))
+  try {
+    const workspace = path.join(root, "ws")
+    const tmpdir = path.join(root, "tmp")
+    fs.mkdirSync(workspace)
+    fs.mkdirSync(tmpdir)
+    const policy = new SandboxPolicy({ workspace, writable: false, network: false, tmpdir })
+    let output = ""
+    const decoder = new TextDecoder()
+    const pty = startOnTerminal(policy, ["/bin/sh", "-c", "test -t 0"], {
+      cols: 80,
+      rows: 24,
+      onData: (chunk) => void (output += decoder.decode(chunk, { stream: true })),
+    })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), PROBE_TIMEOUT * 1000)))
+    const code = await Promise.race([pty.exited, late])
+    clearTimeout(timer)
+    if (code === "late") {
+      pty.kill("SIGKILL")
+      pty.close()
+      await pty.exited
+      return `a sandboxed program on a terminal didn't finish in ${PROBE_TIMEOUT} s`
+    }
+    if (code === 0) return null
+    return lines(output).at(-1)?.slice(0, LINE_CAP) || (code === null ? "it was ended by a signal" : `exit ${code}`)
+  } catch (error) {
+    return messageOf(error)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+}
+
 /**
  * `read` on the store at `store`, opened without migrating it: read-only, or read-write when that can't open it. A
  * WAL store can't be opened read-only without its -wal and -shm files, which SQLite deletes when the office closes
@@ -957,6 +994,8 @@ export interface CheckOptions {
   /** Why a sandboxed command can't run for the office at the given home, or null if one does (default
    *  `sandboxProblem`). */
   probe?: (officeHome: string) => Promise<string | null>
+  /** Why a sandboxed program can't run on a terminal, or null if one does (default `terminalProblem`). */
+  terminal?: () => Promise<string | null>
   /** The Codex check, given the worker env, the office's env and its recorded service mode (default
    *  `codexCheck`). */
   codex?: (env: Record<string, string>, environ: Env, mode: string | null) => Promise<Check>
@@ -1003,6 +1042,7 @@ function lockHeld(paths: OfficePaths, host: Host): boolean {
 export async function checks(home: string, options: CheckOptions): Promise<Check[]> {
   const { host = defaultHost(), command = selfCommand(), repo = CHECKOUT, environ = process.env } = options
   const { codex = codexCheck, office = service.officeInfo, probe = sandboxProblem } = options
+  const { terminal = terminalProblem } = options
   const { hq, hqChecks } = options
   const load = options.loadIdentity ?? loadIdentity
   const lstat = options.lstat ?? ((p: string) => fs.lstatSync(p))
@@ -1104,6 +1144,12 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   if (store !== null) found.push(store)
   const problem = await probe(paths.home)
   found.push({ name: "sandbox", status: problem ? "fail" : "ok", detail: problem || "sandboxed commands run" })
+  const onTerminal = await terminal()
+  found.push(
+    onTerminal
+      ? { name: "terminal", status: "fail", detail: `${onTerminal}; ${SANDBOX_FIX}` }
+      : { name: "terminal", status: "ok", detail: "sandboxed programs run on a terminal" },
+  )
   // A store that failed its own check has no worked folders to read.
   const folders =
     store?.status === "fail"

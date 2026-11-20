@@ -61,14 +61,16 @@ export function goldenPolicy(fields: {
 }
 
 /** An SSH-only policy over exactly these (already real) paths, in the order its constructor lays them out, with no
- *  disk checks, for golden argv and profiles: `bound` are the files `ssh -G` named that it binds, `ticket` a ticket
- *  file and `kcm` a KCM socket. */
+ *  disk checks, for golden argv and profiles: `bound` are the paths it binds besides `~/.ssh` and hq/ssh (the files
+ *  `ssh -G` names, a ControlPath folder, the ssh program), `controlFolders` the ControlPath folders among them,
+ *  `ticket` a ticket file and `kcm` a KCM socket. */
 export function goldenSshPolicy(fields: {
   home: string
   hq: string
   tmpdir: string
   statusFile: string
   bound?: readonly string[]
+  controlFolders?: readonly string[]
   readOnly?: readonly string[]
   agentSocket?: string
   ticket?: string
@@ -84,6 +86,7 @@ export function goldenSshPolicy(fields: {
     readOnly: [ssh, ...(fields.bound ?? []), path.join(fields.hq, "ssh"), ...(fields.readOnly ?? [])],
     writable: [path.join(ssh, "known_hosts"), fields.statusFile, ...(fields.ticket === undefined ? [] : [fields.ticket])],
     sockets: [fields.agentSocket, fields.kcm].filter((p) => p !== undefined),
+    socketFolders: [ssh, ...(fields.controlFolders ?? [])],
     agentSocket: fields.agentSocket ?? null,
     ccache: fields.ticket === undefined ? null : `FILE:${fields.ticket}`,
     systemConfig: fields.systemConfig ?? [],

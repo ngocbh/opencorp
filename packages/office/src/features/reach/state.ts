@@ -113,13 +113,13 @@ export function sweepRedirects(paths: ReachPaths, now: number): void {
 /** How old a status file or a learning run's candidate must be before a new visit deletes it. */
 export const STATUS_STALE_MS = 10 * 60_000
 
-/** The lock holder's start: `exitAll`, `sweepRedirects`, and `ssh/status.*`, `reach.new.sh` and the replays' copies
- *  of reach.sh (`.reach-*.sh`) older than `STATUS_STALE_MS`. */
+/** The lock holder's start: `exitAll`, `sweepRedirects`, and `ssh/status.*`, `ssh/agent-status.*`, `reach.new.sh` and
+ *  the replays' copies of reach.sh (`.reach-*.sh`) older than `STATUS_STALE_MS`. */
 export async function cleanUp(ctx: ReachContext, now: number): Promise<void> {
   const { paths } = ctx
   await exitAll(ctx)
   sweepRedirects(paths, now)
-  removeOlder(paths.ssh, (name) => /^status\.[0-9]+$/.test(name), now - STATUS_STALE_MS)
+  removeOlder(paths.ssh, (name) => /^(agent-)?status\.[0-9]+$/.test(name), now - STATUS_STALE_MS)
   removeOlder(
     paths.dir,
     (name) => name === path.basename(paths.candidate) || /^\.reach-[0-9]+-[0-9a-f]+\.sh$/.test(name),

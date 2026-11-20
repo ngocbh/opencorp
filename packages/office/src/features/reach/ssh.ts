@@ -39,10 +39,9 @@ export function configText(
     sessionOptions = false,
   }: { batch?: boolean; includes: readonly string[]; sessionOptions?: boolean },
 ): string {
-  if (includes.some((file) => /["\n]/.test(file))) throw new Error("an included ssh config's path can't hold \" or a newline")
   return [
-    "# Written by opencorp hq on each visit; edits are lost.",
-    ...includes.map((file) => `Include "${file}"`),
+    HEADER,
+    ...includeLines(includes),
     ...(batch ? ["BatchMode yes"] : []),
     "ControlMaster auto",
     `ControlPath ${cm}/%C`,
@@ -53,6 +52,23 @@ export function configText(
     ...(sessionOptions ? ["SessionType default", "StdinNull no", "ForkAfterAuthentication no"] : []),
     "",
   ].join("\n")
+}
+
+/** `hq/ssh/agent.config`, which the agent's ssh reads while learning: `ControlMaster no`, then the visit config's
+ *  includes, and nothing else. It rides a connection the user has open, at their ControlPath, or logs in directly, and
+ *  never keeps one: in the SSH-only sandbox `~/.ssh` is read-only, and under `ControlMaster auto` with no master to
+ *  ride ssh would log in, fail to bind its socket there and exit 255. */
+export function agentConfigText(includes: readonly string[]): string {
+  return [HEADER, "ControlMaster no", ...includeLines(includes), ""].join("\n")
+}
+
+const HEADER = "# Written by opencorp hq on each visit; edits are lost."
+
+/** An `Include` line for each of `includes`, double-quoted (a home may hold a space); throws for a path holding `"` or
+ *  a newline, which would end the line. */
+function includeLines(includes: readonly string[]): string[] {
+  if (includes.some((file) => /["\n]/.test(file))) throw new Error("an included ssh config's path can't hold \" or a newline")
+  return includes.map((file) => `Include "${file}"`)
 }
 
 const knows = new Map<string, boolean>()
@@ -162,8 +178,9 @@ export async function configProblems(ctx: ReachContext, hosts: readonly SshHost[
 const listed = (items: readonly string[]) =>
   items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`
 
-/** `hq/ssh/bin/ssh`, first on PATH for reach.sh and the shell tool: the real ssh by absolute path (so ProxyJump's hop,
- *  built from the program name ssh was run as and `-F`, shares the config) with our config; each exit status but a
+/** `hq/ssh/bin/ssh`, first on PATH for reach.sh, the shell tool and the agent's shells: the real ssh by absolute path
+ *  (so ProxyJump's hop, built from the program name ssh was run as and `-F`, shares the config) with the config
+ *  `$OPENCORP_SSH_CONFIG` names; each exit status but a
  *  control command's (`-O`) is appended to $OPENCORP_SSH_STATUS, so a 255 counts where a pipeline or `|| true` hides
  *  it. When the host it named is a plain `[user@]host`, the host follows, then its jump hosts from `-J` or
  *  `-o ProxyJump`: a failed visit checks the owner's config for them. */
@@ -219,11 +236,12 @@ export function wrapperText(realSsh: string): string {
   ].join("\n")
 }
 
-/** Writes both configs (0600) and the wrapper (0700) for this visit. */
+/** Writes the visit's two configs and the agent's (0600), and the wrapper (0700), for this visit. */
 export async function writeSshFiles(paths: ReachPaths, realSsh: string, includes: readonly string[]): Promise<void> {
   const sessionOptions = knowsSessionOptions(realSsh)
   await writePrivate(paths.config, configText(paths.cm, { includes, sessionOptions }))
   await writePrivate(paths.batchConfig, configText(paths.cm, { batch: true, includes, sessionOptions }))
+  await writePrivate(paths.agentConfig, agentConfigText(includes))
   await writePrivate(paths.wrapper, wrapperText(realSsh))
   fs.chmodSync(paths.wrapper, 0o700)
 }

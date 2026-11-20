@@ -46,6 +46,10 @@ export class ReachPaths {
   get batchConfig(): string {
     return path.join(this.ssh, "config.batch")
   }
+  /** The config the agent's ssh reads while learning: the user's own, and never a master of its own. */
+  get agentConfig(): string {
+    return path.join(this.ssh, "agent.config")
+  }
   get bin(): string {
     return path.join(this.ssh, "bin")
   }
@@ -55,6 +59,11 @@ export class ReachPaths {
   /** The exit statuses the wrapper records for the process `pid`'s children. */
   status(pid: number): string {
     return path.join(this.ssh, `status.${pid}`)
+  }
+  /** The status file the agent's shells may write while process `pid` learns: never `status(pid)`, which the visit's
+   *  replays read. */
+  agentStatus(pid: number): string {
+    return path.join(this.ssh, `agent-status.${pid}`)
   }
   /** The control sockets of every master. */
   get cm(): string {
@@ -67,6 +76,15 @@ export class ReachPaths {
   /** One `opencorp hq` at a time. */
   get lock(): string {
     return path.join(this.dir, "lock")
+  }
+  /** The learning sessions' folders. */
+  get sessions(): string {
+    return path.join(this.dir, "sessions")
+  }
+  /** Session `id`'s folder: its shells' records. Throws when `id` isn't one plain name. */
+  session(id: string): string {
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`a session's id is one plain name: ${JSON.stringify(id)}`)
+    return path.join(this.sessions, id)
   }
 }
 

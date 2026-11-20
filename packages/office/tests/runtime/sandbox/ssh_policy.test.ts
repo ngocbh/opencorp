@@ -311,6 +311,82 @@ test("only identity, certificate and known-hosts files the user owns outright ar
   ])
 })
 
+test("an ssh outside the system folders is bound read-only, and refused where it would expose hq or the home", () => {
+  const h = layout()
+  // The system's own is mounted with the system.
+  expect(h.make({ ssh: "/usr/bin/ssh" }).readOnly).toEqual([h.ssh, path.join(h.hq, "ssh")])
+  // One elsewhere is bound by itself, after the files ssh -G names: where it resolves, and, since the wrapper runs it
+  // by the name it was found by, a link to it too.
+  const own = h.file(path.join(h.root, "openssh", "bin", "ssh"), "#!/bin/sh\n", 0o755)
+  const link = path.join(h.root, "ssh-link")
+  fs.symlinkSync(own, link)
+  const key = h.file(path.join(h.home, "keys", "id"), "decoy-key")
+  const policy = h.make({ ssh: link, sshFiles: [identity(key)] })
+  expect(policy.readOnly).toEqual([h.ssh, key, own, link, path.join(h.hq, "ssh")])
+  expect(policy.notes).toEqual([])
+  expect(h.make({ ssh: own }).readOnly).toEqual([h.ssh, own, path.join(h.hq, "ssh")])
+  // A link outside the system's folders to the system's own ssh: the link alone.
+  const toSystem = path.join(h.root, "bin", "ssh")
+  fs.mkdirSync(path.dirname(toSystem))
+  fs.symlinkSync("/usr/bin/ssh", toSystem)
+  expect(h.make({ ssh: toSystem }).readOnly).toEqual([h.ssh, toSystem, path.join(h.hq, "ssh")])
+  // A link in OpenCorp's home is refused, wherever it leads.
+  const inHq = path.join(h.hq, "ssh-link")
+  fs.symlinkSync(own, inHq)
+  expect(() => h.make({ ssh: inHq })).toThrow(UnsafeProfile)
+  // Nothing is bound where it would expose hq, the home, OpenCorp's files or a credential.
+  fs.linkSync(h.provider, path.join(h.root, "ssh-provider"))
+  for (const ssh of [h.home, h.hq, h.provider, path.join(h.root, "ssh-provider"), path.join(h.hq, "learned.json")]) {
+    expect(() => h.make({ ssh }), ssh).toThrow(UnsafeProfile)
+  }
+  // One that is no regular file is left out, with a note.
+  const folder = path.join(h.root, "openssh")
+  expect(h.make({ ssh: folder }).readOnly).toEqual([h.ssh, path.join(h.hq, "ssh")])
+  expect(h.make({ ssh: folder }).notes).toEqual([`ssh ${folder} is not bound: it is not a regular file`])
+})
+
+test("a ControlPath folder outside ~/.ssh is bound read-only only when it is the user's own, 0700, and holds only sockets", async () => {
+  const h = layout()
+  const control = (folder: string) => ({ kind: "control" as const, path: path.join(folder, "%C") })
+  const cm = path.join(h.root, "cm")
+  fs.mkdirSync(cm, { mode: 0o700 })
+  fs.chmodSync(cm, 0o700)
+  await listening(path.join(cm, "master"))
+  const policy = h.make({ sshFiles: [control(cm)] })
+  // Read-only, to connect to: ssh rides a master of the user's there, and can't bind one.
+  expect(policy.readOnly).toEqual([h.ssh, cm, path.join(h.hq, "ssh")])
+  expect(policy.socketFolders).toEqual([h.ssh, cm])
+  expect(policy.writable).toEqual([h.knownHosts, h.statusFile])
+  expect(policy.notes).toEqual([])
+  // In ~/.ssh it is mounted with it, and connected to there.
+  const inSsh = path.join(h.ssh, "tmp")
+  fs.mkdirSync(inSsh, { mode: 0o700 })
+  expect(h.make({ sshFiles: [control(inSsh)] }).readOnly).toEqual([h.ssh, path.join(h.hq, "ssh")])
+  expect(h.make({ sshFiles: [control(inSsh)] }).socketFolders).toEqual([h.ssh])
+  // Anything else is left out, with a note.
+  const open = path.join(h.root, "open")
+  fs.mkdirSync(open, { mode: 0o700 })
+  fs.chmodSync(open, 0o750)
+  const mixed = path.join(h.root, "mixed")
+  fs.mkdirSync(mixed, { mode: 0o700 })
+  fs.chmodSync(mixed, 0o700)
+  h.file(path.join(mixed, "notes.txt"), "decoy-secret\n")
+  const file = h.file(path.join(h.root, "file"), "")
+  const cases: [string, string][] = [
+    [open, "it is not 0700"],
+    [mixed, "it holds something other than sockets"],
+    [path.join(h.hq, "cm"), "it is in OpenCorp's home"],
+    [path.join(h.root, "missing"), "nothing is there"],
+    [file, "it is not a folder"],
+    ["/", "it is not the user's"],
+  ]
+  for (const [folder, why] of cases) {
+    const left = h.make({ sshFiles: [control(folder)] })
+    expect([folder, left.readOnly, left.socketFolders]).toEqual([folder, [h.ssh, path.join(h.hq, "ssh")], [h.ssh]])
+    expect(left.notes).toEqual([`the ControlPath folder ${folder} is not bound: ${why}`])
+  }
+})
+
 test("the config files ssh reads are found through its Include lines: globs, quotes, relative paths and nesting", () => {
   const root = tempDir()
   const etc = path.join(root, "etc")
@@ -404,6 +480,8 @@ test.skipIf(!sandboxAvailable())(
       { kind: "known_hosts", path: h.knownHosts },
       { kind: "known_hosts", path: path.join(h.home, "kh") },
       { kind: "known_hosts", path: "/etc/ssh/ssh_known_hosts" },
+      // The socket a master of the owner's would listen on, whose folder the policy may bind to connect to.
+      { kind: "control", path: path.join(h.home, ".opencorp/hq/cm/%C") },
     ])
     // Resolved for a host the owner's config doesn't know, from the visit's config.
     expect(fs.readFileSync(path.join(h.tmp, "args"), "utf8")).toBe(["-G", "-F", config, "--", "opencorp-hq", ""].join("\n"))
@@ -500,6 +578,20 @@ test.skipIf(!sandboxAvailable() || (!fs.existsSync(SSH) && !process.env.OPENCORP
     expect(r.exit, err).toBe(0)
     expect(err).not.toContain("Bad owner")
     expect(r.stdout.toString()).toContain("\nhostname localhost\n")
+  },
+)
+
+// A symlink to the system's ssh, outside the system's folders: ssh -V runs by the link's name, as the wrapper runs it.
+test.skipIf(!sandboxAvailable() || (!fs.existsSync(SSH) && !process.env.OPENCORP_TEST_SANDBOX))(
+  "a symlinked ssh outside the system's folders runs in the profile by the link's own path",
+  async () => {
+    const h = layout()
+    const link = path.join(h.root, "bin", "ssh")
+    fs.mkdirSync(path.dirname(link))
+    fs.symlinkSync(SSH, link)
+    const r = await run(h.make({ ssh: link }), [link, "-V"], { timeout: 20 })
+    expect(r.exit, r.stderr.toString()).toBe(0)
+    expect(r.stderr.toString()).toStartWith("OpenSSH")
   },
 )
 

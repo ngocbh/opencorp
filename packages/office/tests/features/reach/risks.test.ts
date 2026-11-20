@@ -1,7 +1,17 @@
 /** The fixed texts the owner reads before learning the path to HQ and before saving it. */
 import { expect, test } from "bun:test"
 import { ReachPaths } from "../../../src/features/reach/paths.ts"
-import { beforeLearning, beforeSaving, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../../src/features/reach/risks.ts"
+import {
+  beforeLearning,
+  beforeSaving,
+  LEARN,
+  LEARN_QUESTION,
+  NO_SANDBOX_QUESTION,
+  noSandbox,
+  RELEARN_QUESTION,
+  RUN_UNSANDBOXED,
+  STOP,
+} from "../../../src/features/reach/risks.ts"
 import { PERSIST_S } from "../../../src/features/reach/ssh.ts"
 
 /** Each line holds every one of its phrases, in the design's order of risks. */
@@ -79,4 +89,15 @@ test("risks.md holds the texts risks.ts held, byte for byte, whatever the hq fol
     expect(beforeSaving(paths)).toEqual(HELD.beforeSaving(paths))
   }
   expect([LEARN, LEARN_QUESTION, RELEARN_QUESTION]).toEqual([HELD.LEARN, HELD.LEARN_QUESTION, HELD.RELEARN_QUESTION])
+})
+
+test("risks.md has noSandbox", () => {
+  const why = 'no sandbox for platform "plan9" {dir}'
+  expectRisks(noSandbox(new ReachPaths("/h"), why), [
+    ["OpenCorp can't sandbox the agent's shells here", why],
+    ["Without a sandbox", "each command the agent runs", "read and change everything you can", "SSH keys", "/h/hq"],
+    ["the session's mode is all that stands", "ask mode", "approve each command"],
+  ])
+  expect(NO_SANDBOX_QUESTION).toBe("Run the agent's shells with no sandbox?")
+  expect([RUN_UNSANDBOXED, STOP]).toEqual(["Run them with no sandbox", "Stop"])
 })
