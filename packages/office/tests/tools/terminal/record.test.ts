@@ -10,6 +10,7 @@ import {
   RecordError,
   readRecord,
   recoverRecords,
+  type RecordFile,
   type RecordMeta,
 } from "../../../src/tools/terminal/record.ts"
 import { tempDir } from "../../helpers.ts"
@@ -207,6 +208,23 @@ test("a record left running when its host stopped is marked interrupted on the n
   expect(() => readRecord(huge)).toThrow(RecordError)
   // A host with no session folder yet has nothing to recover.
   expect(recoverRecords(path.join(session, "missing"))).toEqual([])
+})
+
+test("recovery hands its host each record it marks interrupted, with the commands still running when it stopped", () => {
+  const session = tempDir()
+  const left = new InstrumentRecord(path.join(session, "sh_1"), { ...META, id: "sh_1" })
+  left.command("ls", "@minh")
+  left.exit(0)
+  left.command("make", "@minh")
+  new InstrumentRecord(path.join(session, "sh_2"), { ...META, id: "sh_2" }).end("ended")
+  const handed: RecordFile[] = []
+  expect(recoverRecords(session, (file) => void handed.push(file))).toEqual([])
+  expect(handed.map((file) => [file.id, file.state, file.commands.map((c) => [c.command, c.exit])])).toEqual([
+    ["sh_1", "interrupted", [["ls", 0], ["make", undefined]]],
+  ])
+  // Marked once: a later start hands nothing again.
+  expect(recoverRecords(session, (file) => void handed.push(file))).toEqual([])
+  expect(handed).toHaveLength(1)
 })
 
 test("meta.json is private to the owner", () => {

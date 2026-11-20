@@ -11,6 +11,7 @@ import { createOfficeClient } from "@opencorp/client"
 import type { Question } from "@opencorp/protocol"
 import type { ScriptedReply } from "@opencorp/office/testing/fake_llm"
 import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
+import { sandboxRuns } from "@opencorp/office/testing/sandbox"
 import { type Terminal, TMUX, terminal } from "./tmux"
 
 setDefaultTimeout(120_000)
@@ -229,7 +230,8 @@ describe.skipIf(!TMUX)("an employee's approval cards on a real office, in the TU
     expect(fs.existsSync(path.join(cwd, "stopped.txt"))).toBe(false)
   })
 
-  test("the approver opens the employee's shell with <leader>o and Ctrl-C stops its command", async () => {
+  // Its command must run, so it needs the sandbox.
+  test.skipIf(!sandboxRuns())("the approver opens the employee's shell with <leader>o and Ctrl-C stops its command", async () => {
     const { t, sid, client } = await chat()
     office.llm.script(shell("call_sleep", "sleep 31.41", 1), after("call_sleep", "It is still running."))
     t.type("Wait a while")

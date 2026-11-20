@@ -98,10 +98,23 @@ test("a run whose reply is cut off stops its command, in a pipes shell and in a 
   pipes.terminal.interruptWaits()
   expect(json(await waited)).toMatchObject({ shell: "shell 1", status: "idle", exit: null })
   expect(fake.running()).toEqual([])
-  expect(pipes.audits.map((row) => [row.outcome, row.text, "exit" in row ? row.exit : undefined])).toEqual([
-    ["error", "make one", null],
-    ["error", "make two", null],
+  expect(pipes.audits.map((row) => [row.outcome, row.text, "exit" in row ? [row.exit, row.stopped] : undefined])).toEqual([
+    ["error", "make one", [null, "its call was cut off"]],
+    ["error", "make two", [null, "its call was cut off"]],
   ])
+  // The agent's interrupt, the owner's Ctrl-C and a close each say why the command ended with no exit.
+  const why = async (stop: (t: typeof pipes) => Promise<unknown> | void, command: string) => {
+    expect(json(await pipes.call("run", { command, why: "x", wait: 0, shell: "shell 1" }))).toMatchObject({ status: "running" })
+    await stop(pipes)
+    await waitFor(() => pipes.audits.length > 2, { what: "the stopped command's row" })
+    const row = pipes.audits.pop()!
+    return "stopped" in row ? row.stopped : undefined
+  }
+  expect(await why((t) => t.call("interrupt", { shell: "shell 1" }), "make three")).toBe("the agent interrupted it")
+  expect(await why((t) => t.terminal.shell(t.terminal.shells()[0]!.id)!.ownerKeys("\x03"), "make four")).toBe(
+    "it was stopped, or couldn't run",
+  )
+  expect(await why((t) => t.call("close", { shell: "shell 1" }), "make five")).toBe("its shell ended")
   // An approved run's command stops with its own signal.
   const { perms, held } = permissions({ mode: "ask" })
   let approvedFake!: ReturnType<typeof fakePipes>
@@ -169,10 +182,16 @@ test("the host's audit gets a held, a refused and an ended command, with why it 
   expect(json(await approved)).toMatchObject({ shell: "shell 2", status: "idle", exit: 2 })
   const rows = t.audits.map((row) => ("duration" in row ? { ...row, duration: typeof row.duration } : row))
   expect(rows).toEqual([
-    { outcome: "ok", tool: "terminal_run", text: "echo hi", shell: "shell 1", exit: 0, duration: "number", why: "by an allow rule" },
+    {
+      outcome: "ok", tool: "terminal_run", text: "echo hi", shell: "shell 1", exit: 0, duration: "number",
+      why: "by an allow rule", stopped: null,
+    },
     { outcome: "denied", tool: "terminal_run", text: "rm x", shell: "shell 1", reason: "Not run: a deny rule: rm *." },
     { outcome: "held", tool: "terminal_run", text: "make", shell: null, reason: "Ask mode" },
-    { outcome: "error", tool: "terminal_run", text: "make", shell: "shell 2", exit: 2, duration: "number", why: "approved by @ngocbh" },
+    {
+      outcome: "error", tool: "terminal_run", text: "make", shell: "shell 2", exit: 2, duration: "number",
+      why: "approved by @ngocbh", stopped: null,
+    },
   ])
 })
 

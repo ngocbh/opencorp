@@ -69,8 +69,8 @@ export type TerminalShells =
 export type TerminalProfile = "workspace" | "ssh" | "none"
 
 /** One row of the host's audit. A held or refused call says why; a command that ran says how it ended, in seconds,
- *  and what let it run (`by <the gate's reason>`, or the approval's credit). `shell` is null for a new shell not yet
- *  made. */
+ *  and what let it run (`by <the gate's reason>`, or the approval's credit), and, when it ended with no exit, why
+ *  (`stopped`). `shell` is null for a new shell not yet made. */
 export type TerminalAudit =
   | {
       readonly outcome: "held" | "denied"
@@ -87,6 +87,7 @@ export type TerminalAudit =
       readonly exit: number | null
       readonly duration: number
       readonly why: string
+      readonly stopped: string | null
     }
 
 /** What the host binds for one new shell: its id, its record, and where its state and live output go. */
@@ -145,6 +146,12 @@ const STARTING: ShellState = { status: "starting", waiting: null, command: null,
 const CTRL_C = "\x03"
 /** How long a cut-off call waits for its stopped command to end before it replies. */
 const STOP_WAIT_MS = 3000
+/** Why a command ended with no exit, for its audit row. */
+const CUT_OFF = "its call was cut off"
+const AGENT_INTERRUPT = "the agent interrupted it"
+const SHELL_ENDED = "its shell ended"
+/** The owner's Ctrl-C reaches the shell itself, and a call that couldn't run ends the same way. */
+const NO_EXIT = "it was stopped, or couldn't run"
 
 /** One shell of the terminal: listed from the moment it is made, ready once `opened` settles. */
 interface Entry {
@@ -158,12 +165,14 @@ interface Entry {
   running: Running | null
 }
 
-/** A command the terminal ran: what let it run, when, whether the shell has started it, and its end. */
+/** A command the terminal ran: what let it run, when, whether the shell has started it, why the terminal stopped
+ *  it (if it did), and its end. */
 interface Running {
   readonly command: string
   readonly why: string
   readonly started: number
   seen: boolean
+  stopped: string | null
   readonly ended: PromiseWithResolvers<void>
 }
 
@@ -348,8 +357,12 @@ export class Terminal {
             const from = parsed.from === undefined ? {} : { from: parsed.from }
             return this.text(entry, shell, await shell.read({ waitMs: parsed.waitMs, signal, ...from }))
           }
-          case "interrupt":
-            return this.text(entry, shell, shell.interrupt())
+          case "interrupt": {
+            const running = entry.running
+            const reply = shell.interrupt()
+            if (reply.refused === undefined && running !== null) running.stopped ??= AGENT_INTERRUPT
+            return this.text(entry, shell, reply)
+          }
           case "close":
             await shell.close()
             return this.text(entry, shell, await shell.read({ waitMs: 0 }))
@@ -412,13 +425,15 @@ export class Terminal {
   ): Promise<string> {
     const why = call.approved ? by : `by ${by}`
     const running: Running = {
-      command: parsed.command, why, started: performance.now(), seen: false, ended: Promise.withResolvers<void>(),
+      command: parsed.command, why, started: performance.now(), seen: false, stopped: null,
+      ended: Promise.withResolvers<void>(),
     }
     entry.running = running
     const reply = await shell.run(parsed.command, parsed.waitMs, call.signal)
     // Refused by the shell itself: it never started.
     if (!running.seen && entry.running === running) entry.running = null
     if (!call.signal.aborted || entry.running !== running) return this.text(entry, shell, reply)
+    running.stopped = CUT_OFF
     shell.ownerKeys(CTRL_C)
     await within(running.ended.promise, STOP_WAIT_MS)
     const { status, exit, waiting } = shell.state()
@@ -439,7 +454,11 @@ export class Terminal {
     const duration = (performance.now() - running.started) / 1000
     const { command: text, why } = running
     const outcome = state.exit === 0 ? "ok" : "error"
-    this.audit({ outcome, tool: "terminal_run", text, shell: entry.name, exit: state.exit, duration, why })
+    const stopped = state.exit !== null
+      ? null
+      : (running.stopped ??
+        (state.status === "failed" ? `the shell failed: ${state.error}` : state.status === "ended" ? SHELL_ENDED : NO_EXIT))
+    this.audit({ outcome, tool: "terminal_run", text, shell: entry.name, exit: state.exit, duration, why, stopped })
     running.ended.resolve()
   }
 

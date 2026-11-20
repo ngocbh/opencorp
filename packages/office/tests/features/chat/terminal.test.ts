@@ -7,11 +7,15 @@ import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { stringify } from "yaml"
 import type { Instrument, ToolPart } from "@opencorp/protocol"
 import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
+import { EmployeeTerminal } from "../../../src/features/chat/terminal.ts"
 import { sessionOption } from "../../../src/runtime/questions/approval.ts"
+import { Instruments } from "../../../src/runtime/sessions/instruments.ts"
 import { readRecord } from "../../../src/tools/terminal/record.ts"
 import { CEO } from "../../server/helpers.ts"
-import { waitFor } from "../../helpers.ts"
+import { tempDir, waitFor } from "../../helpers.ts"
 import { gone, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import { openStore } from "../../runtime/store/helpers.ts"
+import { fakePipes, json, permissions, rule } from "../../tools/terminal/helpers.ts"
 import { fakeLlm, type HarnessOffice, makeHarness, noWorkersLeft, running, status, texts } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -151,7 +155,43 @@ sandboxed("Esc stops the agent and the command its call waited on", async () => 
   expect(JSON.parse(String(tool!.output))).toMatchObject({ shell: "shell 1", status: "idle", exit: null })
   expect(listed(h, id).map((s) => s.status)).toEqual(["idle"])
   expect(fake.requests()).toHaveLength(1)
-  expect(h.store.listAudit({ sessionId: id }).map((r) => r.outcome)).toEqual(["error"])
+  // Its row says it ended with no exit, and why.
+  const rows = h.store.listAudit({ sessionId: id })
+  expect(rows.map((r) => r.outcome)).toEqual(["error"])
+  expect(rows[0]!.detail).toMatch(/^exit=None duration=[\d.]+s by an allow rule: its call was cut off$/)
+})
+
+test("a command that ends after the agent's next turn has begun keeps the run it started in", async () => {
+  const store = openStore()
+  const dir = tempDir()
+  const pipes = fakePipes(dir)
+  const terminal = new EmployeeTerminal({
+    shells: pipes.shells,
+    sessionId: "S1",
+    person: "minh",
+    folder: path.join(dir, "session"),
+    instruments: new Instruments(() => {}),
+    store,
+    mode: () => "auto",
+  })
+  const { perms } = permissions({ mode: "ask", rules: [rule("allow", "command", "make *"), rule("allow", "command", "echo *")] })
+  terminal.bind("r1", perms)
+  const run = terminal.tools().run
+  expect(json(await run.call({ command: "make long", why: "x", wait: 0 }, { callId: "r1/n/1/0" }))).toMatchObject({
+    status: "running",
+  })
+  // The next turn's run is built while the command goes on: what it runs and holds is its own.
+  terminal.bind("r2", perms)
+  expect(json(await run.call({ command: "echo next", why: "x" }, { callId: "r2/n/1/0" }))).toMatchObject({ exit: 0 })
+  await run.call({ command: "rm x", why: "x" }, { callId: "r2/n/2/0" })
+  pipes.end("make long", 0)
+  await waitFor(() => store.listAudit().length === 3, { what: "the long command's row" })
+  expect(store.listAudit().map((r) => [r.args, r.outcome, r.runId])).toEqual([
+    [{ summary: "command='echo next'", shell: "shell 2" }, "ok", "r2"],
+    [{ summary: "command='rm x'", shell: null }, "held", "r2"],
+    [{ summary: "command='make long'", shell: "shell 1" }, "ok", "r1"],
+  ])
+  await terminal.close()
 })
 
 sandboxed("a command the agent was told is running goes on after Esc, and the agent reads it later", async () => {

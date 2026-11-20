@@ -2,14 +2,17 @@
  *  listed as the session's instrument, which the owner watches and stops, with its record in the session's
  *  `terminal/` folder; every command goes through the permissions of the run whose tools were last built (its mode,
  *  rules, Auto's check and cards); and each command the gate holds or refuses, and each one that ran, once it ends, is
- *  an audit row of the session's. */
+ *  an audit row of the session's, of the run it started in. A command an office crash cut off gets its row at the
+ *  next start (`auditInterrupted`). */
 import path from "node:path"
 import { now } from "@opencorp/protocol"
+import { REASON_CHARS } from "../../runtime/permissions/monitor.ts"
 import type { ApprovalCard, CheckInput, Mode, Permissions, Where } from "../../runtime/permissions/policy.ts"
 import type { Instruments } from "../../runtime/sessions/instruments.ts"
 import type { Store } from "../../runtime/store/store.ts"
 import { shellInstrument } from "../../tools/terminal/instrument.ts"
-import { InstrumentRecord } from "../../tools/terminal/record.ts"
+import { InstrumentRecord, type RecordFile } from "../../tools/terminal/record.ts"
+import type { ShellState } from "../../tools/terminal/shell.ts"
 import {
   Terminal, type TerminalAudit, type TerminalProfile, type TerminalShells,
 } from "../../tools/terminal/terminal.ts"
@@ -24,6 +27,45 @@ const BASE: Where = { profile: "workspace", cwd: null, writable: [] }
 
 /** What a command decides by before any run's permissions are bound: everything asks, and nothing can hold it. */
 const UNBOUND = "no run of this session is bound to its terminal yet"
+
+/** What an interrupted row says: the office stopped before the command's end. */
+const OFFICE_STOPPED = "the office stopped while it ran"
+
+/** One audit row of a session's terminal command, as `store` keeps it: `workspace` kind, the tool the model called,
+ *  the command and the shell's name. */
+function writeRow(
+  store: Pick<Store, "recordAudit">,
+  row: {
+    person: string
+    sessionId: string
+    runId: string | null
+    tool: string
+    text: string
+    shell: string | null
+    outcome: string
+    detail: string
+  },
+): void {
+  const { person, sessionId, runId, tool, text, shell, outcome, detail } = row
+  const args = { summary: `command=${repr(text)}`, shell }
+  store.recordAudit({ person, kind: "workspace", tool, args, outcome, sessionId, runId, detail: detail.slice(0, DETAIL_CHARS) })
+}
+
+/** Writes an `interrupted` audit row for each command still running in `file`, a record of session `sessionId`'s
+ *  terminal that an earlier office left running: its end never came, so neither did its row. The session's person, or
+ *  else the record's driver, is the row's; which run it started in isn't known. */
+export function auditInterrupted(
+  store: Pick<Store, "recordAudit" | "getSession">,
+  sessionId: string,
+  file: RecordFile,
+): void {
+  const person = store.getSession(sessionId)?.person ?? file.driver
+  for (const { command, exit } of file.commands) {
+    if (exit !== undefined) continue
+    const row = { person, sessionId, runId: null, tool: "terminal_run", text: command, shell: file.name }
+    writeRow(store, { ...row, outcome: "interrupted", detail: OFFICE_STOPPED })
+  }
+}
 
 /** What an employee's terminal is made from; the agent sets none of it. */
 export interface EmployeeTerminalOptions {
@@ -48,9 +90,12 @@ export class EmployeeTerminal {
   readonly #o: EmployeeTerminalOptions
   /** The shells listed now, by id. */
   readonly #listed = new Set<string>()
-  /** The run whose tools were last built: its permissions gate the agent's commands, and its id is the audit rows'. */
+  /** The run whose tools were last built: its permissions gate the agent's commands, and its id is the rows' of what
+   *  they decide and start. */
   #runId: string | null = null
   #permissions: Permissions | null = null
+  /** The run each shell's running command started in, by shell name: its row, whenever it ends, is that run's. */
+  readonly #startedIn = new Map<string, string | null>()
 
   constructor(o: EmployeeTerminalOptions) {
     this.#o = o
@@ -150,26 +195,29 @@ export class EmployeeTerminal {
     return {
       id,
       record,
-      changed: () => instruments.updated(sessionId, id),
+      // After the terminal's own follow, which writes an ended command's row first.
+      changed: (state: ShellState) => {
+        const runs = state.command !== null && (state.status === "running" || state.status === "waiting")
+        if (!runs) this.#startedIn.delete(name)
+        else if (!this.#startedIn.has(name)) this.#startedIn.set(name, this.#runId)
+        instruments.updated(sessionId, id)
+      },
       output: (chunk: Uint8Array) => instruments.output(sessionId, id, chunk),
     }
   }
 
-  /** Writes `row` as the session's audit row: `workspace` kind, the tool the model called, the command and shell,
-   *  and why it was held or refused, or how it ended (`exit=<n> duration=<s>s <what let it run>`). */
+  /** Writes `row` as the session's audit row: why it was held or refused, in the bound run; or, in the run it started
+   *  in, how it ended (`exit=<n> duration=<s>s <what let it run>`, and `: <why>` when it had no exit). */
   #audit(row: TerminalAudit): void {
-    const detail = "reason" in row
-      ? row.reason
-      : `exit=${row.exit ?? "None"} duration=${row.duration.toFixed(3)}s ${row.why}`
-    this.#o.store.recordAudit({
-      person: this.#o.person,
-      kind: "workspace",
-      tool: row.tool,
-      args: { summary: `command=${repr(row.text)}`, shell: row.shell },
-      outcome: row.outcome,
-      sessionId: this.#o.sessionId,
-      runId: this.#runId,
-      detail: detail.slice(0, DETAIL_CHARS),
-    })
+    const { tool, text, shell, outcome } = row
+    const { person, sessionId } = this.#o
+    if ("reason" in row) {
+      writeRow(this.#o.store, { person, sessionId, runId: this.#runId, tool, text, shell, outcome, detail: row.reason })
+      return
+    }
+    const stopped = row.stopped === null ? "" : `: ${[...row.stopped].slice(0, REASON_CHARS).join("")}`
+    const detail = `exit=${row.exit ?? "None"} duration=${row.duration.toFixed(3)}s ${row.why}${stopped}`
+    const runId = this.#startedIn.has(row.shell) ? this.#startedIn.get(row.shell)! : this.#runId
+    writeRow(this.#o.store, { person, sessionId, runId, tool, text, shell, outcome, detail })
   }
 }

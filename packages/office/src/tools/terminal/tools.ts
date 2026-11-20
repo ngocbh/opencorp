@@ -50,7 +50,8 @@ const SHELLS_PTY =
   "A shell keeps its state between commands, as a terminal does: its folder (`cd`), its variables and what " +
   "earlier commands defined. Programs run on a real terminal: answer a program's question with type."
 const SHELLS_PIPES =
-  "Each command runs on its own in the workspace, with no terminal and no input: nothing carries over between " +
+  "Each command runs on its own in the workspace's sandbox, which reaches only the workspace and a private temp " +
+  "folder, and where the network may be off. It has no terminal and no input, and nothing carries over between " +
   "commands, not the folder (`cd`) nor any variable, so join steps that need each other in one command " +
   "(`cd src && make`). A program that asks a question gets no answer."
 

@@ -828,7 +828,7 @@ test("build office restores codex sessions on start before the cards sweep", asy
   expect(office.store.listWorkers()).toEqual([])
 })
 
-test("a start marks the terminal records an earlier office left running as interrupted, before the restore", async () => {
+test("a start marks the terminal records an earlier office left running as interrupted, before the restore, and audits each command they cut off", async () => {
   let office: Office | undefined
   onTestFinished(async () => {
     try {
@@ -842,6 +842,8 @@ test("a start marks the terminal records an earlier office left running as inter
   // Each session's shells are in its `terminal/` folder.
   const shells = (sid: string) => path.join(paths.sessionDir(sid), "terminal")
   const left = new InstrumentRecord(path.join(shells("S1"), "sh_1"), { ...meta, id: "sh_1" })
+  left.command("ls", "minh")
+  left.exit(0)
   left.command("make", "minh")
   const ended = new InstrumentRecord(path.join(shells("S2"), "sh_1"), { ...meta, id: "sh_1" })
   ended.end("ended")
@@ -866,6 +868,11 @@ test("a start marks the terminal records an earlier office left running as inter
   expect(readRecord(path.join(shells("S2"), "sh_1"))!.state).toBe("ended")
   expect(fs.readFileSync(path.join(shells("S3"), "odd", "meta.json"), "utf8")).toBe("{not json")
   expect(out.text()).toContain(`${path.join(shells("S3"), "odd")}: its meta.json isn't JSON`)
+  // The command the crash cut off never ended, so it never had its row: the start writes it, once.
+  const rows = office.store.listAudit().map((r) => [r.person, r.sessionId, r.runId, r.kind, r.tool, r.args, r.outcome, r.detail])
+  expect(rows).toEqual([
+    ["minh", "S1", null, "workspace", "terminal_run", { summary: "command='make'", shell: "shell 1" }, "interrupted", "the office stopped while it ran"],
+  ])
 })
 
 test("office stop waits for the send backs queued on the office harness and returns", async () => {
