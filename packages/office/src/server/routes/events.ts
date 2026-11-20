@@ -1,5 +1,5 @@
 /** The event stream: stored metadata events and live transcript events, as SSE. */
-import { type Item, PING } from "../../runtime/bus.ts"
+import { type Bus, type Item, PING } from "../../runtime/bus.ts"
 import { RawReply, type Route } from "../http.ts"
 import type { RequestContext } from "../office.ts"
 
@@ -17,12 +17,30 @@ export function frame([kind, event]: Item): string {
   return `event: ${kind}\n${id}data: ${JSON.stringify(event)}\n\n`
 }
 
+/** What the event stream needs of its host: the bus, and the tokens that end a stream of request `C` once its token
+ *  stops counting. `Office` fits, for `RequestContext`. */
+export interface EventsHost<C> {
+  readonly bus: Pick<Bus, "subscribe">
+  readonly tokens: { track(ctx: C, end: () => void): () => void }
+}
+
+/** What the stream reads of its request. */
+export interface StreamRequest {
+  readonly signal: AbortSignal
+  readonly query: URLSearchParams
+}
+
 /** The stream's chunks: `: connected`, then frames, pings and a final `reset` if the bus dropped it. Ends when its
  *  token stops counting, and aborts `cut` when the subscription is ended from outside. */
-async function* stream(ctx: RequestContext, pingMs: number, cut: AbortController): AsyncGenerator<string> {
+async function* stream<C extends StreamRequest>(
+  ctx: C,
+  host: EventsHost<C>,
+  pingMs: number,
+  cut: AbortController,
+): AsyncGenerator<string> {
   // Subscribed before ": connected" is sent, so a client gets every event published after it sees that line.
   // Subscribing here, on the first pull, means a reply that never starts leaves no subscription behind.
-  const sub = ctx.office.bus.subscribe(ctx.query.getAll("session").at(-1) ?? null)
+  const sub = host.bus.subscribe(ctx.query.getAll("session").at(-1) ?? null)
   // A generator can't be stopped from outside while it awaits `next`; ending the subscription wakes it.
   const end = () => sub.end()
   if (ctx.signal.aborted) end()
@@ -33,7 +51,7 @@ async function* stream(ctx: RequestContext, pingMs: number, cut: AbortController
   if (sub.ended.aborted) ended()
   else sub.ended.addEventListener("abort", ended, { once: true })
   // Checked once, when it opened: a token taken out of the roster later ends it here.
-  const untrack = ctx.office.tokens.track(ctx, end)
+  const untrack = host.tokens.track(ctx, end)
   try {
     yield ": connected\n\n"
     for (;;) {
@@ -69,6 +87,15 @@ async function* stream(ctx: RequestContext, pingMs: number, cut: AbortController
  * which a removed device's reconnect gets 401 for.
  */
 export function eventRoutes(pingMs: number = PING_MS): Route<RequestContext>[] {
+  return eventRoutesOf<RequestContext>((ctx) => ctx.office, pingMs)
+}
+
+/** `GET /events` (see `eventRoutes`) for requests `C` of the host `of` gives, with the office's pipeline and framing:
+ *  the no-office host serves it too. */
+export function eventRoutesOf<C extends StreamRequest>(
+  of: (ctx: C) => EventsHost<C>,
+  pingMs: number = PING_MS,
+): Route<C>[] {
   return [
     {
       method: "GET",
@@ -79,7 +106,7 @@ export function eventRoutes(pingMs: number = PING_MS): Route<RequestContext>[] {
         return new RawReply(
           200,
           { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
-          stream(ctx, pingMs, cut),
+          stream(ctx, of(ctx), pingMs, cut),
           { abort: cut.signal },
         )
       },

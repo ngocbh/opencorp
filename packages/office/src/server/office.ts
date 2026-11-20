@@ -7,6 +7,7 @@ import { Logins, type LoginsOptions } from "../models/logins.ts"
 import { ModelCache, type ModelCacheOptions } from "../models/models.ts"
 import type { Transcript } from "../features/chat/transcript.ts"
 import { type CompanyGit, PIN_GRACE_MS } from "../company/git.ts"
+import { loadRepo } from "../company/loader.ts"
 import { CompanySnapshots } from "../company/snapshot.ts"
 import type { CodexSessions } from "../features/codex/sessions.ts"
 import type { Tools } from "../runtime/service/programs.ts"
@@ -16,11 +17,11 @@ import { RunIndexer } from "../runtime/runs/indexer.ts"
 import { RunNotifier } from "../runtime/runs/notify.ts"
 import { Live } from "../runtime/runs/records.ts"
 import { RunLogs } from "../runtime/runs/service.ts"
-import type { SessionHarness } from "../runtime/sessions/harness.ts"
+import { approverOf, type SessionHarness } from "../runtime/sessions/harness.ts"
 import { Instruments } from "../runtime/sessions/instruments.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../runtime/sandbox/policy.ts"
 import { SecretStore } from "../runtime/secrets.ts"
-import type { HqSessionRecord, Store } from "../runtime/store/store.ts"
+import type { HqSessionRecord, SessionRecord, Store } from "../runtime/store/store.ts"
 import type { OfficePaths } from "../util/home.ts"
 import type { WorkerPool } from "../runtime/worker/spawn.ts"
 import { DeviceTokens } from "./auth.ts"
@@ -260,6 +261,18 @@ export class Office {
       if (event.type === "session.updated" && ended) void this.prunePins()
     })
     void this.prunePins()
+  }
+
+  /** Session `id` as stored, or undefined. */
+  session(id: string): SessionRecord | undefined {
+    return this.store.getSession(id)
+  }
+
+  /** Who answers for `session` (`approverOf`): its opener, else the CEO at its pinned commit, which is read only
+   *  then; null for nobody. */
+  async approver(session: SessionRecord): Promise<string | null> {
+    if (session.opened_by !== null) return session.opened_by
+    return approverOf(session, loadRepo(await this.git.pin(session.repo_commit)).company?.ceo ?? null)
   }
 
   /** A run's status, nodes or end may have changed: publishes its run.updated, coalesced per run. */

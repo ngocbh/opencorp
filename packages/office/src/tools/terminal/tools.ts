@@ -154,7 +154,8 @@ export function toolSpecs(
 }
 
 /** `tool`'s arguments read, or why they can't be: an argument its parameters don't name (`extra` adds the host's
- *  own, on an approved call), or one of the wrong kind. A `wait` past two minutes is capped there. */
+ *  own, on an approved call), or one of the wrong kind. A null reads as left out: a worker hands each optional argument
+ *  the model left out as null. A `wait` past two minutes is capped there. */
 export function parseArgs(
   tool: ToolName,
   args: Record<string, unknown>,
@@ -164,29 +165,30 @@ export function parseArgs(
   const known = new Set([...Object.keys(PARAMETERS[tool].properties), ...extra])
   const unknown = Object.keys(args).find((key) => !known.has(key))
   if (unknown !== undefined) return `${tool} takes no argument ${JSON.stringify(unknown)}`
+  const given: Record<string, unknown> = Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null))
   const notText = (key: string) => `${key} must be text`
   // Only run may leave the shell out, for a new one.
-  const shell = args.shell === undefined && tool === "run" ? null : args.shell
+  const shell = given.shell === undefined && tool === "run" ? null : given.shell
   if (shell !== null && typeof shell !== "string") return notText("shell")
   if (tool === "interrupt" || tool === "close") return { tool, shell: shell as string }
-  const waitMs = waitOf(args.wait)
+  const waitMs = waitOf(given.wait)
   if (waitMs === null) return `wait is a number of seconds, from 0 to ${WAIT_MAX_S}`
   if (tool === "read") {
-    const { from } = args
+    const { from } = given
     if (from !== undefined && !(typeof from === "number" && Number.isSafeInteger(from) && from >= 0)) {
       return "from is an offset from an earlier reply's next: a whole number, 0 or more"
     }
     return { tool, shell: shell as string, from, waitMs }
   }
-  const { why } = args
+  const { why } = given
   if (typeof why !== "string") return notText("why")
   if (tool === "run") {
-    const { command } = args
+    const { command } = given
     if (typeof command !== "string") return notText("command")
     if (!/^[\x20-\x7e\n\t]*$/.test(command)) return "a command holds only printable ASCII, newlines and tabs"
     return { tool, command, why, shell: shell === "new" ? null : shell, waitMs }
   }
-  const { text, enter = true } = args
+  const { text, enter = true } = given
   if (typeof text !== "string") return notText("text")
   if (typeof enter !== "boolean") return "enter must be true or false"
   return { tool, shell: shell as string, text, enter, why, waitMs }
