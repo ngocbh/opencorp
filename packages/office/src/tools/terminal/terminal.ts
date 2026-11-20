@@ -21,7 +21,15 @@
  *
  *  **Waits.** A reply waits at most two minutes; a held call waits for its card instead. Each call's wait and gate
  *  end with the call's signal and with `interruptWaits`, and a call stopped in its gate types nothing. Calls on one
- *  shell queue; calls on different shells run together. */
+ *  shell queue; calls on different shells run together.
+ *
+ *  **A call cut off stops its command.** A `run`, the agent's or an approved one, whose signal aborts before its reply
+ *  returns stops the command it waits on, as the owner's Ctrl-C does, and replies once it has ended (or after a few
+ *  seconds). A command whose reply said it is still running goes on: the agent reads it later, or interrupts it.
+ *
+ *  **Audit.** The host's `audit` gets each command or typed line the gate holds or refuses, and each command the gate
+ *  or an approval let run, once it ends, during the agent's wait or after it. A call stopped in its gate writes
+ *  none. */
 import {
   type Action, type CheckInput, type Gate, gate, type Permissions, type Where,
 } from "../../runtime/permissions/policy.ts"
@@ -60,6 +68,27 @@ export type TerminalShells =
 /** The sandbox a terminal's shells run in, as an instrument and its record name it. */
 export type TerminalProfile = "workspace" | "ssh" | "none"
 
+/** One row of the host's audit. A held or refused call says why; a command that ran says how it ended, in seconds,
+ *  and what let it run (`by <the gate's reason>`, or the approval's credit). `shell` is null for a new shell not yet
+ *  made. */
+export type TerminalAudit =
+  | {
+      readonly outcome: "held" | "denied"
+      readonly tool: "terminal_run" | "terminal_type"
+      readonly text: string
+      readonly shell: string | null
+      readonly reason: string
+    }
+  | {
+      readonly outcome: "ok" | "error"
+      readonly tool: "terminal_run"
+      readonly text: string
+      readonly shell: string
+      readonly exit: number | null
+      readonly duration: number
+      readonly why: string
+    }
+
 /** What the host binds for one new shell: its id, its record, and where its state and live output go. */
 export interface ShellBinding extends Pick<ShellHost, "record" | "changed" | "output"> {
   readonly id: string
@@ -70,9 +99,13 @@ export interface TerminalHost {
   readonly shells: TerminalShells
   /** Who drives: the agent's handle, or "opencorp". */
   readonly driver: string
+  /** The session's permissions. Their `where` is the base a shell's own is read over: only its credentials, and for
+   *  shells with no sandbox its folder, count (`Terminal.where`). */
   readonly permissions: Permissions
   /** Binds new shell `name`, which runs in `profile`. */
   shellHost(name: string, profile: TerminalProfile): ShellBinding
+  /** Gets the terminal's audit rows (`TerminalAudit`), if the host keeps them. */
+  audit?(row: TerminalAudit): void
 }
 
 /** One of a terminal's shells: a PTY shell, or the workspace's pipes shell. */
@@ -108,6 +141,10 @@ export const SANDBOX_FIX =
   "the shell needs a sandbox: on Linux, install bubblewrap (bwrap) and allow unprivileged user namespaces; on " +
   "macOS, sandbox-exec comes with the system"
 const STARTING: ShellState = { status: "starting", waiting: null, command: null, exit: null, error: null }
+/** The owner's Ctrl-C, which stops a cut-off call's command. */
+const CTRL_C = "\x03"
+/** How long a cut-off call waits for its stopped command to end before it replies. */
+const STOP_WAIT_MS = 3000
 
 /** One shell of the terminal: listed from the moment it is made, ready once `opened` settles. */
 interface Entry {
@@ -117,15 +154,27 @@ interface Entry {
   shell: TerminalShell | null
   /** The calls on this shell, one after another. */
   queue: Promise<unknown>
+  /** The command the terminal ran here and its end hasn't come yet, if any. */
+  running: Running | null
+}
+
+/** A command the terminal ran: what let it run, when, whether the shell has started it, and its end. */
+interface Running {
+  readonly command: string
+  readonly why: string
+  readonly started: number
+  seen: boolean
+  readonly ended: PromiseWithResolvers<void>
 }
 
 /** How one call runs: the yian call's id, its signal, and whether the owner approved it (no gate). An approved
- *  command carries the folder its card was decided in (`folder`). */
+ *  command carries the folder its card was decided in (`folder`) and what approved it (`credit`). */
 interface Call {
   readonly callId: string | undefined
   readonly signal: AbortSignal
   readonly approved: boolean
   readonly folder?: string | null
+  readonly credit?: string
 }
 
 /** The profile of the sandbox `shells` run in. */
@@ -207,8 +256,14 @@ export class Terminal {
 
   /** Runs held call `tool` (its card's tool, `terminal_run` or `terminal_type`) with `args` once its card says Yes,
    *  with no gate; the tools' own refusals still apply (the shell may have ended or moved on, and a typed line must
-   *  still be the one approved). The host's approved runner. */
-  async runApproved(tool: string, args: Record<string, unknown>, signal: AbortSignal): Promise<string> {
+   *  still be the one approved). `credit` says what approved it, for its audit row ("approved" when not given). The
+   *  host's approved runner: only `signal` ends its wait, and then its command stops. */
+  async runApproved(
+    tool: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal,
+    credit?: string,
+  ): Promise<string> {
     if (this.closed) return refusalText(CLOSED)
     if (tool !== "terminal_run" && tool !== "terminal_type") {
       return refusalText(`${tool} never waits for the owner's approval; only terminal_run and terminal_type do`)
@@ -221,7 +276,8 @@ export class Terminal {
       if (cwd !== null && typeof cwd !== "string") {
         return refusalText("this approval doesn't say which folder it was decided in")
       }
-      return (await this.run(parsed, { callId: undefined, signal, approved: true, folder: cwd })) as string
+      const credited = credit === undefined ? {} : { credit }
+      return (await this.run(parsed, { callId: undefined, signal, approved: true, folder: cwd, ...credited })) as string
     }
     const call: Call = { callId: undefined, signal, approved: true }
     const { line, into } = args
@@ -245,9 +301,10 @@ export class Terminal {
     return this.entries.find((entry) => entry.id === id)?.shell ?? undefined
   }
 
-  /** Ends every reply the agent's calls wait on now, as Esc does, and stops every call still in its gate (Auto's
-   *  check) or queued behind another, which then types nothing; the shells keep running. An approved call's reply
-   *  ends only with its own signal, as the host's approvals stop it. */
+  /** Cuts off the agent's calls now, as Esc does: every reply they wait on ends, and the command each `run` waits on
+   *  stops; a call still in its gate (Auto's check) or queued behind another runs and types nothing. A command whose
+   *  reply already said it is running goes on. An approved call ends only with its own signal, as the host's
+   *  approvals stop it. */
   interruptWaits(): void {
     for (const call of [...this.calls]) call.abort()
   }
@@ -306,7 +363,7 @@ export class Terminal {
   /** Runs a command in the named shell once it is idle, or in a new one, which starts only once the gate lets the
    *  command run. */
   private async run(parsed: Parsed & { tool: "run" }, call: Call): Promise<unknown> {
-    const { command, why, waitMs } = parsed
+    const { command, why } = parsed
     const action: Action = { kind: "command", text: command }
     if (parsed.shell !== null) {
       const entry = this.find(parsed.shell)
@@ -322,7 +379,8 @@ export class Terminal {
         const args = { ...cardArgs(parsed), cwd: folder }
         const gated = await this.gated(action, "terminal_run", why, args, call, entry.id)
         if (!gated.run) return gated.result
-        return this.text(entry, shell, await shell.run(command, waitMs, call.signal))
+        if (call.signal.aborted) return STOPPED
+        return await this.runIn(entry, shell, parsed, call, gated.by)
       })
     }
     const { shells } = this.host
@@ -338,8 +396,60 @@ export class Terminal {
     if (typeof entry === "string") return refusalText(entry)
     return await this.queue(entry, async (shell) => {
       if (call.signal.aborted) return STOPPED
-      return this.text(entry, shell, await shell.run(command, waitMs, call.signal))
+      return await this.runIn(entry, shell, parsed, call, gated.by)
     })
+  }
+
+  /** Runs the command in `shell`, which the gate (saying `by` what) or an approval (`by` its credit) let run, and
+   *  replies. Its end, whenever it comes, goes to the host's audit. A call cut off before its reply stops the command,
+   *  as the owner's Ctrl-C does, and replies once it has ended, or after `STOP_WAIT_MS`. */
+  private async runIn(
+    entry: Entry,
+    shell: TerminalShell,
+    parsed: Parsed & { tool: "run" },
+    call: Call,
+    by: string,
+  ): Promise<string> {
+    const why = call.approved ? by : `by ${by}`
+    const running: Running = {
+      command: parsed.command, why, started: performance.now(), seen: false, ended: Promise.withResolvers<void>(),
+    }
+    entry.running = running
+    const reply = await shell.run(parsed.command, parsed.waitMs, call.signal)
+    // Refused by the shell itself: it never started.
+    if (!running.seen && entry.running === running) entry.running = null
+    if (!call.signal.aborted || entry.running !== running) return this.text(entry, shell, reply)
+    shell.ownerKeys(CTRL_C)
+    await within(running.ended.promise, STOP_WAIT_MS)
+    const { status, exit, waiting } = shell.state()
+    return this.text(entry, shell, { ...reply, status, exit, waiting })
+  }
+
+  /** Follows `entry`'s state for the command the terminal ran there: it starts when the shell runs it, and ends when
+   *  the shell stops running it, its row then going to the host's audit. */
+  private follow(entry: Entry, state: ShellState): void {
+    const running = entry.running
+    if (running === null) return
+    if (!running.seen) {
+      if (state.status === "running" && state.command === running.command) running.seen = true
+      return
+    }
+    if (state.status === "running" || state.status === "waiting") return
+    entry.running = null
+    const duration = (performance.now() - running.started) / 1000
+    const { command: text, why } = running
+    const outcome = state.exit === 0 ? "ok" : "error"
+    this.audit({ outcome, tool: "terminal_run", text, shell: entry.name, exit: state.exit, duration, why })
+    running.ended.resolve()
+  }
+
+  /** Gives `row` to the host's audit, which never fails a call. */
+  private audit(row: TerminalAudit): void {
+    try {
+      this.host.audit?.(row)
+    } catch {
+      // The host's audit failed; the call's own result stands.
+    }
   }
 
   /** Types into the shell's running command, gated on the whole line it makes; an approved call (`approved`, the
@@ -380,7 +490,7 @@ export class Terminal {
     id?: string,
   ): Promise<Gate> {
     if (call.signal.aborted) return { run: false, result: STOPPED }
-    if (call.approved) return { run: true, by: "the owner's approval" }
+    if (call.approved) return { run: true, by: call.credit ?? "approved" }
     const base = this.host.permissions
     const { check, blocked } = base
     const permissions: Permissions = {
@@ -392,7 +502,14 @@ export class Terminal {
       ...(blocked ? { blocked: () => blocked.call(base) } : {}),
     }
     const decided = await gate(permissions, action, { tool, why, args, callId: call.callId, signal: call.signal })
-    if (decided.run && call.signal.aborted) return { run: false, result: STOPPED }
+    if (call.signal.aborted) return decided.run ? { run: false, result: STOPPED } : decided
+    if (!decided.run) {
+      const shell = id === undefined ? null : (this.entries.find((entry) => entry.id === id)?.name ?? null)
+      // A card the host's hold refused (dontAsk's refusal, as text) is a refusal like any other.
+      const held = decided.held !== undefined && typeof decided.result !== "string"
+      const reason = held ? decided.held!.reason : String(decided.result)
+      this.audit({ outcome: held ? "held" : "denied", tool, text: action.text, shell, reason })
+    }
     return decided
   }
 
@@ -407,10 +524,15 @@ export class Terminal {
       return `a new shell couldn't be made: ${(error as Error).message}`
     }
     const { shells, driver } = this.host
+    // The entry, once made: a shell's first state change (its start) can come before.
+    let made: Entry | undefined
     const host = {
       record: binding.record,
       driver,
-      changed: (state: ShellState) => binding.changed(state),
+      changed: (state: ShellState) => {
+        if (made !== undefined) this.follow(made, state)
+        binding.changed(state)
+      },
       output: (chunk: Uint8Array) => binding.output(chunk),
     }
     let opened: Promise<TerminalShell>
@@ -438,7 +560,8 @@ export class Terminal {
       const kind = shells.shell === undefined ? {} : { shell: shells.shell }
       opened = PtyShell.open(binding.id, name, { ...host, start, env: shells.env, ...kind })
     }
-    const entry: Entry = { id: binding.id, name, opened, shell: null, queue: Promise.resolve() }
+    const entry: Entry = { id: binding.id, name, opened, shell: null, queue: Promise.resolve(), running: null }
+    made = entry
     this.entries.push(entry)
     opened.then(
       (shell) => {
@@ -474,6 +597,13 @@ export class Terminal {
     const dontAsk = this.host.permissions.mode() === "dontAsk"
     return replyText(reply, { name: entry.name, error: shell.state().error, dontAsk })
   }
+}
+
+/** Resolves once `promise` does, or after `ms`, whichever comes first. */
+async function within(promise: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([promise, new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)))])
+  clearTimeout(timer)
 }
 
 /** `path` with its links resolved, or as it is when it can't be. */

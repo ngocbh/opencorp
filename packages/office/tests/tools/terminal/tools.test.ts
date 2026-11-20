@@ -491,16 +491,15 @@ test("the wait is capped at two minutes", async () => {
   expect(t.terminal.shells().map((s) => s.name)).toEqual(["shell 1", "shell 2"])
 })
 
-test("a call whose run stops ends its wait", async () => {
+test("a call whose run stops ends its wait, and the command it waited on", async () => {
   const t = openTerminal({ perms: permissions().perms })
   const stop = new AbortController()
   const started = performance.now()
   const running = t.call("run", { command: "sleep 5", why: "x", wait: 60 }, { signal: stop.signal })
   setTimeout(() => stop.abort(), 300)
-  expect(json(await running)).toMatchObject({ shell: "shell 1", status: "running" })
+  expect(json(await running)).toMatchObject({ shell: "shell 1", status: "idle", exit: 130 })
   expect(performance.now() - started).toBeLessThan(3000)
-  expect(json(await t.call("interrupt", { shell: "shell 1" })).refused).toBeUndefined()
-  expect(json(await t.call("read", { shell: "shell 1", wait: 10 }))).toMatchObject({ status: "idle" })
+  expect(json(await t.call("interrupt", { shell: "shell 1" })).refused).toBe("nothing is running")
 })
 
 test("an approved call runs once through runApproved, and is refused if its shell ended meanwhile", async () => {

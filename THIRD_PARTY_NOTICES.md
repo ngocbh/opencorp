@@ -57,11 +57,14 @@ license, the upstream paths and commit, and our paths.
   (`sessions.instrumentScreen`), `packages/office/src/runtime/sessions/instruments.ts`,
   `packages/office/src/server/routes/instruments.ts`.
 - **What:** its shell tool, as the model sees it, as a design: one permission request per call, covering all of the
-  call's commands; a reply within two minutes by default, the command still running past it rather than killed; and
-  its prompt's "DO NOT poll", with its advice to quote paths that hold spaces or special characters and to prefer a
-  dedicated tool over a shell command. The terminal tools' gate and descriptions follow these; the code is our own.
+  call's commands; a reply within two minutes by default, the command still running past it rather than killed; its
+  prompt's "DO NOT poll", with its advice to quote paths that hold spaces or special characters and to prefer a
+  dedicated tool over a shell command; and a call that is stopped stopping its own command, replying once it has
+  ended or after a short wait, while a command its reply left running goes on. The terminal tools' gate, descriptions
+  and stops follow these; the code is our own.
 - **Upstream:** `packages/core/src/tool/plugin/shell.ts` (`description`, `DEFAULT_TIMEOUT_MS`,
-  `BACKGROUND_INSTRUCTION`, and `prepare`'s `permission.assert`), read at commit `df46f69` (2026-11-16).
+  `BACKGROUND_INSTRUCTION`, `prepare`'s `permission.assert`, and `cancelled` with `INTERRUPT_WAIT`), read at commit
+  `df46f69` (2026-11-16).
 - **Ours:** `packages/office/src/tools/terminal/tools.ts`, `packages/office/src/tools/terminal/terminal.ts`.
 - **What:** the line under the prompt keeps the fork's layout: the spinner and `esc interrupt` (or the folder) on the
   left, the shortcuts on the right. The chat's instrument counts follow the left side, and what waits for the owner
