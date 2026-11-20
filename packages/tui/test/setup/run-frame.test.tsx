@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { SPINNER_FRAMES } from "../../src/component/spinner"
+import { parsePrompt } from "../../src/setup/child"
 import { commandName } from "../../src/setup/run"
 import { until } from "../fixture/until"
 import { bootSetup, FakeChild } from "./boot"
@@ -157,6 +158,67 @@ test("a child that ends after the screen is gone still ends the run, touching th
     expect(await app.task).toBe(3)
     expect(late).toEqual([])
   } finally {
+    await app.stop()
+  }
+})
+
+test("a hand_over, take_back, command, result or review line is ignored as any unknown line is: shown as said, nothing more", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq")
+  const renderer = app.setup.renderer
+  const calls: string[] = []
+  for (const name of ["suspend", "resume"] as const) {
+    const original = renderer[name].bind(renderer)
+    renderer[name] = () => {
+      calls.push(name)
+      return original()
+    }
+  }
+  const lines = [
+    { type: "hand_over", why: "Running the command." },
+    { type: "take_back" },
+    { type: "command", title: "Run it?", warning: "", lines: ["  1  ls"] },
+    { type: "result", title: "Exited 0", ok: true, lines: [] },
+    { type: "review", title: "Save it?", files: [{ name: "a", lines: [] }], risks: [], warning: "" },
+  ].map((line) => JSON.stringify(line))
+  try {
+    await app.until((f) => f.includes("Working…"))
+    for (const line of lines) child.push(parsePrompt(line))
+    const f = await app.until((f) => f.includes('"type":"review"'))
+    // The screen stays up and waits on: no hand-over, no answer, and no card to read.
+    expect(f).toContain('"type":"hand_over"')
+    expect(f).toContain("Working…")
+    expect(f).not.toContain("Read to the end")
+    expect(calls).toEqual([])
+    expect(child.answers).toEqual([])
+    child.end(0)
+    expect(await app.task).toBe(0)
+    expect(app.out()).toBe(lines.map((line) => line + "\n").join(""))
+    expect(app.err()).toBe("")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("an uncaught error gives the terminal back, shows the error, and exits non-zero", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "opencorp hq")
+  const realExit = process.exit
+  let exitCode: number | undefined
+  ;(process as unknown as { exit: (c?: number) => void }).exit = (c) => {
+    exitCode = c
+  }
+  try {
+    await app.until((f) => f.includes("Working…"))
+    expect(app.setup.renderer.isDestroyed).toBe(false)
+    // A stray throw anywhere in the visit while the screen is up: opentui would only log it under the screen.
+    process.emit("uncaughtException", new Error("boom in the visit"))
+    // The terminal is given back, the error is shown, and it exits non-zero.
+    expect(exitCode).toBe(1)
+    expect(app.setup.renderer.isDestroyed).toBe(true)
+    expect(app.err()).toContain("boom in the visit")
+  } finally {
+    ;(process as unknown as { exit: typeof realExit }).exit = realExit
     await app.stop()
   }
 })

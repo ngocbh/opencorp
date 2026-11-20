@@ -29,44 +29,7 @@ export function parsePrompt(line: string): SetupPrompt {
   const str = (x: unknown) => typeof x === "string"
   const opt = (x: unknown) => x === undefined || str(x)
   const int = (x: unknown) => Number.isInteger(x)
-  const strs = (x: unknown): x is string[] => Array.isArray(x) && x.every(str)
-  const file = (x: any) => x && typeof x === "object" && str(x.name) && strs(x.lines)
   if (value && typeof value === "object") {
-    if (value.type === "command" && str(value.title) && opt(value.warning) && strs(value.lines))
-      return {
-        type: "command",
-        title: printable(value.title),
-        warning: printable(value.warning ?? ""),
-        lines: value.lines.map(printable),
-      }
-    if (
-      value.type === "result" &&
-      str(value.title) &&
-      typeof value.ok === "boolean" &&
-      (value.lines === undefined || strs(value.lines))
-    )
-      return { type: "result", title: printable(value.title), ok: value.ok, lines: (value.lines ?? []).map(printable) }
-    if (
-      value.type === "review" &&
-      str(value.title) &&
-      Array.isArray(value.files) &&
-      value.files.length > 0 &&
-      value.files.every(file) &&
-      (value.risks === undefined || strs(value.risks)) &&
-      opt(value.warning)
-    )
-      return {
-        type: "review",
-        title: printable(value.title),
-        files: value.files.map((f: { name: string; lines: string[] }) => ({
-          name: printable(f.name),
-          lines: f.lines.map(printable),
-        })),
-        risks: (value.risks ?? []).map(printable),
-        warning: printable(value.warning ?? ""),
-      }
-    if (value.type === "hand_over" && str(value.why)) return { type: "hand_over", why: printable(value.why) }
-    if (value.type === "take_back") return { type: "take_back" }
     if (value.type === "say" && str(value.text)) return { type: "say", text: printable(value.text) }
     if (value.type === "step" && int(value.number) && int(value.total) && str(value.title) && str(value.why))
       return {
