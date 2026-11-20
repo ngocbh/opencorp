@@ -8,6 +8,12 @@
  *  doesn't model at all it doesn't guess: it exits `FAKE_CLAUDE_UNMODELLED`, saying "not modelled: …" on stderr and
  *  in the log, so no test passes by relying on a guess.
  *
+ *  What it guesses, from Claude Code's docs, to re-record in O5: the read-only commands (the docs' list; a real one
+ *  has more, so a command the fake refuses may run unasked for real); the protected paths (`.git` and `.claude`);
+ *  which Bash commands a `Read` or `Edit` rule reaches (redirects, `cat`, `head`, `tail`, `tee`, `sed` and the file
+ *  operations); `permissions.additionalDirectories`, and a JSON `--settings`' `/` rules, anchored at the working
+ *  folder; and the refusals' text and meta.
+ *
  *  - **Start.** `--version` prints the version. Any other run needs `--input-format stream-json --output-format
  *    stream-json`, else it exits 2. It reads `--session-id`, `--resume`, `--permission-mode`,
  *    `--permission-prompt-tool`, `--model`, `--settings` (JSON, or a JSON file), `--setting-sources`,
@@ -40,7 +46,7 @@
  *    2. the deny rules, from `--disallowedTools` and the settings' `permissions.deny`: in every mode;
  *    3. the ask rules, `permissions.ask`, ask even in `bypassPermissions`; a bare `Bash` one gives way to the sandbox;
  *    4. the sandbox's auto-allow runs `Bash` in every mode: the sandbox enabled and up, `autoAllowBashIfSandboxed` on
- *       (unset, on before 2.1.324), and the call kept in the sandbox (not `excludedCommands`, not a
+ *       (unset, on before 2.1.325), and the call kept in the sandbox (not `excludedCommands`, not a
  *       `dangerouslyDisableSandbox` retry unless `allowUnsandboxedCommands` is false, not behind an assignment, `eval`
  *       or `make VAR=…`); `bypassPermissions` runs anything; `acceptEdits` runs edits, and `mkdir`, `touch`, `rm`,
  *       `rmdir`, `mv` and `cp`, on paths inside the working folders (the fake's, `--add-dir`'s and
@@ -72,6 +78,8 @@
  *    script's turn after the session's last; an unknown id exits 1 (its wording unrecorded).
  *  - **The log.** `<state>/log.jsonl` holds each run's start (argv, cwd, env, the flags read, settings whole) and
  *    every line in and out. Stdin's end exits 0 at once, and SIGTERM 143, each ending the running command's group.
+ *    A SIGKILL can't be caught, so a fake killed that way leaves its running Bash group behind: stop it by closing
+ *    stdin or with SIGTERM, never with SIGKILL first.
  *
  *  It writes no `status`, `rate_limit_event`, `stream_event` or `thinking_tokens` lines, which real Claude Code
  *  writes too; a driver ignores them. */
@@ -682,8 +690,9 @@ class Policy {
   readOnly(sub: Simple, all: Simple[]): boolean {
     const [cmd = "", ...args] = sub.words
     if (ASSIGNMENT.test(cmd) || WRAPPERS.has(cmd)) {
-      const behind = sub.words.find((w) => !ASSIGNMENT.test(w) && !WRAPPERS.has(w)) ?? ""
-      if (READ_ONLY.has(behind) || behind === "git" || behind === "cd") unmodelled(`a read-only command behind ${cmd}`)
+      // Which prefixes a real one strips, and how it reads what follows them, isn't modelled.
+      if (args.some((w) => READ_ONLY.has(w) || w === "git" || w === "cd"))
+        unmodelled(`a read-only command behind ${cmd}`)
       return false
     }
     if (cmd === "cd") return args.length === 1 && this.inside(args[0]!) && !all.some((s) => s.words[0] === "git")
@@ -701,6 +710,12 @@ class Policy {
    *  with an option or a glob. sed, and a removal of a critical path, aren't modelled. */
   fileOp(sub: Simple): boolean {
     const [cmd = "", ...args] = sub.words
+    if (ASSIGNMENT.test(cmd) || WRAPPERS.has(cmd)) {
+      // The docs say only that a touch behind an assignment or a wrapper isn't approved.
+      const op = args.find((w) => FILE_OPS.has(w) || w === "sed")
+      if (op !== undefined && op !== "touch") unmodelled(`${op} behind ${cmd} with acceptEdits`)
+      return false
+    }
     if (cmd === "sed") unmodelled("sed with acceptEdits")
     if (!FILE_OPS.has(cmd)) return false
     if (cmd === "touch" && (sub.glob || args.some((a) => a.startsWith("-")))) return false
@@ -711,13 +726,13 @@ class Policy {
   }
 
   /** Whether the sandbox's auto-allow takes the call: the sandbox enabled and up, auto-allow on (unset, on before
-   *  2.1.324), and the call kept in the sandbox. A retry unsandboxed, an excluded call, and a command behind an
+   *  2.1.325), and the call kept in the sandbox. A retry unsandboxed, an excluded call, and a command behind an
    *  assignment, `eval` or `make VAR=…` take the regular flow. */
   sandboxed(input: Obj, subs: () => Simple[]): boolean {
     const sb = this.sandbox
     if (sb.enabled !== true || !this.sandboxUp) return false
     const set = sb.autoAllowBashIfSandboxed
-    const auto = typeof set === "boolean" ? set : below(this.version, "2.1.324")
+    const auto = typeof set === "boolean" ? set : below(this.version, "2.1.325")
     if (!auto || (input.dangerouslyDisableSandbox === true && sb.allowUnsandboxedCommands !== false)) return false
     const all = subs()
     const regular = (s: Simple) => {
@@ -1141,8 +1156,10 @@ class Fake {
     if (answered === null) return null
     const r = isObj(answered.response) ? answered.response : {}
     if (r.updatedPermissions !== undefined) unmodelled("a can_use_tool answer's updatedPermissions")
-    if (answered.subtype === "success" && r.behavior === "allow")
-      return { allow: true, input: isObj(r.updatedInput) ? r.updatedInput : used }
+    if (answered.subtype === "success" && r.behavior === "allow") {
+      if (!isObj(r.updatedInput)) unmodelled("a can_use_tool allow without updatedInput")
+      return { allow: true, input: r.updatedInput }
+    }
     if (r.interrupt === true) unmodelled("a can_use_tool deny that interrupts")
     return { allow: false, message: typeof r.message === "string" ? r.message : denied(name), source: "user" }
   }

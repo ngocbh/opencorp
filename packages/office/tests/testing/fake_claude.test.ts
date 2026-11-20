@@ -335,10 +335,11 @@ test("sandbox auto-allow runs Bash in every mode but plan, unless the command le
   expect(await outcome(dontAsk(sandbox()), [rm({ dangerouslyDisableSandbox: true })])).toEqual(["refused"])
   const strict = sandbox({ allowUnsandboxedCommands: false })
   expect(await outcome(dontAsk(strict), [rm({ dangerouslyDisableSandbox: true })])).toEqual(["ran"])
-  // Unset, auto-allow is on before 2.1.324 and off from it; a sandbox that can't start runs nothing sandboxed.
+  // Unset, auto-allow is on before 2.1.325 and off from it; a sandbox that can't start runs nothing sandboxed.
   const enabled = JSON.stringify({ sandbox: { enabled: true } })
   expect(await outcome(dontAsk(enabled), [rm()])).toEqual(["ran"])
-  expect(await outcome(dontAsk(enabled), [rm()], { version: "2.1.324" })).toEqual(["refused"])
+  expect(await outcome(dontAsk(enabled), [rm()], { version: "2.1.324" })).toEqual(["ran"])
+  expect(await outcome(dontAsk(enabled), [rm()], { version: "2.1.325" })).toEqual(["refused"])
   expect(await outcome(dontAsk(sandbox()), [rm()], { sandbox_unavailable: true })).toEqual(["refused"])
 })
 
@@ -563,7 +564,22 @@ test("the fake exits loudly on what it doesn't model, so no test can rely on it"
   post.send(request("init", { subtype: "initialize", hooks: { PostToolUse: [{ hookCallbackIds: ["hook_1"] }] } }))
   post.send(user("Go.", "u-1"))
   loud(await post.exited, post.stderr)
-  expect(fake.log().filter((entry) => entry.dir === "unmodelled").length).toBe(7)
+  // An allow without updatedInput, which old versions refused.
+  const bare = new Claude(fake, ["--permission-prompt-tool", "stdio"], work)
+  bare.respond((m) => (isRequest("can_use_tool")(m) ? answer(m.request_id, { behavior: "allow" }) : undefined))
+  bare.send(user("Go.", "u-1"))
+  loud(await bare.exited, bare.stderr)
+  // A command behind an assignment or a wrapper where acceptEdits or the read-only set must judge it; the docs say
+  // only that such a touch isn't approved.
+  for (const command of ["LANG=C rm -f gone", "timeout 5 mkdir made", "timeout 5 ls"]) {
+    fake.set({ turns: [[{ tool: "Bash", input: { command } }]] })
+    const prefixed = new Claude(fake, ["--permission-mode", "acceptEdits"], work)
+    prefixed.send(user("Go.", "u-1"))
+    loud(await prefixed.exited, prefixed.stderr)
+  }
+  const touch = [{ tool: "Bash", input: { command: "LANG=C touch t" } }]
+  expect(await outcome(["--permission-mode", "acceptEdits"], touch)).toEqual(["refused"])
+  expect(fake.log().filter((entry) => entry.dir === "unmodelled").length).toBe(11)
 })
 
 test("a Bash step's result is its command's real output and exit", async () => {
