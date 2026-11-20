@@ -27,7 +27,7 @@ test("the fixed risks are the design's, and the provider file is named", () => {
     ["a chat with OpenCorp", "model", "each command", "the screen shows", "hostnames", "username", "job lists", "never what you type at a password prompt"],
     ["starts in auto", "read-only commands", "short answers to a prompt run", "Auto's check, a model call on your connection", "asks you"],
     ["Shift+Tab", "default or ask", "careful relearn"],
-    ["sandboxed to your SSH files", "/h/hq", "the model's key or its ChatGPT sign-in", "out of its reach"],
+    ["sandboxed to your SSH files", "/h/hq", "the model's key or its ChatGPT sign-in", "out of its reach", "asked first whether to run it with none"],
     ["a connection open to the cluster", "the agent's ssh uses it", "no password prompt", "could end it", "each ssh may ask you to log in"],
   ])
   const saving = beforeSaving(new ReachPaths("/h"))
@@ -67,7 +67,7 @@ const HELD = {
     "Learning is a chat with OpenCorp, whose agent uses a model: it sees each command its shell runs and what the screen shows, hostnames, your username, paths and job lists, but never what you type at a password prompt.",
     "The chat starts in auto: read-only commands and short answers to a prompt run at once (a host key's yes, Duo's 1); the rest goes to Auto's check, a model call on your connection, or asks you.",
     "Press Shift+Tab to switch to default or ask for a careful relearn.",
-    `The agent's shell is sandboxed to your SSH files: ${paths.dir}, which holds the model's key or its ChatGPT sign-in, is out of its reach.`,
+    `The agent's shell is sandboxed to your SSH files: ${paths.dir}, which holds the model's key or its ChatGPT sign-in, is out of its reach. Where this machine can't sandbox it, you're asked first whether to run it with none.`,
     "If you have a connection open to the cluster, the agent's ssh uses it, with no password prompt, and could end it; otherwise each ssh may ask you to log in.",
   ],
   beforeSaving: (paths: ReachPaths): string[] => [

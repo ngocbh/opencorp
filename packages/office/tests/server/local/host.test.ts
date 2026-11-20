@@ -580,16 +580,32 @@ function cardGroup(acts: { value: string; typed: boolean }[]) {
 test("a feature's question card asks in every mode but dontAsk; the owner's answer, chosen or typed, goes to its act, whose output the agent gets", async () => {
   const fake = await fakeLlm()
   const save = { tool_calls: [{ name: "card", arguments: {} }], match: AGENT }
-  fake.script(save, { content: "Saved.", match: AGENT }, save, { content: "Changed.", match: AGENT }, save, {
+  // The first turn holds the card beside a command the mode asks about.
+  const both = {
+    tool_calls: [
+      { name: "card", arguments: {}, id: "call_card" },
+      terminalCall("run", { command: "touch a", why: "a" }, "call_touch"),
+    ],
+    match: AGENT,
+  }
+  fake.script(both, { content: "Saved.", match: AGENT }, save, { content: "Changed.", match: AGENT }, save, {
     content: "Refused.",
     match: AGENT,
   })
   const acts: { value: string; typed: boolean }[] = []
-  const { host } = await startHost(fake, { flow: CARD_FLOW, groups: cardGroup(acts) })
+  const { host, work } = await startHost(fake, { flow: CARD_FLOW, groups: cardGroup(acts) })
   await until(host, "idle")
-  // Auto never answers it, and neither does a rule.
+  host.setMode("default", OWNER)
   await host.prompt("save", OWNER)
-  const [card] = await cards(host, 1)
+  const held = await cards(host, 2)
+  const card = held.find((q) => q.source === "ask_user")
+  const touch = held.find((q) => q.source === "approval")
+  // A rule the owner adds while it is open decides the command's card, and never the save card.
+  host.answer(touch!.id, sessionOption(["touch *"]), "option", OWNER)
+  await waitFor(() => fs.existsSync(path.join(work, "a")), { what: "touch a to run" })
+  expect(host.rules().rules.map((rule) => rule.pattern)).toEqual(["touch *"])
+  expect(host.question(card!.id)?.status).toBe("open")
+  expect(acts).toEqual([])
   expect(card).toMatchObject({
     source: "ask_user",
     asker: "opencorp",
@@ -599,7 +615,7 @@ test("a feature's question card asks in every mode but dontAsk; the owner's answ
   })
   host.answer(card!.id, "Save it", "option", OWNER)
   await replied(host, "Saved.")
-  expect(results(fake.requests(), 1)).toEqual(["the owner said Save it"])
+  expect(results(fake.requests(), 1)[0]).toBe("the owner said Save it")
   await until(host, "idle")
   host.setMode("ask", OWNER)
   await host.prompt("save again", OWNER)
@@ -617,7 +633,8 @@ test("a feature's question card asks in every mode but dontAsk; the owner's answ
   await replied(host, "Refused.")
   expect(results(fake.requests(), 5)).toEqual(["Not run: this session doesn't ask (dontAsk mode): saving always asks."])
   expect(acts).toHaveLength(2)
-  expect(host.questions({})).toHaveLength(2)
+  // The two save cards and the command's: none for the refused one.
+  expect(host.questions({})).toHaveLength(3)
 })
 
 test("switching to dontAsk refuses an open question card, and Esc answers one interrupted; neither runs its act", async () => {
@@ -641,4 +658,22 @@ test("switching to dontAsk refuses an open question card, and Esc answers one in
   await host.interrupt()
   await waitFor(() => host.question(second!.id)?.answer_kind === "interrupted", { what: "the card interrupted" })
   expect(acts).toEqual([])
+})
+
+test("a run that fails ends the session failed, and keeps why, as the run said it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 400, match: AGENT })
+  const { host } = await startHost(fake, { first: "hi" })
+  await host.ended
+  expect(host.session()!.status).toBe("failed")
+  expect(host.failure).toContain("scripted error 400")
+})
+
+test("a session that ends as asked keeps no failure", async () => {
+  const fake = await fakeLlm()
+  const { host } = await startHost(fake)
+  await until(host, "idle")
+  await host.end()
+  await host.ended
+  expect([host.session()!.status, host.failure]).toEqual(["ended", null])
 })

@@ -11,6 +11,7 @@ import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { AuthStore } from "@ngocbh/yian/llm_clients"
 import { providerSecrets } from "../../../src/models/check.ts"
 import { AUTH_FILE_ENV, ConnectionFile } from "../../../src/models/connections.ts"
+import { Provider } from "../../../src/models/provider.ts"
 import { Learning } from "../../../src/features/reach/learning.ts"
 import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import type { Spec } from "../../../src/features/reach/spec.ts"
@@ -23,6 +24,8 @@ import {
   LEARN_FIRST,
   LEARN_NEEDS_TERMINAL,
   type LearnChat,
+  type LearnEnd,
+  learnedMessage,
   MAX_OLD_CHARS,
   LOST,
   NO_OFFICE_HERE,
@@ -851,11 +854,11 @@ function binding(answers: CardAnswer[] = []) {
   return { bound, listed, shells }
 }
 
-/** A `learnChat` that plays the session as `play` says, given its spec and tools bound by `binding`'s; it ends
- *  `how`. Each spec it was given is kept. */
+/** A `learnChat` that plays the session as `play` says, given its spec and tools bound by `binding`'s; it ends as
+ *  `end` says. Each spec it was given is kept. */
 function chat(
   play: (spec: BuiltinSession<Terminal>, tools: BuiltinTools<Terminal>) => Promise<void> = async () => {},
-  { answers = [], how = "ended" }: { answers?: CardAnswer[]; how?: "ended" | "left" } = {},
+  { answers = [], end = { status: "ended", error: null } }: { answers?: CardAnswer[]; end?: LearnEnd } = {},
 ) {
   const specs: BuiltinSession<Terminal>[] = []
   const b = binding(answers)
@@ -867,7 +870,7 @@ function chat(
     } finally {
       await tools.terminal?.close()
     }
-    return how
+    return end
   }
   return { learnChat, specs, ...b }
 }
@@ -945,7 +948,7 @@ test.skipIf(!sandboxAvailable())("leaving the chat before it ends lists the comm
   const { dir, fake, paths } = await unlearnedHome()
   const c = chat(async (_session, tools) => {
     await callTool(tools, "terminal", "run", { command: "true", why: "look" })
-  }, { how: "left" })
+  }, { end: { status: "left", error: null } })
   const v = visitDeps(dir, fake, { answers: ["1"], learnChat: c.learnChat })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(130)
   expect(v.errors).toEqual([NO_OFFICE_HERE, NOT_SAVED, ASKED_FOR, "  (exit 0) true"])
@@ -1035,6 +1038,51 @@ test("a ChatGPT subscription's chat runs on the sign-in in hq/auth.json", async 
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
   expect(c.specs[0]!.model.env[AUTH_FILE_ENV]).toBe(paths.auth)
   expect(c.specs[0]!.model.llm_config).toMatchObject({ provider: "openai" })
+})
+
+test("a session that fails says why, and a refused ChatGPT sign-in how to sign in again here", async () => {
+  const { dir, fake, paths } = await unlearnedHome({ provider: false })
+  const yian =
+    "OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in again. Run 'yian auth openai' and start a new run"
+  const c = chat(async () => {}, { end: { status: "failed", error: yian } })
+  // Learn it, openai, the subscription, its default model.
+  const v = visitDeps(dir, fake, { answers: ["1", "openai", "", ""], auth: fakeSubscription().auth, learnChat: c.learnChat })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([
+    NO_OFFICE_HERE,
+    "opencorp hq: learning failed: OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in" +
+      ` again: delete ${paths.auth} and run \`opencorp hq\` again`,
+  ])
+})
+
+test("a failure's model key is left out of what the visit says", async () => {
+  const { dir, fake, paths } = await unlearnedHome()
+  const key = "sk-test-0123456789abcdefghij"
+  await writePrivate(paths.provider, JSON.stringify({ llm_config: { ...LLM_CONFIG, api_key: key }, env: {} }))
+  const c = chat(async () => {}, { end: { status: "failed", error: `the server refused key ${key}` } })
+  const v = visitDeps(dir, fake, { answers: ["1"], learnChat: c.learnChat })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors.at(-1)).toBe("opencorp hq: learning failed: the server refused key [redacted]")
+})
+
+test("a learning run's failure on a refused sign-in says how to sign in again here, not with yian auth", () => {
+  const paths = new ReachPaths("/h/we$&ird$`")
+  const provider = withSignIn(ConnectionFile.parse({ method: "subscription", llm_config: SUBSCRIBED_LLM }), paths.auth)
+  const hint = ". Run 'yian auth openai' and start a new run"
+  const yian = `OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in again${hint}`
+  expect(learnedMessage(yian, provider, paths)).toBe(
+    "OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in again: delete" +
+      " /h/we$&ird$`/hq/auth.json and run `opencorp hq` again",
+  )
+  // A failure that may pass keeps the sign-in.
+  for (const why of ["(could not connect)", "(HTTP 429)", "(HTTP 502)"]) {
+    expect(learnedMessage(`OpenAI authentication request failed ${why}${hint}`, provider, paths)).toBe(
+      `OpenAI authentication request failed ${why}: run \`opencorp hq\` again later`,
+    )
+  }
+  // On a key, or yian's own login, yian's hint is the fix.
+  const keyless = Provider.parse({ llm_config: SUBSCRIBED_LLM })
+  expect(learnedMessage(yian, keyless, paths)).toBe(yian)
 })
 
 test("--relearn gives the agent the old notes and script, and keeps the old path until the new one passes", async () => {

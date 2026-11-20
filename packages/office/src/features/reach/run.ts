@@ -10,7 +10,8 @@ import { createTwoFilesPatch } from "diff"
 import { loadFlow, runFlow } from "@ngocbh/yian"
 import { type ModelCheck, modelProblem, providerSecrets } from "../../models/check.ts"
 import type { Provider } from "../../models/provider.ts"
-import { LISTERS, type Listers, type SubscriptionAuth } from "../setup/onboard.ts"
+import { AUTH_FILE_ENV } from "../../models/connections.ts"
+import { LISTERS, type Listers, signInRemedy, type SubscriptionAuth } from "../setup/onboard.ts"
 import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../setup/prompts.ts"
 import { embedded } from "../../platform.ts"
 import type { BuiltinSession } from "../../runtime/sessions/builtin.ts"
@@ -18,6 +19,7 @@ import type { Terminal } from "../../tools/terminal/terminal.ts"
 import { which } from "../../util/env.ts"
 import { newId } from "../../util/ids.ts"
 import { writePrivate } from "../../util/private_files.ts"
+import { redact } from "../../util/redact.ts"
 import { workerEnv } from "../../runtime/worker/spawn.ts"
 import {
   classifyCheck,
@@ -118,9 +120,16 @@ export interface VisitDeps {
 }
 
 /** Runs `session` on the no-office host with the TUI on it, in this process, so the connection the session's save
- *  leaves open stays this visit's. Resolves once the session has ended (`ended`) or the owner left the TUI before it
- *  did (`left`, which ends it), the host stopped and the TUI closed. */
-export type LearnChat = (session: BuiltinSession<Terminal>) => Promise<"ended" | "left">
+ *  leaves open stays this visit's. Resolves once the session is over, the host stopped and the TUI closed, to how it
+ *  ended: see `LearnEnd`. */
+export type LearnChat = (session: BuiltinSession<Terminal>) => Promise<LearnEnd>
+
+/** How learning's session ended: as asked (`ended`), its run failed (`failed`, `error` saying why, as the run said
+ *  it), or the owner left the TUI before it ended (`left`, which ends it). */
+export interface LearnEnd {
+  readonly status: "ended" | "failed" | "left"
+  readonly error: string | null
+}
 
 export const USE = "Use it"
 export const STOP = "Stop"
@@ -141,6 +150,8 @@ export const LEARN_NEEDS_TERMINAL = "opencorp hq: learning needs a terminal the 
 export const RELEARN_BUSY =
   "opencorp hq: another `opencorp hq` here holds the connection to HQ; end it with Ctrl-C there, then run `opencorp hq --relearn`."
 export const NOT_SAVED = "opencorp hq: learning ended, and nothing was saved."
+/** Learning's session failed: why, as its run said it. */
+export const LEARNING_FAILED = (why: string) => `opencorp hq: learning failed: ${why}`
 export const ASKED_FOR = "The commands the agent ran:"
 /** The owner's first message in learning's chat: their choice to learn. */
 export const LEARN_FIRST = "Learn how this machine reaches HQ"
@@ -423,9 +434,9 @@ async function learnPath(
   const secrets = () => providerSecrets(provider, workerEnv(ctx.env))
   const id = newId()
   const state = new Learning(ctx, secrets, port, ctx.paths.session(id), deps.now)
-  let how: "ended" | "left"
+  let end: LearnEnd
   try {
-    how = await deps.learnChat!(learningSession(ctx, deps, provider, inputs, id, state))
+    end = await deps.learnChat!(learningSession(ctx, deps, provider, inputs, id, state))
   } catch (error) {
     await state.shell?.close()
     throw error
@@ -437,9 +448,23 @@ async function learnPath(
     return { access, conn: state.connection, shell: state.shell }
   }
   await state.shell?.close()
-  deps.error(NOT_SAVED)
+  if (end.status === "failed") {
+    // The model's key or sign-in never goes to the terminal, though a server may quote it.
+    const why = redact(end.error ?? "the session failed", [], state.secrets())
+    deps.error(LEARNING_FAILED(clean(learnedMessage(why, provider, ctx.paths))))
+  } else deps.error(NOT_SAVED)
   listCommands(deps, state)
-  return how === "left" || signal.aborted ? 130 : 1
+  return end.status === "left" || signal.aborted ? 130 : 1
+}
+
+/** Why a learning run on `provider` failed, `message`, with yian's hint to run `yian auth openai` replaced, on the
+ *  sign-in in `paths.auth`, by how to sign in again here: that command writes another file. */
+export function learnedMessage(message: string, provider: Provider, paths: ReachPaths): string {
+  if (provider.env[AUTH_FILE_ENV] !== paths.auth) return message
+  return signInRemedy(message, {
+    refused: `delete ${paths.auth} and run \`opencorp hq\` again`,
+    retry: "run `opencorp hq` again later",
+  })
 }
 
 /** The commands the agent's shells ran, each with its exit, or none; its first line as the record holds it. */

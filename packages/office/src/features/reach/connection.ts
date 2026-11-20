@@ -160,16 +160,16 @@ export class ConnectionShell {
 
   /** Runs `bytes`, reach.sh as checked, as a visit's replay does, here: from a private copy in the hq folder (0600,
    *  unique to this run, removed after), its stdin from /dev/null and its stdout to the shell's temp folder, for up to
-   *  `promptMs`; then classifies the run with the exits the wrapper recorded, its stderr being what the screen
-   *  showed. */
-  async replay(bytes: Uint8Array): Promise<Reached> {
+   *  `promptMs` or until `signal` (the card's, which Esc stops; the visit's by default) aborts; then classifies the
+   *  run with the exits the wrapper recorded, its stderr being what the screen showed. */
+  async replay(bytes: Uint8Array, signal: AbortSignal | undefined = this.o.ctx.signal): Promise<Reached> {
     const { ctx } = this.o
     const name = `.reach-${process.pid}-${randomBytes(4).toString("hex")}.sh`
     replaceFile(ctx.paths.dir, name, bytes)
     const copy = path.join(ctx.paths.dir, name)
     try {
       resetStatus(ctx)
-      const ran = await this.#run(`sh '${copy}' </dev/null >"$TMPDIR/spec.out"`, ctx.limits.promptMs, ctx.signal)
+      const ran = await this.#run(`sh ${quoted(copy)} </dev/null >"$TMPDIR/spec.out"`, ctx.limits.promptMs, signal)
       const out = path.join(this.#tmpdir!, "spec.out")
       let stdout = ""
       try {
@@ -184,7 +184,8 @@ export class ConnectionShell {
   }
 
   /** The node master for `spec`, as the shell's running command: `masterArgv` with the visit's config, after any
-   *  leftover `cm/node` goes. It ends when the shell's command ends (a drop), and `kill` stops it. */
+   *  leftover `cm/node` goes. It ends when the shell's command ends (a drop). `kill` stops it with a Ctrl-C, and
+   *  closes the shell when that hasn't ended it within `STOP_MS`. */
   async master(spec: Spec): Promise<Master> {
     const { ctx } = this.o
     const { paths } = ctx
@@ -214,8 +215,12 @@ export class ConnectionShell {
       socket: paths.node,
       kill: () => {
         // Ended already: nothing to stop, and the shell stays for the next try.
-        if (!["running", "waiting"].includes(shell.state().status)) return
-        if (shell.interrupt().refused !== undefined) void shell.close()
+        const busy = () => ["running", "waiting"].includes(shell.state().status)
+        if (!busy()) return
+        if (shell.interrupt().refused !== undefined) return void shell.close()
+        setTimeout(() => {
+          if (busy()) void shell.close()
+        }, STOP_MS).unref?.()
       },
     }
   }
@@ -243,7 +248,7 @@ export async function chainTest(
   port: number,
   ctx: ReachContext,
 ): Promise<Connection | string> {
-  const reached = await shell.replay(bytes)
+  const reached = await shell.replay(bytes, ctx.signal)
   ctx.signal?.throwIfAborted()
   if (reached.outcome !== "ok") return `reach.sh failed the test (${reached.outcome}): ${reached.detail}`
   try {

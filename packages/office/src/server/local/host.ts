@@ -79,6 +79,14 @@ const FLOW_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 export const END_STOP_MS = 5_000
 /** How long, in ms after End, a worker that hasn't ended is killed: the longest End waits for it. */
 export const END_KILL_MS = 8_000
+/** How long, in ms, a card's stop waits for the interrupt to close its call. */
+const STOP_WAIT_MS = 5_000
+
+/** Resolves once `done()` holds, polling every 20 ms, or after `ms`. */
+async function waitUntil(done: () => boolean, ms: number): Promise<void> {
+  for (const end = Date.now() + ms; !done() && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20))
+}
+
 /** How long, in ms, a worker has to end after it is asked to stop, before its group is killed. */
 const STOP_MS = END_KILL_MS - END_STOP_MS
 
@@ -208,6 +216,12 @@ export class SessionsBusy extends Error {
 export class LocalHost {
   /** The session's id. */
   readonly id = newId()
+
+  /** Why the session failed, as its run or its worker said, once it has; null while it lives, and when it ended as
+   *  asked. */
+  get failure(): string | null {
+    return this.#record.status === "failed" ? (this.#failure ?? "its worker ended before its run did") : null
+  }
   /** The session's events: its record, its questions, its messages and its instruments. */
   readonly bus = new Bus()
   /** The session's live instruments, published on the bus. */
@@ -263,6 +277,8 @@ export class LocalHost {
   #resolveEnded!: () => void
   /** The sessions folder's lock, held from the start until the host closes. */
   #lock: FileLock | null = null
+  /** Why the session failed, once it has; kept in memory, never logged: it may quote what the model's server said. */
+  #failure: string | null = null
 
   private constructor(spec: BuiltinSession<Terminal>, options: LocalHostOptions) {
     this.#spec = spec
@@ -586,6 +602,20 @@ export class LocalHost {
     return { ...answered }
   }
 
+  /** Stops the asker of open question `id` as `by`, who must be the owner: Esc on the chat, which closes its held
+   *  calls, so the card is answered interrupted; a card the interrupt left open is answered so as `by`. Throws
+   *  `HarnessError` 404 `not_found`, 403 `forbidden`, or 409 `not_open` or `ending`/`not_live`. */
+  async stopQuestion(id: string, by: string): Promise<QuestionRecord> {
+    const held = this.#held.get(id)
+    if (held === undefined) throw new HarnessError(404, "not_found", `no question ${id}`)
+    if (by !== OWNER) throw new HarnessError(403, "forbidden", `only @${OWNER} may stop this session's cards`)
+    if (held.question.status !== "open") throw new HarnessError(409, "not_open", `question ${id} is not open`)
+    await this.interrupt()
+    await waitUntil(() => held.question.status !== "open", STOP_WAIT_MS)
+    if (held.question.status === "open") this.#answer(held, INTERRUPTED, "interrupted", by)
+    return { ...held.question }
+  }
+
   /** Stops the host: ends the session (its worker killed by `END_KILL_MS` if it doesn't end), stops Auto's checks and
    *  ends the bus's streams. Never rejects. */
   async close(): Promise<void> {
@@ -700,13 +730,18 @@ export class LocalHost {
           if (waits.some((wait) => wait?.settled === true) && host.#plainFrom !== host.#waits) host.#readvance = true
         }
         if (frame.kept !== true && frame.status !== "succeeded") {
-          host.#log(`session ${host.id}: its run ended ${typeof frame.status === "string" ? frame.status : "badly"}`)
+          const status = typeof frame.status === "string" ? frame.status : "badly"
+          host.#log(`session ${host.id}: its run ended ${status}`)
+          const failure = frame.failure as { message?: unknown } | null | undefined
+          host.#failure ??= typeof failure?.message === "string" ? failure.message : `its run ended ${status}`
         }
         host.#outcome = frame.kept === true ? null : frame.status === "succeeded" ? "ended" : "failed"
       }
 
       override error(_worker: unknown, frame: Frame): void {
-        host.#log(`session ${host.id}: its worker failed (${typeof frame.code === "string" ? frame.code : "error"})`)
+        const code = typeof frame.code === "string" ? frame.code : "error"
+        host.#log(`session ${host.id}: its worker failed (${code})`)
+        host.#failure ??= `its worker failed (${code})`
         host.#outcome = "failed"
       }
 

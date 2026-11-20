@@ -58,7 +58,7 @@ async function learning(
 ) {
   const llm = await FakeLLM.start()
   onTestFinished(() => llm.close())
-  const c = await client(office ?? null, { behavior })
+  const c = await client(office ?? null, { behavior, compiled: true })
   onTestFinished(() => removeClient(c))
   // A path to learn, never one to approve.
   for (const file of ["reach.sh", "reach.approved.sh", "access.json"]) fs.rmSync(path.join(c.hq, file), { force: true })
@@ -107,10 +107,38 @@ function running(text: string): number[] {
   })
 }
 
-/** Nothing of `c` is left running, and every shell's record has ended. */
-function nothingLeft(c: Client) {
+/** Process `pid`'s command line, NUL-separated, or "" once it is gone. */
+function argv(pid: number): string {
+  try {
+    return fs.readFileSync(`/proc/${pid}/cmdline`, "utf8")
+  } catch {
+    return ""
+  }
+}
+
+/** The processes of this user whose working folder is in `dir`: the session's worker runs in its session's folder,
+ *  and OpenCorp's connection shell in hq. */
+function workingIn(dir: string): number[] {
+  return fs.readdirSync("/proc").flatMap((name) => {
+    if (!/^[0-9]+$/.test(name) || Number(name) === process.pid) return []
+    try {
+      const cwd = fs.readlinkSync(`/proc/${name}/cwd`)
+      return cwd === dir || cwd.startsWith(`${dir}/`) ? [Number(name)] : []
+    } catch {
+      return []
+    }
+  })
+}
+
+/** Nothing of `c` is left running, its workers included, once a process that is exiting has had a few seconds to
+ *  go, and every shell's record has ended. */
+async function nothingLeft(c: Client) {
+  const left = () => [...running(c.hq), ...running(c.fakeDir), ...workingIn(c.hq)]
+  for (const deadline = performance.now() + 5000; left().length > 0 && performance.now() < deadline; )
+    await Bun.sleep(100)
   expect(running(c.hq)).toEqual([])
   expect(running(c.fakeDir)).toEqual([])
+  expect(workingIn(c.hq)).toEqual([])
   const sessions = path.join(c.hq, "sessions")
   for (const session of fs.existsSync(sessions) ? fs.readdirSync(sessions) : []) {
     const records = path.join(sessions, session, "terminal")
@@ -146,7 +174,7 @@ describe.skipIf(!TMUX)("learning, a chat with OpenCorp on a real terminal", () =
     expect(holding(c.root, PASSWORD)).toEqual([])
     expect(holding(c.fakeDir, PASSWORD)).toEqual([path.join(c.fakeDir, "state", "tty.txt")])
     expect(t.screen()).not.toContain(PASSWORD)
-    nothingLeft(c)
+    await nothingLeft(c)
   })
 
   test("the fake the real CLI runs in the agent's shell can't read a canary in the test's home", async () => {
@@ -166,7 +194,7 @@ describe.skipIf(!TMUX)("learning, a chat with OpenCorp on a real terminal", () =
     expect(result(llm, "call_cat")).toContain("No such file or directory")
     expect(requests(llm).some((r) => r.includes(CANARY))).toBe(false)
     await leave(t)
-    nothingLeft(c)
+    await nothingLeft(c)
   })
 
   test("in auto the agent answers the host-key question and Duo's 1 with no card", async () => {
@@ -190,7 +218,7 @@ describe.skipIf(!TMUX)("learning, a chat with OpenCorp on a real terminal", () =
     expect(requests(llm).some((r) => r.includes("<input>"))).toBe(false)
     expect(t.screen()).not.toContain("enter confirm")
     await leave(t)
-    nothingLeft(c)
+    await nothingLeft(c)
   })
 
   test("after Shift+Tab to ask, the agent's command waits on a card in the chat, and Yes runs it in the SSH-only shell", async () => {
@@ -224,7 +252,7 @@ describe.skipIf(!TMUX)("learning, a chat with OpenCorp on a real terminal", () =
     expect(ran).toContain("No such file or directory")
     expect(ran).not.toContain("canary-in-the-home")
     await leave(t)
-    nothingLeft(c)
+    await nothingLeft(c)
   })
 
   test("with a connection of the owner's open, the agent's ssh asks for nothing", async () => {
@@ -255,6 +283,7 @@ describe.skipIf(!TMUX)("learning, a chat with OpenCorp on a real terminal", () =
     expect(c.fake.logins()).toEqual(["login1"])
     await leave(t)
     expect(running(c.hq)).toEqual([])
+    expect(workingIn(c.hq)).toEqual([])
   })
 
   test("logged in once in its shell, the agent's typed commands ask for nothing more", async () => {
@@ -277,7 +306,7 @@ describe.skipIf(!TMUX)("learning, a chat with OpenCorp on a real terminal", () =
     expect(c.fake.logins()).toEqual(["login1"])
     expect(requests(llm).some((r) => r.includes(PASSWORD))).toBe(false)
     await leave(t)
-    nothingLeft(c)
+    await nothingLeft(c)
   })
 
   test("the save card reads whole; the chain test asks once in OpenCorp's connection shell; then the chat closes and the visit prints Connected.", async () => {
@@ -320,7 +349,14 @@ describe.skipIf(!TMUX)("learning, a chat with OpenCorp on a real terminal", () =
     expect(await t.exit()).toBe("exit=0")
     expect(holding(c.root, PASSWORD)).toEqual([])
     expect(c.fake.masters()).toEqual([])
-    nothingLeft(c)
+    await nothingLeft(c)
+  })
+
+  test("a model error ends the chat, and the visit says why", async () => {
+    const { c, t } = await learning([{ error: 400, match: AGENT }], {}, { see: "opencorp hq: learning failed:" })
+    expect(await t.exit()).toBe("exit=1")
+    expect(t.screen()).toContain("scripted error 400")
+    await nothingLeft(c)
   })
 
   test("Ctrl-C twice ends the visit and every shell, and lists the commands tried", async () => {
@@ -335,7 +371,11 @@ describe.skipIf(!TMUX)("learning, a chat with OpenCorp on a real terminal", () =
     expect(t.screen()).toContain("The commands the agent ran:")
     expect(t.screen()).toContain("(no exit) sleep 3141")
     expect(t.screen()).not.toContain("touch marker")
-    expect(running("sleep 3141")).toEqual([])
-    nothingLeft(c)
+    // The shell's command goes with it, once it has had a few seconds to.
+    const sleeping = () => running("3141").filter((pid) => argv(pid) === "sleep\u00003141\u0000")
+    for (const deadline = performance.now() + 5000; sleeping().length > 0 && performance.now() < deadline; )
+      await Bun.sleep(100)
+    expect(sleeping()).toEqual([])
+    await nothingLeft(c)
   })
 })

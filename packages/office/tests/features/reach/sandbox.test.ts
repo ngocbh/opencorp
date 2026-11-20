@@ -154,16 +154,20 @@ test("the test fake's folder is bound only when OPENCORP_TEST_SSH_DIR names it, 
     ["/usr", "it is not the user's", h.paths],
     [path.join(h.root, "missing"), "nothing is there", h.paths],
   ]
+  // The passwd entry's home, which ssh's home stands in for in a test.
+  const passwd = path.join(h.root, "passwd")
+  fs.mkdirSync(passwd, { mode: 0o700 })
+  refused.push([folder(path.join(passwd, "fake")), `it lies in ${passwd}`, h.paths])
   for (const [dir, why, paths] of refused) {
     const env = { HOME: envHome, [TEST_SSH_DIR]: dir }
-    const error = await agentPolicy(paths, { home: h.dir, tmpdir: h.tmpdir, ssh: SSH, env }).catch((e: unknown) => e)
+    const error = await agentPolicy(paths, { home: h.dir, tmpdir: h.tmpdir, ssh: SSH, env, passwd }).catch((e: unknown) => e)
     expect([dir, error instanceof UnsafeProfile, (error as Error).message]).toEqual([
       dir,
       true,
       `the test folder ${dir} can't be bound: ${why}`,
     ])
   }
-  expect(testFolder(fake, [h.dir, envHome, h.paths.home])).toBe(fake)
+  expect(testFolder(fake, [h.dir, envHome, h.paths.home, passwd])).toBe(fake)
 })
 
 test("with it, ssh's home is $HOME, and nothing in the passwd home is read or made", async () => {
@@ -177,7 +181,7 @@ test("with it, ssh's home is $HOME, and nothing in the passwd home is read or ma
   expect(sshHome(passwd, { HOME: h.dir })).toBe(passwd)
   const env = { HOME: h.dir, [TEST_SSH_DIR]: fake }
   expect(sshHome(passwd, env)).toBe(h.dir)
-  const policy = await agentPolicy(h.paths, { home: sshHome(passwd, env), tmpdir: h.tmpdir, ssh: SSH, env })
+  const policy = await agentPolicy(h.paths, { home: sshHome(passwd, env), tmpdir: h.tmpdir, ssh: SSH, env, passwd })
   expect(policy.home).toBe(h.dir)
   expect(policy.readOnly[0]).toBe(h.ssh)
   fs.chmodSync(passwd, 0o700)

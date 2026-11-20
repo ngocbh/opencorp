@@ -239,10 +239,12 @@ const SSH_SAFE_KEYS = set(
 const SSH_CONTROL_KEYS = set("controlmaster controlpath localforward remoteforward dynamicforward")
 /** ssh's flags that do the same: a control socket, a control command, and the three forwards. */
 const SSH_CONTROL_LETTERS = "SOLRD"
-/** Variables that name a local command or config for ssh: git's, and the config the ssh wrapper passes with `-F`. */
-const SSH_COMMAND_VARS = ["GIT_SSH_COMMAND", "GIT_SSH", "OPENCORP_SSH_CONFIG"]
-/** Builtins that set, export or unset the variables they name, and those that read a value into them. */
-const SETS_VARIABLES = set("export declare typeset readonly local unset read mapfile readarray")
+/** A word that names a variable for a local command or config of ssh (git's, and the config the ssh wrapper passes
+ *  with `-F`) anywhere in it: as a name, an assignment, an append, an index, a nameref's target or an option's value,
+ *  however a builtin sets it (`export`, `declare -n`, `printf -v`, `read`, `getopts`, ...). Only a plain read of its
+ *  value, `$NAME` or `${NAME}`, is left out; `${NAME:=x}` assigns, so it counts. */
+const SSH_VARIABLE =
+  /(?:^|[^A-Za-z0-9_${]|\$\{(?=[A-Za-z_]+:?=))(?:-[A-Za-z]+)?(?:GIT_SSH_COMMAND|GIT_SSH|OPENCORP_SSH_CONFIG)(?![A-Za-z0-9_])/
 const SSH_LOCAL_KEYS = set("proxycommand localcommand permitlocalcommand knownhostscommand")
 const SSH_IDENTITY_KEYS = set("identityfile certificatefile")
 /** Programs that read only names and metadata, so a credential path given to them reads no secret. */
@@ -1328,11 +1330,7 @@ function riskOf(part: SimpleCommand, prog: string, args: readonly string[], sets
   if (connects(part)) return NETWORK
   const name = base(prog)
   // An exported variable of the shell's keeps its export when assigned, so a bare assignment counts too.
-  if (sets.some(namesSshCommand) || (SETS_VARIABLES.has(name) && args.some(namesSshCommand))) return LOCAL_SSH
-  // printf -v writes its output into the variable it names.
-  const printsInto = (w: string, i: number) =>
-    w === "-v" ? namesSshCommand(args[i + 1] ?? "") : w.startsWith("-v") && namesSshCommand(w.slice(2))
-  if (name === "printf" && args.some(printsInto)) return LOCAL_SSH
+  if ([prog, ...args, ...sets].some(namesSshCommand)) return LOCAL_SSH
   const own = programRisk(name, args, part) ?? FIXED_RISKS.get(name) ?? null
   if (own !== null) return own
   return part.writes.some((w) => w !== "/dev/null") ? WRITES : null
@@ -1427,9 +1425,9 @@ function gitArgs(args: readonly string[]) {
   return { options, globals: options.map(([o]) => o), sub: args[k] ?? "", rest: args.slice(k + 1), restAt: k + 1 }
 }
 
-/** Whether `word`, an assignment or a variable's name, is one of `SSH_COMMAND_VARS`. */
+/** Whether `word` names one of ssh's command variables (`SSH_VARIABLE`). */
 function namesSshCommand(word: string): boolean {
-  return SSH_COMMAND_VARS.some((name) => word === name || word.startsWith(`${name}=`))
+  return SSH_VARIABLE.test(word)
 }
 
 /** An ssh `-o` value's key, lowercased: up to `=` or a blank. */

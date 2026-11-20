@@ -133,3 +133,19 @@ test("a wrong token of the right length is refused", async () => {
   expect(ok.json()).toEqual({ person: OWNER, device: null })
   await served.close()
 })
+
+test("a card's stop is Esc on its chat: only the owner's, and the call is answered interrupted", async () => {
+  const { host, card } = await holding()
+  const asOwner = await serve<LocalContext>(localRoutes(), {
+    context: (info) => ({ host, person: OWNER, signal: info.signal, query: info.query }),
+  })
+  const asAva = await serve<LocalContext>(localRoutes(), {
+    context: (info) => ({ host, person: "ava", signal: info.signal, query: info.query }),
+  })
+  expect(errorOf(await post(asAva.sock, `/questions/${card.id}/stop`, {}))).toEqual([403, "forbidden"])
+  const stopped = await post(asOwner.sock, `/questions/${card.id}/stop`, {})
+  expect(stopped.status).toBe(200)
+  expect(stopped.json()).toMatchObject({ id: card.id, answer_kind: "interrupted" })
+  await until(host, "idle")
+  expect(errorOf(await post(asOwner.sock, `/questions/${card.id}/stop`, {}))).toEqual([409, "not_open"])
+})

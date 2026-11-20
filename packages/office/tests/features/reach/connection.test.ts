@@ -114,3 +114,41 @@ test("the shell stays when its listing goes, and closes at the visit's end", asy
   expect(t.shell.shell!.state().status).toBe("ended")
   expect(t.fake.masters()).toEqual([])
 })
+
+test("the chain test's own stop, the card's Esc, ends its replay at once, even at ssh's password prompt", async () => {
+  const t = await setUp({ hosts: { login1: { login: "tty" } } })
+  const stop = new AbortController()
+  // Five minutes for a login, as a visit gives it: only the stop can end it soon.
+  const limits = { ...t.ctx.limits, promptMs: 300_000 }
+  const tested = chainTest(t.shell, Buffer.from(scriptFor(t.spec)), t.port, { ...t.ctx, limits, signal: stop.signal })
+  await waitFor(() => t.shell.shell?.state().waiting === "secret", { what: "the password prompt" })
+  const at = performance.now()
+  stop.abort()
+  await expect(tested).rejects.toThrow()
+  expect(performance.now() - at).toBeLessThan(4000)
+  expect(["running", "waiting"]).not.toContain(t.shell.shell!.state().status)
+  // The visit's own context goes on: its signal never fired.
+  expect(t.ctx.signal?.aborted ?? false).toBe(false)
+  expect(t.fake.tty()).toEqual([])
+})
+
+test("a node master that a Ctrl-C doesn't end is ended with its shell", async () => {
+  const t = await setUp()
+  // An ssh that ignores SIGINT, as the node master the shell runs.
+  const stubborn = path.join(t.dir, "stubborn-ssh")
+  fs.writeFileSync(stubborn, `#!/bin/sh\ncase "$1" in -G) exit 1 ;; esac\ntrap '' INT\nsleep 300\n`, { mode: 0o700 })
+  const shell = new ConnectionShell({
+    ctx: { ...t.ctx, ssh: stubborn },
+    folder: t.folder,
+    sessionId: "01JDSESSION000000000000000",
+    instruments: { add: () => {}, updated: () => {}, output: () => {}, remove: () => {} },
+  })
+  onTestFinished(() => shell.close())
+  const master = await shell.master(t.spec)
+  await Bun.sleep(300)
+  const at = performance.now()
+  master.kill()
+  expect(await master.exited).toBe(255)
+  expect(performance.now() - at).toBeLessThan(8000)
+  expect(shell.shell!.state().status).toBe("ended")
+})

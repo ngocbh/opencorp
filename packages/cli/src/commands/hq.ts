@@ -199,17 +199,18 @@ export const realHqDeps: HqDeps = {
 }
 
 /** Learning's chat: its session on the no-office host in this process, served on a private socket to the TUI, which
- *  opens on it and closes once the session ends; the host stops once both are over. Resolves `left` when the owner
- *  left the TUI before the session ended, which ends it. Loaded only once learning starts. */
+ *  opens on it and closes once the session is over; the host stops once both are. Resolves to how the session ended,
+ *  with why when its run failed, or `left` when the owner left the TUI first, which ends it. Loaded only once
+ *  learning starts. */
 export const learnChat: LearnChat = async (session) => {
   const { LocalHost, OWNER, serveLocal } = await import("@opencorp/office/server/local")
   const host = await LocalHost.start(session)
   let served: Awaited<ReturnType<typeof serveLocal>> | undefined
   try {
     served = await serveLocal(host)
-    let ended = false
+    let over = false
     const until = host.ended.then(() => {
-      ended = true
+      over = true
       return undefined
     })
     // The TUI is Solid JSX, loaded as `opencorp` loads it.
@@ -219,7 +220,9 @@ export const learnChat: LearnChat = async (session) => {
     const local = { sessionID: host.id, until }
     const input = { socket: served.socket, token: served.token, person: OWNER, cwd: process.cwd(), args: {}, local }
     await Effect.runPromise(runTui(input).pipe(Effect.provide(Global.layer)))
-    return ended ? "ended" : "left"
+    if (!over) return { status: "left", error: null }
+    const failure = host.failure
+    return failure === null ? { status: "ended", error: null } : { status: "failed", error: failure }
   } finally {
     await host.close()
     await served?.close()

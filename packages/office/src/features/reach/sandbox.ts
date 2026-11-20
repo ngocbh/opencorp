@@ -1,6 +1,7 @@
 /** The agent's SSH-only sandbox while learning: the owner's ssh config and `~/.ssh` read-only, `hq/ssh` read-only for
  *  the wrapper and the agent's config, and nothing else of hq, `hq/cm` included. */
 import fs from "node:fs"
+import os from "node:os"
 import { realPath, within } from "../../runtime/sandbox/policy.ts"
 import { run, SandboxUnavailable } from "../../runtime/sandbox/run.ts"
 import { SshPolicy, sshFiles, UnsafeProfile } from "../../runtime/sandbox/ssh_policy.ts"
@@ -36,6 +37,9 @@ export interface AgentPolicyInit {
   /** The visit's environment: the agent's socket (`SSH_AUTH_SOCK`), a Kerberos cache (`KRB5CCNAME`) and, in tests,
    *  `TEST_SSH_DIR` come from it. */
   readonly env: Readonly<Record<string, string | undefined>>
+  /** The passwd entry's home (`os.userInfo().homedir` by default), which a test's folder may neither be in nor
+   *  hold. */
+  readonly passwd?: string
   /** More read-only paths: tests bind the fake ssh's Bun and source here. */
   readonly readOnly?: readonly string[]
   /** Runs the probe call in the sandbox: `run` from runtime/sandbox; tests stand in one whose sandbox fails. */
@@ -49,6 +53,7 @@ export interface AgentPolicyInit {
  *  `SandboxUnavailable` where this platform has no sandbox or the probe can't run in it. */
 export async function agentPolicy(paths: ReachPaths, o: AgentPolicyInit): Promise<SshPolicy> {
   const test = o.env[TEST_SSH_DIR]
+  const homes = [o.home, o.env.HOME ?? o.home, paths.home, o.passwd ?? os.userInfo().homedir]
   const init = {
     home: o.home,
     hq: paths.dir,
@@ -58,7 +63,7 @@ export async function agentPolicy(paths: ReachPaths, o: AgentPolicyInit): Promis
     kerberos: o.env.KRB5CCNAME ?? null,
     ssh: o.ssh,
     readOnly: o.readOnly ?? [],
-    readWrite: test ? [testFolder(test, [o.home, o.env.HOME ?? o.home, paths.home])] : [],
+    readWrite: test ? [testFolder(test, homes)] : [],
   }
   const base = new SshPolicy(init)
   await probe(base, o.run ?? run)
@@ -66,7 +71,7 @@ export async function agentPolicy(paths: ReachPaths, o: AgentPolicyInit): Promis
 }
 
 /** `dir`, a test's fake ssh folder, resolved, once it is the user's own 0700 folder, no link, holding none of `homes`
- *  (ssh's home, `$HOME` and OpenCorp's home) and lying in none of them; `SshPolicy` then checks it as any bind, and
+ *  (ssh's home, `$HOME`, OpenCorp's home and the passwd entry's) and lying in none of them; `SshPolicy` then checks it as any bind, and
  *  for hard links to a credential. Throws `UnsafeProfile` otherwise. */
 export function testFolder(dir: string, homes: readonly string[]): string {
   const refuse = (why: string) => new UnsafeProfile(`the test folder ${dir} can't be bound: ${why}`)

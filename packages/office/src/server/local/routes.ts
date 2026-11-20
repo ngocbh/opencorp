@@ -186,5 +186,12 @@ export function localRoutes({ pingMs }: { pingMs?: number } = {}): Route<LocalCo
         return harnessCall(() => ctx.host.answer(params.id!, answer, kind, ctx.person))
       },
     },
+    {
+      // A card's stop is Esc on its chat, as in the office.
+      method: "POST",
+      path: "/questions/:id/stop",
+      reply: Question,
+      handler: (ctx, params) => harnessCall(() => ctx.host.stopQuestion(params.id!, ctx.person)),
+    },
   ]
 }
