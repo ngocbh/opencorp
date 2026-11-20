@@ -221,7 +221,7 @@ test("an approved command runs only in the folder its card was decided in", asyn
   expect(held[0]!.card.args).toEqual({ command: tar, why: "x", wait: 30, shell: "shell 1", cwd: "~/work" })
   // The agent moves the shell while the card waits.
   expect(json(await t.call("run", { command: "cd ~", why: "x", shell: "shell 1" }))).toMatchObject({ exit: 0 })
-  expect(json(await t.terminal.runApproved("run", held[0]!.card.args, new AbortController().signal))).toMatchObject({
+  expect(json(await t.terminal.runApproved("terminal_run", held[0]!.card.args, new AbortController().signal))).toMatchObject({
     shell: "shell 1",
     refused:
       "the shell is in another folder than when this command was approved (~/work, now ~); run it again to have " +
@@ -230,17 +230,41 @@ test("an approved command runs only in the folder its card was decided in", asyn
   expect(t.record("sh_1").commands.map((c) => c.command)).toEqual(["true", "cd ~"])
   // In the same folder, it runs; a held command for a new shell runs in the folder new shells start in.
   expect(isPending(await t.call("run", { command: "echo there", why: "x", shell: "shell 1" }))).toBe(true)
-  expect(json(await t.terminal.runApproved("run", held[1]!.card.args, new AbortController().signal))).toMatchObject({
+  expect(json(await t.terminal.runApproved("terminal_run", held[1]!.card.args, new AbortController().signal))).toMatchObject({
     exit: 0, output: "$ echo there\nthere\n",
   })
   expect(isPending(await t.call("run", { command: "echo new", why: "x" }))).toBe(true)
   expect(held[2]!.card.args.cwd).toBe("~/work")
-  expect(json(await t.terminal.runApproved("run", held[2]!.card.args, new AbortController().signal))).toMatchObject({
+  expect(json(await t.terminal.runApproved("terminal_run", held[2]!.card.args, new AbortController().signal))).toMatchObject({
     shell: "shell 2", exit: 0,
   })
   // A card names its shell by name, and the host reads the shell's folder by it.
   expect(t.terminal.where("shell 1")).toEqual(t.terminal.where("sh_1"))
   expect(t.terminal.where("shell 1").cwd).toBe("~")
+})
+
+test("runApproved runs a terminal_run or terminal_type card and refuses any other tool", async () => {
+  const { perms, held } = permissions({ mode: "ask", rules: [rule("allow", "command", "cat")] })
+  const t = openTerminal({ perms })
+  await t.call("run", { command: "cat", why: "x", wait: 0 })
+  expect(isPending(await t.call("type", { shell: "shell 1", text: "typed-once", why: "x", wait: 0 }))).toBe(true)
+  expect(isPending(await t.call("run", { command: "echo ran-once", why: "x" }))).toBe(true)
+  const [typed, ran] = held.map((h) => h.card)
+  // A card names its tool as the model called it, and the host passes that name back.
+  expect([typed!.tool, ran!.tool]).toEqual(["terminal_type", "terminal_run"])
+  const signal = new AbortController().signal
+  for (const tool of ["run", "type", "terminal_read", "terminal_interrupt", "terminal_close", "shell"]) {
+    expect(json(await t.terminal.runApproved(tool, ran!.args, signal))).toEqual({
+      refused: `${tool} never waits for the owner's approval; only terminal_run and terminal_type do`,
+    })
+  }
+  expect(t.terminal.shells().map((s) => s.name)).toEqual(["shell 1"])
+  expect(json(await t.terminal.runApproved(typed!.tool, typed!.args, signal)).refused).toBeUndefined()
+  await waitFor(() => t.live("sh_1").includes("typed-once\r\ntyped-once"), { what: "cat's echo" })
+  expect(json(await t.terminal.runApproved(ran!.tool, ran!.args, signal))).toMatchObject({
+    shell: "shell 2", exit: 0, output: "$ echo ran-once\nran-once\n",
+  })
+  t.terminal.shell("sh_1")!.ownerKeys("\x04")
 })
 
 describe.skipIf(!sandboxAvailable())("in the sandbox", () => {

@@ -240,6 +240,8 @@ describe.skipIf(!TMUX)("learning, a chat with OpenCorp on a real terminal", () =
     t.type("Look around")
     await t.see(`echo in-the-shell; cat ${canary}`)
     await t.see("enter confirm")
+    // The card names the tool as the model called it, terminal_run, so it reads as a shell command.
+    await t.see("Shell command", 5_000)
     // Nothing runs until the owner's Yes: a digit only selects.
     t.keys("1")
     await Bun.sleep(500)
