@@ -444,7 +444,8 @@ test("office logging sends opencorp info lines to stderr in the office format", 
 test("the crash report names the error type and its frames never its message", () => {
   class Leaky extends Error {}
   function leak(): never {
-    throw new Leaky("sk-secret-123\n    at fake (secret.ts:1:1)")
+    // A forged frame whose name no checkout path contains, as the real frames hold the checkout's path.
+    throw new Leaky("sk-secret-123\n    at fake-secret-value-9f3 (secret.ts:1:1)")
   }
   let thrown: unknown
   try {
@@ -458,7 +459,7 @@ test("the crash report names the error type and its frames never its message", (
   expect(first).toEndWith("office crashed: Leaky")
   expect(frames.length).toBeGreaterThan(0)
   for (const frame of frames) expect(frame).toMatch(/^\s+at /)
-  for (const secret of ["sk-secret-123", "fake", "secret.ts"]) expect(report).not.toContain(secret)
+  for (const secret of ["sk-secret-123", "fake-secret-value-9f3", "secret.ts"]) expect(report).not.toContain(secret)
 
   const plain = crashReport("plain text")
   expect(plain.slice(0, -1).split("\n")).toHaveLength(1)
