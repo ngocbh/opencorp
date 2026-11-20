@@ -12,28 +12,17 @@ import { createReadThrough, wrap } from "../ui/read-through"
 import type { SetupChild } from "./child"
 import { SecretInput } from "./secret"
 
-type File = { name: string; lines: string[] }
 type Entry =
   | { kind: "step"; counter: string; title: string; why: string }
   | { kind: "say"; text: string }
   | { kind: "answer"; question: string; shown: string }
-  | { kind: "result"; title: string; ok: boolean; lines: string[] }
-  | { kind: "away"; why: string }
 
-/** A command or the files to save, shown whole in a pager the owner reads before they can approve it; or a question
- *  too long for its panel, read the same way before it can be answered. */
-type Card =
-  | { kind: "command"; title: string; warning: string; lines: string[] }
-  | { kind: "review"; title: string; files: File[]; risks: string[]; warning: string }
-  | { kind: "question"; text: string }
+/** The choice the pager gates, once its question has been read: its options, its default, and whether the owner may
+ *  type an answer of their own instead. */
+type Gate = { options: string[]; default: string; typed?: boolean }
 
-/** The choice the pager gates, once its card has been read: the question, its options, and whether the owner may type
- *  an answer of their own instead. */
-type Gate = { question: string; options: string[]; default: string; typed?: boolean }
-
-/** The smallest window the screen draws in: a card's title and a few of its rows, its position line, and a question
- *  with two options and a hint, beside the header. Below it the screen says to make the window larger, and the
- *  learning run asks on the plain terminal instead when it starts that small. */
+/** The smallest window the screen draws in: a few rows of a long question, its position line, and two options and a
+ *  hint, beside the header. Below it the screen says to make the window larger. */
 export const MIN_COLUMNS = 40
 export const MIN_ROWS = 14
 
@@ -54,22 +43,14 @@ function oneLine(text: string) {
   return (indent.length <= 16 ? indent : `<${indent.length} spaces>`) + rest
 }
 
-/** How long input is drained when the screen comes back, as the visit drains before a reconnect. */
-const DRAIN_MS = 50
-
-/** The heading above a review's risks. */
-const BEFORE_SAVING = "Before you save it:"
-/** Shown while a card is still taller than the pager: the owner reads to the end before the choices appear. */
+/** Shown while a question is still taller than the pager: the owner reads to the end before the choices appear. */
 const READ_ON = "Read to the end before you choose — PageDown, or End to jump there."
-/** Shown once the whole card has been read, above the choices. */
+/** Shown once the whole question has been read, above the choices. */
 const CHOOSE = "↑↓ choose · Enter"
 /** The last choice of a question that takes a typed answer; picking it opens a line to type on. */
 const TYPE_OWN = "Type my own answer"
 /** Under the line a typed answer goes on. */
 const TYPE_HINT = "Enter sends it · PageUp/PageDown scroll the question"
-
-/** A row of a card as the pager draws it, with the colour its source line asks for. */
-type Row = { text: string; tone: "title" | "warn" | "code" | "text" }
 
 /** Says the window is too small, and how large it must be. */
 const tooSmall = (width: number, height: number) =>
@@ -111,58 +92,21 @@ function wordWrap(text: string, width: number): string[] {
 const SCREEN_PAD = 2
 const PAGER_PAD = 2
 
-/** The card as rows: its lines, tagged with a tone and wrapped to `width`, so the pager shows every character. */
-function cardRows(card: Card, width: number): Row[] {
-  const w = Math.max(1, width)
-  if (card.kind === "question") return wordWrap(card.text, w).map((text) => ({ text, tone: "text" as const }))
-  const out: Row[] = []
-  const push = (tone: Row["tone"], text: string) => {
-    for (const piece of wrap(text, w)) out.push({ text: piece, tone })
-  }
-  push("title", card.title)
-  if (card.kind === "command") {
-    if (card.warning) push("warn", card.warning)
-    for (const line of card.lines) push("code", line)
-  } else {
-    for (const file of card.files) {
-      push("text", `${file.name}:`)
-      for (const line of file.lines) push("code", line)
-    }
-    if (card.risks.length > 0) {
-      push("text", BEFORE_SAVING)
-      for (const risk of card.risks) push("text", `  - ${risk}`)
-    }
-    if (card.warning) push("warn", card.warning)
-  }
-  return out
-}
-
 /**
  * The install's steps and answers, its pending question in a panel, and a spinner while it works; Ctrl-C asks it to
- * stop. A command and the files to save are shown in a pager, whose choices appear only once the owner has read to
- * the card's last line, so what they approve is what runs. When the child hands the terminal over, the screen steps
- * aside, `notice` says why on the plain terminal, and the child is told it has it, until it takes the terminal back.
- * The header reads `title` (default "Setting up OpenCorp") and `command`. The transcript scrolls with
+ * stop. A question too long for its panel is shown in a pager, whose choices appear only once the owner has read to
+ * its last line. The header reads `title` (default "Setting up OpenCorp") and `command`. The transcript scrolls with
  * PageUp/PageDown, the arrows and Home/End.
  */
-export function SetupScreen(props: {
-  child: SetupChild
-  lines: string[]
-  command?: string
-  title?: string
-  notice?: (text: string) => void
-}) {
+export function SetupScreen(props: { child: SetupChild; lines: string[]; command?: string; title?: string }) {
   const { theme } = useTheme()
   const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
   const [entries, setEntries] = createSignal<Entry[]>([])
   const [pending, setPending] = createSignal<SetupAsk | SetupChoose | SetupSecret>()
-  const [card, setCard] = createSignal<Card>()
   const [stopping, setStopping] = createSignal(false)
   const [transcriptPos, setTranscriptPos] = createSignal("")
   let scroll: ScrollBoxRenderable | undefined
-  // Whether opentui's SIGWINCH listener was taken off for a hand-over, so take_back puts it back.
-  let resizeDetached = false
 
   /** Shows `entry` now; `printed` are its lines in the transcript printed once the screen is gone. */
   const add = (entry: Entry, ...printed: string[]) => {
@@ -170,91 +114,19 @@ export function SetupScreen(props: {
     setEntries((all) => [...all, entry])
   }
 
-  /** A command or the files to save show in the pager, not the transcript; the printed transcript keeps them. */
-  const printCard = (...printed: string[]) => props.lines.push(...printed)
-
   props.child.onPrompt((prompt) => {
     if (prompt.type === "step") {
       const counter = `Step ${prompt.number} of ${prompt.total}`
       add({ kind: "step", counter, title: prompt.title, why: prompt.why }, `${counter}: ${prompt.title}`, prompt.why)
     } else if (prompt.type === "say") add({ kind: "say", text: prompt.text }, prompt.text)
-    else if (prompt.type === "command") {
-      const warning = prompt.warning ?? ""
-      setCard({ kind: "command", title: prompt.title, warning, lines: prompt.lines })
-      printCard(prompt.title, ...(warning ? [warning] : []), ...prompt.lines)
-    } else if (prompt.type === "result")
-      // Its output reached the terminal as it came, so the transcript keeps only how it ended.
-      add({ kind: "result", title: prompt.title, ok: prompt.ok, lines: prompt.lines ?? [] }, prompt.title)
-    else if (prompt.type === "review") {
-      const risks = prompt.risks ?? []
-      const warning = prompt.warning ?? ""
-      setCard({ kind: "review", title: prompt.title, files: prompt.files, risks, warning })
-      printCard(
-        prompt.title,
-        ...prompt.files.flatMap((f) => [`${f.name}:`, ...f.lines]),
-        ...(risks.length > 0 ? [BEFORE_SAVING, ...risks.map((r) => `  - ${r}`)] : []),
-        ...(warning ? [warning] : []),
-      )
-    } else if (prompt.type === "hand_over") {
-      // As `$EDITOR` gets it: the screen's keys, raw mode and drawing stop until take_back. The line goes on the
-      // plain terminal, above ssh's prompts.
-      add({ kind: "away", why: prompt.why })
-      void handOver(prompt.why)
-    } else if (prompt.type === "take_back") {
-      if (renderer.isDestroyed) return
-      const stdin = (renderer as unknown as { stdin: NodeJS.ReadStream }).stdin
-      // On a real terminal, discard what the kernel buffered while the child held it (ssh's menu, a stray Enter)
-      // before the screen listens again, as the visit's `drain` does; stdin has no screen listener and is paused
-      // here. A test renderer's stdin isn't the process's and holds nothing, so it just comes back.
-      if (stdin === process.stdin && stdin.isTTY) void drainThenResume(stdin)
-      else void resumeScreen()
-    } else setPending(prompt)
+    else setPending(prompt)
   })
 
-  /** Stops the screen, then says `why` on the plain terminal and answers: the child takes the terminal only once the
-   *  screen has left it. */
-  const handOver = async (why: string) => {
-    if (!renderer.isDestroyed) {
-      // Nothing is written to the terminal while ssh may be reading it: opentui's resize handler would answer a
-      // window change with a size query (ESC[14t), which would land in ssh's password read.
-      resizeDetached = detachResize(renderer)
-      await renderer.suspend()
-    }
-    props.notice?.(`\n${why}\n`)
-    props.child.answer("")
-  }
-
-  /** Brings the screen back: redraws, and puts the resize handler back, taking the new size now, when a query is
-   *  safe again. */
-  const resumeScreen = async () => {
-    if (renderer.isDestroyed) return
-    await renderer.resume()
-    if (renderer.isDestroyed) return
-    if (resizeDetached) attachResize(renderer)
-    resizeDetached = false
-    renderer.requestRender()
-  }
-
-  /** Reads and throws away what `stdin` buffered while the child held the terminal, for `DRAIN_MS`, then brings the
-   *  screen back. */
-  const drainThenResume = async (stdin: NodeJS.ReadStream) => {
-    const discard = () => {}
-    try {
-      stdin.on("data", discard)
-      stdin.resume()
-      await new Promise((r) => setTimeout(r, DRAIN_MS))
-      stdin.off("data", discard)
-      stdin.pause()
-    } catch {}
-    await resumeScreen()
-  }
-
-  /** Sends `text` as the answer, shows the question answered with `shown`, clears any card, waits for the next. */
+  /** Sends `text` as the answer, shows the question answered with `shown`, waits for the next. */
   const answer = (question: string, text: string, shown: string) => {
     props.child.answer(text)
     add({ kind: "answer", question, shown }, `${question}: ${shown}`)
     setPending(undefined)
-    setCard(undefined)
   }
 
   /** Whether the window is below the size the screen draws in. */
@@ -271,7 +143,7 @@ export function SetupScreen(props: {
    *  view: it is read in the pager instead, its answer under it. */
   const longQuestion = createMemo(() => {
     const p = pending()
-    if (!p || p.type === "secret" || card()) return undefined
+    if (!p || p.type === "secret") return undefined
     const shown = oneLine(p.question)
     const { width, height } = dimensions()
     const textWidth = Math.max(1, width - 2 * SCREEN_PAD - QUESTION_INSET)
@@ -295,7 +167,7 @@ export function SetupScreen(props: {
   /** The viewport's height, scroll offset and content height, for the position line; shown only when the transcript
    *  overflows. Read after a render, when the layout is current. */
   const measure = () => {
-    if (!scroll || card() || longQuestion() || small()) return setTranscriptPos("")
+    if (!scroll || longQuestion() || small()) return setTranscriptPos("")
     const view = scroll.viewport?.height ?? 0
     const total = scroll.scrollHeight
     if (view <= 0 || total <= view) return setTranscriptPos("")
@@ -315,7 +187,7 @@ export function SetupScreen(props: {
     // Below the minimum size nothing is drawn but the request to make the window larger.
     if (small()) return
     // The pager handles its own keys; the transcript is hidden then.
-    if (card() || longQuestion() || !scroll) return
+    if (longQuestion() || !scroll) return
     const view = scroll.viewport?.height ?? 10
     const page = Math.max(1, view - 1)
     switch (key.name) {
@@ -415,31 +287,6 @@ export function SetupScreen(props: {
                         </box>
                       )}
                     </Match>
-                    <Match when={entry.kind === "result" && entry}>
-                      {(result) => (
-                        <box paddingLeft={2}>
-                          <text fg={result().ok ? theme.success : theme.error} wrapMode="word">
-                            {result().title}
-                          </text>
-                          <For each={result().lines}>
-                            {(line) => (
-                              <text fg={theme.textMuted} wrapMode="char">
-                                {line}
-                              </text>
-                            )}
-                          </For>
-                        </box>
-                      )}
-                    </Match>
-                    <Match when={entry.kind === "away" && entry}>
-                      {(away) => (
-                        <box paddingLeft={2}>
-                          <text fg={theme.textMuted} wrapMode="word">
-                            {away().why}
-                          </text>
-                        </box>
-                      )}
-                    </Match>
                   </Switch>
                 )}
               </For>
@@ -521,33 +368,13 @@ export function SetupScreen(props: {
           </>
         }
       >
-        <Match when={card()}>
-          {(c) => {
-            const choose = () => (pending()?.type === "choose" ? (pending() as SetupChoose) : undefined)
-            const gate = (): Gate | undefined => {
-              const q = choose()
-              return q ? { question: q.question, options: q.options, default: q.default ?? "" } : undefined
-            }
-            return (
-              <CardPager
-                card={c()}
-                gate={gate()}
-                stopping={stopping()}
-                onSubmit={(value) => {
-                  const q = gate()!
-                  answer(q.question, value, redact(value))
-                }}
-              />
-            )
-          }}
-        </Match>
         <Match when={longQuestion()}>
           {(text) => {
             const question = () => pending() as SetupAsk | SetupChoose
             const gate = (): Gate | undefined => {
               const q = question()
               return q.type === "choose"
-                ? { question: q.question, options: q.options, default: q.default ?? "", typed: q.typed === true }
+                ? { options: q.options, default: q.default ?? "", typed: q.typed === true }
                 : undefined
             }
             const input = () => {
@@ -561,8 +388,8 @@ export function SetupScreen(props: {
               }
             }
             return (
-              <CardPager
-                card={{ kind: "question", text: text() }}
+              <QuestionPager
+                text={text()}
                 note={lastSay()}
                 gate={gate()}
                 input={input()}
@@ -579,13 +406,13 @@ export function SetupScreen(props: {
 }
 
 /**
- * A card shown whole: `note` pinned above it, its rows in a scrolling viewport, a position line, and, once the owner
- * has read to the last row, the choices (an approval's default is "Don't …"; a question's may end with typing an
- * answer of one's own; a single digit never submits). Until then it says to read on, and PageDown/Space/the arrows/
- * Home/End move through it. With `input` instead, an answer line is always under it, and the page keys scroll.
+ * A long question shown whole: `note` pinned above it, its rows in a scrolling viewport, a position line, and, once
+ * the owner has read to the last row, the choices (which may end with typing an answer of one's own; a single digit
+ * never submits). Until then it says to read on, and PageDown/Space/the arrows/Home/End move through it. With `input`
+ * instead, an answer line is always under it, and the page keys scroll.
  */
-function CardPager(props: {
-  card: Card
+function QuestionPager(props: {
+  text: string
   gate?: Gate
   input?: { placeholder: string; onSubmit: (text: string) => void }
   note?: string
@@ -601,7 +428,7 @@ function CardPager(props: {
 
   // The width the rows are wrapped to and drawn in: what the screen's and the pager's padding leave.
   const width = () => Math.max(1, dimensions().width - 2 * SCREEN_PAD - 2 * PAGER_PAD)
-  const rows = createMemo(() => cardRows(props.card, width()))
+  const rows = createMemo(() => wordWrap(props.text, width()))
   const noteRows = createMemo(() => (props.note ? wordWrap(props.note, width()) : []))
   // The choices: the gate's options, then typing one's own when it takes a typed answer.
   const options = createMemo(() => {
@@ -615,8 +442,6 @@ function CardPager(props: {
     const g = props.gate
     if (!g) return undefined
     return {
-      // A question card is its own question.
-      question: props.card.kind === "question" ? [] : wrap(g.question, width()),
       options: options().map((option, i) => ({ i, rows: wrap(`  ${option}`, width()) })),
       hint: wrap(CHOOSE, width()),
     }
@@ -626,7 +451,7 @@ function CardPager(props: {
     if (props.input) return 1 + typeHint().length
     const c = choices()
     if (!c) return 1
-    const chosen = c.question.length + c.options.reduce((n, o) => n + o.rows.length, 0) + c.hint.length
+    const chosen = c.options.reduce((n, o) => n + o.rows.length, 0) + c.hint.length
     return Math.max(readOn().length, chosen, props.gate?.typed ? 1 + typeHint().length : 0)
   })
   // The header (its padding, title and gap) and the screen's bottom padding take 4 rows; the position line 1. No
@@ -638,16 +463,14 @@ function CardPager(props: {
   const clamp = (t: number) => Math.max(0, Math.min(maxTop(), t))
   const top = () => clamp(rawTop())
 
-  // An approval's default is the question's (the office sends "Don't …" second), so a plain Enter never approves; a
-  // question's is its default option, or the first.
+  // The choice starts on the question's default option, or the first.
   createEffect(() => {
     const g = props.gate
     if (!g) return
-    const at = g.options.indexOf(g.default)
-    setSel(at >= 0 ? at : props.card.kind === "question" ? 0 : g.options.length - 1)
+    setSel(Math.max(0, g.options.indexOf(g.default)))
   })
-  // Before the question there's no final layout, so nothing counts; when the rows are wrapped anew (a resize), only
-  // what is on screen now counts, so a card made longer is read again.
+  // Only a choice is gated; when the rows are wrapped anew (a resize), only what is on screen now counts, so a question
+  // made longer is read again.
   const seen = createReadThrough({ rows, top, view, ready: () => props.gate !== undefined })
 
   const visible = createMemo(() => rows().slice(top(), top() + view()))
@@ -704,7 +527,6 @@ function CardPager(props: {
     }
   })
 
-  const tone = (t: Row["tone"]) => (t === "warn" ? theme.warning : theme.text)
   /** Rows drawn as they are, each no wider than the pager. */
   const plain = (lines: string[], fg: ColorInput) => (
     <For each={lines}>
@@ -724,13 +546,7 @@ function CardPager(props: {
         </box>
       </Show>
       <box height={view()} flexShrink={0} flexDirection="column">
-        <For each={visible()}>
-          {(row) => (
-            <text fg={tone(row.tone)} attributes={row.tone === "title" ? TextAttributes.BOLD : undefined} wrapMode="none">
-              {row.text === "" ? " " : row.text}
-            </text>
-          )}
-        </For>
+        {plain(visible(), theme.text)}
       </box>
       <box flexShrink={0}>
         <text fg={theme.textMuted} wrapMode="none">
@@ -763,7 +579,6 @@ function CardPager(props: {
             <Match when={choices()}>
               {(c) => (
                 <Show when={seen()} fallback={plain(readOn(), theme.accent)}>
-                  {plain(c().question, theme.text)}
                   <For each={c().options}>
                     {(option) => (
                       <For each={option.rows}>
@@ -788,29 +603,6 @@ function CardPager(props: {
       </box>
     </box>
   )
-}
-
-/** opentui's own SIGWINCH listener (set in the renderer's constructor when it drives the real stdout). */
-function sigwinch(renderer: unknown): (() => void) | undefined {
-  const h = (renderer as { sigwinchHandler?: () => void }).sigwinchHandler
-  return typeof h === "function" ? h : undefined
-}
-
-/** Takes opentui's SIGWINCH listener off, so a window change while the terminal is handed over writes no size query
- *  into ssh's read; returns whether one was taken off. */
-export function detachResize(renderer: unknown): boolean {
-  const h = sigwinch(renderer)
-  if (!h || !process.listeners("SIGWINCH").includes(h)) return false
-  process.off("SIGWINCH", h)
-  return true
-}
-
-/** Puts opentui's SIGWINCH listener back after a hand-over and takes the terminal's new size now. */
-export function attachResize(renderer: unknown): void {
-  const h = sigwinch(renderer)
-  if (!h) return
-  process.on("SIGWINCH", h)
-  h()
 }
 
 /** The columns a question panel's own chrome takes beside the screen's padding: its bar and its padding. */

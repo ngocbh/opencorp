@@ -42,8 +42,7 @@ export async function runSetup(argv: string[], cwd: string, env: Record<string, 
 }
 
 /** The same, for a child already running (tests pass a fake); the header reads `title` and names `command`, such as
- *  `opencorp init`. Why the child takes the terminal goes on `err`. `exitSignals` are the signals that take the screen
- *  down (opentui's own list by default). */
+ *  `opencorp init`. `exitSignals` are the signals that take the screen down (opentui's own list by default). */
 export async function runSetupWith(
   child: SetupChild,
   out: Writer = process.stdout,
@@ -99,13 +98,7 @@ export async function runSetupWith(
       await render(
         () => (
           <Providers mode={mode} keymap={keymap}>
-            <SetupScreen
-              child={child}
-              lines={lines}
-              command={command}
-              title={title}
-              notice={(text) => void err.write(text)}
-            />
+            <SetupScreen child={child} lines={lines} command={command} title={title} />
           </Providers>
         ),
         renderer,

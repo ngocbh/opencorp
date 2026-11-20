@@ -4,15 +4,13 @@ import {
   SetupAnswer,
   type SetupAsk,
   type SetupChoose,
-  type SetupHandOver,
   type SetupSay,
   type SetupSecret,
   type SetupStep,
-  type SetupTakeBack,
 } from "@opencorp/protocol"
 import type { z } from "zod"
 import { repr, strip } from "../../util/redact.ts"
-import { type Card, OnboardError, type Prompter, closedInput, readLine } from "./prompts.ts"
+import { OnboardError, type Prompter, closedInput, readLine } from "./prompts.ts"
 
 type Prompt =
   | z.output<typeof SetupAsk>
@@ -20,9 +18,6 @@ type Prompt =
   | z.output<typeof SetupSecret>
   | z.output<typeof SetupSay>
   | z.output<typeof SetupStep>
-  | z.output<typeof SetupHandOver>
-  | z.output<typeof SetupTakeBack>
-  | Card
 
 /** Where prompts are written. */
 export interface TextOut {
@@ -100,18 +95,5 @@ export class JsonPrompter implements Prompter {
 
   step(number: number, total: number, title: string, why: string): void {
     this.send({ type: "step", number, total, title, why })
-  }
-
-  show(card: Card): void {
-    this.send(card)
-  }
-
-  async handOver(why: string): Promise<void> {
-    this.send({ type: "hand_over", why })
-    await this.answer(why)
-  }
-
-  takeBack(): void {
-    this.send({ type: "take_back" })
   }
 }
