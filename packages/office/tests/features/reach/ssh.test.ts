@@ -8,13 +8,14 @@ import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import {
+  breakingOptions,
   CONTROL_HOST,
   CONTROL_MS,
+  configProblems,
   cleanOutput,
   control,
   controlArgv,
   configText,
-  LEARNING_PERSIST_S,
   PERSIST_S,
   defaultIncludes,
   descendants,
@@ -35,6 +36,7 @@ import {
   mux,
   muxArgv,
   quietStdin,
+  readHosts,
   readStatuses,
   resetStatus,
   runChild,
@@ -48,51 +50,163 @@ import {
   writeSshFiles,
 } from "../../../src/features/reach/ssh.ts"
 import { isGone, shortDir, waitFor } from "../../helpers.ts"
-import { fakeHome, freePort, holdConnection, holdingServer, reachCtx, staleSocket } from "./helpers.ts"
-import { fakeControlName } from "../../../src/testing/fake_ssh.ts"
+import { fakeHome, freePort, holdConnection, holdingServer, named, reachCtx, staleSocket } from "./helpers.ts"
+import { type FakeSsh, fakeControlName } from "../../../src/testing/fake_ssh.ts"
 import { startTime } from "../../../src/util/proc.ts"
 
 setDefaultTimeout(30_000)
 
-test("a learning run's config keeps a login master 10 minutes after its last use, a visit's 60 s", () => {
-  expect(configText("/h/hq/cm", { includes: [] })).toContain("\nControlPersist 60\n")
-  expect(configText("/h/hq/cm", { includes: [], persist: LEARNING_PERSIST_S })).toContain("\nControlPersist 600\n")
-  expect([PERSIST_S, LEARNING_PERSIST_S]).toEqual([60, 600])
-})
+/** What the system's ssh prints with `-G` and `args`: the options it would use. It connects nowhere. */
+const sshG = (args: string[]) =>
+  execFileSync("/usr/bin/ssh", ["-G", ...args], {
+    env: { PATH: "/usr/bin:/bin" },
+    encoding: "utf8",
+    // Its warning that stdin isn't a terminal.
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 10_000,
+  })
 
-test("the generated config puts our options before the includes, since ssh keeps the first value", () => {
-  expect(configText("/h/hq/cm", { includes: ["/t/a b/cfg"] })).toBe(
+test("the visit config's includes come first, and OpenCorp's options follow as defaults", () => {
+  // ssh keeps the first value it reads: the owner's settings win wherever they set one.
+  expect(configText("/h/hq/cm", { includes: ["/t/a b/cfg", "/etc/ssh/ssh_config"] })).toBe(
     [
       "# Written by opencorp hq on each visit; edits are lost.",
+      'Include "/t/a b/cfg"',
+      'Include "/etc/ssh/ssh_config"',
       "ControlMaster auto",
       "ControlPath /h/hq/cm/%C",
       "ControlPersist 60",
       "ServerAliveInterval 15",
       "ServerAliveCountMax 3",
-      'Include "/t/a b/cfg"',
       "",
     ].join("\n"),
   )
-  const batch = configText("/h/hq/cm", { batch: true, includes: [] }).split("\n")
-  expect(batch.slice(0, 3)).toEqual([
+  expect(PERSIST_S).toBe(60)
+  // BatchMode follows the includes too, one rule for both files.
+  const batch = configText("/h/hq/cm", { batch: true, includes: ["/i"] }).split("\n")
+  expect(batch.slice(0, 4)).toEqual([
     "# Written by opencorp hq on each visit; edits are lost.",
+    'Include "/i"',
     "BatchMode yes",
     "ControlMaster auto",
   ])
-  expect(batch.some((line) => line.startsWith("Include"))).toBe(false)
   expect(() => configText("/h/hq/cm", { includes: ['/t/a"b'] })).toThrow()
   expect(() => configText("/h/hq/cm", { includes: ["/t/a\nProxyCommand x"] })).toThrow()
   expect(defaultIncludes("/u")).toEqual(["/u/.ssh/config", "/etc/ssh/ssh_config"])
 })
 
-test("where ssh knows them, the config pins the session options the owner's could use to defeat the lifeline", () => {
+test("with the owner's ControlMaster, ControlPath and ControlPersist, a real ssh takes theirs and ours elsewhere", () => {
+  const dir = shortDir()
+  const owner = path.join(dir, "owner")
+  fs.writeFileSync(
+    owner,
+    ["Host login1", "  ControlMaster auto", `  ControlPath ${dir}/mine/%h`, "  ControlPersist 7200", "  RequestTTY no", ""].join("\n"),
+  )
+  const config = path.join(dir, "config")
+  fs.writeFileSync(config, configText(path.join(dir, "cm"), { includes: [owner] }))
+  // -G prints what ssh would use, its tokens expanded; it connects nowhere.
+  const printed = (host: string) => sshG(["-F", config, "--", host])
+  const login = printed("login1")
+  expect(login).toContain(`\ncontrolpath ${dir}/mine/login1\n`)
+  expect(login).toContain("\ncontrolpersist 7200\n")
+  expect(login).toContain("\nserveraliveinterval 15\n")
+  // The owner's Host block ends with their file: another host gets ours.
+  const node = printed("node1")
+  expect(node).toMatch(new RegExp(`\\ncontrolpath ${dir}/cm/[0-9a-f]{40}\\n`))
+  expect(node).toContain("\ncontrolpersist 60\n")
+  expect(node).toContain("\ncontrolmaster auto\n")
+})
+
+test("where ssh knows them, the session options follow the includes as defaults", () => {
   const lines = configText("/h/hq/cm", { includes: ["/i"], sessionOptions: true }).split("\n")
   const pinned = ["SessionType default", "StdinNull no", "ForkAfterAuthentication no"]
-  for (const line of pinned) expect(lines.indexOf(line)).toBeGreaterThan(0)
-  for (const line of pinned) expect(lines.indexOf(line)).toBeLessThan(lines.indexOf('Include "/i"'))
+  for (const line of pinned) expect(lines.indexOf(line)).toBeGreaterThan(lines.indexOf('Include "/i"'))
   // No IgnoreUnknown: the first one read wins, so ours would void the owner's (say, for UseKeychain).
   expect(lines.some((line) => line.startsWith("IgnoreUnknown"))).toBe(false)
   expect(configText("/h/hq/cm", { includes: [] })).not.toContain("SessionType")
+})
+
+test("after a failure, a visit names what the owner's config sets for each host that a visit can't work with", async () => {
+  const dir = shortDir()
+  const paths = new ReachPaths(path.join(dir, "h"))
+  makeDirs(paths)
+  for (const folder of ["mine", "readonly"]) fs.mkdirSync(path.join(dir, folder))
+  fs.chmodSync(path.join(dir, "readonly"), 0o500)
+  const owner = path.join(dir, "owner")
+  fs.writeFileSync(
+    owner,
+    [
+      "Host login1",
+      "  RemoteCommand tmux attach",
+      "  RequestTTY force",
+      "Host login2",
+      `  ControlPath ${dir}/missing/%C`,
+      "Host login3",
+      `  ControlPath ${dir}/readonly/%C`,
+      // No master binds there, so the missing folder breaks nothing.
+      "Host login4",
+      "  ControlMaster no",
+      `  ControlPath ${dir}/missing/%C`,
+      "Host fine",
+      "  ControlMaster auto",
+      `  ControlPath ${dir}/mine/%C`,
+      "  ControlPersist 2h",
+      // A hop the owner's config names is checked too.
+      "Host behind",
+      "  ProxyJump login3,fine",
+      "",
+    ].join("\n"),
+  )
+  await writeSshFiles(paths, "/usr/bin/ssh", [owner])
+  const ctx = context(paths, { PATH: "/usr/bin:/bin", HOME: dir })
+  const hosts = [{ host: "login1" }, { host: "u@login2", port: 2222 }, { host: "login3" }, { host: "login4" }, { host: "fine" }, { host: "login1" }]
+  expect(await configProblems(ctx, hosts)).toEqual([
+    named("RemoteCommand and RequestTTY force", "login1"),
+    named(`a ControlPath whose folder ${dir}/missing doesn't exist`, "u@login2"),
+    named(`a ControlPath whose folder ${dir}/readonly you can't write to`, "login3"),
+  ])
+  expect(await configProblems(ctx, [{ host: "behind" }])).toEqual([
+    named(`a ControlPath whose folder ${dir}/readonly you can't write to`, "login3"),
+  ])
+  // OpenCorp's own defaults break nothing.
+  expect(await configProblems(ctx, [{ host: "node1" }])).toEqual([])
+  // An ssh that can't read the config names nothing.
+  fs.writeFileSync(owner, "NoSuchOption yes\n")
+  expect(await configProblems(ctx, [{ host: "login1" }])).toEqual([])
+})
+
+test("the visit's stop ends the checks at once", async () => {
+  const dir = shortDir()
+  const paths = new ReachPaths(path.join(dir, "h"))
+  makeDirs(paths)
+  // An ssh whose -G never answers, as a config's slow `Match exec` might.
+  const slow = path.join(dir, "slow-ssh")
+  fs.writeFileSync(slow, `#!/bin/sh\necho "$*" >>'${dir}/calls'\nexec sleep 30\n`, { mode: 0o700 })
+  const stop = new AbortController()
+  const ctx = { ...context(paths, { PATH: "/usr/bin:/bin" }), ssh: slow, signal: stop.signal }
+  setTimeout(() => stop.abort(), 300)
+  const started = performance.now()
+  expect(await configProblems(ctx, [{ host: "a" }, { host: "b" }, { host: "c" }])).toEqual([])
+  expect(performance.now() - started).toBeLessThan(CONTROL_MS)
+  expect(fs.readFileSync(path.join(dir, "calls"), "utf8").trim().split("\n")).toHaveLength(1)
+  // Stopped before it starts, it runs nothing.
+  expect(await configProblems(ctx, [{ host: "d" }])).toEqual([])
+  expect(fs.readFileSync(path.join(dir, "calls"), "utf8").trim().split("\n")).toHaveLength(1)
+})
+
+test("the session options an older ssh doesn't print are named where a newer one prints them", () => {
+  const printed = (lines: string[]) => breakingOptions([...lines, "controlmaster false", "controlpath none", ""].join("\n"))
+  expect(printed(["sessiontype none", "stdinnull yes", "forkafterauthentication yes"])).toEqual([
+    "SessionType none",
+    "StdinNull yes",
+    "ForkAfterAuthentication yes",
+  ])
+  expect(printed(["sessiontype subsystem"])).toEqual(["SessionType subsystem"])
+  expect(printed(["sessiontype default", "stdinnull no", "forkafterauthentication no", "requesttty auto", "remotecommand none"])).toEqual([])
+  // Control characters in the owner's config never reach the terminal.
+  expect(breakingOptions("controlmaster auto\ncontrolpath /no\x1b[2Jwhere/x\n")).toEqual([
+    "a ControlPath whose folder /no[2Jwhere doesn't exist",
+  ])
 })
 
 test("knowsSessionOptions asks the ssh itself, and agrees with its version", () => {
@@ -106,7 +220,7 @@ test("knowsSessionOptions asks the ssh itself, and agrees with its version", () 
   expect(knowsSessionOptions("/usr/bin/ssh")).toBe(major! > 8 || (major === 8 && minor! >= 7))
 })
 
-test("the wrapper runs the real ssh with our config and records each exit status, even inside a pipeline", () => {
+test("the wrapper runs the real ssh with our config and records each exit status and host, even inside a pipeline", () => {
   const dir = shortDir()
   const expected = path.join(dir, "the config")
   fs.mkdirSync(path.join(dir, "real"))
@@ -123,8 +237,22 @@ test("the wrapper runs the real ssh with our config and records each exit status
     OPENCORP_SSH_STATUS: path.join(dir, "status"),
     EXPECT: expected,
   }
-  execFileSync("/bin/sh", ["-c", "ssh bad | cat; ssh good; exit 0"], { env, timeout: 10_000 })
-  expect(fs.readFileSync(path.join(dir, "status"), "utf8")).toBe("255\n0\n")
+  execFileSync("/bin/sh", ["-c", "ssh bad | cat; ssh -p 2222 u@good.example true; exit 0"], { env, timeout: 10_000 })
+  expect(fs.readFileSync(path.join(dir, "status"), "utf8")).toBe("255 bad\n0 u@good.example\n")
+  // The jump hosts follow the host: from -J, attached or not, and from -o ProxyJump, however it's written.
+  fs.writeFileSync(path.join(dir, "status"), "")
+  const jumps = [
+    "ssh -J u@gw:2222,login1 node1 true",
+    "ssh -Jgw node2 true",
+    "ssh -oProxyJump=gw node3 true",
+    "ssh -o 'proxyjump = gw2' -- node4 true",
+    "ssh -o ProxyJump=none node5 true",
+    "ssh -J 'gw;x' node6 true",
+  ]
+  execFileSync("/bin/sh", ["-c", jumps.join("\n")], { env, timeout: 10_000 })
+  expect(fs.readFileSync(path.join(dir, "status"), "utf8")).toBe(
+    ["0 node1 u@gw:2222,login1", "0 node2 gw", "0 node3 gw", "0 node4 gw2", "0 node5 none", "0 node6", ""].join("\n"),
+  )
   // With no status file named, it records nothing and still passes the exit through.
   const run = () =>
     execFileSync("/bin/sh", ["-c", "ssh bad; echo $?"], {
@@ -152,10 +280,12 @@ test("the wrapper records no status for a control command, which opens no connec
     "ssh -l -O h2",
     "ssh h3 ls -O",
     "ssh -- -O",
+    "ssh -- 'h4;x' true",
   ]
   execFileSync("/bin/sh", ["-c", calls.map((c) => `${c} || true`).join("\n")], { env, timeout: 10_000 })
-  // Connections: the -o one, the one whose user is "-O", the one whose remote command holds -O, and the last.
-  expect(fs.readFileSync(status, "utf8")).toBe("255\n255\n255\n255\n")
+  // Connections: the -o one, the one whose user is "-O", the one whose remote command holds -O, and the last two,
+  // whose hosts no option or host name could be.
+  expect(fs.readFileSync(status, "utf8")).toBe("255 h1\n255 h2\n255 h3\n255\n255\n")
 })
 
 test("writeSshFiles writes the configs 0600 and the wrapper 0700", async () => {
@@ -226,7 +356,7 @@ test("children get our wrapper first and only HOME, SSH_AUTH_SOCK and our two va
   expect(sshEnv(context(paths, { PATH: "" })).PATH).toBe(`${paths.bin}:/usr/bin:/bin`)
 })
 
-test("status files are reset before a run and read as numbers", () => {
+test("status files are reset before a run and read as numbers and hosts", () => {
   const paths = new ReachPaths(path.join(shortDir(), "h"))
   makeDirs(paths)
   const ctx = context(paths, {})
@@ -235,10 +365,13 @@ test("status files are reset before a run and read as numbers", () => {
   const file = paths.status(process.pid)
   expect(fs.statSync(file).mode & 0o777).toBe(0o600)
   expect(readStatuses(ctx)).toEqual([])
-  fs.appendFileSync(file, "255\n0\nnot a number\n\n1\n")
-  expect(readStatuses(ctx)).toEqual([255, 0, 1])
+  fs.appendFileSync(file, "255 login1\n0\nnot a number\n\n1 u@node1 u@gw:2222,login1,none,bad:port\n0 login1\n")
+  expect(readStatuses(ctx)).toEqual([255, 0, 1, 0])
+  // Each host once, a call's jump hosts before its destination.
+  expect(readHosts(ctx)).toEqual([{ host: "login1" }, { host: "u@gw", port: 2222 }, { host: "u@node1" }])
   resetStatus(ctx)
   expect(fs.readFileSync(file, "utf8")).toBe("")
+  expect(readHosts(ctx)).toEqual([])
 })
 
 test("cleanOutput keeps tabs and newlines and drops every other control character", () => {
@@ -402,10 +535,11 @@ const SPEC = { host: "node1", opencorp: "/o/opencorp" }
 
 test("the master runs a remote cat on our pipe, with no ControlPersist and none of the owner's forwards, after --", () => {
   const spec = { host: "u@n", jump: ["a", "b:2222"], port: 2200, opencorp: "/o/opencorp" }
-  expect(masterArgv("/usr/bin/ssh", spec, { config: "/c", socket: "/s" })).toEqual([
+  expect(masterArgv("/usr/bin/ssh", spec, { config: "/c", socket: "/s", sessionOptions: false })).toEqual([
     "/usr/bin/ssh", "-F", "/c",
     "-M", "-S", "/s",
     "-o", "ControlPersist=no",
+    "-o", "RemoteCommand=none",
     "-o", "ClearAllForwardings=yes", "-o", "RequestTTY=no",
     "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
     "-J", "a,b:2222",
@@ -413,12 +547,30 @@ test("the master runs a remote cat on our pipe, with no ControlPersist and none 
     "--", "u@n",
     "cat >/dev/null",
   ])
-  expect(masterArgv("/usr/bin/ssh", { host: "n", opencorp: "/o/opencorp" }, { config: "/c", socket: "/s" })).toEqual([
+  expect(masterArgv("/usr/bin/ssh", { host: "n", opencorp: "/o/opencorp" }, { config: "/c", socket: "/s", sessionOptions: false })).toEqual([
     "/usr/bin/ssh", "-F", "/c", "-M", "-S", "/s",
-    "-o", "ControlPersist=no", "-o", "ClearAllForwardings=yes", "-o", "RequestTTY=no",
+    "-o", "ControlPersist=no", "-o", "RemoteCommand=none", "-o", "ClearAllForwardings=yes", "-o", "RequestTTY=no",
     "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
     "--", "n", "cat >/dev/null",
   ])
+})
+
+test("the node master pins RemoteCommand none and the session options on its command line", () => {
+  // The command line beats any config: the owner's settings can't replace or end the cat that is its lifeline.
+  const argv = masterArgv("/usr/bin/ssh", { host: "n", opencorp: "/o/opencorp" }, { config: "/c", socket: "/s", sessionOptions: true })
+  const options = argv.flatMap((arg, i) => (argv[i - 1] === "-o" ? [arg] : []))
+  for (const pinned of ["RemoteCommand=none", "SessionType=default", "StdinNull=no", "ForkAfterAuthentication=no", "RequestTTY=no"])
+    expect(options).toContain(pinned)
+  expect(argv.slice(-3)).toEqual(["--", "n", "cat >/dev/null"])
+  // A real ssh lets the pin win over the owner's RemoteCommand, so the master's own command stands.
+  const dir = shortDir()
+  const owner = path.join(dir, "owner")
+  fs.writeFileSync(owner, "RemoteCommand echo owned\n")
+  const config = path.join(dir, "config")
+  fs.writeFileSync(config, configText(path.join(dir, "cm"), { includes: [owner] }))
+  const g = (...more: string[]) => sshG(["-F", config, ...more, "--", "n"])
+  expect(g()).toContain("\nremotecommand echo owned\n")
+  expect(g("-o", "RemoteCommand=none")).not.toContain("\nremotecommand echo owned\n")
 })
 
 test("waitForSocket is up after login, exited when it's refused, and timed out, killing the master, when it hangs", async () => {
@@ -428,7 +580,8 @@ test("waitForSocket is up after login, exited when it's refused, and timed out, 
   expect(await waitForSocket(up, 5000)).toBe("up")
   expect(up.socket).toBe(ctx.paths.node)
   expect(isSocket(ctx.paths.node)).toBe(true)
-  expect(fake.calls()[0]).toEqual(masterArgv(fake.ssh, SPEC, { config: ctx.paths.config, socket: ctx.paths.node }).slice(1))
+  const pins = { config: ctx.paths.config, socket: ctx.paths.node, sessionOptions: knowsSessionOptions(fake.ssh) }
+  expect(fake.calls()[0]).toEqual(masterArgv(fake.ssh, SPEC, pins).slice(1))
   up.lifeline.end()
   expect(await up.exited).toBe(0)
 
@@ -715,13 +868,22 @@ test("exitAll keeps a socket whose -O exit failed while something still listens 
   expect(exits(fake.calls())).toEqual([path.join(ctx.paths.cm, "dead"), refusing])
 })
 
-test("the watcher leaves alone a symlink in cm, even at cm/node, to a socket outside it", async () => {
-  const { dir, fake } = fakeHome()
-  const ctx = await reachCtx(dir, fake)
+/** A master of the owner's at `<dir>/owner.sock`, outside cm, killed when the test finishes. */
+async function ownersMaster(dir: string, fake: FakeSsh): Promise<string> {
   const outside = path.join(dir, "owner.sock")
   const owner = spawn(fake.ssh, ["-M", "-S", outside, "--", "owner", "cat >/dev/null"], { env: { PATH: "/usr/bin:/bin" }, stdio: ["pipe", "ignore", "ignore"] })
   onTestFinished(() => owner.kill("SIGKILL"))
   await waitFor(() => isSocket(outside), { what: "the owner's master" })
+  return outside
+}
+
+/** `-O check` on `socket` as the owner would run it, past OpenCorp's guard. */
+const ownersCheck = (ssh: string, socket: string) => runChild(controlArgv(ssh, socket, "check"), RUN)
+
+test("the watcher leaves alone a symlink in cm, even at cm/node, to a socket outside it", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const outside = await ownersMaster(dir, fake)
   fs.symlinkSync(outside, ctx.paths.node)
   fs.symlinkSync(outside, path.join(ctx.paths.cm, "alias"))
   const watcher = startWatcher(ctx)
@@ -729,10 +891,33 @@ test("the watcher leaves alone a symlink in cm, even at cm/node, to a socket out
   await watcher.release()
   expect(watcher.child.exitCode).toBe(0)
   expect(exits(fake.calls())).toEqual([])
-  expect((await control(ctx, outside, "check")).code).toBe(0)
+  expect((await ownersCheck(fake.ssh, outside)).code).toBe(0)
   await exitAll(ctx)
-  expect((await control(ctx, outside, "check")).code).toBe(0)
+  expect((await ownersCheck(fake.ssh, outside)).code).toBe(0)
   expect(fs.readdirSync(ctx.paths.cm)).toEqual([])
+})
+
+test("control, forward and mux refuse a socket outside hq/cm", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const outside = await ownersMaster(dir, fake)
+  const before = fake.calls().length
+  // Named outright, or through a link in cm that ssh would follow.
+  const exit = await control(ctx, outside, "exit")
+  expect(exit.code).toBe(255)
+  expect(exit.stderr).toContain(`${outside} isn't OpenCorp's own control socket in ${ctx.paths.cm}`)
+  expect((await control(ctx, path.join(ctx.paths.cm, "..", "owner.sock"), "exit")).code).toBe(255)
+  fs.symlinkSync(outside, ctx.paths.node)
+  const spec = { host: "node1", opencorp: "/o/opencorp" }
+  for (const ran of [
+    await control(ctx, ctx.paths.node, "exit"),
+    await forward(ctx, spec, 49381, "/h/hq.sock"),
+    await mux(ctx, spec, ["hq"]),
+  ])
+    expect([ran.code, ran.stderr]).toEqual([255, `${ctx.paths.node} isn't OpenCorp's own control socket in ${ctx.paths.cm}; left alone\n`])
+  // ssh was never run on it, and the owner's master lives.
+  expect(fake.calls().slice(before)).toEqual([])
+  expect((await ownersCheck(fake.ssh, outside)).code).toBe(0)
 })
 
 test("the watcher gives up on a master that never answers its -O exit", async () => {

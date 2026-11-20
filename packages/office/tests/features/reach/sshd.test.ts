@@ -15,6 +15,7 @@ import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import type { Spec } from "../../../src/features/reach/spec.ts"
 import {
   control,
+  controlArgv,
   descendants,
   exitAll,
   forward,
@@ -35,7 +36,7 @@ import { visit } from "../../../src/features/reach/run.ts"
 import { startOffice } from "../../../src/testing/office.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
 import { isGone, shortDir, waitFor } from "../../helpers.ts"
-import { fakeHome, freePort, holdConnection, holdingServer, reachCtx, visitDeps } from "./helpers.ts"
+import { fakeHome, fakeRemote, freePort, holdConnection, holdingServer, reachCtx, visitDeps } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -56,6 +57,9 @@ let sshd: { dir: string; port: number; clientConfig: string; child: ChildProcess
 function run(argv: [string, ...string[]]): void {
   execFileSync(argv[0], argv.slice(1), { env: { PATH: "/usr/bin:/bin" }, stdio: "ignore", timeout: 30_000 })
 }
+
+/** How a test runs a control command of its own. */
+const RUN = { env: { PATH: "/usr/bin:/bin" }, cwd: "/", timeoutMs: 10_000 }
 
 /** Whether something accepts connections on 127.0.0.1:`port`. */
 function accepts(port: number): Promise<boolean> {
@@ -382,6 +386,98 @@ describe.skipIf(!REAL)("a real sshd", () => {
     await events.ended
     expect(fs.readdirSync(paths.cm)).toEqual([])
     await waitFor(() => processesWith(paths.dir).length === 0, { timeout: 10_000, what: "no process on the hq folder" })
+  })
+
+  /** A visit through the real sshd to a fake HQ on this machine: reach.sh logs in to localhost (the login node), then
+   *  prints a spec for 127.0.0.1 through it. `own` is the client's own ssh config, included before the sshd's; its
+   *  ControlPath folder is `<dir>/mine`. Resolves once connected. When the test finishes, the visit is stopped and every
+   *  master in `mine` ended. */
+  async function realVisit(own: string[]) {
+    const dir = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
+    const mine = path.join(dir, "mine")
+    fs.mkdirSync(mine, { mode: 0o700 })
+    let stop = async () => {}
+    // One hook, in this order: the visit stops, the client's own masters end, then the folder goes.
+    onTestFinished(async () => {
+      await stop()
+      for (const name of fs.readdirSync(mine)) await runChild([SSH, "-F", "/dev/null", "-S", path.join(mine, name), "-O", "exit", "--", "x"], RUN)
+      for (const pid of processesWith(mine)) process.kill(pid, "SIGKILL")
+      fs.rmSync(dir, { recursive: true, force: true })
+    })
+    const paths = new ReachPaths(dir)
+    makeDirs(paths)
+    const remote = await fakeRemote(dir)
+    const spec = { host: "127.0.0.1", jump: ["localhost"], opencorp: remote.opencorp }
+    const body = `set -eu\nssh localhost true\nprintf '%s\\n' '${JSON.stringify(spec)}'\n`
+    await writePrivate(paths.script, body)
+    await writePrivate(paths.approved, body)
+    const port = await freePort()
+    await writeAccess(paths, {
+      port,
+      sha256: createHash("sha256").update(body).digest("hex"),
+      learned_at: new Date().toISOString(),
+      last_used_at: null,
+      signed_in_at: null,
+    })
+    const ownConfig = path.join(dir, "own_config")
+    fs.writeFileSync(ownConfig, own.map((line) => line.replaceAll("{mine}", mine)).join("\n") + "\n")
+    const v = visitDeps(dir, null, {
+      env: { PATH: "/usr/bin:/bin", HOME: dir },
+      sshIncludes: [ownConfig, sshd.clientConfig],
+      limits: LIMITS,
+    })
+    const done = visit({ signIn: false, open: false }, v.deps)
+    stop = async () => {
+      v.sigint()
+      await done
+    }
+    await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 0, {
+      what: "the visit to connect",
+    })
+    expect(v.errors).toEqual([])
+    return { v, done, paths, port, mine }
+  }
+
+  /** The client's own connection sharing for the login node, as the owner keeps it in `~/.ssh/config`. */
+  const SHARING = ["Host localhost", "  ControlMaster auto", "  ControlPath {mine}/%C", "  ControlPersist 30"]
+
+  test("with ControlMaster, ControlPath and ControlPersist in the client's config, the visit's login master is in the client's folder and outlives the visit, while the node master in hq/cm ends with it", async () => {
+    const { v, done, paths, mine } = await realVisit(SHARING)
+    // The node's hop rode the login master in the client's folder: hq/cm holds the node master alone.
+    expect(fs.readdirSync(paths.cm)).toEqual(["node"])
+    const logins = fs.readdirSync(mine)
+    expect(logins).toHaveLength(1)
+    v.sigint()
+    expect(await done).toBe(0)
+    expect(fs.readdirSync(paths.cm)).toEqual([])
+    await waitFor(() => processesWith(paths.cm).length === 0, { timeout: 10_000, what: "the node master to end" })
+    // The client's own master is theirs to keep: still up, for their terminals to reuse.
+    expect((await runChild(controlArgv(SSH, path.join(mine, logins[0]!), "check"), RUN)).code).toBe(0)
+  })
+
+  test("with none set, the visit's masters are in hq/cm, one login serves the visit, and they end with it", async () => {
+    const { v, done, paths, mine } = await realVisit(["# The client shares nothing."])
+    const names = fs.readdirSync(paths.cm).sort()
+    // reach.sh's login to localhost left the one master the node's hop rode, beside the node master.
+    expect(names).toHaveLength(2)
+    expect(names[0]).toMatch(/^[0-9a-f]{40}$/)
+    expect(names[1]).toBe("node")
+    expect(fs.readdirSync(mine)).toEqual([])
+    v.sigint()
+    expect(await done).toBe(0)
+    expect(fs.readdirSync(paths.cm)).toEqual([])
+    await waitFor(() => processesWith(paths.dir).length === 0, { timeout: 10_000, what: "no process on the hq folder" })
+  })
+
+  test("HQ's forward is on the node master only", async () => {
+    const { v, done, port, mine } = await realVisit(SHARING)
+    const login = path.join(mine, fs.readdirSync(mine)[0]!)
+    expect(await accepts(port)).toBe(true)
+    v.sigint()
+    expect(await done).toBe(0)
+    // The client's login master outlives the visit, and the port went with the node master.
+    expect((await runChild(controlArgv(SSH, login, "check"), RUN)).code).toBe(0)
+    expect(await accepts(port)).toBe(false)
   })
 
   /** One step run against a context; what it yields is compared between the fake and the real ssh. */

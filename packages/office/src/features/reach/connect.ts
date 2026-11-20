@@ -5,14 +5,17 @@ import { isDeepStrictEqual } from "node:util"
 import { z } from "zod"
 import {
   cleanOutput,
+  configProblems,
   control,
   endNode,
   forward,
+  jumpHost,
   lastStderr,
   type Master,
   mux,
   type Ran,
   type ReachContext,
+  type SshHost,
   startMaster,
   waitForSocket,
 } from "./ssh.ts"
@@ -20,19 +23,41 @@ import { hqSocket, lastJson, type Spec } from "./spec.ts"
 import { codeFrom, RemoteCode } from "./state.ts"
 
 export type FailureKind = "unreachable" | "no_office" | "not_ready" | "broken" | "port_taken" | "no_forward"
-/** A step of reaching HQ failed; `kind` is its row of the failure table. */
+/** A step of reaching HQ failed; `kind` is its row of the failure table, and `problems` the lines naming what the
+ *  owner's ssh config sets that a visit can't work with. */
 export class ReachFailure extends Error {
   override name = "ReachFailure"
   constructor(
     readonly kind: FailureKind,
     message: string,
+    readonly problems: readonly string[] = [],
   ) {
     super(message)
   }
 }
 
-/** The failure table: what to say for `failure`, and the exit code. */
+/** What to say for `failure`, its row of the failure table and then its problems, one per line, and the exit code. */
 export function describe(failure: ReachFailure, port: number): { line: string; code: number } {
+  const { line, code } = row(failure, port)
+  return { line: [line, ...failure.problems].join("\n"), code }
+}
+
+/** `error` with the problems `configProblems` finds for `hosts` when it's a `ReachFailure`; anything else, or after
+ *  the visit's stop, as it is. */
+export async function withProblems(ctx: ReachContext, error: unknown, hosts: readonly SshHost[]): Promise<unknown> {
+  if (!(error instanceof ReachFailure) || ctx.signal?.aborted) return error
+  const problems = await configProblems(ctx, hosts)
+  return problems.length === 0 ? error : new ReachFailure(error.kind, error.message, [...error.problems, ...problems])
+}
+
+/** The hosts a visit's ssh reaches for `spec`: each jump host, then HQ's machine, with their ports. */
+export function specHosts(spec: Spec): SshHost[] {
+  const jumps = (spec.jump ?? []).flatMap((jump) => jumpHost(jump) ?? [])
+  return [...jumps, spec.port === undefined ? { host: spec.host } : { host: spec.host, port: spec.port }]
+}
+
+/** The failure table: what to say for `failure`, and the exit code. */
+function row(failure: ReachFailure, port: number): { line: string; code: number } {
   // Where a sentence follows it, the message's own closing period goes.
   const said = failure.message.replace(/\.+$/, "")
   switch (failure.kind) {
@@ -127,7 +152,7 @@ export function portFree(port: number): Promise<boolean> {
 /** Connects to HQ's machine: (a) the node master logs in, (b) `opencorp hq --check --json` over it gives HQ's socket
  *  and health, (c) 127.0.0.1:`port` here is forwarded to that socket, and (d) HQ's health through the port must be
  *  the check's. On any failure it ends only the node master (a retry needs no new Duo for the login node) and throws
- *  `ReachFailure`. */
+ *  `ReachFailure`, naming what the owner's ssh config sets for the spec's hosts that a visit can't work with. */
 export async function connect(spec: Spec, port: number, ctx: ReachContext): Promise<Connection> {
   // Before logging in, so a port that's taken costs no Duo; checked again before the forward, minutes later.
   if (!(await portFree(port))) throw new ReachFailure("port_taken", `port ${port}`)
@@ -152,7 +177,7 @@ export async function connect(spec: Spec, port: number, ctx: ReachContext): Prom
     return { master, spec, port, socket: status.socket }
   } catch (error) {
     await endNode(ctx, master)
-    throw error
+    throw await withProblems(ctx, error, specHosts(spec))
   }
 }
 

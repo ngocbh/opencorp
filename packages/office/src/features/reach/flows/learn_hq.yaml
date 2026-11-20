@@ -25,7 +25,10 @@ nodes:
 
       Tools:
       - shell runs one POSIX sh command here, in an empty folder, once the owner approves it. Write it in printable
-        ASCII only. Its ssh shares one login per host, so ask for each login once and reuse it. SSH prompts
+        ASCII only. Its ssh reads the owner's ssh config first. Unless that turns sharing off (ControlMaster no), a
+        login stays open after the command that made it (a minute, unless the owner's ControlPersist says otherwise),
+        and the next ssh to that host within that time reuses it; with sharing off, each ssh logs in again. So keep
+        the commands for one host close together, and ask for as few logins as you can. SSH prompts
         (passwords, Duo, host keys) go to the owner's terminal, not to you. Commands get no stdin and stop after 5
         minutes. shell returns one JSON object: exit (null when it was stopped), stdout and stderr, and ssh when an
         ssh in it couldn't connect.

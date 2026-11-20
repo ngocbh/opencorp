@@ -4,11 +4,19 @@ import net from "node:net"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import type { HqStatus } from "@opencorp/protocol"
-import { classifyCheck, connect, type FailureKind, portFree, ReachFailure, signIn } from "../../../src/features/reach/connect.ts"
+import {
+  classifyCheck,
+  connect,
+  describe,
+  type FailureKind,
+  portFree,
+  ReachFailure,
+  signIn,
+} from "../../../src/features/reach/connect.ts"
 import { control, exitAll, isSocket, type ReachContext, type Ran, runChild, sshEnv } from "../../../src/features/reach/ssh.ts"
 import type { Spec } from "../../../src/features/reach/spec.ts"
 import { type FakeSsh, fakeControlName } from "../../../src/testing/fake_ssh.ts"
-import { fakeHome, fakeRemote, freePort, reachCtx } from "./helpers.ts"
+import { fakeHome, fakeRemote, freePort, named, ownerConfig, reachCtx } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -168,6 +176,34 @@ test("a failed connect ends only cm/node", async () => {
   expect((await control(ctx, loginSocket, "check")).code).toBe(0)
   await exitAll(ctx)
   expect(fake.masters()).toEqual([])
+})
+
+test("after a failed check, the visit names a RemoteCommand the user's config sets for the host", async () => {
+  const { dir, fake } = fakeHome({ userConfig: ["Host login1", "  RemoteCommand tmux attach"] })
+  const remote = await fakeRemote(dir)
+  const ctx = await reachCtx(dir, fake, { includes: [ownerConfig(dir)] })
+  onTestFinished(() => exitAll(ctx))
+  remote.setCheck({ code: 1, stderr: "opencorp hq: this office has no HQ yet\n" })
+  const got = await failure(connect(specFor(remote.opencorp), await freePort(), ctx))
+  expect([got.kind, got.message]).toEqual(["not_ready", "opencorp hq: this office has no HQ yet"])
+  // Only login1's: node1 reads OpenCorp's defaults alone.
+  expect(got.problems).toEqual([named("RemoteCommand", "login1")])
+  expect(describe(got, 1).line.split("\n")).toEqual([
+    "opencorp hq: HQ isn't ready there: opencorp hq: this office has no HQ yet. Run `opencorp doctor` there, or update that checkout.",
+    named("RemoteCommand", "login1"),
+  ])
+  expect(fs.existsSync(ctx.paths.node)).toBe(false)
+})
+
+test("a failed connect names nothing when the owner's config sets nothing a visit can't work with", async () => {
+  const { dir, fake } = fakeHome()
+  fake.set({ userConfig: ["ControlMaster auto", `ControlPath ${dir}/%C`, "ControlPersist 2h"] })
+  const remote = await fakeRemote(dir)
+  const ctx = await reachCtx(dir, fake, { includes: [ownerConfig(dir)] })
+  onTestFinished(() => exitAll(ctx))
+  remote.setCheck({ code: 3, stderr: "The office isn't running\n" })
+  const got = await failure(connect(specFor(remote.opencorp), await freePort(), ctx))
+  expect([got.kind, got.problems]).toEqual(["no_office", []])
 })
 
 test("sign-in takes the code from opencorp hq --json over the master", async () => {

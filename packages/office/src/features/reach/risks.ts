@@ -3,7 +3,7 @@
  *  The texts are risks.md's. */
 import { embedded } from "../../platform.ts"
 import type { ReachPaths } from "./paths.ts"
-import { LEARNING_PERSIST_S, PERSIST_S } from "./ssh.ts"
+import { PERSIST_S } from "./ssh.ts"
 import risksMd from "./risks.md" with { type: "file" }
 
 /** risks.md's texts by name. */
@@ -37,12 +37,7 @@ export const beforeLearning = (paths: ReachPaths): string[] => text("beforeLearn
 
 /** Shown by save_access with the two files, before the owner saves; the agent's risks for this setup follow. */
 export const beforeSaving = (paths: ReachPaths): string[] =>
-  text("beforeSaving", {
-    persist_s: PERSIST_S,
-    learning_persist_minutes: LEARNING_PERSIST_S / 60,
-    provider: paths.provider,
-    auth: paths.auth,
-  })
+  text("beforeSaving", { persist_s: PERSIST_S, provider: paths.provider, auth: paths.auth })
 
 /** The answer that starts a learning run. */
 export const LEARN = text("LEARN").join("\n")

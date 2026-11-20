@@ -24,7 +24,16 @@ import { embedded } from "../../platform.ts"
 import { which } from "../../util/env.ts"
 import { writePrivate } from "../../util/private_files.ts"
 import { workerEnv } from "../../runtime/worker/spawn.ts"
-import { classifyCheck, type Connection, connect, describe, ReachFailure, sameHealth, signIn } from "./connect.ts"
+import {
+  classifyCheck,
+  type Connection,
+  connect,
+  describe,
+  ReachFailure,
+  sameHealth,
+  signIn,
+  withProblems,
+} from "./connect.ts"
 import { Learning, learning, withOwnerOrStop } from "./learning.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
 import { learnProvider } from "./provider.ts"
@@ -35,11 +44,11 @@ import {
   findSsh,
   headChars,
   isSocket,
-  LEARNING_PERSIST_S,
   LIMITS,
   mux,
   quietStdin,
   type ReachContext,
+  readHosts,
   control,
   startWatcher,
   type Watcher,
@@ -163,11 +172,18 @@ export function visitLine(conn: Connection): string {
   return `Connected. Until Ctrl-C these stay open: SSH to ${conn.spec.host}${through}, and HQ at http://127.0.0.1:${conn.port}/.`
 }
 
-/** The replay, then connect: a replay that isn't `ok` throws as the `ReachFailure` of its outcome. */
+/** The replay, then connect. */
 export async function reach(ctx: ReachContext, port: number): Promise<Connection> {
+  return connect(await replayed(ctx), port, ctx)
+}
+
+/** The spec a replay printed. A replay that isn't `ok` throws as the `ReachFailure` of its outcome, naming what the
+ *  owner's ssh config sets, for the hosts reach.sh's ssh named, that a visit can't work with. */
+async function replayed(ctx: ReachContext): Promise<Spec> {
   const reached = await runReach(ctx)
-  if (reached.outcome !== "ok") throw new ReachFailure(reached.outcome, reached.detail)
-  return connect(reached.spec!, port, ctx)
+  if (reached.outcome === "ok") return reached.spec!
+  const failure = new ReachFailure(reached.outcome, reached.detail)
+  throw await withProblems(ctx, failure, readHosts(ctx))
 }
 
 /** Runs reach_hq with no `llmConfig` and no provider: one TOOL node, so yian resolves no model. */
@@ -422,13 +438,7 @@ async function learnPath(
     const secrets = () => providerSecrets(provider, workerEnv(ctx.env))
     // The connection save_access opens is the visit's: its master's output goes where the owner sees it then.
     run.state = new Learning({ ...ctx, echo: owner.echo }, owner.prompter, owner.stdin, secrets, port, deps.now)
-    // Masters started while learning keep their ControlPersist; a reconnect's start from the visit's config again.
-    await writeSshFiles(ctx.paths, ctx.ssh, deps.sshIncludes, { persist: LEARNING_PERSIST_S })
-    try {
-      return await runLearn(provider, inputs, run.state)
-    } finally {
-      await writeSshFiles(ctx.paths, ctx.ssh, deps.sshIncludes)
-    }
+    return await runLearn(provider, inputs, run.state)
   }
   const plain = () => learn({ prompter: deps.prompter, stdin: deps.stdin, echo: ctx.echo })
   /** Learning behind the screen; when the screen can't start (a window too small for it, say), on the plain
@@ -755,9 +765,7 @@ async function alreadyRunning(options: VisitOptions, deps: VisitDeps, paths: Rea
       deps.error(NOT_YET)
       return 1
     }
-    const reached = await runReach(ctx)
-    if (reached.outcome !== "ok") throw new ReachFailure(reached.outcome, reached.detail)
-    const spec = reached.spec!
+    const spec = await replayed(ctx)
     // The running visit may not have forwarded the port yet, or may be moving it (`--port`): a code goes only to a
     // port where HQ answers as its check says, steps b and d.
     const status = classifyCheck(await mux(ctx, spec, ["hq", "--check", "--json"]))
@@ -801,14 +809,17 @@ async function waitLoop(ctx: ReachContext, conn: Connection, deps: VisitDeps): P
   }
 }
 
-/** After a drop: close our masters, try once quietly in BatchMode (it fails at once where a login needs Duo), then
+/** After a drop: close our masters, try once quietly in BatchMode (it fails at once where a login needs Duo, and
+ *  each of its steps within `quietMs`, as over a stale connection of the owner's that we don't close), then
  *  reconnect each time the owner presses Enter; Enters typed before the prompt don't count. A failed retry has
  *  ended only the node master (`connect` does that), so the next rides the login master without a new Duo. Never
  *  offers relearning. Null when stdin ends or on Ctrl-C. */
 async function reconnect(ctx: ReachContext, port: number, deps: VisitDeps): Promise<Connection | null> {
   await exitAll(ctx)
+  const { quietMs } = ctx.limits
+  const quiet = { ...ctx.limits, promptMs: quietMs, stepMs: Math.min(ctx.limits.stepMs, quietMs) }
   try {
-    return await reach({ ...ctx, batch: true, echo: () => {} }, port)
+    return await reach({ ...ctx, batch: true, echo: () => {}, limits: quiet }, port)
   } catch {
     await exitAll(ctx)
   }

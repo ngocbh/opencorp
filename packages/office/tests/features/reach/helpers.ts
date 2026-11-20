@@ -20,7 +20,7 @@ import { writePrivate } from "../../../src/util/private_files.ts"
 import { ACCOUNT, fakeSubscription, NO_LISTING, Script } from "../setup/helpers.ts"
 
 /** Limits short enough that a test which hits one still finishes. */
-export const SHORT_LIMITS = Object.freeze({ promptMs: 5000, stepMs: 5000 })
+export const SHORT_LIMITS = Object.freeze({ promptMs: 5000, stepMs: 5000, quietMs: 5000 })
 
 /** A short home folder with a fake ssh in `<dir>/fake`. When the test finishes, every fake master is killed, then
  *  the folder removed (in that order, so no master outlives its state). */
@@ -38,12 +38,16 @@ export function fakeHome(behavior?: FakeSshBehavior): { dir: string; fake: FakeS
   return { dir, fake }
 }
 
-/** A context whose home is `dir` and whose ssh is `fake`, with the hq folders made and the ssh files written (no
- *  includes); children get only a system PATH and `dir` as HOME. */
-export async function reachCtx(dir: string, fake: FakeSsh, more: Partial<ReachContext> = {}): Promise<ReachContext> {
+/** A context whose home is `dir` and whose ssh is `fake`, with the hq folders made and the ssh files written with
+ *  `includes` (none unless given); children get only a system PATH and `dir` as HOME. */
+export async function reachCtx(
+  dir: string,
+  fake: FakeSsh,
+  { includes = [], ...more }: Partial<ReachContext> & { includes?: readonly string[] } = {},
+): Promise<ReachContext> {
   const paths = new ReachPaths(dir)
   makeDirs(paths)
-  await writeSshFiles(paths, fake.ssh, [])
+  await writeSshFiles(paths, fake.ssh, includes)
   return {
     paths,
     ssh: fake.ssh,
@@ -325,6 +329,13 @@ export function tokens(name: string, inSeconds: number): OAuthCredentials {
     accountId: ACCOUNT,
   })
 }
+
+/** The line a failed visit adds for `host`, whose ssh config sets `options`. */
+export const named = (options: string, host: string) =>
+  `opencorp hq: your ssh config sets ${options} for ${host}, which a visit can't work with; see https://opencorp.readthedocs.io/hq/#troubleshooting`
+
+/** An include for the owner's ssh config, where the fake reads its `userConfig`; nothing is at the path. */
+export const ownerConfig = (dir: string) => path.join(dir, "owner_ssh_config")
 
 /** A connection spec reach.sh may print. */
 export const SPEC = { host: "node1", jump: ["login1"], opencorp: "/o/opencorp" }

@@ -75,6 +75,8 @@ import {
   fakeHome,
   fakeRemote,
   freePort,
+  named,
+  ownerConfig,
   reachCtx,
   rejection,
   SPEC,
@@ -582,6 +584,18 @@ test.each(FAILURES)("a failed visit says what to do and exits as the table says 
   expect(home.fake.masters()).toEqual([])
 })
 
+test("after a failed replay, the visit names the RemoteCommand the user's config sets for the login host", async () => {
+  const home = await approvedHome({ userConfig: ["Host login1", "  RemoteCommand tmux attach", "  RequestTTY force"] })
+  const v = visitDeps(home.dir, home.fake, { sshIncludes: [ownerConfig(home.dir)] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  // ssh refuses reach.sh's own command beside the owner's RemoteCommand.
+  expect(v.errors).toEqual([
+    `opencorp hq: couldn't connect: Cannot execute command-line and remote command.\n${named("RemoteCommand and RequestTTY force", "login1")}`,
+  ])
+  expect(home.fake.calls().filter((argv) => argv.includes("-M"))).toEqual([])
+  expect(fs.readdirSync(home.paths.cm)).toEqual([])
+})
+
 /** The control sockets the fake's `-O exit` calls named, in order. */
 const exits = (fake: FakeSsh) =>
   fake.calls().filter((argv) => argv.includes("-O") && argv.includes("exit")).map((argv) => argv[argv.indexOf("-S") + 1])
@@ -621,6 +635,22 @@ test("a drop is retried once quietly in BatchMode before asking for Enter", asyn
   expect(batched().some((argv) => argv.includes("-M"))).toBe(true)
   expect(batched().some((argv) => argv.includes("login1"))).toBe(true)
   expect(v.echoed.length).toBe(echoed)
+  v.sigint()
+  expect(await v.done).toBe(0)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("a drop's quiet try gives each step at most quietMs, so a login that hangs soon asks for Enter", async () => {
+  const { dir, fake, paths } = await approvedHome({}, { signed_in_at: new Date().toISOString() })
+  // Long enough for a step that may prompt; the quiet try never does.
+  const v = await connected(dir, fake, { signIn: false, open: false }, { limits: { promptMs: 60_000, stepMs: 5000, quietMs: 500 } })
+  // As over a stale connection, login1 answers nothing.
+  fake.set({ hosts: { login1: { login: "hang" } } })
+  const dropped = performance.now()
+  dropNode(paths)
+  await waitFor(() => v.errors.includes(LOST), { timeout: 10_000, what: "press Enter" })
+  expect(performance.now() - dropped).toBeLessThan(10_000)
+  expect(v.errors).toEqual([LOST])
   v.sigint()
   expect(await v.done).toBe(0)
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
@@ -974,12 +1004,15 @@ test("--relearn while another opencorp hq holds the connection says to end it fi
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
 })
 
-test("while learning, login masters stay 10 minutes after their last use; afterwards a visit's stay 60 s", async () => {
+test("learning no longer rewrites the ssh files with a longer persist", async () => {
   const { dir, fake, llm, paths } = await unlearnedHome()
   llm.script(call("shell", { command: 'grep ControlPersist "$OPENCORP_SSH_CONFIG"', why: "look" }), { content: "Done." })
   const v = visitDeps(dir, fake, { answers: ["1", "1"] })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(JSON.stringify(llm.requests()[1])).toContain("ControlPersist 600")
+  // The agent's command read the visit's own file.
+  const seen = JSON.stringify(llm.requests()[1])
+  expect(seen).toContain("ControlPersist 60")
+  expect(seen).not.toContain("ControlPersist 600")
   expect(fs.readFileSync(paths.config, "utf8")).toContain("\nControlPersist 60\n")
   expect(fs.readFileSync(paths.batchConfig, "utf8")).toContain("\nControlPersist 60\n")
 })
