@@ -30,9 +30,9 @@ const CHAT = "You work in the office alongside"
 /** The employee's reply once its command ran. */
 const LISTED: ScriptedReply = { match: CHAT, content: "Listed." }
 
-/** The employee's reply that runs `command` in the workspace's shell. */
+/** The employee's reply that runs `command` in a new shell of its terminal. */
 function shell(command: string): ScriptedReply {
-  return { match: CHAT, tool_calls: [{ name: "workspace_shell", arguments: { command } }] }
+  return { match: CHAT, tool_calls: [{ name: "terminal_run", arguments: { command, why: "lists it" } }] }
 }
 
 function post(sock: string, target: string, body: unknown, headers: Record<string, string> = {}): Promise<Reply> {

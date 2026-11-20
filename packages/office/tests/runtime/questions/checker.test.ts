@@ -59,7 +59,7 @@ test("a model question takes text and checks options", () => {
 test("an approval card takes one of its options or text, never a send back", () => {
   const card = q("approval", {
     options: ["Yes", "Yes, and don't ask again this session for: ls *"],
-    approval: { kind: "command", tool: "shell", action: "ls -la", reason: "Ask mode", rules: ["ls *"] },
+    approval: { kind: "command", tool: "terminal_run", action: "ls -la", reason: "Ask mode", rules: ["ls *"] },
   })
   expect(checkAnswer(card, "Yes", "option")).toBe("Yes")
   expect(checkAnswer(card, "use rg instead", "text")).toBe("use rg instead")

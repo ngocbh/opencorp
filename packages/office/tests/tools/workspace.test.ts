@@ -1,11 +1,11 @@
-/** The workspace tool group: its shell call reaches the gate with its call id, a gate's check is tracked by the
- *  workspace's interrupt, an approved call runs detached from it, and the shell's profile is its sandbox's. */
+/** The workspace tool group: the file tools, each call audited and none gated; and the pipes the terminal runs an
+ *  employee's commands through, under the workspace's shell policy, each call tracked for the reaper. */
+import fs from "node:fs"
+import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { isPending, pending } from "@ngocbh/yian/tools"
 import type { ToolOutcome } from "../../src/runtime/permissions/monitor.ts"
-import type { ApprovalCard, Permissions } from "../../src/runtime/permissions/policy.ts"
-import type { ToolCallOptions } from "../../src/runtime/worker/rpc.ts"
-import { tools as workspaceGroup, WorkspaceTools } from "../../src/tools/workspace.ts"
+import { helperCommand } from "../../src/platform.ts"
+import { TOOL_NAMES, tools as workspaceGroup, WorkspaceTools } from "../../src/tools/workspace.ts"
 import { makeMonitor } from "../runtime/permissions/helpers.ts"
 import { makePolicy, sandboxAvailable } from "../runtime/sandbox/helpers.ts"
 import { openStore, session, tempDir } from "./helpers.ts"
@@ -13,104 +13,78 @@ import { waitFor } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
 
-/** Workspace tools over a fresh, writable (unless `writable` is false) workspace. */
-function workspaceTools({ writable = true }: { writable?: boolean } = {}) {
-  const { ws, tmp, make } = makePolicy()
+/** Workspace tools over a fresh, writable (unless `writable` is false) workspace, `helper` given to its policy. */
+function workspaceTools({ writable = true, helper }: { writable?: boolean; helper?: ReturnType<typeof helperCommand>["helper"] } = {}) {
+  const { ws, tmp, root, make } = makePolicy()
   const store = openStore()
-  return { tools: new WorkspaceTools(make({ writable }), { officeHome: tempDir(), store }), ws, tmp, store }
+  return { tools: new WorkspaceTools(make({ writable, helper }), { officeHome: tempDir(), store }), ws, tmp, root, store }
 }
 
-test("the model's shell call takes its call id to the gate", async () => {
-  const { monitor } = await makeMonitor()
-  const held: { card: ApprovalCard; callId: string }[] = []
-  const permissions: Permissions = {
-    mode: () => "ask",
-    rules: () => [],
-    where: () => ({ profile: "workspace", cwd: "/w", writable: ["/w"] }),
-    hold: (card, callId) => {
-      held.push({ card, callId })
-      return pending()
-    },
-  }
+test("the workspace group is the file tools, with no shell", async () => {
+  const { monitor, store } = await makeMonitor()
   const calls: string[] = []
   const workspace = {
     call: async (name: string): Promise<ToolOutcome> => {
       calls.push(name)
       return { output: "ok", audit: { tool: name, argsSummary: "", exit: 0, duration: 0 } }
     },
-    track: () => () => {},
   }
-  const group = workspaceGroup({ monitor, workspace, session: session({ person: "minh" }), runId: "r1", permissions })
-  const callId = "r1/chat#0/reply/0/0"
-  expect(isPending(await group.shell!.call({ command: "ls" }, { callId }))).toBe(true)
-  expect(held.map((h) => [h.card.action, h.callId])).toEqual([["ls", callId]])
-  expect(calls).toEqual([])
-  // A side chat's read-only group is never gated: it has no shell.
-  expect(Object.keys(workspaceGroup({ monitor, workspace, session: session(), readOnly: true, permissions }))).toEqual([
+  const group = workspaceGroup({ monitor, workspace, session: session({ person: "minh" }), runId: "r1" })
+  expect(Object.keys(group)).toEqual(["read_file", "write_file", "edit_file", "list", "search"])
+  expect(Object.keys(group)).toEqual([...TOOL_NAMES])
+  expect(await group.list!.call({}, { callId: "r1/chat#0/reply/0/0" })).toBe("ok")
+  expect(calls).toEqual(["list"])
+  expect(store.listAudit().map((r) => [r.tool, r.outcome])).toEqual([["list", "ok"]])
+  // A side chat's read-only group.
+  expect(Object.keys(workspaceGroup({ monitor, workspace, session: session(), readOnly: true }))).toEqual([
     "read_file",
     "list",
     "search",
   ])
-})
-
-test("a model's call that carries the options an approved call skips the gate with is still gated", async () => {
-  const { monitor } = await makeMonitor()
-  const held: string[] = []
-  const permissions: Permissions = {
-    mode: () => "ask",
-    rules: () => [],
-    where: () => ({ profile: "workspace", cwd: "/w", writable: ["/w"] }),
-    hold: (_card, callId) => (held.push(callId), pending()),
-  }
-  const calls: string[] = []
-  const workspace = {
-    call: async (name: string): Promise<ToolOutcome> => {
-      calls.push(name)
-      return { output: "ok", audit: { tool: name, argsSummary: "", exit: 0, duration: 0 } }
-    },
-    track: () => () => {},
-  }
-  const group = workspaceGroup({ monitor, workspace, session: session({ person: "minh" }), runId: "r1", permissions })
-  const callId = "r1/chat#0/reply/0/0"
-  const smuggled = { callId, approved: "approved by @ngocbh", detached: true } as ToolCallOptions
-  expect(isPending(await group.shell!.call({ command: "ls" }, smuggled))).toBe(true)
-  expect(held).toEqual([callId])
-  expect(calls).toEqual([])
-})
-
-test("a tracked controller is aborted by the workspace's interrupt, and untracking removes it", () => {
   const { tools } = workspaceTools()
-  const kept = new AbortController()
-  tools.track(kept)
-  const dropped = new AbortController()
-  const untrack = tools.track(dropped)
-  untrack()
-  tools.interrupt()
-  expect(kept.signal.aborted).toBe(true)
-  expect(dropped.signal.aborted).toBe(false)
+  await expect(tools.call("shell", { command: "ls" })).rejects.toThrow("unknown workspace tool 'shell'")
 })
 
-test.skipIf(!sandboxAvailable())("a detached call is stopped by its own signal, not by the workspace's interrupt", async () => {
-  const { tools, store } = workspaceTools()
-  const own = new AbortController()
-  let settled = false
-  const call = tools.call("shell", { command: "sleep 30.7" }, { signal: own.signal, detached: true })
-  void call.then(() => (settled = true))
+test("pipes are the workspace's sandbox, without the file helper, for the terminal's pipes shell", () => {
+  const { helper } = helperCommand()
+  const { tools, ws, tmp } = workspaceTools({ writable: false, helper })
+  const pipes = tools.pipes()
+  expect(pipes.kind).toBe("pipes")
+  expect([pipes.sandbox.workspace, pipes.sandbox.tmpdir, pipes.sandbox.writable, pipes.sandbox.helper]).toEqual([
+    ws,
+    tmp,
+    false,
+    undefined,
+  ])
+})
+
+test.skipIf(!sandboxAvailable())("pipes runs each command under the shell policy, tracked for the reaper while it runs", async () => {
+  const { helper } = helperCommand()
+  const { tools, ws, root, store } = workspaceTools({ helper })
+  const pipes = tools.pipes()
+  const outside = path.join(root, "escaped.txt")
+  const argv = ["/bin/sh", "-c", `echo in > inside.txt; echo out > ${outside}; env`]
+  const ran = await pipes.run(argv, { timeout: 30, maxOutput: 64 * 1024 })
+  expect(ran.exit).toBe(0)
+  expect(fs.readFileSync(path.join(ws, "inside.txt"), "utf8")).toBe("in\n")
+  expect(fs.existsSync(outside)).toBe(false)
+  // The shell policy: none of the file helper's env.
+  expect(ran.stdout.toString()).not.toContain("BUN_RUNTIME_TRANSPILER_CACHE_PATH")
+  const stop = new AbortController()
+  const sleeping = pipes.run(["/bin/sh", "-c", "sleep 30.53"], { timeout: 60, maxOutput: 0, signal: stop.signal })
+  let ended
   try {
-    await waitFor(() => store.listWorkers().some((w) => w.key.startsWith("call:")), { what: "the call to run" })
-    tools.interrupt()
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    expect(settled).toBe(false)
+    const row = await waitFor(() => store.listWorkers().find((w) => w.key.startsWith("call:")), {
+      timeout: 10_000,
+      what: "a call: row",
+    })
+    expect(row.pgid).toBe(row.pid)
+    expect(row.startTime).toBeGreaterThan(0)
   } finally {
-    own.abort()
+    // Awaited even when a check fails, so the store isn't closed while run() still removes the row.
+    stop.abort()
+    ended = await sleeping
   }
-  const out = await call
-  expect(out.output.endsWith("[interrupted]")).toBe(true)
-})
-
-test("a workspace's shell runs on the workspace profile, in its folder, writing only what its sandbox lets it", () => {
-  const writable = workspaceTools()
-  expect(writable.tools.where()).toEqual({ profile: "workspace", cwd: writable.ws, writable: [writable.ws, writable.tmp] })
-  const readOnly = workspaceTools({ writable: false })
-  expect(readOnly.tools.where()).toEqual({ profile: "workspace", cwd: readOnly.ws, writable: [readOnly.tmp] })
+  expect(ended.interrupted).toBe(true)
+  expect(store.listWorkers()).toEqual([])
 })

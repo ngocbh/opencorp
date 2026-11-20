@@ -275,9 +275,9 @@ async function sweepOnStart(office: Office, log: ReturnType<typeof officeLogger>
   }
 }
 
-/** Marks each terminal record an earlier office left running as interrupted, in every session's folder: a shell an
- *  office stop cut off is never run again. A folder whose meta.json isn't a record's is logged and left as it is; a
- *  failure is logged by its type, and never stops the start. */
+/** Marks each terminal record an earlier office left running as interrupted, in every session's `terminal/` folder:
+ *  a shell an office stop cut off is never run again. A folder whose meta.json isn't a record's is logged and left as
+ *  it is; a failure is logged by its type, and never stops the start. */
 function recoverTerminals(paths: OfficePaths, log: ReturnType<typeof officeLogger>): void {
   let folders: fs.Dirent[]
   try {
@@ -291,7 +291,7 @@ function recoverTerminals(paths: OfficePaths, log: ReturnType<typeof officeLogge
   for (const folder of folders) {
     if (!folder.isDirectory()) continue
     try {
-      for (const problem of recoverRecords(path.join(paths.sessions, folder.name))) {
+      for (const problem of recoverRecords(path.join(paths.sessions, folder.name, "terminal"))) {
         log("WARNING", "opencorp.daemon.main")(`a terminal record was left as it is: ${problem}`)
       }
     } catch (error) {

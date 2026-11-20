@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { stringify } from "yaml"
 import { AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent, Message } from "@opencorp/protocol"
@@ -264,7 +265,10 @@ const LOOKUP_CHAT = CHAT_FLOW
     "    output: ${find.output}",
     "",
   ].join("\n"))
-  .replace("tools: [toolbox, workspace, company, ask_user]", "tools: [toolbox, workspace, company, ask_user, lookup]")
+  .replace(
+    "tools: [toolbox, workspace, terminal, company, ask_user]",
+    "tools: [toolbox, workspace, terminal, company, ask_user, lookup]",
+  )
 
 test("a message sent while a real reply's flow call runs steers the reply, on the events yian sends", async () => {
   expect(LOOKUP_CHAT).toContain("ask_user, lookup]")
@@ -1000,6 +1004,59 @@ test("esc answers an office call in flight", async () => {
   expect(o.workspace.interrupts).toBeGreaterThan(interrupts)
   // The run goes on to its next turn.
   await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "the run at its next turn" })
+})
+
+/** An office whose terminal's commands run until stopped (`o.pipes`), recording what the actor's handlers answer each
+ *  tool call with; minh's rules allow `make *`. */
+async function terminalCallOffice(fake: Awaited<ReturnType<typeof fakeLlm>>) {
+  const rules = stringify({ rules: [{ effect: "allow", kind: "command", pattern: "make *" }] })
+  const o = await chatOffice(fake, { files: { "people/minh/rules.yaml": rules } })
+  o.pipes.run = (_command, signal) =>
+    new Promise((resolve) => signal.addEventListener("abort", () => resolve({ exit: null }), { once: true }))
+  const replies: Promise<unknown>[] = []
+  const recorded = (handlers: WorkerHandlers<Worker>) => {
+    const toolCall = handlers.toolCall.bind(handlers)
+    handlers.toolCall = (w, group, name, args, callId) => {
+      const reply = toolCall(w, group, name, args, callId)
+      replies.push(Promise.resolve(reply))
+      return reply
+    }
+    return handlers
+  }
+  const { spawn, next } = o.registry
+  o.registry.spawn = (job, sessionDir, handlers, options) => spawn(job, sessionDir, recorded(handlers), options)
+  o.registry.next = (worker, job, handlers) => next(worker, job, recorded(handlers))
+  return { o, replies }
+}
+
+test("Esc doesn't answer a terminal call early: it stops itself", async () => {
+  const fake = await fakeLlm()
+  const run = (command: string) => ({ tool_calls: [{ name: "terminal_run", arguments: { command, why: "builds" } }] })
+  fake.script(
+    run("make all"),
+    run("./configure"),
+    { match: "<command>", hold: true, tool_calls: [{ name: "Record", arguments: { verdict: "run", reason: "fine" } }] },
+  )
+  const { o, replies } = await terminalCallOffice(fake)
+  const { actor, sid } = await startActor(o)
+  // A command that runs: Esc's answer is the terminal's own reply, once it has stopped the command.
+  await actor.prompt("build it")
+  await waitFor(() => o.pipes.commands.length === 1 && replies.length === 1, { what: "the command" })
+  await actor.interrupt()
+  const ran = await replies[0]
+  expect(ran).not.toBe(INTERRUPTED_CALL)
+  expect(JSON.parse(String(ran))).toMatchObject({ shell: "shell 1", status: "idle", exit: null })
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "the turn's end" })
+  // A command in Auto's check: Esc stops the check, and the call answers that nothing ran.
+  await actor.prompt("configure it")
+  await waitFor(() => fake.requests().some((r) => JSON.stringify(r.messages).includes("<command>")) && replies.length === 2, {
+    what: "the check",
+  })
+  await actor.interrupt()
+  expect(await replies[1]).toBe("Not run: stopped before Auto's check finished.")
+  fake.release()
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "the second turn's end" })
+  expect(o.pipes.commands).toEqual(["make all"])
 })
 
 test("end answers an office call in flight and interrupts the workspace", async () => {

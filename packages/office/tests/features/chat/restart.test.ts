@@ -135,9 +135,9 @@ test("restore advances a run with an answer that never reached it", async () => 
   expect(o.office.store.getQuestion(q.id)!.status).toBe("consumed")
 })
 
-/** A model turn that runs `command` in the workspace's shell. */
+/** A model turn that runs `command` in the terminal's shell. */
 function shellCall(command: string): ScriptedReply {
-  return { tool_calls: [{ name: "workspace_shell", arguments: { command } }] }
+  return { tool_calls: [{ name: "terminal_run", arguments: { command, why: "as asked" } }] }
 }
 
 test("an approval card survives an office restart, and Yes after it runs the command once", async () => {
@@ -146,7 +146,7 @@ test("an approval card survives an office restart, and Yes after it runs the com
   const o = await chatOffice(fake)
   const { actor: first, sid } = await startActor(o)
   o.office.store.updateSession(sid, { mode: "ask" })
-  o.workspace.run = async () => "a.txt\n[exit 0]"
+  o.pipes.run = async () => ({ output: "a.txt\n", exit: 0 })
   await first.prompt("list it")
   const q = await card(o, sid, "approval")
   await waitFor(() => status(o, sid) === "waiting" && !first.hasWorker, { what: "asleep on the card" })
@@ -159,8 +159,10 @@ test("an approval card survives an office restart, and Yes after it runs the com
   expect(state(o, sid)).toMatchObject({ status: "waiting", waiting_on: [CEO] })
   await actor.answer(q.id, YES, "option", { by: CEO })
   await waitFor(() => texts(o, sid).includes("Listed.") && status(o, sid) === "idle", { what: "the reply" })
-  expect(o.workspace.calls).toEqual([{ tool: "shell", args: { command: "ls", timeout: null } }])
-  expect(lastAsked(fake, "a.txt\\n[exit 0]")).toBe(true)
+  expect(o.pipes.commands).toEqual(["ls"])
+  // The terminal's reply, as the model's request holds it: its output and its exit.
+  expect(lastAsked(fake, JSON.stringify('"output":"$ ls\\na.txt\\n"').slice(1, -1))).toBe(true)
+  expect(lastAsked(fake, JSON.stringify('"exit":0').slice(1, -1))).toBe(true)
   expect(o.office.store.getQuestion(q.id)!.status).toBe("consumed")
   expect(o.office.store.listAudit({ sessionId: sid }).map((r) => r.outcome)).toEqual(["held", "ok"])
 })
@@ -172,17 +174,17 @@ test("a restart while an approved command runs never runs it again: the agent re
   const { actor: first, sid } = await startActor(o)
   o.office.store.updateSession(sid, { mode: "ask" })
   // The command runs until it is stopped.
-  o.workspace.run = (_tool, _args, signal) =>
-    new Promise((resolve) => signal.addEventListener("abort", () => resolve("[interrupted]"), { once: true }))
+  o.pipes.run = (_command, signal) =>
+    new Promise((resolve) => signal.addEventListener("abort", () => resolve({ exit: null }), { once: true }))
   await first.prompt("deploy it")
   const q = await card(o, sid, "approval")
   await waitFor(() => status(o, sid) === "waiting" && !first.hasWorker, { what: "asleep on the card" })
   await first.answer(q.id, YES, "option", { by: CEO })
-  await waitFor(() => o.workspace.calls.length === 1, { what: "the command to run" })
+  await waitFor(() => o.pipes.commands.length === 1, { what: "the command to run" })
   const actor = await reopen(o, first)
   await actor.restore()
   await waitFor(() => texts(o, sid).includes("I'll check first.") && status(o, sid) === "idle", { what: "the reply" })
-  expect(o.workspace.calls).toHaveLength(1)
+  expect(o.pipes.commands).toHaveLength(1)
   expect(lastAsked(fake, "Not run again: the user approved this")).toBe(true)
   expect(o.office.store.getQuestion(q.id)!.status).toBe("consumed")
 })

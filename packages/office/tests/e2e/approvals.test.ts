@@ -1,5 +1,5 @@
-/** Approval cards on a real office: a held shell call survives the office's restart and runs once on Yes, End closes
- *  a card with nothing run, and in auto Auto's check runs in a classify worker of the office. */
+/** Approval cards on a real office: a held terminal command survives the office's restart and runs once on Yes, End
+ *  closes a card with nothing run, and in auto Auto's check runs in a classify worker of the office. */
 import fs from "node:fs"
 import path from "node:path"
 import { Database } from "bun:sqlite"
@@ -15,10 +15,13 @@ const TIMEOUT = 180_000
 /** Words only the chat's requests hold, from its system prompt, so a check's request never takes Minh's reply. */
 const CHAT = "You work in the office alongside"
 
-/** Minh's reply that runs `command` in the workspace's shell. */
+/** Minh's reply that runs `command` in a new shell of his terminal. */
 function shell(command: string): ScriptedReply {
-  return { match: CHAT, tool_calls: [{ name: "workspace_shell", arguments: { command } }] }
+  return { match: CHAT, tool_calls: [{ name: "terminal_run", arguments: { command, why: "as asked" } }] }
 }
+
+/** What a request holds once a command's reply, exit 0, reached it: the reply's JSON, escaped in the tool's result. */
+const EXITED = JSON.stringify('"exit":0').slice(1, -1)
 
 /** An audit row as the office's store holds it. */
 type Row = { kind: string; tool: string; outcome: string; detail: string | null; run_id: string | null; args: string }
@@ -59,7 +62,7 @@ test.skipIf(!sandboxAvailable())(
   "an approval card left open survives the office's restart, and Yes after it runs the command once",
   async () => {
     const office = await openOffice()
-    office.llm.script(shell("echo ran >> runs.txt"), { match: "[exit 0]", content: "Recorded." })
+    office.llm.script(shell("echo ran >> runs.txt"), { match: EXITED, content: "Recorded." })
     const { workspace, sid, card } = await heldInAsk(office, "Record a run")
     await office.opencorp(["restart"], { cwd: workspace })
     await waitFor(async () => (await office.status(sid)) === "waiting", { timeout: 60_000, what: "the restored chat" })
@@ -105,7 +108,7 @@ test.skipIf(!sandboxAvailable())(
         match: "<command>\\nmake\\n</command>",
         tool_calls: [{ name: "Record", arguments: { verdict: "run", reason: "builds the project" } }],
       },
-      { match: "[exit 0]", content: "Built." },
+      { match: EXITED, content: "Built." },
     )
     const sid = await office.startChat(await office.person("minh"), workspace)
     expect(((await office.session(sid)) as { mode: string }).mode).toBe("auto")
@@ -115,7 +118,7 @@ test.skipIf(!sandboxAvailable())(
     const [check, ran] = audit(office, sid)
     expect(check).toMatchObject({ kind: "check", tool: "classify_command", outcome: "run", detail: "builds the project" })
     expect(JSON.parse(check!.args)).toMatchObject({ command: "make", profile: "workspace", cwd: workspace })
-    expect(ran).toMatchObject({ kind: "workspace", tool: "shell", outcome: "ok" })
+    expect(ran).toMatchObject({ kind: "workspace", tool: "terminal_run", outcome: "ok" })
     expect(ran!.detail).toEndWith(" by Auto's check: builds the project")
     // The check ran as its own yian run, its log in the session's folder.
     expect(fs.existsSync(path.join(office.paths.sessionDir(sid), "checks", `${check!.run_id}.jsonl`))).toBe(true)

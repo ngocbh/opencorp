@@ -10,7 +10,10 @@ import { build, type ToolContext } from "../../src/tools/index.ts"
 import { tools as toolboxTools } from "../../src/tools/toolbox.ts"
 import { tools as workItemsTools } from "../../src/tools/work_items.ts"
 import { READ_TOOLS, TOOL_NAMES, tools as workspaceTools } from "../../src/tools/workspace.ts"
+import { Terminal } from "../../src/tools/terminal/terminal.ts"
+import { TOOLS as TERMINAL_TOOLS } from "../../src/tools/terminal/tools.ts"
 import { groupSpecs } from "../../src/runtime/worker/job.ts"
+import { goldenPolicy } from "../runtime/sandbox/helpers.ts"
 import { company, openStore, session, tempDir, workItem } from "./helpers.ts"
 
 /** The two Monitor methods tools call, recording who each binds to. */
@@ -38,9 +41,20 @@ const NO_WORKSPACE = {
   call: (): never => {
     throw new Error("the workspace is never called")
   },
-  track: (): never => {
-    throw new Error("the workspace never tracks a call")
-  },
+}
+
+/** A terminal of a workspace's pipes, as a main chat's host binds it: building tools runs no command. */
+function pipesTerminal(): Terminal {
+  const never = (): never => {
+    throw new Error("building tools runs nothing")
+  }
+  const sandbox = goldenPolicy({ workspace: "/w", writable: true, network: false, tmpdir: "/tmp" })
+  return new Terminal({
+    shells: { kind: "pipes", sandbox, run: never },
+    driver: "minh",
+    permissions: { mode: () => "auto", rules: () => [], where: () => ({ profile: "workspace", cwd: null, writable: [] }), hold: never },
+    shellHost: never,
+  })
 }
 
 /** A run of minh on a work item they requested, with a recording monitor. */
@@ -60,15 +74,24 @@ function ctx(): ToolContext & { monitor: Monitor; session: NonNullable<ToolConte
 }
 
 test("build returns the named groups in order with their tools", () => {
-  const c = ctx()
-  const groups = build(["toolbox", "workspace", "company", "work_items"], c)
+  const c = { ...ctx(), terminal: pipesTerminal() }
+  const groups = build(["toolbox", "workspace", "terminal", "company", "work_items"], c)
   expect(Object.entries(groups).map(([g, t]) => [g, Object.keys(t)])).toEqual([
     ["toolbox", ["fake__echo"]],
     ["workspace", [...TOOL_NAMES]],
+    ["terminal", [...TERMINAL_TOOLS]],
     ["company", ["ask_manager", "create_work_item", "comment"]],
     ["work_items", ["list_work_items", "read_work_item"]],
   ])
   expect(Object.keys(build(["company", "toolbox"], c))).toEqual(["company", "toolbox"])
+})
+
+test("the terminal group is the session's terminal's tools, and empty without one", () => {
+  expect(build(["terminal"], ctx())).toEqual({ terminal: {} })
+  const terminal = pipesTerminal()
+  const { terminal: tools } = build(["terminal"], { terminal })
+  expect(Object.keys(tools!)).toEqual(["run", "type", "read", "interrupt", "close"])
+  expect(tools!.run!.description).toBe(terminal.tools().run.description)
 })
 
 test("tools are bound to the runs person run and session", async () => {
@@ -105,6 +128,7 @@ const FIELDS: Field[] = [
   "monitor",
   "workspace",
   "question",
+  "terminal",
 ]
 
 test.each(Object.keys(GATES))("a topic has its tools with only what it needs [%s]", (name) => {
@@ -150,8 +174,9 @@ test("the office tool specs equal the saved copy", () => {
     onQuestion: (q) => q,
     monitor,
     workspace: NO_WORKSPACE,
+    terminal: pipesTerminal(),
   }
-  const specs = groupSpecs(build(["toolbox", "workspace", "company", "work_items"], c))
+  const specs = groupSpecs(build(["toolbox", "workspace", "terminal", "company", "work_items"], c))
   const golden = fs.readFileSync(new URL("../fixtures/tool_specs.json", import.meta.url), "utf8")
   expect(JSON.stringify(specs, null, 2) + "\n").toBe(golden)
 })

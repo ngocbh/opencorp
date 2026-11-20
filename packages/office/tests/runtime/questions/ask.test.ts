@@ -481,7 +481,7 @@ function approvalCard(sid: string) {
     call_id: CALL,
     question: "rm -rf build",
     options: ["Yes"],
-    approval: { kind: "command", tool: "shell", action: "rm -rf build", reason: "Ask mode" },
+    approval: { kind: "command", tool: "terminal_run", action: "rm -rf build", reason: "Ask mode" },
   })
 }
 

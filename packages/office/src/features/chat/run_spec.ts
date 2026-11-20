@@ -24,6 +24,7 @@ import {
 } from "../../runtime/worker/job.ts"
 import type { OfficeTool } from "../../runtime/worker/rpc.ts"
 import { personInputs, talkingTo } from "./identity.ts"
+import type { EmployeeTerminal } from "./terminal.ts"
 import { HarnessError, notAnAgent } from "../../runtime/sessions/state.ts"
 import { type ChatFlow, MAIN_CHAT } from "../../company/chat_flow.ts"
 
@@ -32,10 +33,12 @@ const SIDE_CHAT_FLOW = "shared/flows/side_chat.yaml"
 const SIDE_HISTORY_CHARS = 32000
 
 type Person = z.output<typeof PersonSchema>
-type Workspace = Pick<WorkspaceTools, "call" | "interrupt" | "track" | "where">
+type Workspace = Pick<WorkspaceTools, "call" | "interrupt">
+/** What the session actor and the approvals use of a main chat's terminal. */
+type Shells = Pick<EmployeeTerminal, "tools" | "bind" | "runApproved" | "where" | "interruptWaits" | "close">
 
 /** What a run's tool groups are built for: the session, the run, how its tools ask questions, and the permissions
- *  its shell runs under. */
+ *  its terminal's commands run under. */
 export interface GroupContext {
   readonly session: SessionRecord
   readonly runId: string
@@ -50,9 +53,10 @@ export interface GroupContext {
  * flow. `groups` builds the office tools of one run, `{group: {tool name: tool}}`. `memories` are the office memories
  * the worker binds to the flow's memory inputs of the same names, on every run call; history lives in the flow's
  * `summary` and `history` inputs, not in a memory. `names` are what the person answers to (handle, then name).
- * `workspace` is the workspace the run's workspace tools call, if it has one. `parent` is the run (and node) the
- * session's fresh runs nest under in yian's run index, if any. `runApproved` runs a held call its approver said Yes
- * to, if the spec's tools can be held. Python's `learnable` is dropped: learning is deferred.
+ * `workspace` is the workspace the run's workspace tools call, if it has one; `terminal` the shells its commands run
+ * in, if it has them. `parent` is the run (and node) the session's fresh runs nest under in yian's run index, if any.
+ * `runApproved` runs a held call its approver said Yes to, if the spec's tools can be held. Python's `learnable` is
+ * dropped: learning is deferred.
  */
 export interface RunSpec {
   readonly flow: string
@@ -63,10 +67,11 @@ export interface RunSpec {
   readonly skills: string[]
   readonly names: readonly string[]
   readonly workspace?: Workspace
+  readonly terminal?: Shells
   readonly parent?: Parent | null
   /** Runs `tool` with `args` for run `runId` of `session`, approved as `credit` says (`approved by @<who>`, or what
-   *  rule allows it): no gate, its audit row ending with `credit`, and detached from the workspace's interrupt, so
-   *  only `signal` stops it; its output. Throws `RangeError` for a tool it can't run. */
+   *  rule allows it): no gate, its audit row ending with `credit`, and outside the terminal's waits, so only `signal`
+   *  stops it; its output. Throws `RangeError` for a tool it can't run. */
   runApproved?(
     tool: string,
     args: Record<string, unknown>,
@@ -99,8 +104,9 @@ function profileMemory(git: CompanyGit, handle: string): Record<string, MemoryBa
  * The run spec of a person's main chat, `repo` being the session's pinned commit.
  *
  * The person's main flow, who they are and who they're talking with, their profile as its `profile` memory, their
- * skills, and the toolbox, workspace and company groups. Throws `HarnessError` (`422`) when the person isn't in
- * `repo` or has no main flow.
+ * skills, and the toolbox, workspace (the file tools), terminal and company groups. Each run's build binds its
+ * permissions to `terminal`, whose commands they gate; an approved call runs there. Throws `HarnessError` (`422`)
+ * when the person isn't in `repo` or has no main flow.
  */
 export function mainSpec({
   store,
@@ -108,6 +114,7 @@ export function mainSpec({
   repo,
   session,
   workspace,
+  terminal,
   monitor,
   carried,
 }: {
@@ -116,6 +123,7 @@ export function mainSpec({
   repo: CompanyRepo
   session: SessionRecord
   workspace: Workspace
+  terminal: Shells
   monitor: Monitor
   carried: Carried
 }): RunSpec {
@@ -131,17 +139,18 @@ export function mainSpec({
       max_turns: defaults.max_turns,
     },
     groups: ({ session, runId, onQuestion, permissions }) => {
-      const ctx = { store, repo, session, runId, onQuestion, carried, monitor, workspace, permissions }
-      return build(["toolbox", "workspace", "company"], ctx)
+      if (permissions !== undefined) terminal.bind(runId, permissions)
+      const ctx = { store, repo, session, runId, onQuestion, carried, monitor, workspace, terminal }
+      return build(["toolbox", "workspace", "terminal", "company"], ctx)
     },
     memories: profileMemory(git, person.handle),
     skills: [...person.skills],
     names: [person.handle, person.name],
     workspace,
-    runApproved: async (tool, args, { session, runId, signal, credit }) => {
-      if (tool !== "shell") throw new RangeError("only a shell call can run once approved")
-      const call = monitor.workspace(workspace, session.person, runId, { sessionId: session.id })
-      return String(await call(tool, args, { signal, approved: credit, detached: true }))
+    terminal,
+    runApproved: async (tool, args, { runId, signal, credit }) => {
+      if (tool !== "terminal_run") throw new RangeError("only a terminal command can run once approved")
+      return await terminal.runApproved(tool, args, { runId, signal, credit })
     },
   }
 }

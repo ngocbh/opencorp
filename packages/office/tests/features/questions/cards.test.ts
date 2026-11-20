@@ -286,7 +286,7 @@ function approvalCard(office: Office, n = 1): QuestionRecord {
     call_id: `run-1/n/${n}/0`,
     question: "rm -rf build",
     options: ["Yes"],
-    approval: { kind: "command", tool: "shell", action: "rm -rf build", reason: "Ask mode" },
+    approval: { kind: "command", tool: "terminal_run", action: "rm -rf build", reason: "Ask mode" },
   })
 }
 

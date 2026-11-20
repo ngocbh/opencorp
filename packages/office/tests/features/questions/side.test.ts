@@ -23,6 +23,7 @@ import { tempDir, waitFor } from "../../helpers.ts"
 import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import { openStore, question, session } from "../../runtime/store/helpers.ts"
 import { advanceJob, run, type TestWorker } from "../../runtime/worker/helpers.ts"
+import { permissions } from "../../tools/terminal/helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -282,10 +283,14 @@ async function sideOf(h: Harness, cwd: string, over: Partial<Session> = {}): Pro
   )
 }
 
-/** The HTTP status `spec`'s workspace shell gets from the fake LLM at `url`, followed by the shell's `[exit N]` line
- *  when curl fails: the output starts with `000` when it can't connect. */
-async function curl(workspace: RunSpec["workspace"], url: string): Promise<string> {
-  return (await workspace!.call("shell", { command: `curl -s -m 5 -o /dev/null -w '%{http_code}' ${url}` })).output
+/** The HTTP status a command in `spec`'s terminal, for run `run-1` of `session`, Auto's check letting it run, gets
+ *  from the fake LLM at `url`: `000` when it can't connect. */
+async function curl(spec: RunSpec, session: SessionRecord, url: string): Promise<string> {
+  const command = `curl -s -m 5 -o /dev/null -w '%{http_code}' ${url}`
+  const { perms } = permissions({ check: async () => ({ verdict: "run", reason: "checks the network" }) })
+  const run = spec.groups({ session, runId: "run-1", permissions: perms }).terminal!.run!
+  const reply = JSON.parse(String(await run.call({ command, why: "checks the network" }, { callId: "run-1/n/1/0" })))
+  return String(reply.output).split("\n")[1]!
 }
 
 /** A harness whose company gives minh a workspace-write, online `harness_policy` and ships the side chat flow, a
@@ -321,11 +326,14 @@ test.if(sandboxAvailable())("a side chats workspace refuses the writes and netwo
   expect(String(await read.call({ path: "notes.txt" }))).toContain("the build is red")
   await spec.workspace!.call("write_file", { path: "notes.txt", content: "fixed\n" })
   expect(fs.readFileSync(notes, "utf8")).toBe("the build is red\n")
-  expect(await curl(spec.workspace, fake.baseUrl)).toMatch(/^000/)
+  // A side chat runs no command at all: it has no terminal.
+  expect(spec.terminal).toBeUndefined()
   const main = await h.harness.spec({ ...side, kind: "main", question_id: null })
   await main.workspace!.call("write_file", { path: "notes.txt", content: "fixed\n" })
   expect(fs.readFileSync(notes, "utf8")).toBe("fixed\n")
-  expect(await curl(main.workspace, fake.baseUrl)).toMatch(/^[1-5]\d\d\n\[exit 0\]$/)
+  // A main chat's commands reach the network its harness_policy gives them.
+  expect(await curl(main, side, fake.baseUrl)).toMatch(/^[1-5]\d\d$/)
+  await main.terminal!.close()
 })
 
 test("a side run in the office files is refused", async () => {

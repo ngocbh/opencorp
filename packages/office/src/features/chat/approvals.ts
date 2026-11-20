@@ -47,8 +47,8 @@ export interface ApprovalHost {
 
 /**
  * A chat session's approvals as the office binds them: the mode from the store, the session's own rules with the
- * agent's and the company's, where its workspace shell runs, Auto's check on the office's connection, cards held
- * through the run's `onQuestion`, and what an answer to a card does.
+ * agent's and the company's, where its terminal's shells run (the actor's, which reads the terminal's), Auto's check
+ * on the office's connection, cards held through the run's `onQuestion`, and what an answer to a card does.
  *
  * The agent's rules (`people/<handle>/rules.yaml`) and the company's (`rules.yaml`) are read at the company repo's
  * HEAD when a run's permissions are built and again after each change this session commits, and kept, so a committed
@@ -62,7 +62,7 @@ export interface ApprovalHost {
  * prices. The session's own rules and the check's verdicts live in memory with its actor, so an office restart starts
  * them fresh: the next check asks the model again, and a "don't ask again" from before asks again.
  *
- * A Yes runs the held action with no gate, detached from the workspace's interrupt, and its output completes the
+ * A Yes runs the held action in the terminal with no gate, outside the terminal's waits, and its output completes the
  * call. A No completes it with the approver's words, and answers the run's other open cards the same way, as one No
  * settles the reply's held calls. A "don't ask again" or an "always" re-checks the run's other open cards and runs
  * those the session's mode and rules now allow. An "always" commits its rules to the agent's file, as its approver's.
@@ -101,7 +101,8 @@ export class ChatApprovals {
     paths: OfficePaths
     /** The session, as stored now. */
     session: () => SessionRecord
-    /** Where the session's workspace shell runs. */
+    /** Where a new shell of the session's terminal runs: what a card is decided again by. The terminal's own reading,
+     *  through the actor; the terminal never reads it back. */
     where: () => Where
     /** Records a check's usage as the session's: the actor's charge (`recordUsage`, the session's cost, its cap). */
     charge(runId: string, model: string | null, usd: number): void
@@ -218,8 +219,8 @@ export class ChatApprovals {
     return this.#running.size > 0
   }
 
-  /** Stops the approved actions running now: Esc, End and the office stop end them, as they end the workspace's own
-   *  calls. */
+  /** Stops the approved actions running now, whose commands then stop: Esc, End and the office stop end them, as they
+   *  cut off the terminal's own calls. */
   stop(): void {
     for (const controller of this.#running.values()) controller.abort()
   }
@@ -251,8 +252,8 @@ export class ChatApprovals {
   /**
    * Runs approval card `card`'s held action, approved as `credit` says (its audit row ends with it). Its "don't ask
    * again" rules are added first, and then each other open card of the run those rules now allow runs too
-   * (`#recheck`). The action runs with no gate, detached from the workspace's interrupt (no worker waits on it),
-   * while the session reads busy; `stop` ends it. Once it ends, its output (or `error: <its type>`) completes the
+   * (`#recheck`). The action runs with no gate, outside the terminal's waits (no worker waits on it), while the
+   * session reads busy; `stop` ends it. Once it ends, its output (or `error: <its type>`) completes the
    * held call, unless the session finished or the call is no longer of its run (its answer is then lost).
    */
   async #approve(card: QuestionRecord, credit: string): Promise<void> {

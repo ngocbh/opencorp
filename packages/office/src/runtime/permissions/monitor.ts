@@ -1,10 +1,8 @@
 /** The reference monitor: asset tools checked against the company repo, run with office secrets, audited; and each
- *  workspace call audited, the shell's gated by the session's permissions. */
-import { isPending } from "@ngocbh/yian/tools"
+ *  workspace file call audited. */
 import type { Asset as AssetSchema, Grant as GrantSchema } from "@opencorp/protocol"
 import type { z } from "zod"
 import { builtinKinds, type KindTool, type Kinds } from "./assets.ts"
-import { type Gate, gate, type Permissions } from "./policy.ts"
 import { type CompanyRepo, loadRepo } from "../../company/loader.ts"
 import { assetToolName, shownAssetToolName, TOOL_NAME } from "../../company/naming.ts"
 import { type SecretStore, SecretNotSetError } from "../secrets.ts"
@@ -16,13 +14,6 @@ type Grant = z.output<typeof GrantSchema>
 
 /** Characters of a killed workspace call's reason kept in its audit row. */
 export const REASON_CHARS = 200
-
-/** What a gated shell call returns when Esc, End or the office stop came after its gate let it run, before it
- *  started. */
-export const STOPPED_BEFORE_RUN = "Not run: stopped before it started."
-
-/** What a shell call returns, and its audit row says, when no permissions are bound to gate it. */
-export const NO_PERMISSIONS = "Not run: no permissions are bound to this shell, so it runs nothing."
 
 /** A failure the monitor words itself, shown to the model as `error: <message>`. */
 class MonitorError extends Error {
@@ -36,15 +27,10 @@ export interface ToolboxTool {
   call(args: Record<string, unknown>): Promise<unknown>
 }
 
-/** How one workspace call runs: `signal` stops it; `callId` is the yian call's, which a held call's card names.
- *  `approved` runs a held call that was approved, with no gate, and says what approved it for its audit row
- *  (`approved by @<who>`, or `by an allow rule`); `detached` leaves it out of the workspace's interrupt, so only
- *  `signal` stops it. Only the office sets these two, never a model's call. */
+/** How one workspace call runs: `signal` stops it; `callId` is the yian call's. */
 export interface WorkspaceCallOptions {
   readonly signal?: AbortSignal
   readonly callId?: string
-  readonly approved?: string
-  readonly detached?: boolean
 }
 
 /** Forwards one workspace call (`WorkspaceTools.call`'s output, or anything shaped like it); a held one returns
@@ -73,15 +59,9 @@ export interface ToolOutcome {
 }
 
 /** What `workspace` audits: a workspace tool call by name that resolves to its output and audit record, as
- *  `WorkspaceTools.call` does, and the workspace's interrupt, which a gate's controller joins while it decides. */
+ *  `WorkspaceTools.call` does. */
 export interface AuditedTools {
-  call(
-    name: string,
-    args: Record<string, unknown>,
-    options?: { signal?: AbortSignal; detached?: boolean },
-  ): Promise<ToolOutcome>
-  /** Adds `controller` to the calls the workspace's interrupt aborts; returns its removal. */
-  track(controller: AbortController): () => void
+  call(name: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<ToolOutcome>
 }
 
 /**
@@ -212,85 +192,34 @@ export class Monitor {
   }
 
   /**
-   * A `call(name, args)` for `workspaceToolFunctions` that audits each workspace call.
+   * A `call(name, args)` for `workspaceToolFunctions` that audits each workspace file call.
    *
    * The row's outcome is `ok` for exit 0 and `error` otherwise. A call with no exit status (timed out,
    * interrupted, or bad arguments) has the reason from its output in the detail. A call that rejects is recorded
-   * as `error` and its error thrown again.
-   *
-   * A `shell` call is gated first (`gate`) by `permissions`, and refused (`NO_PERMISSIONS`) without them: its
-   * controller joins the workspace's interrupt before the gate decides, so Esc, End and the office stop end Auto's
-   * check, and a call stopped then never runs and writes no row. A call the gate lets run says why in its row's
-   * detail (`by …`); a refused one returns the refusal, audited `denied`; a held one returns its card's `pending()`,
-   * audited `held` with why it asks. An `approved` call runs with no gate, its row saying what approved it. The file
-   * tools are never gated.
+   * as `error` and its error thrown again. The file tools are never gated; the terminal gates and audits commands.
    */
   workspace(
     tools: AuditedTools,
     person: string,
     runId: string | null,
-    { sessionId = null, permissions }: { sessionId?: string | null; permissions?: Permissions } = {},
+    { sessionId = null }: { sessionId?: string | null } = {},
   ): WorkspaceCall {
     const record = (tool: string, args: Record<string, unknown>, outcome: string, detail: string) =>
       this.store.recordAudit({ person, kind: "workspace", tool, args, outcome, sessionId, runId, detail })
-    const run = async (
-      name: string,
-      args: Record<string, unknown>,
-      options: { signal?: AbortSignal; detached?: boolean },
-      why: string,
-    ): Promise<string> => {
+    return async (name, args, options = {}) => {
       let outcome: ToolOutcome
       try {
-        outcome = await tools.call(name, args, options)
+        outcome = await tools.call(name, args, options.signal === undefined ? {} : { signal: options.signal })
       } catch (error) {
         record(name, {}, "error", reasonOf(error).slice(0, DETAIL_CHARS))
         throw error
       }
       const audit = outcome.audit
-      let detail = `exit=${audit.exit ?? "None"} duration=${audit.duration.toFixed(3)}s${why}`
+      let detail = `exit=${audit.exit ?? "None"} duration=${audit.duration.toFixed(3)}s`
       if (audit.exit === null) detail += `: ${[...lastLine(outcome.output)].slice(0, REASON_CHARS).join("")}`
       const ended = audit.exit === 0 ? "ok" : "error"
       record(audit.tool, { summary: audit.argsSummary }, ended, detail.slice(0, DETAIL_CHARS))
       return outcome.output
-    }
-    return async (name, args, options = {}) => {
-      const { signal: given, callId, approved, detached } = options
-      if (approved !== undefined) return run(name, args, { signal: given, detached }, ` ${approved}`)
-      if (name !== "shell") return run(name, args, { signal: given, detached }, "")
-      const command = args.command
-      if (permissions === undefined) {
-        const summary = typeof command === "string" ? { summary: `command=${repr(command)}` } : {}
-        record(name, summary, "denied", NO_PERMISSIONS)
-        return NO_PERMISSIONS
-      }
-      // A shell call whose command isn't text never runs: the tools refuse it.
-      if (typeof command !== "string") return run(name, args, { signal: given, detached }, "")
-      const own = new AbortController()
-      const untrack = tools.track(own)
-      const signal = given ? AbortSignal.any([own.signal, given]) : own.signal
-      try {
-        const summary = { summary: `command=${repr(command)}` }
-        let decided: Gate
-        try {
-          const call = { tool: "shell", why: "", args, callId, signal }
-          decided = await gate(permissions, { kind: "command", text: command }, call)
-        } catch (error) {
-          record(name, summary, "error", reasonOf(error).slice(0, DETAIL_CHARS))
-          throw error
-        }
-        if (!decided.run) {
-          // A card the host's hold refused is a refusal like any other.
-          const held = decided.held !== undefined && isPending(decided.result)
-          if (held) record(name, summary, "held", decided.held!.reason.slice(0, DETAIL_CHARS))
-          // Stopped while Auto's check ran: nothing was decided, and its check's own row says so.
-          else if (!signal.aborted) record(name, summary, "denied", String(decided.result).slice(0, DETAIL_CHARS))
-          return decided.result
-        }
-        if (signal.aborted) return STOPPED_BEFORE_RUN
-        return await run(name, args, { signal }, ` by ${decided.by}`)
-      } finally {
-        untrack()
-      }
     }
   }
 
@@ -430,8 +359,7 @@ function toJson(value: unknown, path: Set<object> = new Set()): unknown {
 
 /** The last line of `text` that isn't blank, stripped, or "". */
 export function lastLine(text: string): string {
-  // A killed shell call ends its output with "[timed out after Ns]" or "[interrupted]";
-  // a file tool's or a bad-arguments reply is one line.
+  // A killed file call's output is "[interrupted]"; a timed-out one's or a bad-arguments reply is one line.
   for (const line of splitLines(text).reverse()) if (strip(line)) return strip(line)
   return ""
 }

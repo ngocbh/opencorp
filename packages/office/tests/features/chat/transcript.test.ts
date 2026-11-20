@@ -323,7 +323,7 @@ test("a failed model attempt shows nothing", async () => {
 
 test("a tool call whose arguments did not parse shows no tool part", async () => {
   const fake = await fakeLlm()
-  fake.script({ content: "Trying.", tool_calls: [{ id: "bad", name: "workspace_shell", arguments: "{not json" }] })
+  fake.script({ content: "Trying.", tool_calls: [{ id: "bad", name: "terminal_run", arguments: "{not json" }] })
   const runs = tempDir()
   const job = await waitingChat(fake, "chat", {}, { runs })
   await advance(job, fake, [send("s1", "hi")])
@@ -332,7 +332,7 @@ test("a tool call whose arguments did not parse shows no tool part", async () =>
   expect(parts.find((part) => part.type === "tool_call")).toEqual({
     type: "tool_call",
     id: "bad",
-    name: "workspace_shell",
+    name: "terminal_run",
     raw_arguments: "{not json",
   })
   expect(shown(messages(runs, newId(), ["r1"]))).toEqual([

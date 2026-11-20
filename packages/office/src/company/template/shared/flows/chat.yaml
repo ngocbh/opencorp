@@ -83,7 +83,7 @@ defs:
         steer_inbox: ${input.messages}
         env:
           max_tool_iterations: 100
-        tools: [toolbox, workspace, company, ask_user]
+        tools: [toolbox, workspace, terminal, company, ask_user]
         skills: all
         input:
           summary: ${context.output.summary}

@@ -16,6 +16,7 @@ import { ChatHarness } from "../../../src/features/chat/harness.ts"
 import { Hooks } from "../../../src/runtime/sessions/hooks.ts"
 import { type Lister, ModelCache, ownModels } from "../../../src/models/models.ts"
 import { mainSpec } from "../../../src/features/chat/run_spec.ts"
+import { EmployeeTerminal } from "../../../src/features/chat/terminal.ts"
 import { MAIN_CHAT } from "../../../src/company/chat_flow.ts"
 import { type ActorContext, type ActorWorker, SessionActor, type Wait } from "../../../src/features/chat/session_actor.ts"
 import { Transcript } from "../../../src/features/chat/transcript.ts"
@@ -35,9 +36,12 @@ import { type Delivery, Job, type JobInput } from "../../../src/runtime/worker/j
 import { MemoryHost, type MemoryRequest } from "../../../src/runtime/worker/memory_host.ts"
 import type { JobWorker, OfficeTool, WorkerHandlers } from "../../../src/runtime/worker/rpc.ts"
 import type { Worker, WorkerRegistry } from "../../../src/runtime/worker/spawn.ts"
+import type { RunOptions } from "../../../src/runtime/sandbox/run.ts"
 import { baseFiles, person } from "../../company/helpers.ts"
 import { CEO, makeOffice } from "../../server/helpers.ts"
 import { type Codex, makeCodex } from "../codex/helpers.ts"
+import { goldenPolicy } from "../../runtime/sandbox/helpers.ts"
+import { pipesResult } from "../../tools/terminal/helpers.ts"
 import { NO_GROUP, tempDir, waitFor } from "../../helpers.ts"
 import {
   advanceJob,
@@ -168,7 +172,7 @@ export const PERSON = { name: "Minh", handle: "minh", title: "Engineer", company
 
 /** The groups each template flow names; `ask_user` is the worker's own tool. */
 export const GROUPS: Record<string, string[]> = {
-  chat: ["toolbox", "workspace", "company"],
+  chat: ["toolbox", "workspace", "terminal", "company"],
   side_chat: ["workspace", "work_items"],
   profile_manager: ["profile"],
 }
@@ -531,12 +535,18 @@ export interface ChatOffice {
   readonly logs: string[]
   /** Each live event published on the office's bus, in order. */
   readonly lives: LiveEvent[]
-  /** The workspace stand-in: how often it was interrupted, each call it ran, and what a call does (`run`: answers
-   *  "ok" at once by default; its signal aborts on the call's stop, an interrupt included unless it is detached). */
+  /** The workspace stand-in: how often it was interrupted, each file call it ran, and what a call does (`run`:
+   *  answers "ok" at once by default; its signal aborts on the call's stop, an interrupt included). */
   readonly workspace: {
     interrupts: number
     readonly calls: { tool: string; args: Record<string, unknown> }[]
     run: (tool: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<string>
+  }
+  /** The terminal's pipes runner stand-in: each command it was given, and what one does (`run`: prints nothing and
+   *  exits 0 at once by default; its signal aborts when the command is stopped, and it then ends with no exit). */
+  readonly pipes: {
+    readonly commands: string[]
+    run: (command: string, signal: AbortSignal) => Promise<{ output?: string; exit: number | null }>
   }
   /** The actors made through these helpers; each is closed when the test finishes. */
   readonly actors: SessionActor[]
@@ -560,7 +570,8 @@ export interface ChatOffice {
  * `fake` (`llmConfig`, the fake's env, `prices`), each of `connections` (name to model) added on `fake` too, the
  * company `defaults` merged in, and a registry whose `spawn` is wrapped to record, hold, fail or follow each spawn.
  * Its actors share one `Hooks`, `Answers`, `Transcript` and `LiveRelay`, and a run spec from `mainSpec` over a
- * workspace stand-in, with the tools of `groups` merged into its groups. `office` builds the office from the company
+ * workspace stand-in and a real terminal over a pipes runner stand-in, with the tools of `groups` merged into its
+ * groups. `office` builds the office from the company
  * files (default `makeOffice`'s). At test end the actors close, then the workers stop, before the office's store
  * closes.
  */
@@ -668,17 +679,13 @@ export async function chatOffice(
   const live = new LiveRelay({ bus: office.bus, transcript, log })
   const monitor = new Monitor(office.paths.company, office.store, new SecretStore(office.paths.secrets))
   const workspace: ChatOffice["workspace"] = { interrupts: 0, calls: [], run: async () => "ok" }
-  // The calls an interrupt stops: each running call not detached, and each tracked controller.
+  // The calls an interrupt stops.
   const active = new Set<AbortController>()
   const standIn = {
-    call: async (
-      tool: string,
-      args: Record<string, unknown>,
-      options: { signal?: AbortSignal; detached?: boolean } = {},
-    ) => {
+    call: async (tool: string, args: Record<string, unknown>, options: { signal?: AbortSignal } = {}) => {
       workspace.calls.push({ tool, args })
       const own = new AbortController()
-      if (!options.detached) active.add(own)
+      active.add(own)
       try {
         const output = await workspace.run(tool, args, options.signal ? AbortSignal.any([own.signal, options.signal]) : own.signal)
         return { output, audit: { tool, argsSummary: "", exit: 0, duration: 0 } }
@@ -686,16 +693,21 @@ export async function chatOffice(
         active.delete(own)
       }
     },
-    track: (controller: AbortController) => {
-      active.add(controller)
-      return () => void active.delete(controller)
-    },
     interrupt: () => {
       workspace.interrupts += 1
       for (const controller of active) controller.abort()
     },
-    // It plays the sandboxed shell, which may write nothing here.
-    where: () => ({ profile: "workspace" as const, cwd: "/", writable: [] }),
+  }
+  const pipes: ChatOffice["pipes"] = { commands: [], run: async () => ({ exit: 0 }) }
+  /** The terminal's `run`: the pipes stand-in plays each command, its output going where a sandboxed call's would. */
+  const runner = async (argv: readonly string[], options: RunOptions) => {
+    const command = argv[2]!.replace(/^exec 2>&1; /, "")
+    pipes.commands.push(command)
+    const started = performance.now()
+    const signal = options.signal ?? new AbortController().signal
+    const { output = "", exit } = await pipes.run(command, signal)
+    if (output !== "") options.onOutput?.("stdout", Buffer.from(output))
+    return pipesResult(signal.aborted ? null : exit, signal.aborted, (performance.now() - started) / 1000)
   }
   const { store, git } = office
   const ctx: ActorContext = {
@@ -712,7 +724,18 @@ export async function chatOffice(
     spec: async (session) => {
       const repo = loadRepo(await git.pin(session.repo_commit))
       const carried = (q: QuestionRecord) => answers.carried(q)
-      const spec = mainSpec({ store, git, repo, session, workspace: standIn, monitor, carried })
+      // A workspace's sandbox over the session's folder, which the stand-in runs nothing in.
+      const sandbox = goldenPolicy({ workspace: session.cwd, writable: true, network: false, tmpdir: os.tmpdir() })
+      const terminal = new EmployeeTerminal({
+        shells: { kind: "pipes", sandbox, run: runner },
+        sessionId: session.id,
+        person: session.person,
+        folder: office.paths.sessionDir(session.id),
+        instruments: office.instruments,
+        store,
+        mode: () => store.getSession(session.id)?.mode ?? session.mode,
+      })
+      const spec = mainSpec({ store, git, repo, session, workspace: standIn, terminal, monitor, carried })
       return {
         ...spec,
         groups: (c) => {
@@ -738,6 +761,7 @@ export async function chatOffice(
     logs,
     lives,
     workspace,
+    pipes,
     actors,
     hold() {
       let release!: () => void

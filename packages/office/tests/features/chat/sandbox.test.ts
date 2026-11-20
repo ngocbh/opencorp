@@ -1,4 +1,5 @@
-/** Harness tests that run workspace calls under the OS sandbox (Python's `tests/chat/test_sandbox.py`). */
+/** Harness tests that run an employee's commands in the terminal's pipes shell under the OS sandbox (Python's
+ *  `tests/chat/test_sandbox.py`): a call cut off stops its command. */
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
@@ -29,9 +30,9 @@ async function shellRunning(h: Harness): Promise<string> {
   return id
 }
 
-/** A model reply that runs `command` in the workspace's shell. */
+/** A model reply that runs `command` in a new shell of the terminal, waiting up to two minutes for it. */
 function shell(command: string) {
-  return { tool_calls: [{ name: "workspace_shell", arguments: { command } }] }
+  return { tool_calls: [{ name: "terminal_run", arguments: { command, why: "as asked", wait: 120 } }] }
 }
 
 test.if(sandboxAvailable())("esc kills a running shell call", async () => {
@@ -44,8 +45,9 @@ test.if(sandboxAvailable())("esc kills a running shell call", async () => {
   await waitFor(() => status(h, id) === "idle", { what: "the next turn" })
   expect(performance.now() - began).toBeLessThan(10_000)
   const [tool] = await tools(h, id)
-  expect(tool).toMatchObject({ tool: "workspace_shell", state: "completed" })
-  expect(JSON.stringify(tool!.output)).toContain("[interrupted]")
+  expect(tool).toMatchObject({ tool: "terminal_run", state: "completed" })
+  // The reply says its command ended, stopped with no exit, as a killed call ends.
+  expect(JSON.parse(String(tool!.output))).toMatchObject({ shell: "shell 1", status: "idle", exit: null })
   expect(await gone("60.1")).toBe(true)
   expect(fake.requests()).toHaveLength(1)
   await h.harness.prompt(id, "again")
@@ -96,6 +98,6 @@ test.if(sandboxAvailable())("a killed worker leaves no shell call or tool part r
   await waitFor(async () => (await tools(h, id))[0]?.state === "interrupted", {
     what: "the cut call shown interrupted",
   })
-  expect((await tools(h, id))[0]!.tool).toBe("workspace_shell")
+  expect((await tools(h, id))[0]!.tool).toBe("terminal_run")
   expect(await gone("43.9")).toBe(true)
 })

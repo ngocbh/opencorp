@@ -421,21 +421,21 @@ test("esc answers an ask manager card interrupted and closes its item", async ()
 
 test("while an approval card is open the session waits on its approver, and while its approved command runs it is busy", async () => {
   const fake = await fakeLlm()
-  fake.script({ tool_calls: [{ name: "workspace_shell", arguments: { command: "ls" } }] }, { content: "Listed." })
+  fake.script({ tool_calls: [{ name: "terminal_run", arguments: { command: "ls", why: "lists it" } }] }, { content: "Listed." })
   const o = await chatOffice(fake)
   const { actor, sid } = await startActor(o)
   o.office.store.updateSession(sid, { mode: "ask" })
-  let finish!: (output: string) => void
-  o.workspace.run = () => new Promise((resolve) => (finish = resolve))
+  let finish!: (ran: { output: string; exit: number }) => void
+  o.pipes.run = () => new Promise((resolve) => (finish = resolve))
   await actor.prompt("list it")
   const q = await card(o, sid, "approval")
   await waitFor(() => JSON.stringify(waits(o, sid)) === JSON.stringify(["waiting", [CEO]]) && !actor.hasWorker, {
     what: "waiting on the approver",
   })
   await actor.answer(q.id, YES, "option")
-  await waitFor(() => o.workspace.calls.length === 1, { what: "the approved command" })
+  await waitFor(() => o.pipes.commands.length === 1, { what: "the approved command" })
   expect(waits(o, sid)).toEqual(["busy", []])
-  finish("a.txt\n[exit 0]")
+  finish({ output: "a.txt\n", exit: 0 })
   await waitFor(() => texts(o, sid).includes("Listed.") && status(o, sid) === "idle", { what: "the reply" })
 })
 

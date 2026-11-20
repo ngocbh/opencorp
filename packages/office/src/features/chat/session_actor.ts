@@ -910,9 +910,10 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * Esc: interrupts the workspace, answers the office tool calls in flight `INTERRUPTED_CALL`, and interrupts the
-   * run: through its worker while one runs it (over the cost cap, unless ending, only while a reply node runs), else,
-   * while the agent waits on a model question, through a worker spawned for it; else nothing runs to stop. Resolves
+   * Esc: interrupts the workspace and the terminal (a command the agent waits on stops), answers the office tool
+   * calls in flight `INTERRUPTED_CALL`, and interrupts the run: through its worker while one runs it (over the cost
+   * cap, unless ending, only while a reply node runs), else, while the agent waits on a model question, through a
+   * worker spawned for it; else nothing runs to stop. Resolves
    * once the interrupt's reply is handled (the calls it closed are answered) or it was dropped. A card's stop names its
    * `question`, which must still be open with no other interrupt unanswered. Refused with `404 not_found`, `409
    * not_live`, `409 not_open` and `409 ending` (with a `question`), `503 stopping` or `503 cant_wake`.
@@ -929,7 +930,7 @@ export class SessionActor implements LiveCalls {
         if (status !== "open") throw new HarnessError(409, "not_open", `question ${question} is ${status ?? "gone"}`)
         if (this.#interrupting()) throw new HarnessError(409, "not_open", `question ${question} is being interrupted`)
       }
-      this.#interruptWorkspace()
+      this.#interruptShells()
       this.#approvals.stop()
       this.#answerCalls()
       const run = this.#run
@@ -968,13 +969,13 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * End: the session is `ending` at once, the workspace is interrupted and the office tool calls in flight are answered
-   * `INTERRUPTED_CALL` (as by Esc), and its run gets an `interrupt` (while a reply or its fold runs, or the agent waits
-   * on a model question) and a `close` of its inbox, whose turn then reads it closed, so the run succeeds and the
-   * session ends. Resolves once they are queued; a second End does nothing. A spawn for them that fails fails the
-   * session, and End throws its error. Over the cost cap a waiting run is ended the same way; a reply that runs is
-   * stopped, and a run stopped, crashed or unknown is cancelled, ending the session `ENDED_OVER_CAP`. Refused with
-   * `404 not_found` (the session row is gone), `409 not_live` or `503 stopping`.
+   * End: the session is `ending` at once, the workspace is interrupted, the terminal closed and the office tool calls
+   * in flight are answered `INTERRUPTED_CALL` (as by Esc), and its run gets an `interrupt` (while a reply or its fold
+   * runs, or the agent waits on a model question) and a `close` of its inbox, whose turn then reads it closed, so the
+   * run succeeds and the session ends. Resolves once they are queued; a second End does nothing. A spawn for them that
+   * fails fails the session, and End throws its error. Over the cost cap a waiting run is ended the same way; a reply
+   * that runs is stopped, and a run stopped, crashed or unknown is cancelled, ending the session `ENDED_OVER_CAP`.
+   * Refused with `404 not_found` (the session row is gone), `409 not_live` or `503 stopping`.
    */
   end(): Promise<void> {
     return this.#command(async () => {
@@ -987,10 +988,10 @@ export class SessionActor implements LiveCalls {
     })
   }
 
-  /** Marks the session ending, interrupts the workspace and answers the office tool calls in flight (as Esc does),
-   *  and queues its run's `interrupt` (while a reply or its fold runs, `replying`, or the agent waits) and `close`,
-   *  spawning for them when no worker runs. A run restore found ended in yian ends the session at once, as that run
-   *  did. */
+  /** Marks the session ending, interrupts the workspace, closes the terminal and answers the office tool calls in
+   *  flight (as Esc does), and queues its run's `interrupt` (while a reply or its fold runs, `replying`, or the agent
+   *  waits) and `close`, spawning for them when no worker runs. A run restore found ended in yian ends the session at
+   *  once, as that run did. */
   async #end(session: SessionRecord, replying = this.#turnWorks()): Promise<void> {
     if (this.#unresumable?.why === null) {
       // Yian ended the run: nothing is left to close, so the session ends as the run did.
@@ -1001,9 +1002,10 @@ export class SessionActor implements LiveCalls {
     // Stored first: an End whose write fails leaves the session as it was, so End can be tried again.
     this.#ctx.store.updateSession(this.sessionId, notWaiting("ending"))
     this.#ending = true
-    // A reply blocked on a sandboxed shell or an office tool call can't read the interrupt until the call returns;
-    // and nobody will read what it returns, even when the end below fails.
-    this.#interruptWorkspace()
+    // A reply blocked on a sandboxed call or an office tool call can't read the interrupt until the call returns;
+    // and nobody will read what it returns, even when the end below fails. Every command ends with the session.
+    this.#interruptShells()
+    this.#closeShells()
     this.#approvals.stop()
     this.#answerCalls()
     let inbox: string
@@ -1344,11 +1346,11 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * Office stop: the workspace is interrupted and every delivery not yet answered is answered: with its recorded
-   * reply when the worker sent one, else by the closing rule with `503 stopping`. Later commands are refused `503
-   * stopping`, later worker frames are ignored and later `askUser` and `toolCall` requests are refused (store requests
-   * still run); the office's registry stops the workers, and the parked worker is closed. Returns a promise that
-   * settles once the job running at the close returns.
+   * Office stop: the workspace is interrupted, the terminal closed and every delivery not yet answered is answered:
+   * with its recorded reply when the worker sent one, else by the closing rule with `503 stopping`. Later commands are
+   * refused `503 stopping`, later worker frames are ignored and later `askUser` and `toolCall` requests are refused
+   * (store requests still run); the office's registry stops the workers, and the parked worker is closed. Returns a
+   * promise that settles once the job running at the close returns and the terminal's shells have ended.
    */
   close(): Promise<void> {
     const tail = this.#tail.then(() => {})
@@ -1358,12 +1360,13 @@ export class SessionActor implements LiveCalls {
     this.#disarm()
     this.#stopSettleRetry()
     void this.#releaseParked()
-    this.#interruptWorkspace()
+    this.#interruptShells()
+    const shells = this.#closeShells()
     this.#approvals.stop()
     this.#answerCalls()
     const given = [...(this.#starting?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
     this.#answerRest(given, stopping())
-    return tail
+    return Promise.all([tail, shells]).then(() => {})
   }
 
   // --- the queue ------------------------------------------------------------------------
@@ -2157,8 +2160,9 @@ export class SessionActor implements LiveCalls {
       ): Promise<unknown> {
         if (actor.#closed) return Promise.reject(new Error("the office is stopping"))
         const call = () => super.toolCall(worker, group, name, args, callId)
-        // The workspace kills its own calls when interrupted.
-        return group === "workspace" ? call() : actor.#cancellable(call)
+        // The workspace kills its own calls when interrupted, and the terminal's stop themselves: a call whose check
+        // still runs is never answered early.
+        return group === "workspace" || group === "terminal" ? call() : actor.#cancellable(call)
       }
     })({ tools, memories })
   }
@@ -2558,7 +2562,7 @@ export class SessionActor implements LiveCalls {
     const session = this.#ctx.store.getSession(this.sessionId)
     if (session !== undefined) void this.#ctx.hooks.notify("callEnded", session)
     // Nobody is left to read what these calls return, finished or not.
-    this.#interruptWorkspace()
+    this.#interruptShells()
     this.#answerCalls()
     if (this.#finished) {
       // Its hard stop spawns under the session's id, so a parked worker goes first.
@@ -2920,10 +2924,10 @@ export class SessionActor implements LiveCalls {
    * the run ended, key redacted, else null) then `sessionEnded` are notified in order, not awaited, once the end is
    * stored (`#storeEnd`, which retries a store that can't be written). Every delivery not answered gets `409
    * not_live`. A run yian may still see unfinished gets a hard stop, as does each replaced run no fresh worker
-   * cancelled. The live relay forgets the session's runs now with no worker alive, else at that worker's exit. Throws
-   * `HarnessError` (`404`) when the session row is gone; any other failed store write is logged by its type. While a
-   * fresh run is held, the run is reported with the held run's result and end reason, as the fresh run would have
-   * reported it.
+   * cancelled. The terminal closes. The live relay forgets the session's runs now with no worker alive, else at that
+   * worker's exit. Throws `HarnessError` (`404`) when the session row is gone; any other failed store write is logged
+   * by its type. While a fresh run is held, the run is reported with the held run's result and end reason, as the
+   * fresh run would have reported it.
    */
   #finish(status: "ended" | "failed", outcome: Frame | null, why: string | null, run = this.#run): void {
     if (this.#finished) return
@@ -2980,6 +2984,8 @@ export class SessionActor implements LiveCalls {
       const given = [...(run?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
       this.#answerRest(given, new HarnessError(409, "not_live", `session ${this.sessionId} has no live run`))
       this.#stopRuns(!ended ? runId : null, this.#replaced.splice(0))
+      // Its commands end with the session, and its shells' listings go.
+      void this.#closeShells()
       // Its end is stored, or yian's index has it (the ending result's job brought it up to date); a replaced run's
       // end was told when `#replace` stored it.
       if (runId !== null) this.#ctx.runChanged?.(runId)
@@ -3246,19 +3252,34 @@ export class SessionActor implements LiveCalls {
     return session.opened_by ?? (await this.#pinsOf(session)).ceo
   }
 
-  /** Interrupts the workspace's calls in flight: nobody is left to read what they return. */
-  #interruptWorkspace(): void {
+  /** Interrupts the workspace's file calls and cuts off the terminal's calls in flight, whose commands then stop:
+   *  nobody is left to read what they return. A command the agent was told is running goes on. */
+  #interruptShells(): void {
     try {
       this.#spec?.workspace?.interrupt()
     } catch (error) {
       this.#log(`session ${this.sessionId}: the workspace can't be interrupted (${errorName(error)})`)
     }
+    try {
+      this.#spec?.terminal?.interruptWaits()
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: the terminal can't be interrupted (${errorName(error)})`)
+    }
   }
 
-  /** Where the session's workspace shell runs, as its sandbox says. Without a workspace no shell is offered, so the
-   *  strict SSH-only reading, which writes nothing, stands in. */
+  /** Closes the terminal: every command ends, its records end and its listings go. Never rejects. */
+  #closeShells(): Promise<void> {
+    const terminal = this.#spec?.terminal
+    if (terminal === undefined) return Promise.resolve()
+    return terminal.close().catch((error: unknown) => {
+      this.#log(`session ${this.sessionId}: its terminal didn't close cleanly (${errorName(error)})`)
+    })
+  }
+
+  /** Where a new shell of the session's terminal runs, as its sandbox says: what the approvals decide a card again
+   *  by. Without a terminal no shell is offered, so the strict SSH-only reading, which writes nothing, stands in. */
   #where(): Where {
-    return this.#spec?.workspace?.where() ?? { profile: "ssh", cwd: this.#session().cwd, writable: [] }
+    return this.#spec?.terminal?.where() ?? { profile: "ssh", cwd: this.#session().cwd, writable: [] }
   }
 
   /**

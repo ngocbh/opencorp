@@ -6,6 +6,7 @@ import type { ToolContext } from "./context.ts"
 import * as toolbox from "./toolbox.ts"
 import * as workItems from "./work_items.ts"
 import * as workspace from "./workspace.ts"
+import type { TerminalTool } from "./terminal/terminal.ts"
 
 export type { ToolContext } from "./context.ts"
 
@@ -13,9 +14,16 @@ export type { ToolContext } from "./context.ts"
 const GROUPS: Record<string, (ctx: ToolContext) => Record<string, OfficeTool>> = {
   toolbox: toolbox.tools,
   workspace: workspace.tools,
+  terminal,
   // The company group is its topics' tools; only work's are in it (draft's are in no group).
   company: work.tools,
   work_items: workItems.tools,
+}
+
+/** The `terminal` group: the session's shells (`run`, `type`, `read`, `interrupt`, `close`, which a model calls
+ *  `terminal_run` and so on), as its host bound them; none without a terminal. */
+function terminal(ctx: ToolContext): Record<string, TerminalTool> {
+  return ctx.terminal ? ctx.terminal.tools() : {}
 }
 
 /**

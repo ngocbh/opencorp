@@ -5,6 +5,8 @@ import path from "node:path"
 import { stringify } from "yaml"
 import { personInputs, talkingTo } from "../../../src/features/chat/identity.ts"
 import { chatJob, managerSpec, mainSpec, sideSpec } from "../../../src/features/chat/run_spec.ts"
+import { EmployeeTerminal } from "../../../src/features/chat/terminal.ts"
+import { Instruments } from "../../../src/runtime/sessions/instruments.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
 import { MAIN_CHAT } from "../../../src/company/chat_flow.ts"
 import { CompanyGit } from "../../../src/company/git.ts"
@@ -17,9 +19,10 @@ import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
 import { READ_TOOLS } from "../../../src/tools/workspace.ts"
 import type { OfficeTool } from "../../../src/runtime/worker/rpc.ts"
 import { groupSpecs, JobError, personFlow } from "../../../src/runtime/worker/job.ts"
-import { tempDir } from "../../helpers.ts"
+import { tempDir, waitFor } from "../../helpers.ts"
 import { openStore, question, session, workItem } from "../../runtime/store/helpers.ts"
 import { advanceJob, Recorder, run, waitsOf } from "../../runtime/worker/helpers.ts"
+import { fakePipes, json, permissions } from "../../tools/terminal/helpers.ts"
 import { fakeLlm } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -44,12 +47,6 @@ const NO_WORKSPACE = {
   },
   interrupt: (): never => {
     throw new Error("the workspace is never interrupted")
-  },
-  track: (): never => {
-    throw new Error("the workspace never tracks a call")
-  },
-  where: (): never => {
-    throw new Error("the workspace's shell never runs")
   },
 }
 
@@ -104,9 +101,24 @@ async function opened(memory: MemoryBase): Promise<unknown[]> {
   return [contract, session.info.identity, session.info.settings.max_file_chars]
 }
 
-/** minh's main spec in `o`. */
-function main(o: Office) {
-  return mainSpec({ ...o, workspace: NO_WORKSPACE, carried: () => [] })
+/** minh's terminal in `o`'s session, over pipes that run nothing (`fakePipes`), its records under `o.dir`. */
+function shellsOf(o: Office) {
+  const pipes = fakePipes(o.dir)
+  const terminal = new EmployeeTerminal({
+    shells: pipes.shells,
+    sessionId: o.session.id,
+    person: "minh",
+    folder: path.join(o.dir, "session"),
+    instruments: new Instruments(() => {}),
+    store: o.store,
+    mode: () => "auto",
+  })
+  return { terminal, pipes }
+}
+
+/** minh's main spec in `o`, on `terminal` (one of `shellsOf`'s by default). */
+function main(o: Office, terminal = shellsOf(o).terminal) {
+  return mainSpec({ ...o, workspace: NO_WORKSPACE, terminal, carried: () => [] })
 }
 
 /** A chat job of `spec` for `o`'s session, pinned at the company dir, logging under `o.dir`. */
@@ -127,7 +139,7 @@ test("the main spec runs the persons main flow with their tools memory and skill
   const spec = main(o)
   expect(spec.flow).toBe(personFlow("minh", "../../shared/flows/chat.yaml"))
   expect(spec.chat).toBe(MAIN_CHAT)
-  expect(Object.keys(spec.groups({ session: o.session, runId: "r1" }))).toEqual(["toolbox", "workspace", "company"])
+  expect(Object.keys(spec.groups({ session: o.session, runId: "r1" }))).toEqual(["toolbox", "workspace", "terminal", "company"])
   expect(Object.keys(spec.memories)).toEqual(["profile"])
   // minh's memory folder, with the same settings in every company.
   expect(await opened(spec.memories.profile!)).toEqual([FileMemory.contract, "people/minh", 1_000_000n])
@@ -141,10 +153,40 @@ test("the main spec runs the persons main flow with their tools memory and skill
   })
   expect(spec.workspace).toBe(NO_WORKSPACE)
   const owner = o.store.createSession(session({ person: "ngocbh" }))
-  const ownerSpec = () => mainSpec({ ...o, session: owner, workspace: NO_WORKSPACE, carried: () => [] })
+  const ownerSpec = () => mainSpec({ ...o, session: owner, workspace: NO_WORKSPACE, terminal: shellsOf(o).terminal, carried: () => [] })
   // A 422 says which field failed, never its value.
   expect(ownerSpec).toThrow(/^the person has no main flow to chat with$/)
   expect(refusal(ownerSpec)).toEqual([422, "not_an_agent"])
+})
+
+test("a main run's build binds its permissions to the terminal, whose commands they gate, and an approved terminal_run runs there", async () => {
+  const o = await office()
+  const { terminal, pipes } = shellsOf(o)
+  const spec = main(o, terminal)
+  expect(spec.terminal).toBe(terminal)
+  const { perms, held } = permissions({ mode: "ask" })
+  const groups = spec.groups({ session: o.session, runId: "r1", permissions: perms })
+  expect(Object.keys(groups.terminal!)).toEqual(["run", "type", "read", "interrupt", "close"])
+  const callId = "r1/chat#0/reply/0/0"
+  await groups.terminal!.run!.call({ command: "make", why: "builds it" }, { callId })
+  expect(held.map((h) => [h.card.tool, h.card.action, h.callId])).toEqual([["terminal_run", "make", callId]])
+  const signal = new AbortController().signal
+  const credit = "approved by @ngocbh"
+  const ran = spec.runApproved!("terminal_run", held[0]!.card.args, { session: o.session, runId: "r1", signal, credit })
+  await waitFor(() => pipes.running().length === 1, { what: "the approved command" })
+  pipes.end("make", 0)
+  expect(json(await ran)).toMatchObject({ shell: "shell 1", status: "idle", exit: 0 })
+  expect(pipes.commands).toEqual(["make"])
+  const rows = o.store.listAudit({ sessionId: o.session.id })
+  expect(rows.map((r) => [r.kind, r.tool, r.outcome, r.runId, r.args])).toEqual([
+    ["workspace", "terminal_run", "held", "r1", { summary: "command='make'", shell: null }],
+    ["workspace", "terminal_run", "ok", "r1", { summary: "command='make'", shell: "shell 1" }],
+  ])
+  expect(rows[1]!.detail).toMatch(/^exit=0 duration=[\d.]+s approved by @ngocbh$/)
+  await expect(spec.runApproved!("shell", { command: "ls" }, { session: o.session, runId: "r1", signal, credit })).rejects.toThrow(
+    RangeError,
+  )
+  await terminal.close()
 })
 
 test("the side spec has read only lookups and room for its seed", async () => {
@@ -331,10 +373,10 @@ test("a chat flow that grants a tool group the office doesn't serve, such as an 
   // The office passes yian only its own groups, so a group it doesn't serve, as an MCP server's, is missing.
   const o = await office()
   const file = path.join(o.root, "shared/flows/chat.yaml") // the job's pin is the company folder
-  const granted = "tools: [toolbox, workspace, company, ask_user]"
+  const granted = "tools: [toolbox, workspace, terminal, company, ask_user]"
   const text = fs.readFileSync(file, "utf8")
   expect(text.split(granted)).toHaveLength(2)
-  fs.writeFileSync(file, text.replace(granted, "tools: [toolbox, workspace, company, ask_user, github]"))
+  fs.writeFileSync(file, text.replace(granted, "tools: [toolbox, workspace, terminal, company, ask_user, github]"))
   const fake = await fakeLlm()
   const spec = main(o)
   const tools = spec.groups({ session: o.session, runId: "r1" })
