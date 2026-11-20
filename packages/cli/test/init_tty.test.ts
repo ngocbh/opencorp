@@ -179,6 +179,10 @@ describe.skipIf(!TMUX)("init on a real terminal: the plain steps, then a chat wi
     expect(answered).toBe("The owner wants changes; ask what to change")
     await leave(t)
     expect(fs.existsSync(path.join(c.home, "company"))).toBe(false)
+    // The chat's TUI keeps what the owner typed under --home, as the office's TUI does, so offboard removes it; none
+    // of it goes to $HOME/.opencorp.
+    expect(holding(path.join(c.home, "tui"), "Acme Robotics")).not.toEqual([])
+    expect(fs.existsSync(path.join(c.root, ".opencorp"))).toBe(false)
     await nothingLeft(c)
   })
 
@@ -201,6 +205,8 @@ describe.skipIf(!TMUX)("init on a real terminal: the plain steps, then a chat wi
       "# Minh, Engineer\n\nBuilds the robots' firmware.\n",
     )
     expect(holding(c.root, PASSWORD)).toEqual([])
+    // Neither the chat's TUI nor the office's keeps anything in $HOME/.opencorp.
+    expect(fs.existsSync(path.join(c.root, ".opencorp"))).toBe(false)
     expect(t.ended()).toBe(false)
   })
 

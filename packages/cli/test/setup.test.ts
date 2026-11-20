@@ -13,13 +13,15 @@ afterEach(() => {
 })
 
 /** SetupDeps whose install exits `code`, on a terminal it can draw on or not; the office exits 7. Each records what
- *  it got. */
+ *  it got: the install's argv and folder in `calls`, its env in `envs`. */
 function fake(opts: { code?: number; terminal?: boolean; spawnCwd?: () => string } = {}) {
   const calls: { argv: string[]; cwd: string }[] = []
+  const envs: Record<string, string>[] = []
   const offices: (string | undefined)[] = []
   const deps: SetupDeps = {
-    spawn: async (argv, { cwd }) => {
+    spawn: async (argv, { cwd, env }) => {
       calls.push({ argv, cwd })
+      envs.push(env)
       return opts.code ?? 0
     },
     spawnCwd: opts.spawnCwd ?? (() => HOME_DIR),
@@ -29,7 +31,7 @@ function fake(opts: { code?: number; terminal?: boolean; spawnCwd?: () => string
       return 7
     },
   }
-  return { deps, calls, offices }
+  return { deps, calls, envs, offices }
 }
 
 const COMMANDS = ["init", "onboard"] as const
@@ -74,17 +76,21 @@ for (const command of COMMANDS) {
       expect(offices).toEqual([])
     })
 
-    test("--home reaches the install absolute and names the office that opens", async () => {
-      process.env.OPENCORP_HOME = "/tmp/elsewhere"
+    // The install's env stays the caller's: init's chat points its own TUI at --home (chat.ts), and the install says to
+    // export OPENCORP_HOME when this shell's `opencorp` would look for its office elsewhere.
+    test("--home reaches the install absolute and names the office that opens; the install's OPENCORP_HOME stays the caller's", async () => {
       const rel = path.resolve(process.cwd(), "rel")
       for (const [argv, given, home] of [
         [["--home", "/tmp/h"], ["--home", "/tmp/h"], "/tmp/h"],
         [["--home=/tmp/h"], ["--home=/tmp/h"], "/tmp/h"],
         [["--home", "rel"], ["--home", rel], rel],
       ] as [string[], string[], string][]) {
-        const { deps, calls, offices } = fake()
+        // setUp points this process at the office it opens.
+        process.env.OPENCORP_HOME = "/tmp/elsewhere"
+        const { deps, calls, envs, offices } = fake()
         expect(await setUp(command, argv, deps)).toBe(7)
         expect(calls.map((c) => c.argv)).toEqual([install(command, ...given)])
+        expect(envs.map((env) => env.OPENCORP_HOME)).toEqual(["/tmp/elsewhere"])
         expect(offices).toEqual([home])
       }
     })
