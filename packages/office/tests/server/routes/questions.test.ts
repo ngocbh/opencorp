@@ -323,7 +323,7 @@ test("only the session's approver may answer or stop its approval card", async (
         call_id: `run-1/n/${n}/0`,
         question: "rm -rf build",
         options: ["Yes"],
-        approval: { kind: "command", tool: "shell", action: "rm -rf build", reason: "Ask mode" },
+        approval: { kind: "command", tool: "terminal_run", action: "rm -rf build", reason: "Ask mode" },
       }),
     )
   // A chat's opener answers its cards, even over the CEO; a chat nobody opened falls to the CEO at its pinned commit.
@@ -466,7 +466,7 @@ test("a chat message from the approver answers only an ask_user, and leaves an a
       call_id: `${runId}/n/9/0`,
       question: "rm -rf build",
       options: ["Yes"],
-      approval: { kind: "command", tool: "shell", action: "rm -rf build", reason: "Ask mode" },
+      approval: { kind: "command", tool: "terminal_run", action: "rm -rf build", reason: "Ask mode" },
     }),
   )
   // The chat's opener, the CEO here, is the card's approver: their message is still no answer to it.

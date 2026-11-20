@@ -10,11 +10,12 @@ import { spawnPty } from "../../../src/platform.ts"
 import type {
   Action, ApprovalCard, CheckInput, Mode, Permissions, Rule, Verdict, Where,
 } from "../../../src/runtime/permissions/policy.ts"
+import type { Result } from "../../../src/runtime/sandbox/run.ts"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../../src/testing/fake_ssh.ts"
 import { InstrumentRecord, readRecord, type RecordFile } from "../../../src/tools/terminal/record.ts"
 import type { ShellState } from "../../../src/tools/terminal/shell.ts"
-import { Terminal, type TerminalHost, type TerminalShells } from "../../../src/tools/terminal/terminal.ts"
-import { goldenSshPolicy } from "../../runtime/sandbox/helpers.ts"
+import { Terminal, type TerminalAudit, type TerminalHost, type TerminalShells } from "../../../src/tools/terminal/terminal.ts"
+import { goldenPolicy, goldenSshPolicy } from "../../runtime/sandbox/helpers.ts"
 
 /** What the host's own `where()` says: the workspace profile, writable everywhere. A terminal whose shells don't run
  *  in a workspace's sandbox must never take it. */
@@ -73,17 +74,25 @@ export function plainShells(dir: string, fake?: FakeSsh, cwd = dir): Extract<Ter
 }
 
 /** A terminal driven by `@minh` in a fresh folder, its shells' records in `<dir>/record-<id>`, over plain PTYs there
- *  unless `shells` says otherwise. The test's end closes it, then removes the folder. */
-export function openTerminal(o: { perms: Permissions; fake?: FakeSsh; shells?: (dir: string) => TerminalShells }) {
+ *  unless `shells` says otherwise; with `audit`, its host keeps each audit row in `audits`. The test's end closes it,
+ *  then removes the folder. */
+export function openTerminal(o: {
+  perms: Permissions
+  fake?: FakeSsh
+  shells?: (dir: string) => TerminalShells
+  audit?: boolean
+}) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-term-")))
   const live = new Map<string, Uint8Array[]>()
   const states = new Map<string, ShellState[]>()
+  const audits: TerminalAudit[] = []
   let made = 0
   let calls = 0
   const host: TerminalHost = {
     shells: o.shells?.(dir) ?? plainShells(dir, o.fake),
     driver: "@minh",
     permissions: o.perms,
+    ...(o.audit ? { audit: (row: TerminalAudit) => void audits.push(row) } : {}),
     shellHost: (name, profile) => {
       const id = `sh_${++made}`
       const record = new InstrumentRecord(path.join(dir, `record-${id}`), {
@@ -103,6 +112,8 @@ export function openTerminal(o: { perms: Permissions; fake?: FakeSsh; shells?: (
   return {
     terminal,
     dir,
+    /** The rows the host's audit got, in order. */
+    audits,
     /** Calls tool `name` with `args`, as yian would: with a fresh call id unless given. */
     call: (name: keyof typeof tools, args: Record<string, unknown>, options: { callId?: string; signal?: AbortSignal } = {}) =>
       tools[name].call(args, { callId: options.callId ?? `r/n/${++calls}/0`, ...(options.signal ? { signal: options.signal } : {}) }),
@@ -117,3 +128,50 @@ export function openTerminal(o: { perms: Permissions; fake?: FakeSsh; shells?: (
 
 /** A reply as the model reads it. */
 export const json = (result: unknown): Record<string, unknown> => JSON.parse(result as string)
+
+/** A pipes runner over a workspace's sandbox in `dir` that runs nothing: `echo <text>` prints its text and exits 0 at
+ *  once; any other command runs until `end(command, exit)`, or until its call is stopped, when it ends with no exit, as
+ *  a killed call does. `commands` are the commands it was given, in order; `running()` those still running. */
+export function fakePipes(dir: string) {
+  const sandbox = goldenPolicy({ workspace: dir, writable: true, network: false, tmpdir: "/tmp" })
+  const ends = new Map<string, (exit: number) => void>()
+  const commands: string[] = []
+  const shells: Extract<TerminalShells, { kind: "pipes" }> = {
+    kind: "pipes",
+    sandbox,
+    run: (argv, options) =>
+      new Promise((resolve) => {
+        const command = argv[2]!.replace(/^exec 2>&1; /, "")
+        commands.push(command)
+        const started = performance.now()
+        const done = (exit: number | null) => {
+          options.signal?.removeEventListener("abort", stop)
+          ends.delete(command)
+          resolve(pipesResult(exit, exit === null, (performance.now() - started) / 1000))
+        }
+        const stop = () => done(null)
+        if (options.signal?.aborted) return stop()
+        if (command.startsWith("echo ")) {
+          options.onOutput?.("stdout", Buffer.from(`${command.slice(5)}\n`))
+          return done(0)
+        }
+        options.signal?.addEventListener("abort", stop, { once: true })
+        ends.set(command, done)
+      }),
+  }
+  return {
+    shells,
+    commands,
+    running: () => [...ends.keys()],
+    end: (command: string, exit: number) => ends.get(command)?.(exit),
+  }
+}
+
+/** A pipes call's result, as `run` gives it. */
+export function pipesResult(exit: number | null, interrupted = false, duration = 0): Result {
+  const empty = Buffer.alloc(0)
+  return {
+    exit, stdout: empty, stderr: empty, stdoutTail: empty, stderrTail: empty, stdoutBytes: 0, stderrBytes: 0,
+    timedOut: false, interrupted, truncated: false, duration, refused: false,
+  }
+}

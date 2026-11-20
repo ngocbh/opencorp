@@ -1,15 +1,17 @@
 /** A terminal: one session's shells by name, as its host binds them. Calls on one shell queue, waits end together,
- *  close ends them all, a start failure says what to fix, and the gate reads the profile from the shells' sandbox.
- *  Plain PTYs, except the pipes test, which runs in the sandbox where one runs. */
+ *  a call cut off stops the command it waited on, close ends them all, a start failure says what to fix, the gate reads
+ *  the profile from the shells' sandbox, and the host's audit gets each command the gate decided. Plain PTYs or a
+ *  fake pipes runner, except the pipes test, which runs in the sandbox where one runs. */
 import fs from "node:fs"
 import path from "node:path"
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { isPending } from "@ngocbh/yian/tools"
 import { type Result, run, SandboxUnavailable } from "../../../src/runtime/sandbox/run.ts"
+import type { Verdict, Where } from "../../../src/runtime/permissions/policy.ts"
 import { Terminal } from "../../../src/tools/terminal/terminal.ts"
 import { waitFor } from "../../helpers.ts"
-import { goldenPolicy, goldenSshPolicy, makePolicy, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
-import { HOST_WHERE, json, openTerminal, permissions, plainShells, rule, sshShells } from "./helpers.ts"
+import { goldenPolicy, goldenSshPolicy, gone, makePolicy, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import { fakePipes, HOST_WHERE, json, openTerminal, permissions, plainShells, rule, sshShells } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -59,25 +61,180 @@ test("two calls on one shell queue, and calls on two shells run together", async
   expect(performance.now() - started).toBeLessThan(1500)
 })
 
-test("interruptWaits ends every waiting reply at once", async () => {
+test("interruptWaits ends every waiting reply at once, and stops the commands they waited on", async () => {
   const t = openTerminal({ perms: permissions().perms })
   await t.call("run", { command: "true", why: "x" })
   const started = performance.now()
   const waiting = Promise.all([
-    t.call("run", { command: "sleep 10", why: "x", shell: "shell 1", wait: 60 }),
-    t.call("run", { command: "sleep 10", why: "x", wait: 60 }),
+    t.call("run", { command: "sleep 10.41", why: "x", shell: "shell 1", wait: 60 }),
+    t.call("run", { command: "sleep 10.41", why: "x", wait: 60 }),
   ])
   await waitFor(() => t.terminal.shells().filter(({ state }) => state.status === "running").length === 2, {
     what: "both commands",
   })
   t.terminal.interruptWaits()
-  expect((await waiting).map((reply) => json(reply).status)).toEqual(["running", "running"])
+  // Each reply says its command ended, as a Ctrl-C ends it.
+  expect((await waiting).map((reply) => [json(reply).status, json(reply).exit])).toEqual([["idle", 130], ["idle", 130]])
   expect(performance.now() - started).toBeLessThan(3000)
-  // The shells keep running: only the replies ended.
   expect(t.terminal.shells().map(({ state }) => [state.status, state.command])).toEqual([
-    ["running", "sleep 10"],
-    ["running", "sleep 10"],
+    ["idle", null],
+    ["idle", null],
   ])
+  expect(await gone("10.41")).toBe(true)
+})
+
+test("a run whose reply is cut off stops its command, in a pipes shell and in a PTY shell", async () => {
+  // A pipes shell: the call's own signal, then the terminal's interruptWaits.
+  const allowMake = [rule("allow", "command", "make *")]
+  let fake!: ReturnType<typeof fakePipes>
+  const pipes = openTerminal({ perms: permissions({ rules: allowMake }).perms, shells: (dir) => (fake = fakePipes(dir)).shells, audit: true })
+  const stop = new AbortController()
+  const cut = pipes.call("run", { command: "make one", why: "x", wait: 60 }, { signal: stop.signal })
+  await waitFor(() => fake.running().length === 1, { what: "the command" })
+  stop.abort()
+  expect(json(await cut)).toMatchObject({ shell: "shell 1", status: "idle", exit: null })
+  const waited = pipes.call("run", { command: "make two", why: "x", wait: 60, shell: "shell 1" })
+  await waitFor(() => fake.running().length === 1, { what: "the second command" })
+  pipes.terminal.interruptWaits()
+  expect(json(await waited)).toMatchObject({ shell: "shell 1", status: "idle", exit: null })
+  expect(fake.running()).toEqual([])
+  expect(pipes.audits.map((row) => [row.outcome, row.text, "exit" in row ? [row.exit, row.stopped] : undefined])).toEqual([
+    ["error", "make one", [null, "its call was cut off"]],
+    ["error", "make two", [null, "its call was cut off"]],
+  ])
+  // The agent's interrupt, the owner's Ctrl-C and a close each say why the command ended with no exit.
+  const why = async (stop: (t: typeof pipes) => Promise<unknown> | void, command: string) => {
+    expect(json(await pipes.call("run", { command, why: "x", wait: 0, shell: "shell 1" }))).toMatchObject({ status: "running" })
+    await stop(pipes)
+    await waitFor(() => pipes.audits.length > 2, { what: "the stopped command's row" })
+    const row = pipes.audits.pop()!
+    return "stopped" in row ? row.stopped : undefined
+  }
+  expect(await why((t) => t.call("interrupt", { shell: "shell 1" }), "make three")).toBe("the agent interrupted it")
+  expect(await why((t) => t.terminal.shell(t.terminal.shells()[0]!.id)!.ownerKeys("\x03"), "make four")).toBe(
+    "it was stopped, or couldn't run",
+  )
+  expect(await why((t) => t.call("close", { shell: "shell 1" }), "make five")).toBe("its shell ended")
+  // An approved run's command stops with its own signal.
+  const { perms, held } = permissions({ mode: "ask" })
+  let approvedFake!: ReturnType<typeof fakePipes>
+  const asked = openTerminal({ perms, shells: (dir) => (approvedFake = fakePipes(dir)).shells })
+  expect(isPending(await asked.call("run", { command: "make three", why: "x" }))).toBe(true)
+  const approval = new AbortController()
+  const approved = asked.terminal.runApproved("terminal_run", held[0]!.card.args, approval.signal, "approved by @ngocbh")
+  await waitFor(() => approvedFake.running().length === 1, { what: "the approved command" })
+  approval.abort()
+  expect(json(await approved)).toMatchObject({ status: "idle", exit: null })
+  expect(approvedFake.running()).toEqual([])
+  // A PTY shell gets a Ctrl-C.
+  const pty = openTerminal({ perms: permissions().perms })
+  const ptyStop = new AbortController()
+  const sleeping = pty.call("run", { command: "sleep 30.31", why: "x", wait: 60 }, { signal: ptyStop.signal })
+  await waitFor(() => pty.terminal.shells()[0]?.state.status === "running", { what: "the PTY command" })
+  ptyStop.abort()
+  expect(json(await sleeping)).toMatchObject({ shell: "shell 1", status: "idle", exit: 130 })
+  expect(await gone("30.31")).toBe(true)
+  // A read cut off stops nothing: there is nothing it started.
+  let readFake!: ReturnType<typeof fakePipes>
+  const reader = openTerminal({ perms: permissions({ rules: allowMake }).perms, shells: (dir) => (readFake = fakePipes(dir)).shells })
+  expect(json(await reader.call("run", { command: "make four", why: "x", wait: 0 }))).toMatchObject({ status: "running" })
+  const reading = new AbortController()
+  const read = reader.call("read", { shell: "shell 1", wait: 60 }, { signal: reading.signal })
+  reading.abort()
+  expect(json(await read)).toMatchObject({ status: "running" })
+  expect(readFake.running()).toEqual(["make four"])
+  readFake.end("make four", 0)
+})
+
+test("a command whose reply said running goes on when a later call is cut off", async () => {
+  let fake!: ReturnType<typeof fakePipes>
+  const t = openTerminal({
+    perms: permissions({ rules: [rule("allow", "command", "make *")] }).perms,
+    shells: (dir) => (fake = fakePipes(dir)).shells,
+    audit: true,
+  })
+  expect(json(await t.call("run", { command: "make long", why: "x", wait: 0 }))).toMatchObject({
+    shell: "shell 1", status: "running",
+  })
+  // A later call on another shell, cut off by the terminal's interruptWaits, as Esc does.
+  const later = t.call("run", { command: "make short", why: "x", wait: 60 })
+  await waitFor(() => fake.running().length === 2, { what: "the second command" })
+  t.terminal.interruptWaits()
+  expect(json(await later)).toMatchObject({ shell: "shell 2", status: "idle", exit: null })
+  // The one the agent was told is running goes on, and the agent reads it later.
+  expect(fake.running()).toEqual(["make long"])
+  expect(t.terminal.shells().map(({ name, state }) => [name, state.status])).toEqual([["shell 1", "running"], ["shell 2", "idle"]])
+  fake.end("make long", 0)
+  expect(json(await t.call("read", { shell: "shell 1", wait: 10 }))).toMatchObject({ status: "idle", exit: 0 })
+})
+
+test("the host's audit gets a held, a refused and an ended command, with why it ran or the approval's credit", async () => {
+  const rules = [rule("allow", "command", "echo *"), rule("deny", "command", "rm *")]
+  const { perms, held } = permissions({ mode: "ask", rules })
+  let fake!: ReturnType<typeof fakePipes>
+  const t = openTerminal({ perms, shells: (dir) => (fake = fakePipes(dir)).shells, audit: true })
+  expect(json(await t.call("run", { command: "echo hi", why: "x" }))).toMatchObject({ shell: "shell 1", exit: 0 })
+  expect(await t.call("run", { command: "rm x", why: "x", shell: "shell 1" })).toBe("Not run: a deny rule: rm *.")
+  expect(isPending(await t.call("run", { command: "make", why: "builds it" }))).toBe(true)
+  const approved = t.terminal.runApproved("terminal_run", held[0]!.card.args, new AbortController().signal, "approved by @ngocbh")
+  await waitFor(() => fake.running().length === 1, { what: "the approved command" })
+  fake.end("make", 2)
+  expect(json(await approved)).toMatchObject({ shell: "shell 2", status: "idle", exit: 2 })
+  const rows = t.audits.map((row) => ("duration" in row ? { ...row, duration: typeof row.duration } : row))
+  expect(rows).toEqual([
+    {
+      outcome: "ok", tool: "terminal_run", text: "echo hi", shell: "shell 1", exit: 0, duration: "number",
+      why: "by an allow rule", stopped: null,
+    },
+    { outcome: "denied", tool: "terminal_run", text: "rm x", shell: "shell 1", reason: "Not run: a deny rule: rm *." },
+    { outcome: "held", tool: "terminal_run", text: "make", shell: null, reason: "Ask mode" },
+    {
+      outcome: "error", tool: "terminal_run", text: "make", shell: "shell 2", exit: 2, duration: "number",
+      why: "approved by @ngocbh", stopped: null,
+    },
+  ])
+})
+
+test("a command that ends after the agent's wait still writes its row when it ends, with its exit", async () => {
+  let fake!: ReturnType<typeof fakePipes>
+  const check = async () => ({ verdict: "run" as const, reason: "builds the project" })
+  const t = openTerminal({ perms: permissions({ check }).perms, shells: (dir) => (fake = fakePipes(dir)).shells, audit: true })
+  expect(json(await t.call("run", { command: "make", why: "x", wait: 0 }))).toMatchObject({ status: "running" })
+  expect(t.audits).toEqual([])
+  fake.end("make", 0)
+  await waitFor(() => t.audits.length === 1, { what: "the command's row" })
+  expect(t.audits[0]).toMatchObject({
+    outcome: "ok", text: "make", shell: "shell 1", exit: 0, why: "by Auto's check: builds the project",
+  })
+})
+
+test("a call stopped in its check writes no audit row", async () => {
+  let answer: ((verdict: Verdict) => void) | undefined
+  const check = () => new Promise<Verdict>((resolve) => (answer = resolve))
+  const { perms, held, checked } = permissions({ check })
+  let fake!: ReturnType<typeof fakePipes>
+  const t = openTerminal({ perms, shells: (dir) => (fake = fakePipes(dir)).shells, audit: true })
+  const running = t.call("run", { command: "make", why: "x" })
+  await waitFor(() => checked.length === 1, { what: "the check" })
+  t.terminal.interruptWaits()
+  answer!({ verdict: "run", reason: "fine" })
+  expect(await running).toBe("Not run: stopped before Auto's check finished.")
+  expect([t.audits, held, fake.commands, t.terminal.shells()]).toEqual([[], [], [], []])
+})
+
+test("a shell's start reads only the host's base where, never the host's caller", async () => {
+  // The base names no folder, as the chat binds it: the terminal takes the profile, folder and writable paths from
+  // the shells' sandbox, and only the credentials from the base. Nothing it does reads the caller's where.
+  let reads = 0
+  const base: Where = { profile: "workspace", cwd: null, writable: [], credentials: ["/creds/key"] }
+  const { perms, held } = permissions({ mode: "auto", where: base })
+  const counted = { ...perms, where: () => (reads++, base) }
+  const t = openTerminal({ perms: counted, shells: (dir) => fakePipes(dir).shells })
+  expect(t.terminal.where()).toEqual({ profile: "workspace", cwd: t.dir, writable: [t.dir, "/tmp"], credentials: ["/creds/key"] })
+  expect(reads).toBe(1)
+  expect(json(await t.call("run", { command: "echo read-only", why: "x" }))).toMatchObject({ exit: 0 })
+  expect(isPending(await t.call("run", { command: "cat /creds/key", why: "x", shell: "shell 1" }))).toBe(true)
+  expect(held.map((h) => h.card.reason)).toEqual(["it names a credential path: /creds/key"])
 })
 
 test("close ends every shell and marks its record ended", async () => {

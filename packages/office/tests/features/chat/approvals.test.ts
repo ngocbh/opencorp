@@ -1,5 +1,6 @@
-/** A chat's approvals: the employee's shell runs, holds on an approval card or is refused as the session's mode,
- *  its rules and Auto's check decide, and the office runs a held call once the approver says Yes. */
+/** A chat's approvals: the employee's commands run in the terminal's pipes shell, hold on an approval card or are
+ *  refused as the session's mode, its rules and Auto's check decide, and the office runs a held call once the approver
+ *  says Yes. */
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
@@ -40,9 +41,22 @@ const sandboxed = test.if(sandboxAvailable())
 
 type Mode = "auto" | "default" | "ask" | "dontAsk"
 
-/** The employee's reply that runs each of `commands` in the workspace's shell. */
+/** What the employee gives as each command's reason, which its card shows. */
+const WHY = "as asked"
+
+/** The employee's reply that runs each of `commands` in a new shell of its terminal. */
 function shell(...commands: string[]): ScriptedReply {
-  return { match: CHAT, tool_calls: commands.map((command) => ({ name: "workspace_shell", arguments: { command } })) }
+  return { match: CHAT, tool_calls: commands.map((command) => ({ name: "terminal_run", arguments: { command, why: WHY } })) }
+}
+
+/** `fragment` of a terminal reply (its JSON text), as a model's request holds it: escaped inside the tool's result. */
+function inReply(fragment: string): string {
+  return JSON.stringify(fragment).slice(1, -1)
+}
+
+/** What a request holds once a command's reply reached it: its exit, 0 by default. */
+function exited(exit = 0): string {
+  return inReply(`"exit":${exit}`)
 }
 
 /** The employee's reply saying `content`, to a request holding `after`: by default any of the chat's, else what
@@ -167,7 +181,7 @@ test("in auto a command the check says ask holds on a card that shows the check'
   const h = await makeHarness(fake)
   const id = await chat(h)
   const [q] = await held(h, id, "cancel it")
-  expect(q!.approval).toMatchObject({ tool: "shell", action: "scancel 42", reason: "Auto's check: cancels a cluster job" })
+  expect(q!.approval).toMatchObject({ tool: "terminal_run", action: "scancel 42", reason: "Auto's check: cancels a cluster job" })
   expect(q!.options).toEqual([YES, sessionOption(["scancel 42"]), alwaysOption(["scancel 42"])])
   expect(rows(h, id).map((r) => [r.outcome, r.detail])).toEqual([["held", "Auto's check: cancels a cluster job"]])
 })
@@ -285,8 +299,8 @@ test("a session's hold refuses rather than hold a card once the session doesn't 
   })
   const asked: unknown[] = []
   const card = {
-    kind: "command" as const, tool: "shell", action: "make", args: { command: "make" }, why: "", reason: "Ask mode",
-    rules: ["make"], partial: false, into: null,
+    kind: "command" as const, tool: "terminal_run", action: "make", args: { command: "make", why: WHY }, why: WHY,
+    reason: "Ask mode", rules: ["make"], partial: false, into: null,
   }
   const runId = session(h, id).run_ids.at(-1)!
   const perms = await approvals.permissions(runId, (q) => (asked.push(q), q))
@@ -317,7 +331,7 @@ test("in dontAsk a command the check says ask is refused with no card, and the a
   expect(rows(h, id).map((r) => [r.outcome, r.detail])).toEqual([["denied", why]])
 })
 
-test("in ask mode the employee's shell holds on an approval card, and the run waits", async () => {
+test("in ask mode the employee's command holds on an approval card, and the run waits", async () => {
   const fake = await fakeLlm()
   fake.script(shell("ls"))
   const h = await makeHarness(fake)
@@ -326,7 +340,7 @@ test("in ask mode the employee's shell holds on an approval card, and the run wa
   const runId = session(h, id).run_ids.at(-1)!
   expect(q).toMatchObject({ status: "open", source: "approval", run_id: runId, asker: "minh", question: "ls" })
   expect(q!.call_id!.startsWith(`${runId}/`)).toBe(true)
-  expect(q!.approval).toMatchObject({ kind: "command", tool: "shell", action: "ls", why: "", reason: "Ask mode" })
+  expect(q!.approval).toMatchObject({ kind: "command", tool: "terminal_run", action: "ls", why: WHY, reason: "Ask mode" })
   expect(q!.options).toEqual([YES, sessionOption(["ls *"]), alwaysOption(["ls *"])])
   const inspection = inspectRun(path.join(h.office.paths.runs, runId, "log.jsonl"))
   expect(inspection.status).toBe("waiting")
@@ -337,18 +351,18 @@ test("in ask mode the employee's shell holds on an approval card, and the run wa
 
 test("a held call's transcript row names the yian call id its card holds, beside the model's own", async () => {
   const fake = await fakeLlm()
-  fake.script({ ...shell("ls"), tool_calls: [{ id: "call_ls", name: "workspace_shell", arguments: { command: "ls" } }] })
+  fake.script({ ...shell("ls"), tool_calls: [{ id: "call_ls", name: "terminal_run", arguments: { command: "ls", why: WHY } }] })
   const h = await makeHarness(fake)
   const id = await chat(h, "ask")
   const [q] = await held(h, id, "list it")
   expect(await tools(h, id)).toMatchObject([
-    { tool: "workspace_shell", call_id: "call_ls", yian_call_id: q!.call_id, state: "running" },
+    { tool: "terminal_run", call_id: "call_ls", yian_call_id: q!.call_id, state: "running" },
   ])
 })
 
 sandboxed("Yes runs the command once, and the agent reads its output", async () => {
   const fake = await fakeLlm()
-  fake.script(shell("ls"), says("Listed.", "a.txt\\n[exit 0]"))
+  fake.script(shell("ls"), says("Listed.", inReply('"output":"$ ls\\na.txt\\n"')))
   const h = await makeHarness(fake)
   fs.writeFileSync(path.join(h.folder, "a.txt"), "")
   const id = await chat(h, "ask")
@@ -364,7 +378,7 @@ sandboxed("Yes runs the command once, and the agent reads its output", async () 
 
 sandboxed("a Yes completes the held call exactly once, after the command runs", async () => {
   const fake = await fakeLlm()
-  fake.script(shell("echo once"), says("Done.", "once\\n[exit 0]"))
+  fake.script(shell("echo once"), says("Done.", inReply('"output":"$ echo once\\nonce\\n"')))
   const h = await makeHarness(fake)
   const id = await chat(h, "ask")
   const [q] = await held(h, id, "say it")
@@ -377,8 +391,10 @@ sandboxed("a Yes completes the held call exactly once, after the command runs", 
     .flatMap((record) => (record.kind === "node_step" && record.payload.step ? [record.payload.step] : []))
   const pendingStep = steps.find((step) => step.kind === "pending" && step.call_id === q!.call_id)!
   const results = steps.filter((step) => step.kind === "tool_result" && step.call_id === pendingStep.tool_call_id)
-  // Its one result is the command's own output: the answer's generic completion never ran before it.
-  expect(results.map((step) => step.output)).toEqual(["once\n[exit 0]"])
+  // Its one result is the command's own reply: the answer's generic completion never ran before it.
+  expect(results.map((step) => JSON.parse(step.output as string))).toMatchObject([
+    { shell: "shell 1", status: "idle", exit: 0, output: "$ echo once\nonce\n" },
+  ])
   expect(h.logs.filter((line) => line.includes("refused"))).toEqual([])
 })
 
@@ -410,7 +426,7 @@ sandboxed("don't ask again lets the next matching command run without a card", a
   ])
 })
 
-test("Esc while Auto's check runs stops the call with nothing run and no card", async () => {
+test("Esc while Auto's check runs for a terminal command types nothing and holds nothing", async () => {
   const fake = await fakeLlm()
   fake.script(shell("make"), verdict("make", "run", "builds the project", { hold: true }))
   const h = await makeHarness(fake)
@@ -431,7 +447,7 @@ test("Esc while Auto's check runs stops the call with nothing run and no card", 
   expect(h.store.listQuestions({ sessionId: id })).toEqual([])
 })
 
-test("End while Auto's check runs runs nothing", async () => {
+test("End while Auto's check runs for a terminal command types nothing", async () => {
   const fake = await fakeLlm()
   fake.script(shell("make"), verdict("make", "run", "builds the project", { hold: true }))
   const h = await makeHarness(fake)
@@ -568,7 +584,7 @@ sandboxed("a message sent while an approval card is open leaves the card open; t
   await h.harness.answer(q!.id, YES, "option", { by: CEO })
   await replied(h, id, "Listed, and noted.")
   const last = chats(fake).at(-1)!
-  expect(last).toContain("[exit 0]")
+  expect(last).toContain(exited())
   expect(last).toContain("check the README too")
 })
 
@@ -686,7 +702,7 @@ sandboxed("a malformed rules file asks for everything and says why", async () =>
     shell("ls"),
     says("Refused.", refused),
     shell("ls"),
-    says("Listed.", "[exit 0]"),
+    says("Listed.", exited()),
   )
   const h = await makeHarness(fake, {
     files: { "rules.yaml": "rules: [\n", "people/minh/rules.yaml": rulesFile(["deny", "rm *"]) },
@@ -720,7 +736,7 @@ sandboxed("a malformed rules file asks for everything and says why", async () =>
 
 sandboxed("a malformed agent rules file blocks only that agent's sessions", async () => {
   const fake = await fakeLlm()
-  fake.script(shell("ls"), shell("ls"), says("Listed, ava.", "[exit 0]"))
+  fake.script(shell("ls"), shell("ls"), says("Listed, ava.", exited()))
   const h = await makeHarness(fake, { files: { ...AVA, "people/minh/rules.yaml": "rules: [\n" } })
   const minh = await chat(h)
   const [q] = await held(h, minh, "list it")

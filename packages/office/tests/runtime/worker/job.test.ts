@@ -139,7 +139,8 @@ test("tool spec uses the given name", () => {
 test("group specs names tools by their keys", () => {
   const groups = groupSpecs({ workspace: workspaceToolFunctions(async () => "") })
   const names = groups.workspace!.map((s) => s.name)
-  expect(names).toEqual(["read_file", "write_file", "edit_file", "list", "search", "shell"])
+  // The file tools: commands are the terminal group's.
+  expect(names).toEqual(["read_file", "write_file", "edit_file", "list", "search"])
 })
 
 test("a bad job error holds no input value", () => {

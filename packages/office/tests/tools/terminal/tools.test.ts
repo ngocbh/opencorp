@@ -98,7 +98,8 @@ const PTY_SPECS = {
 
 /** What a pipes terminal says in place of the PTY's state and terminal sentences, and of type's description. */
 const PIPES_RUN =
-  "Each command runs on its own in the workspace, with no terminal and no input: nothing carries over between " +
+  "Each command runs on its own in the workspace's sandbox, which reaches only the workspace and a private temp " +
+  "folder, and where the network may be off. It has no terminal and no input, and nothing carries over between " +
   "commands, not the folder (`cd`) nor any variable, so join steps that need each other in one command " +
   "(`cd src && make`). A program that asks a question gets no answer."
 const PIPES_TYPE =
@@ -491,16 +492,15 @@ test("the wait is capped at two minutes", async () => {
   expect(t.terminal.shells().map((s) => s.name)).toEqual(["shell 1", "shell 2"])
 })
 
-test("a call whose run stops ends its wait", async () => {
+test("a call whose run stops ends its wait, and the command it waited on", async () => {
   const t = openTerminal({ perms: permissions().perms })
   const stop = new AbortController()
   const started = performance.now()
   const running = t.call("run", { command: "sleep 5", why: "x", wait: 60 }, { signal: stop.signal })
   setTimeout(() => stop.abort(), 300)
-  expect(json(await running)).toMatchObject({ shell: "shell 1", status: "running" })
+  expect(json(await running)).toMatchObject({ shell: "shell 1", status: "idle", exit: 130 })
   expect(performance.now() - started).toBeLessThan(3000)
-  expect(json(await t.call("interrupt", { shell: "shell 1" })).refused).toBeUndefined()
-  expect(json(await t.call("read", { shell: "shell 1", wait: 10 }))).toMatchObject({ status: "idle" })
+  expect(json(await t.call("interrupt", { shell: "shell 1" })).refused).toBe("nothing is running")
 })
 
 test("an approved call runs once through runApproved, and is refused if its shell ended meanwhile", async () => {

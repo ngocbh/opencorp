@@ -25,6 +25,7 @@ import { Answers } from "../../runtime/questions/ask.ts"
 import type { RunIndexer } from "../../runtime/runs/indexer.ts"
 import { Live, type LiveRun } from "../../runtime/runs/records.ts"
 import { type AnswerKind, type SessionHarness, approverOf } from "../../runtime/sessions/harness.ts"
+import type { Instruments } from "../../runtime/sessions/instruments.ts"
 import { type OfficePaths as SandboxOfficePaths, SandboxPolicy, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
 import { InvalidTransition, LIVE, type QuestionRecord, type SessionRecord, type Store, newId } from "../../runtime/store/store.ts"
 import { WorkspaceTools } from "../../tools/workspace.ts"
@@ -38,6 +39,7 @@ import { ProviderError } from "../../models/provider.ts"
 import { defaultsOf, type RunSpec, mainSpec, managerSpec, sideSpec } from "./run_spec.ts"
 import { type ActorContext, KEEP_MS, SessionActor, named, ownModel } from "./session_actor.ts"
 import { HarnessError, notAnAgent } from "../../runtime/sessions/state.ts"
+import { EmployeeTerminal } from "./terminal.ts"
 import type { Transcript } from "./transcript.ts"
 
 /** How long, in milliseconds, the stop waits for worker requests, office tool bodies and actor jobs still running. */
@@ -65,6 +67,8 @@ export interface ChatOffice {
   readonly codex: CodexSessions | undefined
   readonly transcript: Transcript | undefined
   readonly live: LiveRelay | undefined
+  /** Each session's live instruments: a main chat's shells are listed there. */
+  readonly instruments: Instruments
   /** A run's status, nodes or end may have changed. */
   runChanged(runId: string): void
 }
@@ -352,8 +356,9 @@ export class ChatHarness implements SessionHarness {
    * The run spec of `session` at its pinned commit, by its kind. A main chat's and a side chat's workspace tools run
    * under a sandbox over the session's folder, checked again (422 when it is gone or unsafe), with a private tmp dir
    * under the session's folder: a main chat's as the person's `harness_policy` says, a side chat's read-only and
-   * offline whatever it says. A side chat's runs see its question, if it has one. A profile manager has only its
-   * profile tools, over the person's profile, and no workspace.
+   * offline whatever it says. A main chat's commands run in its terminal, the pipes shell in that same sandbox
+   * (`EmployeeTerminal`); a side chat has none. A side chat's runs see its question, if it has one. A profile manager
+   * has only its profile tools, over the person's profile, and no workspace.
    */
   async spec(session: SessionRecord): Promise<RunSpec> {
     const { store, git } = this.office
@@ -376,7 +381,16 @@ export class ChatHarness implements SessionHarness {
       network: policy?.network === true,
     })
     const carried = (question: QuestionRecord) => this.answers.carried(question)
-    return mainSpec({ store, git, repo, session, workspace, monitor, carried })
+    const terminal = new EmployeeTerminal({
+      shells: workspace.pipes(),
+      sessionId: session.id,
+      person: session.person,
+      folder: this.office.paths.sessionDir(session.id),
+      instruments: this.office.instruments,
+      store,
+      mode: () => store.getSession(session.id)?.mode ?? session.mode,
+    })
+    return mainSpec({ store, git, repo, session, workspace, terminal, monitor, carried })
   }
 
   /** The workspace tools of `session`'s folder, checked again (422 when it is gone or unsafe), under a sandbox

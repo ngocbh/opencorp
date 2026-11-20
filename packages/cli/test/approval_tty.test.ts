@@ -1,6 +1,7 @@
 // An employee's approval cards on a real office, answered in the TUI on a real terminal, in tmux: a chat starts in
 // auto, Shift+Tab cycles its four modes, Auto's check's reason shows on its card, a digit only selects, Enter answers,
-// Esc stops the employee, and dontAsk refuses with no card. The fake model is the office's connection, so Auto's check
+// Esc stops the employee, dontAsk refuses with no card, and the approver opens the employee's shell and stops its
+// command. The fake model is the office's connection, so Auto's check
 // runs on it too; the sandbox may be missing here, so each test checks that a call's result reached the model, never
 // what it was.
 import { afterAll, beforeAll, describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
@@ -10,6 +11,7 @@ import { createOfficeClient } from "@opencorp/client"
 import type { Question } from "@opencorp/protocol"
 import type { ScriptedReply } from "@opencorp/office/testing/fake_llm"
 import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
+import { sandboxRuns } from "@opencorp/office/testing/sandbox"
 import { type Terminal, TMUX, terminal } from "./tmux"
 
 setDefaultTimeout(120_000)
@@ -19,9 +21,22 @@ const CHAT = "You work in the office alongside"
 /** The approval card's choices, once it has been read. */
 const CHOICES = "enter confirm"
 
-/** Minh's reply that runs `command` in the workspace's shell, as call `id`. */
-function shell(id: string, command: string): ScriptedReply {
-  return { match: CHAT, tool_calls: [{ id, name: "workspace_shell", arguments: { command } }] }
+/** Minh's reply that runs `command` in a new shell of his terminal, as call `id`, waiting `wait` seconds at most. */
+function shell(id: string, command: string, wait?: number): ScriptedReply {
+  const args = { command, why: "as asked", ...(wait === undefined ? {} : { wait }) }
+  return { match: CHAT, tool_calls: [{ id, name: "terminal_run", arguments: args }] }
+}
+
+/** The processes of this user that run `sleep <marker>`, as the sandbox's shell starts it. */
+function sleeping(marker: string): number[] {
+  return fs.readdirSync("/proc").flatMap((name) => {
+    if (!/^[0-9]+$/.test(name)) return []
+    try {
+      return fs.readFileSync(`/proc/${name}/cmdline`, "utf8") === `sleep\0${marker}\0` ? [Number(name)] : []
+    } catch {
+      return []
+    }
+  })
 }
 
 /** Minh's reply once call `id`'s result reached him, whatever it was. */
@@ -213,6 +228,27 @@ describe.skipIf(!TMUX)("an employee's approval cards on a real office, in the TU
     await until(async () => (await client.sessions.get(sid)).status === "idle", "the chat idle")
     expect(results("call_touch")).toEqual([])
     expect(fs.existsSync(path.join(cwd, "stopped.txt"))).toBe(false)
+  })
+
+  // Its command must run, so it needs the sandbox.
+  test.skipIf(!sandboxRuns())("the approver opens the employee's shell with <leader>o and Ctrl-C stops its command", async () => {
+    const { t, sid, client } = await chat()
+    office.llm.script(shell("call_sleep", "sleep 31.41", 1), after("call_sleep", "It is still running."))
+    t.type("Wait a while")
+    await t.see("It is still running.")
+    // The office lists the shell under the prompt, its command running.
+    await t.see("1 shell")
+    const [listed] = await client.sessions.instruments(sid)
+    expect(listed).toMatchObject({ kind: "terminal", name: "shell 1", status: "running", command: "sleep 31.41" })
+    // The leader, then o, opens it with the keys.
+    t.keys("C-x")
+    t.keys("o")
+    await t.see("sleep 31.41")
+    t.keys("C-c")
+    await until(async () => (await client.sessions.instruments(sid))[0]?.status === "idle", "the shell idle")
+    await until(() => sleeping("31.41").length === 0, "the command's end", 10_000)
+    // The chat goes on: Ctrl-C in the shell stopped its command, not the employee.
+    expect((await client.sessions.get(sid)).status).toBe("idle")
   })
 
   test("in dontAsk a command the check says ask is refused with no card", async () => {

@@ -20,7 +20,7 @@ import { openStore, session, thrown } from "../store/helpers.ts"
 
 const RUN = "run-1"
 const RULES = ["git status *", "ls *"]
-const CARD: Approval = { kind: "command", tool: "shell", action: "ls -la", reason: "Ask mode", rules: RULES }
+const CARD: Approval = { kind: "command", tool: "terminal_run", action: "ls -la", reason: "Ask mode", rules: RULES }
 const UNKNOWN =
   "Not run again: the user approved this, but the office stopped before its result came back, either before the " +
   "command ran or while it ran. Check whether it ran before you try it again."
@@ -81,7 +81,7 @@ test("holding a call stores one card for its call id, asked by the agent, and re
     "open",
   ])
   expect(card.approval).toEqual({
-    kind: "command", tool: "shell", action: "ls -la", args: {}, why: "", reason: "Ask mode", rules: RULES,
+    kind: "command", tool: "terminal_run", action: "ls -la", args: {}, why: "", reason: "Ask mode", rules: RULES,
     partial: false, into: null,
   })
   expect(card.question).toBe("ls -la")
