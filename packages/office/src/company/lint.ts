@@ -473,6 +473,31 @@ function* checkDevices(repo: CompanyRepo): Iterable<RepoIssue> {
   }
 }
 
+/** Each folder a person's `harness_policy` lists is absolute or starts with `~/`, the owner's home. Each one that is
+ *  gets a warning that it is unguarded: the office mounts it for the person's harness commands as listed, whatever it
+ *  holds. */
+function* checkFolders(repo: CompanyRepo): Iterable<RepoIssue> {
+  for (const [handle, person] of sorted(repo.people)) {
+    for (const folder of person.harness_policy?.folders ?? []) {
+      const shown = JSON.stringify(folder.path)
+      if (folder.path.includes("\0")) {
+        yield repoIssue(personPath(handle), "person.folder_invalid", `folder ${shown}: embedded null byte`)
+      } else if (!path.isAbsolute(folder.path) && !folder.path.startsWith("~/")) {
+        yield repoIssue(personPath(handle), "person.folder_invalid",
+          `folder ${shown} isn't absolute; write it as /… or as ~/… in your home`)
+      } else {
+        const writes = folder.access === "write"
+          ? " and change anything in it, programs included, and a program in it that you run yourself runs their"
+            + " change as you"
+          : ""
+        yield repoIssue(personPath(handle), "person.folder_unguarded",
+          `folder ${shown} is unguarded: @${handle}'s harness commands can read everything in it${writes}; list no`
+          + " folder that holds secrets", "warning")
+      }
+    }
+  }
+}
+
 /** The company's `rules.yaml` and each person's `people/<handle>/rules.yaml` load, read as the office reads them at a
  *  commit (`inTree`): while one doesn't, every command of the sessions it covers asks. A `*` that isn't a pattern's
  *  last word on its own is a warning: it matches only a literal `*`. */
@@ -487,4 +512,4 @@ function* checkRules(repo: CompanyRepo): Iterable<RepoIssue> {
 }
 
 const CHECKS: Check[] = [checkIdCase, checkManagers, checkCeo, checkGroups, checkPersonGroups, checkAssets,
-  checkFlows, checkSkills, checkProfiles, checkDevices, checkRules]
+  checkFlows, checkSkills, checkProfiles, checkDevices, checkFolders, checkRules]

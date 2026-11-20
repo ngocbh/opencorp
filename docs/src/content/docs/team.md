@@ -35,3 +35,40 @@ while a command runs), and a missing `.mcp.json` can still be created.
   Ctrl-C there stops its command. Esc stops your employee and the command they were waiting on. A command they were
   told is still running goes on, and they read its output later.
 - **The end.** Ending the session ends its shells and their commands.
+
+## What an employee may touch
+
+`harness_policy` in your employee's `people/<handle>/person.yaml` sets what their commands may touch:
+
+```yaml
+harness_policy:
+  sandbox: workspace-write   # they may write the project folder; read-only by default
+  network: false
+  folders:                   # extra folders, each read-only or writable
+    - { path: ~/.cargo, access: read }
+    - { path: ~/miniconda3/envs/ml, access: write }
+    - { path: /data/shared, access: write }
+```
+
+When your employee works in Codex or Claude Code, that harness's own sandbox holds their commands to the project
+folder, a private temp folder and the listed folders, each with exactly the access listed. The shell above doesn't
+mount the listed folders.
+
+- A path is absolute or starts with `~/`, your home. `opencorp doctor` fails on any other.
+- A folder that doesn't exist mounts nothing.
+- The harness won't start with a folder whose path goes through a folder your employee can write (the project
+  folder, or another writable listed folder), since a link there could repoint it.
+- A read-only folder's `bin` is on the harness's `PATH`, unless another employee or another user may write it. A
+  writable folder's programs aren't on your employee's harness `PATH`: they run by full path. A program the harness runs for itself
+  (`git`, `rg`) comes only from the system and read-only folders.
+
+Nothing guards a listed folder: OpenCorp mounts it as listed, whatever it holds, and `opencorp doctor` counts each
+one as a lint warning.
+
+- Your employee's commands can read everything in a listed folder, and change anything in a writable one, programs
+  included.
+- If you later run one of those programs yourself, outside the sandbox, a change your employee planted runs as you,
+  with full access.
+
+So list no folder that holds secrets, make a folder writable only where your employee must write there, and keep the
+folders of tools you run yourself read-only: `~/.cargo` read-only, `~/miniconda3/envs/ml` writable.

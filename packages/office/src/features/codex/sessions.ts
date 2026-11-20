@@ -12,6 +12,7 @@ import { loadRepo, missingPerson } from "../../company/loader.ts"
 import type { Bus } from "../../runtime/bus.ts"
 import type { Tools } from "../../runtime/service/programs.ts"
 import type { AnswerKind, SessionHarness } from "../../runtime/sessions/harness.ts"
+import type { EmployeePermission } from "../../runtime/sandbox/harness_profile.ts"
 import {
   type OfficePaths as SandboxOfficePaths,
   UnsafeWorkspace,
@@ -34,6 +35,7 @@ import { workerEnv } from "../../runtime/worker/spawn.ts"
 import type { HarnessEvent } from "../../tools/codex/adapter.ts"
 import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from "../../tools/codex/codex.ts"
 import { nameOf } from "../../tools/codex/rpc.ts"
+import { type HarnessThread, employeePermission } from "./permission.ts"
 import { CodexSession, END_WAIT_MS, REPLY_WAIT_MS, STOP_WAIT_MS } from "./session.ts"
 
 /** What a yian chat's session calls answer, until the chat harness serves them. */
@@ -387,6 +389,17 @@ export class CodexSessions implements SessionHarness {
     const session = this.store.getSession(sessionId)!
     const person = loadRepo(await this.office.git.pin(session.repo_commit)).people.get(session.person)
     return person?.harness_policy ?? null
+  }
+
+  /** The session's employee's permission for one harness thread in its folder, from the people at the session's
+   *  pinned commit (`employeePermission`): `~/` is the owner's home, and the log notes each listed folder that mounts
+   *  nothing. */
+  async permission(sessionId: string, thread: HarnessThread): Promise<EmployeePermission> {
+    const session = this.store.getSession(sessionId)!
+    const repo = loadRepo(await this.office.git.pin(session.repo_commit))
+    const { guards, paths } = this.office
+    const office = { home: guards.home ?? os.homedir(), officeHome: paths.home, guards }
+    return employeePermission(repo, session, thread, office, this.log)
   }
 
   /** Who a message with no named sender is from: the session's opener, else the pinned company's CEO. */

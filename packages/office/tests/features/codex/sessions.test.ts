@@ -310,3 +310,34 @@ test("esc on a session on another harness that is not live is 409 and a missing 
   const missing = await rejection(h.sessions.interrupt(ULID))
   expect([missing.status, missing.code]).toEqual([404, "not_found"])
 })
+
+test("a session's employee permission comes from their person at the session's pinned commit, ~/ in the owner's home", async () => {
+  const folders = [
+    { path: "~/tools", access: "read" },
+    { path: "~/gone", access: "write" },
+  ]
+  const policy = { sandbox: "workspace-write", network: true, folders }
+  const h = makeCodex({
+    files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"], harness_policy: policy }) },
+  })
+  const home = fs.realpathSync(tempDir())
+  fs.mkdirSync(path.join(home, "tools"))
+  h.office.guards.home = home
+  const cwd = fs.realpathSync(h.workspace)
+  const row = h.store.createSession(
+    session({ person: "minh", harness: "codex", cwd, repo_commit: await h.office.git.head(), status: "ended" }),
+  )
+  const thread = { gitRoot: null, tmpdir: "/tmp/opencorp-t/thread", fence: "/tmp/opencorp-t/fence" }
+  expect(await h.sessions.permission(row.id, thread)).toEqual({
+    workspace: cwd,
+    ...thread,
+    writable: true,
+    network: true,
+    folders: [{ path: path.join(home, "tools"), access: "read" }],
+    home,
+    officeHome: h.office.paths.home,
+    office: h.office.guards,
+    othersWritable: [],
+  })
+  expect(h.lines).toContain(`@minh's listed folder "~/gone" isn't there, so their harness mounts nothing for it`)
+})

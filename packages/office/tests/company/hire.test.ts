@@ -93,7 +93,7 @@ test("a new hire gets the m1 defaults", async () => {
   await hiring.hire(req(FORM, true), "ngocbh")
   const lan = loadRepo(git.root).people.get("lan")!
   expect([lan.kind, lan.harnesses, lan.groups, lan.skills]).toEqual(["agent", ["composer"], [], []])
-  expect(lan.harness_policy).toEqual({ sandbox: "workspace-write", network: false })
+  expect(lan.harness_policy).toEqual({ sandbox: "workspace-write", network: false, folders: [] })
   expect(fs.readFileSync(path.join(git.root, "people/lan/memory/profile.md"), "utf8")).toBe("# Lan, QA\n")
   expect(runGit(git.root, "log", "-1", "--format=%s")).toBe("hire(@lan): Lan, QA")
 })

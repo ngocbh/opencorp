@@ -22,6 +22,10 @@ export type Company = z.input<typeof Company>
 export const HarnessPolicy = z.strictObject({
   sandbox: z.enum(["read-only", "workspace-write"]).default("read-only"),
   network: z.boolean().default(false),
+  /** Extra folders the person's harness commands may read, or also write, beside the session's folder: each mounted
+   *  as listed, whatever it holds. A path is absolute or starts with `~/`, the owner's home; the office's lint checks
+   *  it. */
+  folders: z.array(z.strictObject({ path: z.string(), access: z.enum(["read", "write"]) })).default(() => []),
 })
 export type HarnessPolicy = z.input<typeof HarnessPolicy>
 

@@ -731,3 +731,47 @@ test("a * that isn't a rule pattern's last word on its own is a lint warning", a
     ["rules.literal_star", "rules.yaml", `rule 2: ${why}`, "warning"],
   ])
 })
+
+test("a person's folders load with their access, and a relative path fails lint", async () => {
+  const folders: { path: string; access: "read" | "write" }[] = [
+    { path: "~/.cargo", access: "read" },
+    { path: "/data/shared", access: "write" },
+    { path: "envs/ml", access: "write" },
+    { path: "~", access: "read" },
+    { path: "~ann/tools", access: "read" },
+    { path: "/data/a\0b", access: "read" },
+  ]
+  const policy = { sandbox: "workspace-write" as const, network: false, folders }
+  const root = makeCompany({ "people/minh/person.yaml": person("minh", { harness_policy: policy }) })
+  expect(loadRepo(root).people.get("minh")!.harness_policy).toEqual(policy)
+  const found = (await withCode(root, "person.folder_invalid")).map((i) => [i.path, i.message, i.severity])
+  const fix = "isn't absolute; write it as /… or as ~/… in your home"
+  expect(found).toEqual([
+    ["people/minh/person.yaml", `folder "envs/ml" ${fix}`, "error"],
+    ["people/minh/person.yaml", `folder "~" ${fix}`, "error"],
+    ["people/minh/person.yaml", `folder "~ann/tools" ${fix}`, "error"],
+    ["people/minh/person.yaml", `folder "/data/a\\u0000b": embedded null byte`, "error"],
+  ])
+})
+
+test("every listed folder is a lint warning saying it is unguarded, and none is refused for what it holds", async () => {
+  const folders = [
+    { path: "~/.ssh", access: "read" },
+    { path: "~/.opencorp", access: "write" },
+    { path: "/", access: "read" },
+  ]
+  const root = makeCompany({
+    "people/minh/person.yaml": person("minh", { harness_policy: { folders } }),
+  })
+  expect(await issues(root)).toEqual(new Set())
+  const found = (await lint(loadRepo(root))).map((i) => [i.code, i.path, i.message, i.severity])
+  const reads = "@minh's harness commands can read everything in it"
+  const secrets = "list no folder that holds secrets"
+  const writes = "and change anything in it, programs included, and a program in it that you run yourself runs"
+    + " their change as you"
+  expect(found).toEqual([
+    ["person.folder_unguarded", "people/minh/person.yaml", `folder "~/.ssh" is unguarded: ${reads}; ${secrets}`, "warning"],
+    ["person.folder_unguarded", "people/minh/person.yaml", `folder "~/.opencorp" is unguarded: ${reads} ${writes}; ${secrets}`, "warning"],
+    ["person.folder_unguarded", "people/minh/person.yaml", `folder "/" is unguarded: ${reads}; ${secrets}`, "warning"],
+  ])
+})
