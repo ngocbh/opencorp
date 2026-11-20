@@ -1,12 +1,14 @@
 /** The agent's SSH-only policy for learning's shells: hq/ssh read-only for the wrapper and the agent's config, the
  *  user's ssh config read-only, and nothing else of hq. */
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import { agentPolicy } from "../../../src/features/reach/sandbox.ts"
 import { writeSshFiles } from "../../../src/features/reach/ssh.ts"
-import { UnsafeProfile } from "../../../src/runtime/sandbox/ssh_policy.ts"
+import { refusal, type run, SandboxUnavailable } from "../../../src/runtime/sandbox/run.ts"
+import { type SshPolicy, UnsafeProfile } from "../../../src/runtime/sandbox/ssh_policy.ts"
 import { within } from "../../../src/runtime/sandbox/policy.ts"
 
 const SSH = "/usr/bin/ssh"
@@ -36,8 +38,10 @@ test("hq's agent policy binds hq/ssh read-only and nothing else of hq, hq/cm inc
   expect(policy.home).toBe(h.dir)
   expect(policy.tmpdir).toBe(h.tmpdir)
   expect(policy.readOnly).toEqual([h.ssh, h.paths.ssh])
-  // hq/ssh's status file is the one file of hq a call may write, and only its data.
-  expect(policy.writable).toEqual([path.join(h.ssh, "known_hosts"), h.paths.status(process.pid)])
+  // A status file of the agent's own is the one file of hq a call may write, and only its data: never the visit's,
+  // which its replays read.
+  expect(policy.writable).toEqual([path.join(h.ssh, "known_hosts"), h.paths.agentStatus(process.pid)])
+  expect(policy.writable).not.toContain(h.paths.status(process.pid))
   expect(policy.socketFolders).toEqual([h.ssh])
   const reached = [...policy.readOnly, ...policy.writable, ...policy.sockets, ...policy.socketFolders, policy.tmpdir]
   expect(reached.filter((p) => within(p, h.paths.dir) && !within(p, h.paths.ssh))).toEqual([])
@@ -68,4 +72,42 @@ test("a temp folder or status file that would expose hq is refused", async () =>
   fs.symlinkSync(h.paths.dir, h.paths.ssh)
   await expect(make(h.tmpdir)).rejects.toThrow(UnsafeProfile)
   await expect(make(h.tmpdir)).rejects.toThrow("would expose hq")
+})
+
+/** `run`, whose sandbox is a stand-in command: `/bin/sh -c script`, run here, with what it exits and prints as the
+ *  call's. Each call's policy and argv are kept in `calls`. */
+function standIn(script: string) {
+  const calls: { policy: SshPolicy; argv: readonly string[] }[] = []
+  const runIn: typeof run = async (policy, argv) => {
+    calls.push({ policy: policy as SshPolicy, argv })
+    const ran = spawnSync("/bin/sh", ["-c", script], { timeout: 10_000 })
+    const empty = Buffer.alloc(0)
+    return {
+      exit: ran.status, stdout: ran.stdout, stderr: ran.stderr, stdoutTail: empty, stderrTail: empty,
+      stdoutBytes: ran.stdout.length, stderrBytes: ran.stderr.length, timedOut: false, interrupted: false,
+      truncated: false, duration: 0, refused: refusal("linux", ran.status, ran.stderr),
+    }
+  }
+  return { calls, runIn }
+}
+
+test("a sandbox that can't run a call counts as none: bubblewrap's refusal, or a runner that can't start", async () => {
+  const h = await home()
+  const make = (runIn: typeof run) => agentPolicy(h.paths, { home: h.dir, tmpdir: h.tmpdir, ssh: SSH, env: {}, run: runIn })
+  // bubblewrap where unprivileged user namespaces are off.
+  const refused = standIn('printf "bwrap: setting up uid map: Permission denied\\n" >&2; exit 1')
+  await expect(make(refused.runIn)).rejects.toThrow(SandboxUnavailable)
+  await expect(make(refused.runIn)).rejects.toThrow(/^bwrap: setting up uid map: Permission denied$/)
+  // One trivial call, in the policy itself.
+  expect(refused.calls[0]!.argv).toEqual(["/bin/sh", "-c", "exit 0"])
+  expect(refused.calls[0]!.policy.tmpdir).toBe(h.tmpdir)
+  // A runner that can't start (no bwrap on PATH), and one that fails for any other reason.
+  const missing: typeof run = async () => {
+    throw Object.assign(new Error("spawn bwrap ENOENT"), { code: "ENOENT" })
+  }
+  await expect(make(missing)).rejects.toThrow(new SandboxUnavailable("the sandbox can't start: spawn bwrap ENOENT"))
+  await expect(make(standIn("exit 3").runIn)).rejects.toThrow(new SandboxUnavailable("a sandboxed call exited 3"))
+  // A call that runs is a sandbox.
+  const works = standIn("exit 0")
+  expect((await make(works.runIn)).home).toBe(h.dir)
 })

@@ -424,6 +424,54 @@ test("ssh -O exit, stop, cancel and forward, and -S, ControlPath or ControlMaste
   expect(ownerOnly(readCommand("ssh -O check h").parts[0]!, true)).toBeNull()
 })
 
+test("ssh port forwards ask in every mode and are refused in dontAsk: over a shared connection they outlive the call", () => {
+  const controls = "it controls a shared ssh connection"
+  const lines = [
+    "ssh -L 1:h:2 h", "ssh -L1:h:2 h", "ssh -NL 1:h:2 h", "ssh -fNL1:h:2 h", "ssh h -L 1:h:2", "ssh -R 1:h:2 h",
+    "ssh -R1:h:2 h", "ssh -D 1080 h", "ssh -D1080 h", "ssh -ND 1080 h", "ssh -o LocalForward=1:h:2 h",
+    "ssh -oLocalForward=1:h:2 h", "ssh -o 'LocalForward 1 h:2' h", "ssh -o localforward=1:h:2 h",
+    "ssh -o LOCALFORWARD=1:h:2 h", "ssh -o RemoteForward=1:h:2 h", "ssh -oremoteforward=1:h:2 h",
+    "ssh -o DynamicForward=1080 h", "ssh -o 'dynamicforward 1080' h", "ssh -o DynamicForward 1080 h ls",
+  ]
+  each(lines, risk, controls)
+  each(lines, readOnly, false)
+  each(lines, (line) => ownerOnly(readCommand(line).parts[0]!, true), controls)
+  expect(ownerOnly(readCommand("ssh a ssh -L 1:h:2 b").parts[0]!, true)).toBe(`on a: ${controls}`)
+  const S: Where = { profile: "ssh", cwd: "/tmp/w", writable: [] }
+  const allows = [{ effect: "allow" as const, kind: "command" as const, pattern: "ssh *" }]
+  for (const mode of ["auto", "default", "ask", "dontAsk"] as Mode[]) {
+    expect([mode, decide({ kind: "command", text: "ssh -fNL 8080:localhost:80 h" }, mode, allows, S)]).toEqual([
+      mode,
+      mode === "dontAsk"
+        ? { verdict: "deny", reason: `this session doesn't ask (dontAsk mode): ${controls}` }
+        : { verdict: "ask", reason: controls, rules: [] },
+    ])
+  }
+  // Options that only look alike, and a login that forwards nothing, stay as they were.
+  each(["ssh -o ExitOnForwardFailure=yes h", "ssh -o ClearAllForwardings=yes h", "ssh -l L h", "ssh -p 22 h"], risk, null)
+})
+
+test("the ssh wrapper's config variable is a local command for ssh, set, exported or unset, as GIT_SSH_COMMAND is", () => {
+  const local = "it runs a local command for ssh"
+  const lines = [
+    "OPENCORP_SSH_CONFIG=/tmp/x ssh h", "env OPENCORP_SSH_CONFIG=/tmp/x ssh h", "OPENCORP_SSH_CONFIG=/tmp/x",
+    "export OPENCORP_SSH_CONFIG=/tmp/x", "export OPENCORP_SSH_CONFIG", "declare -x OPENCORP_SSH_CONFIG=/tmp/x",
+    "typeset OPENCORP_SSH_CONFIG=x", "readonly OPENCORP_SSH_CONFIG=x", "local OPENCORP_SSH_CONFIG=x",
+    "unset OPENCORP_SSH_CONFIG", "export GIT_SSH_COMMAND=x", "unset GIT_SSH",
+  ]
+  each(lines, (line) => readCommand(line).parts.map((p) => ownerOnly(p, false)).find((r) => r !== null) ?? null, local)
+  expect(risk("OPENCORP_SSH_CONFIG=/tmp/x ssh h")).toBe(local)
+  const S: Where = { profile: "ssh", cwd: "/tmp/w", writable: [] }
+  for (const mode of ["auto", "dontAsk"] as Mode[]) {
+    for (const line of ["OPENCORP_SSH_CONFIG=/tmp/x ssh h", "export OPENCORP_SSH_CONFIG=/tmp/x; ssh h"]) {
+      const decided = decide({ kind: "command", text: line }, mode, [], S)
+      expect([mode, line, decided.verdict]).toEqual([mode, line, mode === "dontAsk" ? "deny" : "ask"])
+    }
+  }
+  // Another variable of the same name's start isn't it.
+  each(["OPENCORP_SSH_CONFIGS=x ls", "export OPENCORP_SSH_CONFIGURED=1"], (line) => ownerOnly(readCommand(line).parts[0]!, false), null)
+})
+
 test("host-key options and known_hosts writes are ordinary", () => {
   each(["ssh -o StrictHostKeyChecking=accept-new h", "ssh -o UserKnownHostsFile=/dev/null h"], readOnly, false)
   each(["ssh -o StrictHostKeyChecking=accept-new h", "ssh -o UserKnownHostsFile=/dev/null h", "ssh-keygen -R h"], risk, null)

@@ -70,7 +70,7 @@ export class SshPolicy {
   /** `<tmpdir>/cm` (0700): a folder where the call's ssh could bind control sockets of its own. */
   readonly controlDir: string
   /** Bound read-only, in this order: `~/.ssh`, the files and ControlPath folder `ssh -G` names that the profile takes
-   *  (the constructor says which), the ssh program, `hq/ssh`, then the extra paths. */
+   *  (the constructor says which), the ssh program and a link it was named by, `hq/ssh`, then the extra paths. */
   readonly readOnly: readonly string[]
   /** Files bound read-write for their data only, never to be removed, renamed or linked, in this order:
    *  `~/.ssh/known_hosts`, the status file, and a ticket file. */
@@ -120,9 +120,9 @@ export class SshPolicy {
    * cache that names no file or socket by its absolute path (a kernel keyring), and either one in OpenCorp's home
    * (the office's own socket is there) get a note too.
    *
-   * `ssh` is bound, as the file it resolves to, when it lies outside the system's folders and the temp folder; one
-   * that would expose hq, the home, a secret or OpenCorp's files throws, and one that is no regular file gets a
-   * note.
+   * `ssh` is bound, as the file it resolves to and, when its name is a link, as that name too, wherever either lies
+   * outside the system's folders and the temp folder; one that would expose hq, the home, a secret or OpenCorp's
+   * files throws, and one that is no regular file gets a note.
    *
    * Throws `Error` when `tmpdir` or `hq/ssh` is not an existing folder.
    */
@@ -278,12 +278,17 @@ export class SshPolicy {
     }
     if (init.ssh !== undefined) {
       const real = realPath(init.ssh)
-      denied.check(real, "ssh")
-      if (ours(real)) throw new UnsafeProfile(`the SSH-only sandbox would expose OpenCorp's files through ssh ${real}`)
+      // The call runs ssh by the name it was given (the wrapper does), so a link there is bound as well as its target.
+      const named = path.join(realPath(path.dirname(init.ssh)), path.basename(init.ssh))
+      const programs = named === real ? [real] : [real, named]
+      for (const p of programs) {
+        denied.check(p, "ssh")
+        if (ours(p)) throw new UnsafeProfile(`the SSH-only sandbox would expose OpenCorp's files through ssh ${p}`)
+      }
       const system = (process.platform === "darwin" ? SYSTEM_SUBPATHS : SYSTEM_DIRS).map((dir) => realPath(dir))
-      const mounted = system.some((dir) => within(real, dir)) || within(real, tmpdir) || bound.includes(real)
+      const mounted = (p: string) => system.some((dir) => within(p, dir)) || within(p, tmpdir) || bound.includes(p)
       if (!lstat(real)?.isFile()) notes.push(`ssh ${init.ssh} is not bound: it is not a regular file`)
-      else if (!mounted) bound.push(real)
+      else for (const p of programs) if (!mounted(p)) bound.push(p)
     }
     const extras = (init.readOnly ?? []).map((p) => realPath(p))
     for (const p of extras) denied.check(p, "the extra path")

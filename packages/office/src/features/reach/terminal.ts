@@ -48,7 +48,8 @@ export interface LearningTerminalOptions {
   readonly ssh: string
   /** The visit's environment, for the agent's socket and a Kerberos cache; nothing else of it reaches a shell. */
   readonly env: Readonly<Record<string, string | undefined>>
-  /** The session's mode, rules, cards and Auto's check. Where a shell starts is the terminal's own to say. */
+  /** The session's mode, rules, cards and Auto's check, and the credentials its `where` marks. Where a shell starts
+   *  is the terminal's own to say. */
   readonly permissions: Permissions
   /** Asks the owner whether shells may run with no sandbox; only `RUN_UNSANDBOXED` starts them. */
   readonly consent: Consent
@@ -73,20 +74,23 @@ export interface LearningTerminalOptions {
  *  starts, Stop by default. On Yes the shells start with none, which the gate reads as the SSH-only profile; on Stop
  *  none starts, and every call says why, before any gate.
  *
- *  Throws what building the sandbox throws otherwise (`UnsafeProfile`, say). */
+ *  Throws for a session id that isn't one plain name, before anything else, and what building the sandbox throws
+ *  otherwise (`UnsafeProfile`, say). */
 export async function learningTerminal(o: LearningTerminalOptions): Promise<Terminal> {
+  o.paths.session(o.session)
   const made = o.tmpdir === undefined
   const tmpdir = fs.realpathSync(o.tmpdir ?? fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-learn-")))
-  const removeTmp = () => {
+  const cleanUp = () => {
     if (made) fs.rmSync(tmpdir, { recursive: true, force: true })
+    fs.rmSync(o.paths.agentStatus(process.pid), { force: true })
   }
   try {
     const shells = await learningShells(o, tmpdir)
-    if (typeof shells !== "string") return new LearningTerminal(host(o, shells, tmpdir), removeTmp)
-    removeTmp()
+    if (typeof shells !== "string") return new LearningTerminal(host(o, shells, tmpdir), cleanUp)
+    cleanUp()
     return new StoppedTerminal(host(o, stoppedShells(shells), tmpdir), shells)
   } catch (error) {
-    removeTmp()
+    cleanUp()
     throw error
   }
 }
@@ -108,7 +112,7 @@ async function learningShells(o: LearningTerminalOptions, tmpdir: string): Promi
   return sandboxed(o.paths, sandbox, tmpdir)
 }
 
-/** A `Terminal` that removes its shells' temp folder once they have ended. */
+/** A `Terminal` that removes its shells' temp folder and status file once they have ended. */
 class LearningTerminal extends Terminal {
   constructor(
     host: TerminalHost,
@@ -210,7 +214,7 @@ function host(o: LearningTerminalOptions, shells: TerminalShells, tmpdir: string
   return {
     shells,
     driver: DRIVER,
-    permissions: startingIn(o.permissions, tmpdir),
+    permissions: startingIn(o.permissions, o.paths, tmpdir),
     shellHost: (name, profile) => {
       for (const dir of [o.paths.sessions, o.paths.session(o.session), records]) {
         makePrivateFolder(dir)
@@ -230,13 +234,18 @@ function host(o: LearningTerminalOptions, shells: TerminalShells, tmpdir: string
   }
 }
 
-/** `base`, but a new shell starts in `tmpdir`, as the terminal's own `where` says. */
-function startingIn(base: Permissions, tmpdir: string): Permissions {
+/** `base`, but a new shell starts in `tmpdir`, as the terminal's own `where` says, and hq's model key and sign-in
+ *  are credentials beside those `base` marks: the reader's own patterns know them only under `~/.opencorp`. */
+function startingIn(base: Permissions, paths: ReachPaths, tmpdir: string): Permissions {
   const { check, blocked } = base
   return {
     mode: () => base.mode(),
     rules: () => base.rules(),
-    where: () => ({ profile: "ssh", cwd: tmpdir, writable: [] }),
+    where: () => {
+      const where = base.where()
+      const credentials = [...(where.credentials ?? []), paths.provider, paths.auth]
+      return { ...where, profile: "ssh", cwd: tmpdir, writable: [], credentials }
+    },
     hold: (card, callId) => base.hold(card, callId),
     ...(check ? { check: (input: CheckInput, signal: AbortSignal) => check.call(base, input, signal) } : {}),
     ...(blocked ? { blocked: () => blocked.call(base) } : {}),

@@ -2,7 +2,7 @@
  *  ControlMaster no, their records in hq/sessions, and a question before running with no sandbox. The fake ssh lives
  *  in the shells' temp folder, which the sandbox lets it write, and runs on this Bun from the office's source, both
  *  bound read-only, as the SSH-only profile's own tests run it. */
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -10,10 +10,13 @@ import { describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:t
 import { isPending } from "@ngocbh/yian/tools"
 import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import { NO_SANDBOX_QUESTION, noSandbox, RUN_UNSANDBOXED, STOP } from "../../../src/features/reach/risks.ts"
+import { agentPolicy } from "../../../src/features/reach/sandbox.ts"
 import { writeSshFiles } from "../../../src/features/reach/ssh.ts"
-import { type Consent, type ConsentAsk, learningTerminal } from "../../../src/features/reach/terminal.ts"
+import {
+  type Consent, type ConsentAsk, learningTerminal, type LearningTerminalOptions,
+} from "../../../src/features/reach/terminal.ts"
 import type { Permissions } from "../../../src/runtime/permissions/policy.ts"
-import { SandboxUnavailable } from "../../../src/runtime/sandbox/run.ts"
+import { type run, SandboxUnavailable } from "../../../src/runtime/sandbox/run.ts"
 import { type FakeSshBehavior, fakeControlName, installFakeSsh } from "../../../src/testing/fake_ssh.ts"
 import { readRecord } from "../../../src/tools/terminal/record.ts"
 import { waitFor } from "../../helpers.ts"
@@ -32,14 +35,16 @@ const RUNS = async () => ({ verdict: "run" as const, reason: "fine" })
 const userConfig = (ssh: string) => ["Host *", "  ControlMaster auto", `  ControlPath ${ssh}/tmp/%C`, "  User alice"]
 
 /** Learning's terminal over a short temp root: the user's home (`~/.ssh` with their config and `tmp/`, OpenCorp's
- *  home with hq's key, sign-in and the visit's ssh files), and the shells' temp folder holding the fake ssh, which
- *  the visit's wrapper runs. `noSandbox` stands in a policy that can't be built for want of a sandbox; `consent`
- *  answers the owner's question (Stop when it says nothing). The test's end closes the terminal, ends the fake's
- *  masters and removes the root. */
+ *  home with hq's key, sign-in and the visit's ssh files, or at `<root>/<office>`), and the shells' temp folder
+ *  holding the fake ssh, which the visit's wrapper runs. `noSandbox` stands in a policy that can't be built for want
+ *  of a sandbox, and `policy` any other; `consent` answers the owner's question (Stop when it says nothing). The
+ *  test's end closes the terminal, ends the fake's masters and removes the root. */
 async function learning(o: {
   perms: Permissions
   behavior?: FakeSshBehavior
   noSandbox?: boolean
+  policy?: LearningTerminalOptions["policy"]
+  office?: string
   consent?: (ask: ConsentAsk) => Promise<string>
 }) {
   const root = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
@@ -48,7 +53,7 @@ async function learning(o: {
   for (const dir of [home, ssh, path.join(ssh, "tmp")]) fs.mkdirSync(dir, { mode: 0o700 })
   fs.writeFileSync(path.join(ssh, "config"), `${userConfig(ssh).join("\n")}\n`, { mode: 0o600 })
   fs.writeFileSync(path.join(home, "secret.txt"), "decoy-secret\n")
-  const paths = new ReachPaths(path.join(home, ".opencorp"))
+  const paths = new ReachPaths(o.office === undefined ? path.join(home, ".opencorp") : path.join(root, o.office))
   makeDirs(paths)
   fs.writeFileSync(paths.provider, '{"key":"decoy-provider"}\n', { mode: 0o600 })
   fs.writeFileSync(paths.auth, '{"token":"decoy-auth"}\n', { mode: 0o600 })
@@ -77,6 +82,7 @@ async function learning(o: {
     },
     readOnly: [SRC, fs.realpathSync(process.execPath)],
     tmpdir,
+    ...(o.policy ? { policy: o.policy } : {}),
     ...(o.noSandbox
       ? {
           policy: async () => {
@@ -136,7 +142,8 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
   test("learning's shells run in the SSH-only profile, and the gate reads it as ssh", async () => {
     const t = await learning({ perms: permissions({ check: RUNS }).perms })
     expect(t.terminal.profile).toBe("ssh")
-    expect(t.terminal.where()).toEqual({ profile: "ssh", cwd: t.tmpdir, writable: [] })
+    const credentials = [t.paths.provider, t.paths.auth]
+    expect(t.terminal.where()).toEqual({ profile: "ssh", cwd: t.tmpdir, writable: [], credentials })
     const command = 'echo "$HOME $TMPDIR $OPENCORP_SSH_CONFIG"; command -v ssh; pwd'
     const reply = json(await t.call("run", { command, why: "look around" }))
     expect(reply).toMatchObject({ shell: "shell 1", status: "idle", exit: 0 })
@@ -324,7 +331,8 @@ test("with no sandbox the owner is asked first, Stop by default, and Stop starts
   // On Yes they run with no sandbox, and the gate still reads them as the SSH-only profile.
   const yes = await learning({ perms: permissions({ check: RUNS }).perms, noSandbox: true, consent: async () => RUN_UNSANDBOXED })
   expect(yes.terminal.profile).toBe("none")
-  expect(yes.terminal.where()).toEqual({ profile: "ssh", cwd: yes.tmpdir, writable: [] })
+  const credentials = [yes.paths.provider, yes.paths.auth]
+  expect(yes.terminal.where()).toEqual({ profile: "ssh", cwd: yes.tmpdir, writable: [], credentials })
   const command = 'echo "$HOME $TMPDIR $OPENCORP_SSH_CONFIG"; command -v ssh; pwd'
   const reply = json(await yes.call("run", { command, why: "x" }))
   expect(reply.output).toBe(`$ ${command}\n${yes.home} ${yes.tmpdir} ${yes.paths.agentConfig}\n${yes.paths.wrapper}\n${yes.tmpdir}\n`)
@@ -337,4 +345,65 @@ test("a shell whose temp folder has gone isn't started elsewhere", async () => {
   const reply = json(await t.call("run", { command: "pwd", why: "x" }))
   expect(reply).toMatchObject({ shell: "shell 1", status: "failed" })
   expect(reply.error).toBe(`the shell couldn't start: the shells' folder is not a directory: ${t.tmpdir}`)
+})
+
+/** `run`, whose sandbox is a stand-in command that refuses as bubblewrap does where it can't make a namespace. */
+const brokenSandbox: typeof run = async () => {
+  const ran = spawnSync("/bin/sh", ["-c", 'printf "bwrap: setting up uid map: Permission denied\\n" >&2; exit 1'])
+  const empty = Buffer.alloc(0)
+  return {
+    exit: ran.status, stdout: ran.stdout, stderr: ran.stderr, stdoutTail: empty, stderrTail: empty,
+    stdoutBytes: 0, stderrBytes: ran.stderr.length, timedOut: false, interrupted: false, truncated: false,
+    duration: 0, refused: true,
+  }
+}
+
+test("where the sandbox can't run a call, the owner is asked as where there is none", async () => {
+  const asking = permissions({ mode: "ask", check: RUNS })
+  const t = await learning({
+    perms: asking.perms,
+    policy: (paths, init) => agentPolicy(paths, { ...init, run: brokenSandbox }),
+  })
+  const why = "bwrap: setting up uid map: Permission denied"
+  expect(t.asked).toEqual([
+    { lines: noSandbox(t.paths, why), question: NO_SANDBOX_QUESTION, choices: [RUN_UNSANDBOXED, STOP], default: STOP },
+  ])
+  expect(json(await t.call("run", { command: "echo hi", why: "x" }))).toEqual({
+    refused: `the owner stopped learning's shells: OpenCorp can't sandbox them here (${why})`,
+  })
+  expect([asking.held, t.terminal.shells()]).toEqual([[], []])
+})
+
+test("hq's key and sign-in, and what the session marks, are credentials to the gate, wherever OpenCorp's home is", async () => {
+  const marked = "/srv/keys/deploy"
+  const where = { profile: "workspace" as const, cwd: "/w", writable: ["/"], credentials: [marked] }
+  const { perms, held } = permissions({ check: RUNS, where })
+  // OpenCorp's home where no built-in pattern knows it, and no sandbox to keep its files out of reach.
+  const t = await learning({ perms, office: "oc", noSandbox: true, consent: async () => RUN_UNSANDBOXED })
+  const { provider, auth } = t.paths
+  expect(t.terminal.where()).toEqual({ profile: "ssh", cwd: t.tmpdir, writable: [], credentials: [marked, provider, auth] })
+  for (const file of [provider, auth, marked]) expect(isPending(await t.call("run", { command: `cat ${file}`, why: "x" }))).toBe(true)
+  expect(held.map((h) => h.card.reason)).toEqual([provider, auth, marked].map((f) => `it names a credential path: ${f}`))
+  expect(t.terminal.shells()).toEqual([])
+})
+
+test("a session id that isn't one plain name is refused before anything is built or asked", async () => {
+  let built = 0
+  const asked: ConsentAsk[] = []
+  const made = learningTerminal({
+    paths: new ReachPaths("/nonexistent/oc"),
+    session: "../elsewhere",
+    home: "/nonexistent/home",
+    ssh: "/usr/bin/ssh",
+    env: {},
+    permissions: permissions().perms,
+    consent: async (ask) => (asked.push(ask), STOP),
+    policy: async () => {
+      built++
+      throw new SandboxUnavailable(PLAN9)
+    },
+    tmpdir: "/nonexistent/tmp",
+  })
+  await expect(made).rejects.toThrow("a session's id")
+  expect([built, asked]).toEqual([0, []])
 })

@@ -315,14 +315,25 @@ test("an ssh outside the system folders is bound read-only, and refused where it
   const h = layout()
   // The system's own is mounted with the system.
   expect(h.make({ ssh: "/usr/bin/ssh" }).readOnly).toEqual([h.ssh, path.join(h.hq, "ssh")])
-  // One elsewhere is bound by itself, where it resolves, after the files ssh -G names.
+  // One elsewhere is bound by itself, after the files ssh -G names: where it resolves, and, since the wrapper runs it
+  // by the name it was found by, a link to it too.
   const own = h.file(path.join(h.root, "openssh", "bin", "ssh"), "#!/bin/sh\n", 0o755)
   const link = path.join(h.root, "ssh-link")
   fs.symlinkSync(own, link)
   const key = h.file(path.join(h.home, "keys", "id"), "decoy-key")
   const policy = h.make({ ssh: link, sshFiles: [identity(key)] })
-  expect(policy.readOnly).toEqual([h.ssh, key, own, path.join(h.hq, "ssh")])
+  expect(policy.readOnly).toEqual([h.ssh, key, own, link, path.join(h.hq, "ssh")])
   expect(policy.notes).toEqual([])
+  expect(h.make({ ssh: own }).readOnly).toEqual([h.ssh, own, path.join(h.hq, "ssh")])
+  // A link outside the system's folders to the system's own ssh: the link alone.
+  const toSystem = path.join(h.root, "bin", "ssh")
+  fs.mkdirSync(path.dirname(toSystem))
+  fs.symlinkSync("/usr/bin/ssh", toSystem)
+  expect(h.make({ ssh: toSystem }).readOnly).toEqual([h.ssh, toSystem, path.join(h.hq, "ssh")])
+  // A link in OpenCorp's home is refused, wherever it leads.
+  const inHq = path.join(h.hq, "ssh-link")
+  fs.symlinkSync(own, inHq)
+  expect(() => h.make({ ssh: inHq })).toThrow(UnsafeProfile)
   // Nothing is bound where it would expose hq, the home, OpenCorp's files or a credential.
   fs.linkSync(h.provider, path.join(h.root, "ssh-provider"))
   for (const ssh of [h.home, h.hq, h.provider, path.join(h.root, "ssh-provider"), path.join(h.hq, "learned.json")]) {
@@ -567,6 +578,20 @@ test.skipIf(!sandboxAvailable() || (!fs.existsSync(SSH) && !process.env.OPENCORP
     expect(r.exit, err).toBe(0)
     expect(err).not.toContain("Bad owner")
     expect(r.stdout.toString()).toContain("\nhostname localhost\n")
+  },
+)
+
+// A symlink to the system's ssh, outside the system's folders: ssh -V runs by the link's name, as the wrapper runs it.
+test.skipIf(!sandboxAvailable() || (!fs.existsSync(SSH) && !process.env.OPENCORP_TEST_SANDBOX))(
+  "a symlinked ssh outside the system's folders runs in the profile by the link's own path",
+  async () => {
+    const h = layout()
+    const link = path.join(h.root, "bin", "ssh")
+    fs.mkdirSync(path.dirname(link))
+    fs.symlinkSync(SSH, link)
+    const r = await run(h.make({ ssh: link }), [link, "-V"], { timeout: 20 })
+    expect(r.exit, r.stderr.toString()).toBe(0)
+    expect(r.stderr.toString()).toStartWith("OpenSSH")
   },
 )
 

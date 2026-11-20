@@ -13,9 +13,10 @@
  * (`Where.credentials`), or a folder that holds them. On the SSH-only profile and over ssh, where credentials are
  * reachable, it also asks before a program that reads file contents is given a path through an expansion, whose
  * value it can't see; in the workspace sandbox, which keeps the home out, such a read follows the usual rules and
- * the sandbox is the guard. Auto's check never judges a push, `sudo`, a local command for ssh, or a command that
- * controls a shared ssh connection (`-O` but `check`, `-S`, `ControlPath`, `ControlMaster`): the owner's own
- * connections can be reached from the SSH-only profile, and `-O exit` would end one.
+ * the sandbox is the guard. Auto's check never judges a push, `sudo`, a local command for ssh (the wrapper's
+ * `OPENCORP_SSH_CONFIG` among them), or a command that controls a shared ssh connection (`-O` but `check`, `-S`,
+ * `ControlPath`, `ControlMaster`, and port forwards): the owner's own connections can be reached from the SSH-only
+ * profile, `-O exit` would end one, and a forward added to one outlives the call.
  *
  * It can't know what a program does with its files, its config or its input: `git` runs hooks and programs its
  * config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host has
@@ -234,8 +235,14 @@ const SSH_SAFE_KEYS = set(
   "batchmode connecttimeout serveraliveinterval serveralivecountmax user port identitiesonly identityfile " +
     "controlpersist",
 )
-/** ssh's options that pick or make the master a call shares. */
-const SSH_CONTROL_KEYS = set("controlmaster controlpath")
+/** ssh's options that pick or make the master a call shares, or add a forward to it, which outlives the call. */
+const SSH_CONTROL_KEYS = set("controlmaster controlpath localforward remoteforward dynamicforward")
+/** ssh's flags that do the same: a control socket, a control command, and the three forwards. */
+const SSH_CONTROL_LETTERS = "SOLRD"
+/** Variables that name a local command or config for ssh: git's, and the config the ssh wrapper passes with `-F`. */
+const SSH_COMMAND_VARS = ["GIT_SSH_COMMAND", "GIT_SSH", "OPENCORP_SSH_CONFIG"]
+/** Builtins that set, export or unset the variables they name. */
+const SETS_VARIABLES = set("export declare typeset readonly local unset")
 const SSH_LOCAL_KEYS = set("proxycommand localcommand permitlocalcommand knownhostscommand")
 const SSH_IDENTITY_KEYS = set("identityfile certificatefile")
 /** Programs that read only names and metadata, so a credential path given to them reads no secret. */
@@ -626,10 +633,11 @@ export function innerParts(part: SimpleCommand): readonly SimpleCommand[] {
 
 /** Why Auto's check must never judge `part`, so every mode asks the owner and dontAsk refuses it: a push the
  *  reader can't call plain (any push, in a line it can't read), a program that runs as another user, a local
- *  command for ssh (`ProxyCommand`, `-F`, `scp -S`, `rsync -e`, `GIT_SSH_COMMAND`, `core.sshCommand`), which on
- *  the SSH-only profile could send a key off the machine, or an ssh that controls a shared connection (`-O` but
- *  `check`, `-S`, `-o ControlPath`, `-o ControlMaster`), which could end or take over one of the owner's; here,
- *  under `find -exec` or over ssh. Null otherwise. */
+ *  command for ssh (`ProxyCommand`, `-F`, `scp -S`, `rsync -e`, `GIT_SSH_COMMAND`, `core.sshCommand`,
+ *  `OPENCORP_SSH_CONFIG`), which on the SSH-only profile could send a key off the machine, or an ssh that controls a
+ *  shared connection (`-O` but `check`, `-S`, `ControlPath`, `ControlMaster`, `-L`, `-R`, `-D` and their options),
+ *  which could end one of the owner's or leave a forward on it; here, under `find -exec` or over ssh. Null
+ *  otherwise. */
 export function ownerOnly(part: SimpleCommand, readable: boolean): string | null {
   const push = pushOf(part)
   if (push) return push.asks ?? (readable ? null : PUSHES)
@@ -1318,8 +1326,9 @@ function base(prog: string): string {
 
 function riskOf(part: SimpleCommand, prog: string, args: readonly string[], sets: readonly string[]): string | null {
   if (connects(part)) return NETWORK
-  if (sets.some((s) => s.startsWith("GIT_SSH_COMMAND=") || s.startsWith("GIT_SSH="))) return LOCAL_SSH
   const name = base(prog)
+  // An exported variable of the shell's keeps its export when assigned, so a bare assignment counts too.
+  if (sets.some(namesSshCommand) || (SETS_VARIABLES.has(name) && args.some(namesSshCommand))) return LOCAL_SSH
   const own = programRisk(name, args, part) ?? FIXED_RISKS.get(name) ?? null
   if (own !== null) return own
   return part.writes.some((w) => w !== "/dev/null") ? WRITES : null
@@ -1350,7 +1359,9 @@ function programRisk(name: string, args: readonly string[], part: SimpleCommand)
       const { opts } = sshParse(args)
       if (opts.some(([c, v]) => c === "F" || (c === "o" && SSH_LOCAL_KEYS.has(optionKey(v))))) return LOCAL_SSH
       const controls = opts.some(
-        ([c, v]) => (c === "O" && v !== "check") || c === "S" || (c === "o" && SSH_CONTROL_KEYS.has(optionKey(v))),
+        ([c, v]) =>
+          (c === "O" ? v !== "check" : SSH_CONTROL_LETTERS.includes(c)) ||
+          (c === "o" && SSH_CONTROL_KEYS.has(optionKey(v))),
       )
       return controls ? CONTROLS_SSH : null
     }
@@ -1410,6 +1421,11 @@ function gitArgs(args: readonly string[]) {
     k += separate ? 2 : 1
   }
   return { options, globals: options.map(([o]) => o), sub: args[k] ?? "", rest: args.slice(k + 1), restAt: k + 1 }
+}
+
+/** Whether `word`, an assignment or a variable's name, is one of `SSH_COMMAND_VARS`. */
+function namesSshCommand(word: string): boolean {
+  return SSH_COMMAND_VARS.some((name) => word === name || word.startsWith(`${name}=`))
 }
 
 /** An ssh `-o` value's key, lowercased: up to `=` or a blank. */

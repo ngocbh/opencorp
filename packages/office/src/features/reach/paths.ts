@@ -60,6 +60,11 @@ export class ReachPaths {
   status(pid: number): string {
     return path.join(this.ssh, `status.${pid}`)
   }
+  /** The status file the agent's shells may write while process `pid` learns: never `status(pid)`, which the visit's
+   *  replays read. */
+  agentStatus(pid: number): string {
+    return path.join(this.ssh, `agent-status.${pid}`)
+  }
   /** The control sockets of every master. */
   get cm(): string {
     return path.join(this.dir, "cm")
