@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url"
 /** The Bun flags that stop a checkout's Bun from reading the cwd's `.env` and `bunfig.toml`
  *  (and its preloads) or installing a missing package; `packages/cli/bin/opencorp` passes the
  *  same ones. */
-const CHECKOUT_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
+export const CHECKOUT_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 
 /** The argv prefix that runs the office's own code: the binary itself when compiled (built with
  *  `--no-compile-autoload-dotenv` and `--no-compile-autoload-bunfig`), else this Bun with

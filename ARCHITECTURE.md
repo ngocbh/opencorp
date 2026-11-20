@@ -87,7 +87,7 @@ Each category is a top-level folder of `packages/office/src/`. The order, lowest
 | `tools/` | What agents use | Typed tool groups (company, work items, workspace, terminal, toolbox) and the instruments (`codex/` and `terminal/` now; `claude/` in #888) | util, company, runtime | features |
 | `features/` | What the owner and agents do | Chat, Codex sessions, questions, profiles, setup, doctor, `opencorp hq` | util, company, runtime, models, tools | server; the CLI (`reach`) |
 | `server/` | The office's processes and how clients reach them | The `Office` and its HTTP API, HQ's web server, the daemon process, the process that runs the CLI's setup commands (`opencorp install …`, before any office exists), and the host that serves a built-in agent's chat with no office | everything below | `main.ts`; the CLI, TUI and HQ app |
-| `testing/` | Fakes for tests | Fake model, ssh and Codex; a temp office; whether the sandbox runs here | anything | tests in every package; `tui/script/dev.ts` |
+| `testing/` | Fakes for tests | Fake model, ssh, Codex and Claude Code; a temp office; whether the sandbox runs here | anything | tests in every package; `tui/script/dev.ts` |
 
 **`models/` stays a layer.** It holds policy that is OpenCorp's, not Yian's: which connection the office and each
 employee use, prices and cost caps, and who may change them. Folding it into `runtime/` would mix "which model and

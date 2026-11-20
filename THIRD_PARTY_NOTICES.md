@@ -144,6 +144,16 @@ license, the upstream paths and commit, and our paths.
   shell in the home instead, ported for learning's shells.
 - **Upstream:** `packages/core/src/persistent-pty/index.ts` (`create`), read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/office/src/features/reach/terminal.ts` (`startsIn`).
+- **What:** the fake Claude Code's fixture: one line per kind of line the fake writes, copied from upstream's
+  recordings of Claude Code's stream-json protocol, with long lists shortened and the upstream name replaced by
+  `fixture`. The fake's design follows upstream's: a stand-in `claude` that answers `initialize`, writes a turn's
+  lines and its result, sends `hook_callback` before a tool, rejects a waiting tool on an interrupt, and keeps each
+  session's lines for a resume. Ours is a program behind a shim rather than an in-process spawn, and runs scripted
+  steps rather than replaying recordings; the code is our own.
+- **Upstream:** `packages/core/test/plugin/provider/claude-agent/fixtures/recordings/{text,text-cancel,tools,tools-continue,tools-waiting-cancel,startup-logged-out,controls,billing-error}.jsonl`,
+  `packages/core/test/plugin/provider/claude-agent/lib/fake-claude.ts` and `lib/recorder.ts`, read at commit `df46f69`
+  (2026-11-16).
+- **Ours:** `packages/office/tests/fixtures/claude/stream.jsonl`, `packages/office/src/testing/fake_claude.ts`.
 
 ## Paperclip
 
