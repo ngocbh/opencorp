@@ -135,7 +135,7 @@ imports and what imports it").
 | `server/local/` | The no-office host | One built-in agent's chat with no office running, served as the office serves a session (`host.ts`): its flow in a kept `opencorp __worker`, its cards in the four modes with session rules only, Auto's check as a worker job, its shells as instruments. Its routes (`routes.ts`) go through the office's pipeline on a private socket in a fresh 0700 folder, with a random token per start held in memory (`serve.ts`) | util, company, runtime (root, auth, permissions, questions, sessions, store, worker), tools/terminal, features/chat, server (root, routes) | — |
 | `server/hq/` | HQ's web server | Serves the web app: guard, login, pairing, browser sessions, its API; the app's build ids (`version.ts`); HQ's checks for doctor (`checks.ts`) | util, company, runtime (root, auth, service, store), features/doctor, server (root, routes) | server/{commands, daemon}; the CLI, the app |
 | `server/daemon/` | The office process | Start and stop, the lock, sockets, extensions; builds the `Office` and wires everything | util, company, runtime (root, permissions, runs, sandbox, service, sessions, store, worker), models, tools/terminal, features/{chat, codex, questions}, server (root, hq, routes) | main.ts |
-| `server/commands/` | The setup commands' process | `opencorp install init/onboard/offboard/doctor/start/stop/restart`, in a child; init's interview runs in the chat the CLI's entry hands it (`Setup.chat`); JSON prompts for the TUI's setup screen | util, company, runtime/{auth, service}, models, features/{doctor, setup}, server/hq | main.ts |
+| `server/commands/` | The setup commands' process | `opencorp install init/onboard/offboard/doctor/start/stop/restart`, in a child, each asking on the terminal; init's interview runs in the chat the CLI's entry hands it (`Setup.chat`) | util, company, runtime/{auth, service}, models, features/{doctor, setup}, server/hq | main.ts |
 
 **Inside each category, folders are ordered:**
 - runtime: root, store, sandbox, auth → worker, service → questions, runs, permissions → sessions;
@@ -149,11 +149,10 @@ imports and what imports it").
   commands run in its pipes shell (`features/chat/terminal.ts`);
 - `server/local/`, built: the no-office host. `opencorp hq`'s learning and `init`'s interview run their chats with
   OpenCorp on it, with the TUI reading it over its private socket. `onboard` and `offboard` ask on the terminal, as
-  `init` asks its model, password and remote;
+  `init` asks its model, password and remote; the TUI's setup screen is gone;
 - `runtime/permissions/` gains modes and rules, as a module that needs no store, beside `monitor.ts`, which needs
   the store and asset secrets;
-- `features/reach/tools/shell.ts` is gone, replaced by `tools/terminal/`, and so is the setup screen's in-process
-  learning;
+- `features/reach/tools/shell.ts` is gone, replaced by `tools/terminal/`;
 - the session-folder checks (`checkFolder`, `folderOf`, `checkOverlap`, `unsafeWorkspace`) move to
   `runtime/sessions/` once a second harness needs them;
 - step 8 of #888 decides whether `features/codex/` folds into employee chats that drive the Codex instrument.

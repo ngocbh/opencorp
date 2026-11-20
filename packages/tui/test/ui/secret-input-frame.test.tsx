@@ -4,11 +4,11 @@ import { testRender, useRenderer } from "@opentui/solid"
 import { createSignal, onCleanup, type JSX } from "solid-js"
 import { resolve, TuiConfigProvider } from "../../src/config"
 import { OpenCorpKeymapProvider, registerOpenCorpBaseKeymap } from "../../src/keymap"
-import { SecretInput } from "../../src/setup/secret"
+import { SecretInput } from "../../src/ui/secret-input"
 
 const SECRET = "sk-ant-sentinel-a7d93c10e5b2"
 
-/** The keymap and config the setup screen gives its boxes. */
+/** The keymap and config a masked box gets in the TUI. */
 function Keys(props: { children: JSX.Element }) {
   const keymap = createDefaultOpenTuiKeymap(useRenderer())
   onCleanup(registerOpenCorpBaseKeymap(keymap))

@@ -34,7 +34,7 @@ test("422 text never holds an input value or an unknown key", () => {
     [Schemas.Message, { ...chat, parts: [{ ...chat.parts[0], type: SECRET }] }, "parts: isn't an allowed value"],
     [Schemas.HqLoginRequest, { handle: "x", password: "p", label: SECRET.repeat(10) }, "label: is too long"],
     [Schemas.AddDeviceRequest, { name: "macbook", token_sha256: SECRET }, "token_sha256: isn't in the right format"],
-    [Schemas.SetupPrompt, { type: SECRET, text: SECRET }, "type: isn't an allowed value"],
+    [Schemas.Part, { type: SECRET, text: SECRET }, "type: isn't an allowed value"],
     [
       Schemas.Asset,
       { id: "cluster-a", kind: "slurm_cluster", tools: { [SECRET]: { risk: "bogus" } } },
@@ -60,7 +60,7 @@ test("422 text names the field and a fixed phrase", () => {
     [Schemas.Person, fixture("invalid/Person.device-without-hash.json"), "devices: is required"],
     [Schemas.HqLoginRequest, { handle: "x", zz: 1 }, "password: is required; an extra field: isn't allowed"],
     [Schemas.Ack, {}, "ok: is required"],
-    [Schemas.SetupPrompt, { text: "hi" }, "type: is required"],
+    [Schemas.Part, { text: "hi" }, "type: is required"],
     [z.strictObject({ toString: z.string() }), {}, "toString: is required"],
     [pets, { colour: SECRET, pet: { type: SECRET } }, "colour: isn't an allowed value; pet: isn't an allowed value"],
     [z.strictObject({ indices: z.array(z.int()) }), { indices: ["a", "b", "c"] }, "indices: has the wrong type"],

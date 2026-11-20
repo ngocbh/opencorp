@@ -7,6 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import { expect, onTestFinished, spyOn, test } from "bun:test"
 import {
+  KILL_GRACE_MS,
   Launch,
   type PinOptions,
   daemonArgs,
@@ -20,7 +21,7 @@ import {
   wantedHome,
 } from "../../../src/runtime/service/launch.ts"
 import { sameProcess, startTime } from "../../../src/util/proc.ts"
-import { selfCommand, unsafeEnvName } from "../../../src/platform.ts"
+import { selfCommand, spawnPty, unsafeEnvName } from "../../../src/platform.ts"
 import { isGone, ps, shortDir, tempDir, waitFor } from "../../helpers.ts"
 import { Runner, makeHost, SRC } from "../../features/setup/helpers.ts"
 
@@ -392,6 +393,50 @@ test("a program that outlives the timeout is exit 124", async () => {
   expect(took).toBeLessThan(3000)
   expect(held.code).toBe(124)
 })
+
+test("a command at its timeout gets SIGTERM, which lets it put the terminal back, and SIGKILL only after the grace", async () => {
+  const mark = path.join(tempDir(), "mark")
+  const started = performance.now()
+  // It notes the SIGTERM and carries on, as a program that ignores it would.
+  const script = `trap 'echo term >> ${mark}' TERM; while :; do /bin/sleep 0.1; done`
+  const out = await runCommand(["/bin/sh", "-c", script], { timeoutMs: 300 })
+  expect(out).toEqual({ code: 124, stdout: "", stderr: "/bin/sh timed out" })
+  expect(fs.readFileSync(mark, "utf8")).toBe("term\n")
+  expect(performance.now() - started).toBeGreaterThanOrEqual(300 + KILL_GRACE_MS - 50)
+}, 20_000)
+
+test("a command cut off at its timeout leaves the terminal in the mode it found, echo on", async () => {
+  const dir = tempDir()
+  const file = path.join(dir, "driver.ts")
+  // On the terminal the driver's stdin is, the command turns echo off as a password prompt does, then hangs.
+  fs.writeFileSync(
+    file,
+    `import { runCommand, STDIN_TERMINAL } from ${JSON.stringify(path.join(SRC, "runtime/service/launch.ts"))}
+const argv = ["/bin/sh", "-c", "stty -echo < /dev/tty; exec /bin/sleep 30"]
+const done = await runCommand(argv, { timeoutMs: 1500, terminal: STDIN_TERMINAL })
+process.stdout.write(\`ended \${done.code}\\n\`)
+await new Promise((resolve) => setTimeout(resolve, 30_000))
+`,
+  )
+  let out = ""
+  const decoder = new TextDecoder()
+  // The same flags as CHECKOUT_FLAGS in src/platform.ts.
+  const argv = [process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", file]
+  const pty = spawnPty(argv, {
+    cwd: dir,
+    env: { PATH: "/usr/bin:/bin", TERM: "xterm" },
+    cols: 80,
+    rows: 24,
+    onData: (chunk) => (out += decoder.decode(chunk)),
+  })
+  onTestFinished(async () => {
+    pty.kill("SIGKILL")
+    await pty.exited
+  })
+  await waitFor(() => !pty.modes().echo, { timeout: 10_000, what: "the command turning echo off" })
+  await waitFor(() => out.includes("ended 124"), { timeout: 10_000, what: "the command's timeout" })
+  expect(pty.modes().echo).toBe(true)
+}, 30_000)
 
 /** A script whose grandchild writes its own pid to `pidFile` and becomes a sleep of `secs` seconds. */
 function grandchildScript(pidFile: string, secs: number): [string, ...string[]] {

@@ -21,7 +21,7 @@ export function SecretInput(props: {
   onSubmit: (value: string) => void
 }) {
   // Only this closure and the callbacks hold the text, so it can't leak into a store, the history or a frame; the
-  // screen only needs its length.
+  // drawn box needs only its length.
   let value = ""
   const [length, setLength] = createSignal(0)
   const enabled = () => props.enabled !== false

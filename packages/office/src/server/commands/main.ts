@@ -3,14 +3,12 @@
  * `opencorp start`, `opencorp stop` and `opencorp restart` run, in a child. `install` is hidden, so a command's
  * usage and errors name it as the user typed it: `opencorp <command>`.
  *
- * `opencorp init` runs on this terminal: its interview is a chat with OpenCorp in the TUI, through the chat the CLI's
- * entry hands it (`Setup.chat`). `opencorp`'s setup screen runs onboard with `--json-prompts`: each question is a JSON
- * line on stdout, each answer a JSON line on stdin. Flags are matched whole; a prefix (`--prov` for
- * `--provider-stdin`) is unknown.
+ * Every command asks on this terminal; `opencorp init`'s interview is a chat with OpenCorp in the TUI, through the chat
+ * the CLI's entry hands it (`Setup.chat`). Flags are matched whole; a prefix (`--prov` for `--provider-stdin`) is
+ * unknown.
  *
  * Exit codes: 0 done, 1 failed, 2 usage, 3 (`start`, `restart`) no office yet, 130 Ctrl-C.
  */
-import { Console } from "node:console"
 import fs from "node:fs"
 import path from "node:path"
 import type { Readable, Writable } from "node:stream"
@@ -27,7 +25,6 @@ import { strerror } from "../../util/errors.ts"
 import { type CheckOptions, checks, exitCode, report } from "../../features/doctor/doctor.ts"
 import * as fallback from "../../runtime/service/fallback.ts"
 import { type InitOptions, init } from "../../features/setup/init.ts"
-import { JsonPrompter, type TextOut } from "../../features/setup/json_prompts.ts"
 import { defaultHost, type Host, type Launch, launch, ServiceError, wantedHome } from "../../runtime/service/launch.ts"
 import { Declined, OffboardError, offboard } from "../../features/setup/offboard.ts"
 import {
@@ -79,19 +76,6 @@ export interface Setup {
   doctor: Partial<Omit<CheckOptions, "host" | "environ">>
   /** How `start`, `restart` and `stop` find the running daemon (none: `service.findDaemon`'s defaults). */
   lookup: service.LookupOptions
-  /** JSON mode: points every other stdout writer at stderr; returns the writer for prompts. */
-  guardStdout(): TextOut
-}
-
-/** Rebinds the console and `process.stdout.write` to stderr; returns stdout's own writer, bound before. */
-function guardStdout(): TextOut {
-  const out = process.stdout.write.bind(process.stdout)
-  // Python pointed fd 1 at stderr, so nothing else printed could land inside a prompt line. Here fd 1 stays, and
-  // Bun's console writes natively rather than through process.stdout, so both writers are rebound.
-  // Bun's global console type has members node:console's Console instance lacks.
-  globalThis.console = new Console({ stdout: process.stderr, stderr: process.stderr }) as typeof globalThis.console
-  process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write
-  return { write: out }
 }
 
 /** `given` with the production collaborators for what it leaves out, each made only when it's left out. */
@@ -111,7 +95,6 @@ function defaults(given: Partial<Setup>): Setup {
     offboard: given.offboard ?? offboard,
     doctor: given.doctor ?? {},
     lookup: given.lookup ?? {},
-    guardStdout: given.guardStdout ?? guardStdout,
   }
 }
 
@@ -121,7 +104,6 @@ interface Args {
   help?: boolean
   service?: service.Mode | "auto"
   "provider-stdin"?: boolean
-  "json-prompts"?: boolean
   company?: string
   name?: string
   handle?: string
@@ -145,8 +127,6 @@ interface Flag {
 }
 
 const SERVICES: readonly string[] = ["auto", ...service.MODES]
-/** Flags that can't be given together. */
-const EXCLUSIVE = ["provider-stdin", "json-prompts"]
 
 const COMMON: Record<string, Flag> = {
   help: { type: "boolean", short: "h", help: "show this help message and exit" },
@@ -165,8 +145,6 @@ const SETUP: Record<string, Flag> = {
       "read the office's setup connection from stdin as JSON, replacing it; ask nothing: " +
       '{"llm_config":{"provider":...,"api_key":...,"model":...},"env":{"VLLM_BASE_URL":...}}',
   },
-  // Only for opencorp's setup screen, which reads the prompts; not something to type.
-  "json-prompts": { type: "boolean" },
 }
 
 /** Each command: what it does, and its flags in help order. */
@@ -277,7 +255,7 @@ function parse(command: string, argv: string[]): Args | string {
   )
   let parsed
   try {
-    parsed = parseArgs({ args: argv, options, strict: true, allowPositionals: false, tokens: true })
+    parsed = parseArgs({ args: argv, options, strict: true, allowPositionals: false })
   } catch (error) {
     if (error instanceof Error && "code" in error && String(error.code).startsWith("ERR_PARSE_ARGS_")) {
       return error.message
@@ -288,10 +266,6 @@ function parse(command: string, argv: string[]): Args | string {
   if (args.help) return args
   // An empty home would resolve to the cwd, and falling back to the default would point offboard at the real office.
   if (args.home === "") return "argument --home: the home can't be empty"
-  // In argv order, as argparse words it: the later flag is the one not allowed.
-  const given = parsed.tokens.flatMap((t) => (t.kind === "option" && EXCLUSIVE.includes(t.name) ? [t.name] : []))
-  const later = given.find((name) => name !== given[0])
-  if (later) return `argument --${later}: not allowed with argument --${given[0]}`
   if (args.service !== undefined && !SERVICES.includes(args.service)) {
     return `argument --service: invalid choice: ${repr(args.service)} (choose from ${SERVICES.join(", ")})`
   }
@@ -396,10 +370,8 @@ function home(value: string | undefined, s: Setup): string {
   return wantedHome(value, s.environ, s.host.userHome)
 }
 
-/** The prompter for init and onboard: the setup screen's with `--json-prompts`, else the terminal's, which asks
- *  only when `asking` (no provider on stdin). */
-function prompter(args: Args, asking: boolean, s: Setup, preset: Record<string, string> = {}): Prompter {
-  if (args["json-prompts"]) return new JsonPrompter(s.guardStdout(), s.stdin, preset)
+/** The prompter for init and onboard: the terminal's, which asks only when `asking` (no provider on stdin). */
+function prompter(asking: boolean, s: Setup, preset: Record<string, string> = {}): Prompter {
   return new TtyPrompter({ preset, interactive: asking, input: s.stdin, output: s.stdout, env: s.environ })
 }
 
@@ -450,7 +422,7 @@ async function initCommand(args: Args, s: Setup): Promise<number> {
   // With the provider on stdin nothing is asked, and questions without a flag take their defaults.
   const stdin = args["provider-stdin"] ? s.stdin : undefined
   const code = await setupRun("init", s, () =>
-    s.init(home(args.home, s), prompter(args, stdin === undefined, s), {
+    s.init(home(args.home, s), prompter(stdin === undefined, s), {
       listers: s.listers,
       checkModel: s.checkModel,
       auth: s.auth,
@@ -470,7 +442,7 @@ async function initCommand(args: Args, s: Setup): Promise<number> {
 async function onboardCommand(args: Args, s: Setup): Promise<number> {
   const stdin = args["provider-stdin"] ? s.stdin : undefined
   const code = await setupRun("onboard", s, () =>
-    s.onboard(home(args.home, s), prompter(args, stdin === undefined, s, { [WHO]: args.handle ?? "" }), {
+    s.onboard(home(args.home, s), prompter(stdin === undefined, s, { [WHO]: args.handle ?? "" }), {
       listers: s.listers,
       checkModel: s.checkModel,
       auth: s.auth,

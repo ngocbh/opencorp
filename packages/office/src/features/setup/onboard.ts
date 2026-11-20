@@ -55,6 +55,7 @@ import {
   resolveHome,
   runCommand,
   ServiceError,
+  STDIN_TERMINAL,
 } from "../../runtime/service/launch.ts"
 import { clean, NoTerminal, OnboardError, type Prompter, TRIES } from "./prompts.ts"
 import * as service from "../../runtime/service/service.ts"
@@ -257,6 +258,19 @@ function azureProblem(answer: string): string | null {
   } catch (error) {
     if (!(error instanceof ValidationError)) throw error
     return "give the resource name, or its endpoint like https://<resource>.openai.azure.com"
+  }
+  return null
+}
+
+/** Why `answer` can't be the company repo URL to clone, or null when it can be (or is empty: there's none yet). The
+ *  terminal shows what is typed and the clone keeps its URL, so a password or token in it is refused; a user name
+ *  alone, as in `ssh://git@host/x` or `git@host:x`, is no secret. The reasons never hold the answer. */
+export function repoUrlProblem(answer: string): string | null {
+  const url = URL.parse(answer.trim())
+  if (url === null) return null
+  const web = url.protocol === "http:" || url.protocol === "https:"
+  if (url.password || (web && url.username)) {
+    return "keep the password or token out of the URL; git asks for it, or uses your credential helper or ssh key"
   }
   return null
 }
@@ -1124,15 +1138,16 @@ export function makeHome(home: string): void {
 }
 
 /** Runs git as the user would, in `env` (this process's by default), so their credentials and ssh setup reach a
- *  remote; never throws: git that can't start is exit 127, and one still running after 300 s exit 124. */
+ *  remote; never throws: git that can't start is exit 127, and one still running after 300 s exit 124. git or ssh may
+ *  ask for a password on this terminal, so a git cut off there leaves the terminal in the mode it found. */
 export async function userGit(args: readonly string[], { env = process.env }: { env?: Env } = {}): Promise<Completed> {
   const vars: Record<string, string> = {}
   for (const [name, value] of Object.entries(env)) if (value !== undefined) vars[name] = value
-  const done = await runCommand(["git", ...args], { env: vars, timeoutMs: 300_000 })
+  const done = await runCommand(["git", ...args], { env: vars, timeoutMs: 300_000, terminal: STDIN_TERMINAL })
   return done.code === 127 ? { ...done, stderr: `can't run git: ${done.stderr}` } : done
 }
 
-/** What to do when a clone or push fails: under `opencorp`'s setup screen git has no terminal to ask on. */
+/** What to do when a clone or push fails: git may have had no terminal to ask on. */
 export const GIT_ACCESS =
   "if git needs a login or a new host key, set that up in a terminal first (`gh auth login`, or `ssh -T git@HOST` once)"
 
@@ -1383,7 +1398,7 @@ export async function onboardLocked(one: Launch, prompter: Prompter, options: On
           " run `opencorp init` to finish it, or remove it to join another",
       )
     }
-    const url = options.source || (await prompter.ask(REPO_URL))
+    const url = options.source || (await askUntil(prompter, REPO_URL, "", repoUrlProblem))
     if (!url) throw new OnboardError(`there's no company at ${company}; ${SET_UP}`)
     root = path.join(one.home, CLONE)
     await clone(url, root, environ)
