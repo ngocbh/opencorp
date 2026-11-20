@@ -10,6 +10,7 @@ import {
   codexThread,
   type EmployeePermission,
   harnessPath,
+  mcpServersOff,
 } from "../../../src/runtime/sandbox/harness_profile.ts"
 import { UnsafeProfile, UnsafeWorkspace } from "../../../src/runtime/sandbox/policy.ts"
 import { tempDir } from "../../helpers.ts"
@@ -22,9 +23,10 @@ const SYSTEM = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 if (process.platform === "darwin") SYSTEM.push("/opt/homebrew/bin")
 
 /** A temp layout: a home holding credentials and an office (`.ssh/id_test`, `.codex/auth.json`, `.claude/`,
- *  `.opencorp/office/connections/`), a workspace `<root>/ws` that is a git repo (a `.git` folder with its config), a
- *  private empty temp folder `<root>/tmp` and the fence `<root>/fence`, all resolved. `permission` builds an
- *  employee's permission over it. */
+ *  `.opencorp/office/connections/main.json`), a workspace `<root>/ws` that is a git repo (a `.git` folder with its
+ *  config), a private empty temp folder `<root>/tmp`, the fence `<root>/fence` and a Codex install
+ *  `<root>/codex-install`, all resolved. `permission` builds an employee's permission over it, and `thread` its
+ *  Codex thread. */
 function layout() {
   const root = fs.realpathSync(tempDir())
   const home = path.join(root, "home")
@@ -37,6 +39,11 @@ function layout() {
   }
   fs.writeFileSync(path.join(home, ".ssh/id_test"), "decoy-ssh-key")
   fs.writeFileSync(path.join(home, ".codex/auth.json"), '{"token": "decoy-codex"}')
+  fs.writeFileSync(path.join(home, ".opencorp/office/connections/main.json"), '{"key": "decoy-connection"}')
+  // Where Codex is installed: its sandboxed commands run its own binary from there.
+  const install = path.join(root, "codex-install")
+  fs.mkdirSync(path.join(install, "bin"), { recursive: true })
+  fs.writeFileSync(path.join(install, "bin/codex"), "")
   fs.mkdirSync(path.join(ws, ".git"), { recursive: true })
   fs.writeFileSync(path.join(ws, ".git/config"), "[core]\n")
   fs.mkdirSync(tmp, { mode: 0o700 })
@@ -54,13 +61,20 @@ function layout() {
     officeHome,
     ...fields,
   })
-  /** A folder `<root>/<rel>` with a `bin` folder in it. */
+  /** A folder `<root>/<rel>` with a `bin` folder in it, both the user's alone to write, whatever the umask. */
   const folder = (rel: string): string => {
     const p = path.join(root, rel)
     fs.mkdirSync(path.join(p, "bin"), { recursive: true })
+    for (const dir of [p, path.join(p, "bin")]) fs.chmodSync(dir, 0o755)
     return p
   }
-  return { root, home, officeHome, ws, tmp, fence, permission, folder }
+  /** Codex's thread for `p`, with the layout's install folder. */
+  const thread = (p: EmployeePermission, options: { mcpServers?: readonly string[]; id?: string } = {}) =>
+    codexThread(p, options.id ?? "opencorp-s1", { install, mcpServers: options.mcpServers })
+  /** The filesystem entries of Codex's profile for `p`. */
+  const filesystem = (p: EmployeePermission): Record<string, string> =>
+    (thread(p).config.permissions as Record<string, { filesystem: Record<string, string> }>)["opencorp-s1"]!.filesystem
+  return { root, home, officeHome, ws, tmp, fence, install, permission, folder, thread, filesystem }
 }
 
 /** The home's credential folders and the office's home under `home`, as Codex's deny entries. */
@@ -77,15 +91,14 @@ function claudeDenies(home: string, except: readonly string[] = []): string[] {
 
 /** The workspace's paths both harnesses keep read-only, as Codex's `read` entries. */
 function codexKept(ws: string): Record<string, string> {
-  const kept = [".git/hooks", ".git/config", ".codex", ".agents", ".claude", ".mcp.json"]
+  const kept = [".git", ".codex", ".agents", ".claude", ".mcp.json"]
   return Object.fromEntries(kept.map((rel) => [path.join(ws, rel), "read"]))
 }
 
-/** The same, as Claude Code's `denyWrite` entries and `Edit` denies (a folder's covers what is in it). */
-function claudeKept(ws: string): { denyWrite: string[]; deny: string[] } {
+/** The same, as Claude Code's `denyWrite` entries and `Edit` denies (a folder's also covers what is in it). */
+function claudeKept(ws: string, gitFolder = true): { denyWrite: string[]; deny: string[] } {
   const kept: [string, boolean][] = [
-    [".git/hooks", true],
-    [".git/config", false],
+    [".git", gitFolder],
     [".codex", true],
     [".agents", true],
     [".claude", true],
@@ -93,19 +106,34 @@ function claudeKept(ws: string): { denyWrite: string[]; deny: string[] } {
   ]
   return {
     denyWrite: kept.map(([rel]) => path.join(ws, rel)),
-    deny: kept.map(([rel, folder]) => `Edit(/${path.join(ws, rel)}${folder ? "/**" : ""})`),
+    deny: kept.flatMap(([rel, folder]) => rules("Edit", path.join(ws, rel), folder)),
   }
 }
 
-test("a writable employee's Codex override reads the minimal set, writes its folder and temp folder, denies the fence, and pins the folder and its git root untrusted", () => {
-  const { home, ws, tmp, fence, permission, root } = layout()
-  expect(codexThread(permission(), "opencorp-s1")).toEqual({
+/** Claude Code permission rules for `tool` on the absolute `p` (`//` starts an absolute path), and on what is in it
+ *  when it is a folder. */
+function rules(tool: string, p: string, folder = true): string[] {
+  return folder ? [`${tool}(/${p})`, `${tool}(/${p}/**)`] : [`${tool}(/${p})`]
+}
+
+/** Claude Code's `Read` denies for the folders denied by name under `home`, mirroring its sandbox's `denyRead`. */
+function claudeReads(home: string, except: readonly string[] = []): string[] {
+  return Object.keys(codexDenies(home, except)).flatMap((p) => rules("Read", p))
+}
+
+/** The features every Codex override turns off. */
+const FEATURES = { hooks: false, apps: false, plugins: false, memories: false, skill_mcp_dependency_install: false }
+
+test("a writable employee's Codex override reads the minimal set and Codex's install, writes its folder and temp folder, denies the fence, and pins the folder and its git root untrusted", () => {
+  const { home, ws, tmp, fence, install, permission, root, thread } = layout()
+  expect(thread(permission())).toEqual({
     permissions: "opencorp-s1",
     config: {
       permissions: {
         "opencorp-s1": {
           filesystem: {
             ":minimal": "read",
+            [install]: "read",
             [ws]: "write",
             ...codexKept(ws),
             [tmp]: "write",
@@ -116,7 +144,7 @@ test("a writable employee's Codex override reads the minimal set, writes its fol
         },
       },
       projects: { [ws]: { trust_level: "untrusted" } },
-      features: { hooks: false, apps: false, plugins: false },
+      features: FEATURES,
       notify: [],
       web_search: "disabled",
     },
@@ -124,22 +152,22 @@ test("a writable employee's Codex override reads the minimal set, writes its fol
   // A folder inside a repo pins both: Codex keys trust by the folder first, then by its git root.
   const sub = path.join(root, "repo/ws")
   fs.mkdirSync(sub, { recursive: true })
-  const nested = codexThread(permission({ workspace: sub, gitRoot: path.join(root, "repo") }), "opencorp-s2")
+  const nested = thread(permission({ workspace: sub, gitRoot: path.join(root, "repo") }), { id: "opencorp-s2" })
   expect(nested.config.projects).toEqual({
     [sub]: { trust_level: "untrusted" },
     [path.join(root, "repo")]: { trust_level: "untrusted" },
   })
   // No git root, only the folder.
-  const bare = codexThread(permission({ gitRoot: null }), "opencorp-s3")
+  const bare = thread(permission({ gitRoot: null }), { id: "opencorp-s3" })
   expect(bare.config.projects).toEqual({ [ws]: { trust_level: "untrusted" } })
 })
 
-test("every Codex override turns hooks, apps, plugins, notify and the given MCP servers off, and web search too with the network off", () => {
-  const { permission } = layout()
+test("every Codex override turns hooks, apps, plugins, memories, notify and the given MCP servers off, and web search too with the network off", () => {
+  const { permission, thread } = layout()
   for (const writable of [true, false]) {
     for (const network of [true, false]) {
-      const { config } = codexThread(permission({ writable, network }), "opencorp-s1", { mcpServers: ["docs", "a.b"] })
-      expect(config.features).toEqual({ hooks: false, apps: false, plugins: false })
+      const { config } = thread(permission({ writable, network }), { mcpServers: ["docs", "a.b"] })
+      expect(config.features).toEqual(FEATURES)
       expect(config.notify).toEqual([])
       expect(config.mcp_servers).toEqual({ docs: { enabled: false }, "a.b": { enabled: false } })
       if (network) expect("web_search" in config).toBe(false)
@@ -148,17 +176,19 @@ test("every Codex override turns hooks, apps, plugins, notify and the given MCP 
       expect(profile.network).toEqual({ enabled: network })
     }
   }
-  // With no servers given there is nothing to turn off, and the key is left out.
-  expect("mcp_servers" in codexThread(permission(), "opencorp-s1").config).toBe(false)
+  // With no servers given there is nothing to turn off, and the key is left out: Codex refuses an entry for a name
+  // its config doesn't define, so only the names it defines are passed.
+  expect("mcp_servers" in thread(permission()).config).toBe(false)
+  expect(mcpServersOff(["docs", "a.b"])).toEqual({ docs: { enabled: false }, "a.b": { enabled: false } })
+  expect(mcpServersOff([])).toEqual({})
 })
 
 test("a read-only employee's folder is read-only in both harnesses, Claude Code's Bash write to it denied too", () => {
-  const { home, ws, tmp, fence, permission } = layout()
+  const { home, ws, tmp, fence, install, permission, filesystem } = layout()
   const p = permission({ writable: false })
-  const { config } = codexThread(p, "opencorp-s1")
-  const profile = (config.permissions as Record<string, { filesystem: Record<string, string> }>)["opencorp-s1"]!
-  expect(profile.filesystem).toEqual({
+  expect(filesystem(p)).toEqual({
     ":minimal": "read",
+    [install]: "read",
     [ws]: "read",
     ...codexKept(ws),
     [tmp]: "write",
@@ -177,21 +207,101 @@ test("a read-only employee's folder is read-only in both harnesses, Claude Code'
     "Write",
     "NotebookEdit",
     ...kept.deny,
+    ...claudeReads(home),
     "WebFetch",
     "WebSearch",
   ])
 })
 
-test("the office's home and the home's credential folders are denied by name", () => {
-  const { root, home, officeHome, permission } = layout()
-  const { config } = codexThread(permission(), "opencorp-s1")
-  const filesystem = (config.permissions as Record<string, { filesystem: Record<string, string> }>)["opencorp-s1"]!
-    .filesystem
-  for (const p of [officeHome, path.join(home, ".ssh"), path.join(home, ".codex"), path.join(home, ".claude")]) {
-    expect(filesystem[p]).toBe("deny")
+test("both harnesses keep .git itself read-only, a missing one too, so a command can't move it aside or start one", () => {
+  const { ws, permission, filesystem } = layout()
+  const git = path.join(ws, ".git")
+  const claude = () => {
+    const { settings } = claudeStart(permission())
+    return {
+      denyWrite: (settings.sandbox as { filesystem: { denyWrite: string[] } }).filesystem.denyWrite,
+      deny: (settings.permissions as { deny: string[] }).deny,
+    }
   }
-  const sandbox = claudeStart(permission()).settings.sandbox as { filesystem: { denyRead: string[] } }
+  // A repo: .git whole, never only its hooks and config (bwrap can't mount a missing one inside a read-only .git).
+  for (const layoutOf of ["repo", "no hooks or config", "missing"] as const) {
+    if (layoutOf === "no hooks or config") fs.rmSync(path.join(git, "config"))
+    if (layoutOf === "missing") fs.rmSync(git, { recursive: true })
+    const entries = filesystem(permission())
+    expect(entries[git], layoutOf).toBe("read")
+    expect(Object.keys(entries).filter((k) => k.startsWith(git + "/")), layoutOf).toEqual([])
+    const { denyWrite, deny } = claude()
+    expect(denyWrite, layoutOf).toContain(git)
+    // Claude Code's own tools can't write .git, or a .git file pointing at a planted repo.
+    expect(deny, layoutOf).toEqual(expect.arrayContaining([`Edit(/${git})`, `Edit(/${git}/**)`]))
+  }
+})
+
+test("Codex reads its own install folder, which the employee can't write", () => {
+  const { root, ws, tmp, install, permission, folder, thread } = layout()
+  const envs = folder("envs")
+  const linked = path.join(envs, "link")
+  fs.symlinkSync(install, linked)
+  const inWs = path.join(ws, "tools/codex")
+  fs.mkdirSync(inWs, { recursive: true })
+  const writable: [string, EmployeePermission, string][] = [
+    ["in the writable workspace", permission(), inWs],
+    ["in a writable listed folder", permission({ folders: [{ path: envs, access: "write" }] }), path.join(envs, "bin")],
+    ["reached through a writable folder", permission({ folders: [{ path: envs, access: "write" }] }), linked],
+    ["holding the temp folder", permission(), root],
+    ["the temp folder", permission(), tmp],
+  ]
+  for (const [what, p, at] of writable) {
+    expect(() => codexThread(p, "opencorp-s1", { install: at }), what).toThrow(UnsafeProfile)
+    expect(() => codexThread(p, "opencorp-s1", { install: at }), what).toThrow(/Codex's install folder/)
+  }
+  expect(() => codexThread(permission(), "opencorp-s1", { install: "codex" })).toThrow(/isn't absolute/)
+  // In a read-only listed folder, or reached through a link outside what the employee writes, it is read resolved.
+  const tools = folder("tools")
+  fs.symlinkSync(install, path.join(tools, "codex"))
+  const p = permission({ folders: [{ path: tools, access: "read" }] })
+  const read = codexThread(p, "opencorp-s1", { install: path.join(tools, "codex") }).config.permissions as Record<
+    string,
+    { filesystem: Record<string, string> }
+  >
+  expect(read["opencorp-s1"]!.filesystem[install]).toBe("read")
+  expect(thread(permission({ writable: false })).config.permissions).toBeDefined()
+})
+
+test("the office's home, the home's credential folders and the harnesses' own config folders are denied by name", () => {
+  const { root, home, officeHome, permission, filesystem } = layout()
+  const entries = filesystem(permission())
+  for (const p of [officeHome, path.join(home, ".ssh"), path.join(home, ".codex"), path.join(home, ".claude")]) {
+    expect(entries[p]).toBe("deny")
+  }
+  const start = claudeStart(permission())
+  const sandbox = start.settings.sandbox as { filesystem: { denyRead: string[] } }
   expect(sandbox.filesystem.denyRead).toEqual(claudeDenies(home))
+  // Claude Code's own tools are held by its rules, not the OS: the same folders get Read denies (not the home, which
+  // holds the workspace; its working folders already bound its reads).
+  expect((start.settings.permissions as { deny: string[] }).deny).toEqual(expect.arrayContaining(claudeReads(home)))
+  expect(JSON.stringify(start.settings.permissions)).not.toContain(`Read(/${home})`)
+  // CODEX_HOME and CLAUDE_CONFIG_DIR set apart from the home are denied by name too, in both harnesses.
+  const codexHome = path.join(root, "codex-home")
+  const claudeHome = path.join(root, "claude-home")
+  fs.mkdirSync(codexHome)
+  fs.mkdirSync(claudeHome)
+  const apart = permission({ harnessHomes: [codexHome, claudeHome] })
+  expect(filesystem(apart)[codexHome]).toBe("deny")
+  expect(filesystem(apart)[claudeHome]).toBe("deny")
+  const settings = claudeStart(apart).settings
+  expect((settings.sandbox as { filesystem: { denyRead: string[] } }).filesystem.denyRead).toEqual([
+    ...claudeDenies(home),
+    codexHome,
+    claudeHome,
+  ])
+  expect((settings.permissions as { deny: string[] }).deny).toEqual(
+    expect.arrayContaining([...rules("Read", codexHome), ...rules("Read", claudeHome)]),
+  )
+  // A session folder in one is refused, as one in the office's home is.
+  const inside = path.join(codexHome, "proj")
+  fs.mkdirSync(inside)
+  expect(() => checkPermission(permission({ workspace: inside, harnessHomes: [codexHome] }))).toThrow(UnsafeWorkspace)
   // An office home outside the home is denied by name too, and a credential folder that is a link by its target.
   const elsewhere = path.join(root, "oc-home")
   const keys = path.join(root, "keys")
@@ -199,20 +309,19 @@ test("the office's home and the home's credential folders are denied by name", (
   fs.mkdirSync(keys)
   fs.rmSync(path.join(home, ".ssh"), { recursive: true })
   fs.symlinkSync(keys, path.join(home, ".ssh"))
-  const moved = codexThread(permission({ officeHome: elsewhere }), "opencorp-s1").config.permissions as Record<
-    string,
-    { filesystem: Record<string, string> }
-  >
-  expect(moved["opencorp-s1"]!.filesystem[elsewhere]).toBe("deny")
-  expect(moved["opencorp-s1"]!.filesystem[keys]).toBe("deny")
-  expect(moved["opencorp-s1"]!.filesystem[path.join(home, ".ssh")]).toBeUndefined()
+  const moved = filesystem(permission({ officeHome: elsewhere }))
+  expect(moved[elsewhere]).toBe("deny")
+  expect(moved[keys]).toBe("deny")
+  expect(moved[path.join(home, ".ssh")]).toBeUndefined()
 })
 
 test("a listed folder is mounted as listed, and one covering a credential folder lifts its deny-by-name, but never the fence", () => {
-  const { home, ws, tmp, permission, folder } = layout()
+  const { home, ws, tmp, install, permission, folder, filesystem } = layout()
   const cargo = folder("cargo")
   const envs = folder("envs")
   const ssh = path.join(home, ".ssh")
+  const config = path.join(home, ".config")
+  fs.mkdirSync(path.join(config, "gh"), { recursive: true })
   // A writable listed folder holding the fence.
   const holder = folder("holder")
   const fence = path.join(holder, "fence")
@@ -224,13 +333,12 @@ test("a listed folder is mounted as listed, and one covering a credential folder
       { path: envs, access: "write" },
       { path: ssh, access: "read" },
       { path: holder, access: "write" },
+      { path: path.join(config, "gh"), access: "read" },
     ],
   })
-  const { config } = codexThread(covered, "opencorp-s1")
-  const filesystem = (config.permissions as Record<string, { filesystem: Record<string, string> }>)["opencorp-s1"]!
-    .filesystem
-  expect(filesystem).toEqual({
+  expect(filesystem(covered)).toEqual({
     ":minimal": "read",
+    [install]: "read",
     [ws]: "write",
     ...codexKept(ws),
     [tmp]: "write",
@@ -238,20 +346,23 @@ test("a listed folder is mounted as listed, and one covering a credential folder
     [envs]: "write",
     [ssh]: "read",
     [holder]: "write",
+    [path.join(config, "gh")]: "read",
     ...codexDenies(home, [ssh]),
     [fence]: "deny",
   })
   const start = claudeStart(covered)
-  expect(start.addDirs).toEqual([cargo, envs, ssh, holder])
+  expect(start.addDirs).toEqual([cargo, envs, ssh, holder, path.join(config, "gh")])
   const sandbox = start.settings.sandbox as { filesystem: Record<string, string[]> }
   expect(sandbox.filesystem.denyRead).toEqual(claudeDenies(home, [ssh]))
-  expect(sandbox.filesystem.allowRead).toEqual([ws, tmp, cargo, envs, ssh, holder])
+  expect(sandbox.filesystem.allowRead).toEqual([ws, tmp, cargo, envs, ssh, holder, path.join(config, "gh")])
   expect(sandbox.filesystem.allowWrite).toEqual([ws, tmp, envs, holder])
+  // A Read deny would beat the listed folder inside ~/.config for Claude Code's own tools, so that one isn't mirrored.
+  const deny = (start.settings.permissions as { deny: string[] }).deny
+  expect(deny).toEqual(expect.arrayContaining(claudeReads(home, [ssh, config])))
+  expect(deny.filter((rule) => rule.startsWith(`Read(/${config}`) || rule.startsWith(`Read(/${ssh}`))).toEqual([])
   // Listing the whole home lifts every deny under it, the office's home included; the fence stays.
-  const all = codexThread(permission({ folders: [{ path: home, access: "read" }] }), "opencorp-s1").config
-    .permissions as Record<string, { filesystem: Record<string, string> }>
-  const denied = Object.entries(all["opencorp-s1"]!.filesystem).filter(([, access]) => access === "deny")
-  expect(denied).toEqual([[permission().fence, "deny"]])
+  const all = filesystem(permission({ folders: [{ path: home, access: "read" }] }))
+  expect(Object.entries(all).filter(([, access]) => access === "deny")).toEqual([[permission().fence, "deny"]])
   const wide = claudeStart(permission({ folders: [{ path: home, access: "read" }] })).settings.sandbox as {
     filesystem: Record<string, string[]>
   }
@@ -259,29 +370,23 @@ test("a listed folder is mounted as listed, and one covering a credential folder
 })
 
 test("a worktree's .git file is kept read-only whole, and a kept path that is a link is left out", () => {
-  const { root, ws, permission } = layout()
+  const { root, ws, permission, filesystem } = layout()
   fs.rmSync(path.join(ws, ".git"), { recursive: true })
   fs.writeFileSync(path.join(ws, ".git"), `gitdir: ${root}/main/.git/worktrees/ws\n`)
   // Both harnesses' Linux sandboxes bind a read-only path onto itself, so a link would mount its target.
   fs.symlinkSync(path.join(root, "home/.ssh"), path.join(ws, ".claude"))
-  const { config } = codexThread(permission(), "opencorp-s1")
-  const filesystem = (config.permissions as Record<string, { filesystem: Record<string, string> }>)["opencorp-s1"]!
-    .filesystem
-  const kept = Object.keys(filesystem).filter((p) => p.startsWith(ws + "/"))
+  const kept = Object.keys(filesystem(permission())).filter((p) => p.startsWith(ws + "/"))
   expect(kept).toEqual([".git", ".codex", ".agents", ".mcp.json"].map((rel) => path.join(ws, rel)))
-  const sandbox = claudeStart(permission()).settings.sandbox as { filesystem: { denyWrite: string[] } }
-  expect(sandbox.filesystem.denyWrite).toEqual(kept)
-  // With no .git at all, nothing of git is listed.
-  fs.rmSync(path.join(ws, ".git"))
-  const none = codexThread(permission(), "opencorp-s1").config.permissions as Record<
-    string,
-    { filesystem: Record<string, string> }
-  >
-  expect(Object.keys(none["opencorp-s1"]!.filesystem).filter((p) => p.includes(".git"))).toEqual([])
+  const { settings } = claudeStart(permission())
+  expect((settings.sandbox as { filesystem: { denyWrite: string[] } }).filesystem.denyWrite).toEqual(kept)
+  // The .git file is a file: its edit deny names it alone.
+  const deny = (settings.permissions as { deny: string[] }).deny
+  expect(deny).toContain(`Edit(/${path.join(ws, ".git")})`)
+  expect(deny).not.toContain(`Edit(/${path.join(ws, ".git")}/**)`)
 })
 
 test("a read-only listed folder gets Claude Code's write deny and edit deny; a writable one gets neither", () => {
-  const { ws, permission, folder } = layout()
+  const { home, ws, permission, folder } = layout()
   const cargo = folder("cargo")
   const envs = folder("envs")
   const p = permission({
@@ -295,8 +400,9 @@ test("a read-only listed folder gets Claude Code's write deny and edit deny; a w
   const sandbox = settings.sandbox as { filesystem: Record<string, string[]> }
   expect(sandbox.filesystem.denyWrite).toEqual([cargo, ...kept.denyWrite])
   expect((settings.permissions as { deny: string[] }).deny).toEqual([
-    `Edit(/${cargo}/**)`,
+    ...rules("Edit", cargo),
     ...kept.deny,
+    ...claudeReads(home),
     "WebFetch",
     "WebSearch",
   ])
@@ -316,7 +422,6 @@ test("the harness PATH is the system folders and read-only listed folders' bin, 
   })
   expect(harnessPath(p)).toBe([...SYSTEM, path.join(cargo, "bin")].join(":"))
   expect(harnessPath(permission())).toBe(SYSTEM.join(":"))
-  expect(claudeStart(p).env.PATH).toBe(harnessPath(p))
   // A read-only folder's bin that is a link into a writable folder is left off: a program planted there would run
   // as the owner.
   const tools = folder("tools")
@@ -335,6 +440,26 @@ test("the harness PATH is the system folders and read-only listed folders' bin, 
   for (const entry of sbin) expect(fs.realpathSync(entry)).not.toBe(fs.realpathSync("/usr/sbin"))
   // Nothing left on PATH is refused: an empty PATH means the working folder.
   expect(() => harnessPath(permission({ folders: [{ path: "/", access: "write" }] }))).toThrow(/nothing is left/)
+})
+
+test("a listed bin folder others can write, or one another person's permission lists as writable, stays off PATH", () => {
+  const { permission, folder } = layout()
+  const shared = folder("shared")
+  const open = folder("open")
+  const team = folder("team")
+  fs.chmodSync(path.join(shared, "bin"), 0o775)
+  fs.chmodSync(open, 0o757)
+  const p = permission({
+    folders: [
+      { path: shared, access: "read" },
+      { path: open, access: "read" },
+      { path: team, access: "read" },
+    ],
+  })
+  expect(harnessPath(p)).toBe([...SYSTEM, path.join(team, "bin")].join(":"))
+  expect(harnessPath({ ...p, othersWritable: [team] })).toBe(SYSTEM.join(":"))
+  const inside = harnessPath({ ...p, othersWritable: [path.join(team, "bin", "x")] })
+  expect(inside).toBe([...SYSTEM, path.join(team, "bin")].join(":"))
 })
 
 test("Claude Code's start turns its sandbox on, fails if it can't start, allows no unsandboxed command, reads only the folder in the home, and turns auto memory off", () => {
@@ -357,7 +482,7 @@ test("Claude Code's start turns its sandbox on, fails if it can't start, allows 
       },
       permissions: {
         blockReadsOutsideWorkingDirectories: true,
-        deny: [...kept.deny, "WebFetch", "WebSearch"],
+        deny: [...kept.deny, ...claudeReads(home), "WebFetch", "WebSearch"],
       },
       disableAllHooks: true,
     },
@@ -369,14 +494,16 @@ test("Claude Code's start turns its sandbox on, fails if it can't start, allows 
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     },
   })
-  // With the network on, commands may reach any host and the web tools aren't denied.
-  const online = claudeStart(permission({ network: true })).settings
-  expect((online.sandbox as { network: unknown }).network).toEqual({ allowedDomains: ["*"], strictAllowlist: true })
-  expect((online.permissions as { deny: string[] }).deny).toEqual(kept.deny)
+})
+
+test("Claude Code with the network on is refused: its sandbox has no checked way to allow every host", () => {
+  const { permission } = layout()
+  expect(() => claudeStart(permission({ network: true }))).toThrow(/network on isn't supported yet/)
+  expect(() => harnessPath(permission({ network: true }))).not.toThrow()
 })
 
 test("the override is nested objects with no dotted key, and its paths are resolved", () => {
-  const { root, ws, tmp, fence, permission } = layout()
+  const { root, ws, tmp, fence, permission, thread } = layout()
   const link = (target: string, name: string): string => {
     const p = path.join(root, name)
     fs.symlinkSync(target, p)
@@ -388,7 +515,7 @@ test("the override is nested objects with no dotted key, and its paths are resol
     gitRoot: link(ws, "git-link"),
     fence: path.join(link(root, "root-link"), "fence"),
   })
-  const { config } = codexThread(p, "opencorp-s1")
+  const { config } = thread(p)
   for (const key of Object.keys(config)) expect(key).not.toContain(".")
   const filesystem = (config.permissions as Record<string, { filesystem: Record<string, string> }>)["opencorp-s1"]!
     .filesystem
@@ -399,11 +526,11 @@ test("the override is nested objects with no dotted key, and its paths are resol
   expect(config.projects).toEqual({ [ws]: { trust_level: "untrusted" } })
   // Every value is a plain object, array, string or boolean: JSON round-trips it unchanged.
   expect(JSON.parse(JSON.stringify(config))).toEqual(config)
-  expect(() => codexThread(permission(), ":workspace")).toThrow()
+  expect(() => thread(permission(), { id: ":workspace" })).toThrow()
 })
 
 test("a workspace that would expose the home, a credential folder or the office is refused", () => {
-  const { root, home, officeHome, permission } = layout()
+  const { root, home, officeHome, permission, thread } = layout()
   const tool = path.join(root, "ws/bin/git")
   fs.mkdirSync(path.dirname(tool), { recursive: true })
   fs.writeFileSync(tool, "")
@@ -420,7 +547,7 @@ test("a workspace that would expose the home, a credential folder or the office 
   ]
   for (const p of refused) {
     expect(() => checkPermission(p), p.workspace).toThrow(UnsafeWorkspace)
-    expect(() => codexThread(p, "opencorp-s1")).toThrow(UnsafeWorkspace)
+    expect(() => thread(p)).toThrow(UnsafeWorkspace)
     expect(() => claudeStart(p)).toThrow(UnsafeWorkspace)
   }
   expect(() => checkPermission(permission())).not.toThrow()
@@ -550,13 +677,68 @@ test("a listed folder whose path walks through the writable session folder or an
   expect(() => checkPermission(both)).not.toThrow()
 })
 
-/** The `codex` a test runs, named by `OPENCORP_TEST_CODEX`; unset, the real-Codex tests skip, so no run finds the
- *  owner's own Codex by chance. Codex's sandbox needs what the office's does, so they also skip where that can't
- *  start (and fail under `OPENCORP_TEST_SANDBOX`). */
+/** The `codex` a test runs, named by `OPENCORP_TEST_CODEX`. Unset, the real-Codex tests skip, so no run finds the
+ *  owner's own Codex by chance; under `OPENCORP_TEST_SANDBOX` they run, and fail without it. Codex's sandbox needs
+ *  what the office's does, so they also skip where that can't start (and fail under `OPENCORP_TEST_SANDBOX`). */
 const CODEX = process.env.OPENCORP_TEST_CODEX
-const NO_CODEX = CODEX === undefined || !sandboxAvailable()
+const NO_CODEX = CODEX === undefined ? !process.env.OPENCORP_TEST_SANDBOX : !sandboxAvailable()
 /** The oldest Codex whose sandbox takes a per-thread permission profile in these tests' form. */
 const CODEX_FLOOR = [0, 167, 0]
+
+/** The native Codex behind `OPENCORP_TEST_CODEX` (npm's launcher only execs it, so no node is needed), and its
+ *  install folder, the one holding its `bin`. */
+function nativeCodex(): { binary: string; install: string } {
+  if (CODEX === undefined) throw new Error("OPENCORP_TEST_SANDBOX is set: set OPENCORP_TEST_CODEX to a Codex 0.167.0+")
+  const real = fs.realpathSync(CODEX)
+  let binary = real
+  if (real.endsWith(".js")) {
+    // <node_modules>/@openai/codex/bin/codex.js, beside <node_modules>/@openai/codex-<platform>/vendor/<target>/bin.
+    const scope = path.dirname(path.dirname(path.dirname(real)))
+    const found = fs
+      .readdirSync(scope)
+      .filter((name) => name.startsWith("codex-"))
+      .flatMap((pkg) => {
+        const vendor = path.join(scope, pkg, "vendor")
+        if (!fs.existsSync(vendor)) return []
+        return fs.readdirSync(vendor).map((target) => path.join(vendor, target, "bin/codex"))
+      })
+      .filter((p) => fs.existsSync(p))
+    if (found.length !== 1) throw new Error(`no single native Codex under ${scope}: ${found.join(", ")}`)
+    binary = found[0]!
+  }
+  return { binary, install: path.dirname(path.dirname(binary)) }
+}
+
+/** Runs the test's Codex with `args` and none of this process's environment: a temp HOME and CODEX_HOME, never the
+ *  real ones, the given PATH, and `env`. */
+function runCodex(
+  args: readonly string[],
+  options: { home: string; codexHome: string; path: string; cwd: string; env?: Record<string, string> },
+) {
+  return spawnSync(nativeCodex().binary, args, {
+    cwd: options.cwd,
+    env: { HOME: options.home, CODEX_HOME: options.codexHome, PATH: options.path, ...options.env },
+    encoding: "utf8",
+    timeout: 60_000,
+  })
+}
+
+/** Throws unless the test's Codex, asked in a fresh temp home, is 0.167.0 or later. */
+function checkCodexVersion(): void {
+  const scratch = fs.realpathSync(tempDir())
+  for (const dir of ["home", "codex"]) fs.mkdirSync(path.join(scratch, dir))
+  const version = runCodex(["--version"], {
+    home: path.join(scratch, "home"),
+    codexHome: path.join(scratch, "codex"),
+    path: SYSTEM.join(":"),
+    cwd: scratch,
+  })
+  const found = (version.stdout.match(/(\d+)\.(\d+)\.(\d+)/) ?? []).slice(1).map(Number)
+  const first = found.findIndex((n, i) => n !== CODEX_FLOOR[i])
+  if (found.length !== 3 || (first >= 0 && found[first]! < CODEX_FLOOR[first]!)) {
+    throw new Error(`OPENCORP_TEST_CODEX is ${version.stdout.trim() || version.stderr.trim()}; need 0.167.0 or later`)
+  }
+}
 
 /** `value` as a TOML value on one line: tables inline, keys quoted. */
 function toml(value: unknown): string {
@@ -567,43 +749,46 @@ function toml(value: unknown): string {
   return `{ ${entries.map(([key, v]) => `${JSON.stringify(key)} = ${toml(v)}`).join(", ")} }`
 }
 
-/** Runs `script` with `sh` under Codex's own sandbox, given the employee's override as `-c` flags, with only a temp
+/** Runs `script` with `sh` under Codex's own sandbox, given the employee's override as `-c` flags, with only the temp
  *  home, a scratch CODEX_HOME and the harness PATH in its environment. */
 function codexSandbox(p: EmployeePermission, codexHome: string, script: string) {
-  const version = spawnSync(CODEX!, ["--version"], { encoding: "utf8", timeout: 30_000, env: { PATH: harnessPath(p) } })
-  const found = (version.stdout.match(/(\d+)\.(\d+)\.(\d+)/) ?? []).slice(1).map(Number)
-  const first = found.findIndex((n, i) => n !== CODEX_FLOOR[i])
-  if (found.length !== 3 || (first >= 0 && found[first]! < CODEX_FLOOR[first]!)) {
-    throw new Error(`OPENCORP_TEST_CODEX is ${version.stdout.trim() || version.stderr.trim()}; need 0.167.0 or later`)
-  }
-  const { permissions, config } = codexThread(p, "opencorp-t")
+  checkCodexVersion()
+  const { permissions, config } = codexThread(p, "opencorp-t", { install: nativeCodex().install })
   const flags = Object.entries(config).flatMap(([key, value]) => ["-c", `${key}=${toml(value)}`])
-  return spawnSync(CODEX!, ["sandbox", "-P", permissions, "-C", p.workspace, ...flags, "--", "sh", "-c", script], {
+  return runCodex(["sandbox", "-P", permissions, "-C", p.workspace, ...flags, "--", "sh", "-c", script], {
+    home: p.home,
+    codexHome,
+    path: harnessPath(p),
     cwd: p.workspace,
-    env: { HOME: p.home, CODEX_HOME: codexHome, PATH: harnessPath(p), TMPDIR: p.tmpdir },
-    encoding: "utf8",
-    timeout: 60_000,
+    env: { TMPDIR: p.tmpdir },
   })
 }
 
 test.skipIf(NO_CODEX)(
-  "under the override, Codex's sandbox runs sh, git and cc in the folder, and can't read the office's home, ~/.ssh or ~/.codex, or write outside the folder",
+  "under the override, Codex's sandbox runs sh, git and cc in the folder, reads no credential, the office's home or the fence, and writes nothing on the host outside the folder",
   () => {
-    const { root, home, ws, permission } = layout()
+    const { root, home, ws, fence, permission } = layout()
     fs.rmSync(path.join(ws, ".git"), { recursive: true })
-    expect(spawnSync("git", ["init", "-q", ws], { env: { PATH: "/usr/bin:/bin", HOME: home } }).status).toBe(0)
+    const init = spawnSync("git", ["init", "-q", ws], { env: { PATH: "/usr/bin:/bin", HOME: home } })
+    expect(init.status).toBe(0)
+    const gitConfig = fs.readFileSync(path.join(ws, ".git/config"), "utf8")
+    fs.writeFileSync(fence, "decoy-fence")
     const codexHome = path.join(root, "codex")
     fs.mkdirSync(codexHome)
+    const ownerConfig = '# the owner\'s config\nmodel_reasoning_effort = "low"\n'
+    fs.writeFileSync(path.join(codexHome, "config.toml"), ownerConfig)
     const cc = fs.existsSync("/usr/bin/cc")
+    // The sandbox's root is a writable scratch file system, so a write outside the folder can succeed in there: only
+    // the host side says whether it got out.
     const script = [
       "echo hi > ok.txt && cat ok.txt",
       "git rev-parse --is-inside-work-tree && echo git-ok",
       cc ? "printf 'int main(void){return 0;}\\n' > t.c && cc t.c -o t && ./t && echo cc-ok" : "true",
-      `cat ${home}/.ssh/id_test`,
-      `cat ${home}/.codex/auth.json`,
-      `ls ${home}/.opencorp/office && echo LEAK-office`,
-      `echo x > ${root}/outside.txt && echo LEAK-write`,
-      `echo x > ${home}/escape.txt && echo LEAK-home`,
+      `cat ${home}/.ssh/id_test ${home}/.codex/auth.json ${home}/.opencorp/office/connections/main.json ${fence}`,
+      `echo x > ${root}/outside.txt; echo x > ${home}/escape.txt`,
+      "printf '[core]\\n\\tfsmonitor = planted\\n' > .git/config; mv .git .git-old",
+      "mkdir -p .codex && echo planted > .codex/config.toml; echo planted > .mcp.json",
+      "mkdir -p .claude && echo planted > .claude/settings.json",
     ].join("\n")
     const result = codexSandbox(permission(), codexHome, script)
     const output = result.stdout + result.stderr
@@ -612,23 +797,26 @@ test.skipIf(NO_CODEX)(
     expect(result.stdout, output).toContain("git-ok")
     if (cc) expect(result.stdout, output).toContain("cc-ok")
     expect(output).not.toContain("decoy")
-    expect(output).not.toContain("LEAK")
+    expect(fs.readFileSync(path.join(ws, "ok.txt"), "utf8")).toBe("hi\n")
     expect(fs.existsSync(path.join(root, "outside.txt"))).toBe(false)
     expect(fs.existsSync(path.join(home, "escape.txt"))).toBe(false)
-    expect(fs.readFileSync(path.join(ws, "ok.txt"), "utf8")).toBe("hi\n")
+    expect(fs.readFileSync(path.join(ws, ".git/config"), "utf8")).toBe(gitConfig)
+    expect(fs.existsSync(path.join(ws, ".git-old"))).toBe(false)
+    for (const rel of [".codex/config.toml", ".mcp.json", ".claude/settings.json"]) {
+      expect(fs.existsSync(path.join(ws, rel)), rel).toBe(false)
+    }
+    expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).toBe(ownerConfig)
   },
 )
 
-test.skipIf(NO_CODEX)("an allow rule in the scratch CODEX_HOME's rules still runs its command sandboxed", () => {
-  // `codex sandbox` always sandboxes; what lets an agent's allowed command stay sandboxed is the deny entry the
-  // profile keeps, so this checks the fence is denied with the rule in place.
-  const { root, home, fence, permission } = layout()
-  fs.writeFileSync(fence, "decoy-fence")
+test.skipIf(NO_CODEX)("in a folder with no .git, Codex's sandbox can't start a repository and plant its config", () => {
+  const { root, ws, permission } = layout()
+  fs.rmSync(path.join(ws, ".git"), { recursive: true })
   const codexHome = path.join(root, "codex")
-  fs.mkdirSync(path.join(codexHome, "rules"), { recursive: true })
-  fs.writeFileSync(path.join(codexHome, "rules/default.rules"), 'prefix_rule(pattern = ["cat"], decision = "allow")\n')
-  const result = codexSandbox(permission(), codexHome, `cat ${fence}; cat ${home}/.ssh/id_test; echo done`)
-  const output = result.stdout + result.stderr
-  expect(result.stdout, output).toContain("done")
-  expect(output).not.toContain("decoy")
+  fs.mkdirSync(codexHome)
+  const script = "git init -q .; mkdir -p .git && printf '[core]\\n\\tfsmonitor = planted\\n' > .git/config; echo done"
+  const result = codexSandbox(permission({ gitRoot: null }), codexHome, script)
+  expect(result.stdout, result.stdout + result.stderr).toContain("done")
+  expect(fs.existsSync(path.join(ws, ".git/config"))).toBe(false)
+  expect(fs.existsSync(path.join(ws, ".git/HEAD"))).toBe(false)
 })

@@ -217,6 +217,22 @@ test.skipIf(!sandboxAvailable())(
   },
 )
 
+test.skipIf(!sandboxAvailable())(
+  "in a writable folder with no repository the shell can't start one and plant its config",
+  async () => {
+    const { ws, make } = makePolicy()
+    const policy = make()
+    const init = await shell(policy, "git init -q .")
+    expect(init.exit, init.output).not.toBe(0)
+    const planted = await shell(policy, "mkdir -p .git && printf '[core]\\n\\tfsmonitor = planted\\n' > .git/config")
+    expect(planted.exit, planted.output).not.toBe(0)
+    const moved = await shell(policy, "mv .git .git-old")
+    expect(moved.exit, moved.output).not.toBe(0)
+    if (ON_LINUX) expect(fs.readdirSync(path.join(ws, ".git"))).toEqual([])
+    else expect(fs.existsSync(path.join(ws, ".git"))).toBe(false)
+  },
+)
+
 test.skipIf(!sandboxAvailable())("links do not escape", async () => {
   const policy = makePolicy().make()
   const secret = path.join(office(), ".ssh/id_ed25519")

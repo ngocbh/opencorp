@@ -116,8 +116,10 @@ function system({ tty, network, files }: { tty: boolean; network: boolean; files
  * They come after the workspace bind so they cover it. `.git` is bound onto itself:
  * Linux refuses to rename a mount point, but not a directory that merely contains one,
  * so binding only `.git/hooks` and `.git/config` would leave `mv .git .git2` open.
- * A missing `.git/hooks` is created first, since a bind needs an existing source; a
- * missing `.git/config` stays missing, and is then writable.
+ * A missing `.git/hooks` is created first, since a bind needs an existing source. A missing
+ * `.git` is created empty, and it and a `.git` with no config (not a repository yet) are bound
+ * read-only whole: otherwise `git init` there would write a config with, say, `core.fsmonitor`,
+ * which git run later as the owner (or a harness's own git) runs. git skips an empty `.git`.
  *
  * Each project config folder (`.codex`, `.agents`, `.claude`) is bound read-only onto itself, so it can't be written,
  * renamed or removed; a missing one is created first, as `.git/hooks` is. A project config file (`.mcp.json`) is
@@ -145,13 +147,16 @@ function protectedBinds(policy: SandboxPolicy): string[] {
 /** The mounts of `protectedBinds` that keep `.git` protected. */
 function gitBinds(policy: SandboxPolicy): string[] {
   const { git, hooks, config } = policy.protectedPaths
-  const stat = lstat(git)
-  if (stat === undefined || stat.isSymbolicLink()) return []
-  if (stat.isFile()) {
-    // A worktree's .git file names the real git dir.
-    return ["--ro-bind", git, git]
+  let stat = lstat(git)
+  if (stat === undefined) {
+    fs.mkdirSync(git)
+    stat = lstat(git)
   }
+  if (stat === undefined || stat.isSymbolicLink()) return []
+  // A worktree's .git file names the real git dir.
+  if (stat.isFile()) return ["--ro-bind", git, git]
   if (!stat.isDirectory()) return []
+  if (lstat(config) === undefined) return ["--ro-bind", git, git]
   if (lstat(hooks) === undefined) fs.mkdirSync(hooks)
   const binds = ["--bind", git, git]
   for (const p of [hooks, config]) {

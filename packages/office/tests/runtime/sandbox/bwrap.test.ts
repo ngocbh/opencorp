@@ -64,6 +64,7 @@ test("workspace bind mode", () => {
 test("git paths are read only over a writable workspace", () => {
   const policy = setup().make()
   fs.mkdirSync(path.join(policy.workspace, ".git"))
+  fs.writeFileSync(path.join(policy.workspace, ".git/config"), "")
   const argv = command(policy, ["x"])
   const ws = policy.workspace
   const git = path.join(ws, ".git")
@@ -124,6 +125,7 @@ test("missing .codex, .agents and .claude folders are made first, and a link is 
 test("missing git hooks is created so it can be bound", () => {
   const policy = setup().make()
   fs.mkdirSync(path.join(policy.workspace, ".git"))
+  fs.writeFileSync(path.join(policy.workspace, ".git/config"), "")
   command(policy, ["x"])
   expect(fs.statSync(path.join(policy.workspace, ".git/hooks")).isDirectory()).toBe(true)
 })
@@ -159,11 +161,25 @@ test("git symlinks are never bound", () => {
   expect(fs.existsSync(path.join(secret, "hooks"))).toBe(false)
 })
 
-test("no git no git binds", () => {
+test("a missing .git is made empty and bound read-only whole, so a call can't start a repository and plant its config", () => {
   const policy = setup().make()
+  const git = path.join(policy.workspace, ".git")
   const argv = command(policy, ["x"])
-  expect(fs.existsSync(path.join(policy.workspace, ".git"))).toBe(false)
-  expect(argv).not.toContain(path.join(policy.workspace, ".git"))
+  expect(fs.readdirSync(git)).toEqual([])
+  expect(triples(argv, "--ro-bind")).toContainEqual(["--ro-bind", git, git])
+  expect(triples(argv, "--bind")).not.toContainEqual(["--bind", git, git])
+  expect(argv).not.toContain(path.join(git, "hooks"))
+})
+
+test("a .git with no config isn't a repository yet, so it is bound read-only whole", () => {
+  // git init there would write a config, which a later git run by the owner reads.
+  const policy = setup().make()
+  const git = path.join(policy.workspace, ".git")
+  fs.mkdirSync(path.join(git, "objects"), { recursive: true })
+  const argv = command(policy, ["x"])
+  expect(triples(argv, "--ro-bind")).toContainEqual(["--ro-bind", git, git])
+  expect(triples(argv, "--bind")).not.toContainEqual(["--bind", git, git])
+  expect(fs.existsSync(path.join(git, "hooks"))).toBe(false)
 })
 
 test("tmpdir and read only", () => {

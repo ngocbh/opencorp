@@ -43,6 +43,11 @@ export interface EmployeePermission {
   home: string
   officeHome: string
   office?: OfficePaths
+  /** The harnesses' own config folders where they are set apart from the home (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`):
+   *  denied by name, as the home's are, and never the session's folder. */
+  harnessHomes?: readonly string[]
+  /** Folders other people's permissions list as writable: none of them goes on this one's PATH. */
+  othersWritable?: readonly string[]
 }
 
 /** The system folders that start every harness PATH. Both harnesses run `git`, `rg` and (Codex, on Linux) `bwrap`
@@ -73,8 +78,12 @@ interface Checked {
   fence: string
   folders: Listed[]
   home: string
-  /** `<OPENCORP_HOME>` and the home's credential folders, less any a listed folder covers: denied by name. */
+  /** `<OPENCORP_HOME>`, the home's credential folders and the harnesses' own config folders, less any a listed
+   *  folder covers: denied by name. */
   denied: string[]
+  /** The folders the harness's commands can write: the session's folder if writable, the temp folder, and each
+   *  writable listed folder. */
+  writableRoots: string[]
   /** The workspace's paths both harnesses keep read-only (`keptPaths`). */
   kept: Kept[]
   /** The harness PATH. */
@@ -92,20 +101,27 @@ interface Kept {
  *  is unique per session, since the layer is deep-merged with any other layer defining the same id; a subagent
  *  inherits its parent's profile.
  *
- *  `mcpServers` are the owner's MCP servers by name, each turned off. Throws as `checkPermission` does. */
+ *  `install` is the folder Codex is installed in (the one holding the `bin` of its resolved binary): its sandboxed
+ *  commands run Codex's own binary, so the profile reads it, and it is refused if the employee can write it.
+ *  `mcpServers` are the owner's MCP servers (`mcpServersOff`). Throws as `checkPermission` does. */
 export function codexThread(
   p: EmployeePermission,
   id: string,
-  { mcpServers = [] }: { mcpServers?: readonly string[] } = {},
+  { install, mcpServers = [] }: { install: string; mcpServers?: readonly string[] },
 ): { permissions: string; config: Record<string, unknown> } {
   // A `:` name is one of Codex's built-in profiles.
   if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`a Codex profile id is letters, digits, - and _; got ${id}`)
   const c = checked(p)
   // No `:root` entry, so nothing is readable but what is listed. On equally specific entries deny beats write beats
   // read, and a more specific entry beats a broader one.
-  const filesystem: Record<string, string> = { ":minimal": "read", [c.workspace]: c.writable ? "write" : "read" }
+  const filesystem: Record<string, string> = {
+    ":minimal": "read",
+    [installFolder(install, c.writableRoots)]: "read",
+    [c.workspace]: c.writable ? "write" : "read",
+  }
   // Codex keeps a writable root's top-level .git and .codex read-only by itself, and .agents only when it exists;
-  // listing all of them holds a missing one too, and the rest (.claude, .mcp.json) Codex wouldn't hold at all.
+  // listing all of them holds a missing one too (so no `git init` starts a repository), and the rest (.claude,
+  // .mcp.json) Codex wouldn't hold at all.
   for (const kept of c.kept) filesystem[kept.path] = "read"
   filesystem[c.tmpdir] = "write"
   for (const folder of c.folders) filesystem[folder.path] = folder.access
@@ -120,30 +136,42 @@ export function codexThread(
   const config: Record<string, unknown> = {
     permissions: { [id]: { filesystem, network: { enabled: c.network } } },
     projects,
-    features: { hooks: false, apps: false, plugins: false },
+    // Memories write the owner's Codex home; a skill's MCP dependency installs a server that runs as the owner.
+    features: { hooks: false, apps: false, plugins: false, memories: false, skill_mcp_dependency_install: false },
     notify: [],
   }
-  if (mcpServers.length > 0) {
-    config.mcp_servers = Object.fromEntries(mcpServers.map((name) => [name, { enabled: false }]))
-  }
+  if (mcpServers.length > 0) config.mcp_servers = mcpServersOff(mcpServers)
   // Codex's own web search reaches the web from the harness, outside the sandbox.
   if (!c.network) config.web_search = "disabled"
   return { permissions: id, config }
+}
+
+/** The `mcp_servers` override that turns each of `defined` off: exactly the names the owner's Codex config defines,
+ *  since Codex fails to load a config that turns off a name it doesn't define (it has no transport). */
+export function mcpServersOff(defined: readonly string[]): Record<string, { enabled: false }> {
+  return Object.fromEntries(defined.map((name) => [name, { enabled: false as const }]))
 }
 
 /** Claude Code's flag settings (`--settings`), its `--add-dir` folders, and its environment, for one session.
  *
  *  Its Bash sandbox reads everything but `denyRead` (where `allowRead` re-opens a folder), and can always write its
  *  working folder and each `--add-dir` folder, with `denyWrite` winning over every write allow; its own file tools
- *  are held by its permission rules, not the OS. With the network on its commands may reach any host (`*`, a grammar
- *  not yet checked against a real Claude Code), never asking. Throws as `checkPermission` does. */
+ *  are held by its permission rules, not the OS, so its `Read` denies mirror the folders denied by name. Throws as
+ *  `checkPermission` does, and for the network on: its sandbox takes only a list of allowed hosts, and no setting
+ *  that allows every host has been checked against a real Claude Code. */
 export function claudeStart(p: EmployeePermission): {
   settings: Record<string, unknown>
   addDirs: string[]
   env: Record<string, string>
 } {
   const c = checked(p)
+  if (c.network) {
+    throw new Error("Claude Code with the network on isn't supported yet: its sandbox can't allow every host")
+  }
   const covered = (denied: string) => c.folders.some((folder) => within(denied, folder.path))
+  // A Read deny beats any allow, so a denied folder holding a folder Claude Code may read isn't mirrored.
+  const opened = [c.workspace, c.tmpdir, ...c.folders.map((folder) => folder.path)]
+  const mirrored = c.denied.filter((denied) => !opened.some((p) => within(p, denied)))
   const readOnly = readOnlyOf(c.folders)
   const writable = writableOf(c.folders)
   const settings = {
@@ -158,17 +186,18 @@ export function claudeStart(p: EmployeePermission): {
         allowWrite: [...(c.writable ? [c.workspace] : []), c.tmpdir, ...writable],
         denyWrite: [...(c.writable ? [] : [c.workspace]), ...readOnly, ...c.kept.map((kept) => kept.path)],
       },
-      network: { allowedDomains: c.network ? ["*"] : [], strictAllowlist: true },
+      network: { allowedDomains: [], strictAllowlist: true },
     },
     permissions: {
       blockReadsOutsideWorkingDirectories: true,
       deny: [
         ...(c.writable ? [] : ["Edit", "Write", "NotebookEdit"]),
-        // `//` starts an absolute path in a permission rule.
-        ...readOnly.map((folder) => `Edit(/${folder}/**)`),
-        ...c.kept.map((kept) => `Edit(/${kept.path}${kept.folder ? "/**" : ""})`),
+        ...readOnly.flatMap((folder) => rules("Edit", folder, true)),
+        ...c.kept.flatMap((kept) => rules("Edit", kept.path, kept.folder)),
+        ...mirrored.flatMap((denied) => rules("Read", denied, true)),
         // Both reach the web from Claude Code itself, outside its sandbox.
-        ...(c.network ? [] : ["WebFetch", "WebSearch"]),
+        "WebFetch",
+        "WebSearch",
       ],
     },
     disableAllHooks: true,
@@ -182,9 +211,16 @@ export function claudeStart(p: EmployeePermission): {
   return { settings, addDirs: c.folders.map((folder) => folder.path), env }
 }
 
+/** Claude Code permission rules for `tool` on the absolute `p` (`//` starts an absolute path), and, for a folder, on
+ *  what is in it. */
+function rules(tool: string, p: string, folder: boolean): string[] {
+  return folder ? [`${tool}(/${p})`, `${tool}(/${p}/**)`] : [`${tool}(/${p})`]
+}
+
 /** The fixed PATH both harnesses run with: the system folders, then the `bin` folder of each read-only listed folder.
  *  A writable listed folder is never on it, nor is any entry that is or walks through a folder the harness can
- *  write (the session's folder, the temp folder, a writable listed folder). Throws as `checkPermission` does. */
+ *  write (the session's folder, the temp folder, a writable listed folder) or another person's writable folder,
+ *  nor a listed `bin` that others than the user may write. Throws as `checkPermission` does. */
 export function harnessPath(p: EmployeePermission): string {
   return checked(p).path
 }
@@ -210,6 +246,8 @@ function checked(p: EmployeePermission): Checked {
     ["office's home", p.officeHome],
     ...(p.gitRoot === null ? [] : ([["git root", p.gitRoot]] as [string, string][])),
     ...p.folders.map((folder): [string, string] => ["listed folder", folder.path]),
+    ...(p.harnessHomes ?? []).map((dir): [string, string] => ["harness's config folder", dir]),
+    ...(p.othersWritable ?? []).map((dir): [string, string] => ["other person's writable folder", dir]),
   ]
   for (const [what, given] of named) {
     if (!path.isAbsolute(given)) {
@@ -220,7 +258,8 @@ function checked(p: EmployeePermission): Checked {
   const officeHome = realPath(p.officeHome)
   const workspace = existingDir("workspace", p.workspace)
   checkWorkspace(workspace, { ...p.office, home })
-  checkClearOf(workspace, [officeHome])
+  const harnessHomes = (p.harnessHomes ?? []).map((dir) => realPath(dir))
+  checkClearOf(workspace, [officeHome, ...harnessHomes])
   const gitRoot = p.gitRoot === null ? null : realPath(p.gitRoot)
   const tmpdir = privateFolder(p.tmpdir, officeHome)
   const fence = fenceFile(p.fence, officeHome)
@@ -238,7 +277,8 @@ function checked(p: EmployeePermission): Checked {
     if (outer !== undefined) throw new UnsafeProfile(`the harness can't write ${w} inside the read-only ${outer}`)
   }
   const sensitive = SENSITIVE_HOME_PATHS.map((rel) => realPath(path.join(home, rel)))
-  const denied = [...new Set([officeHome, ...sensitive])].filter((d) => !folders.some((f) => within(d, f.path)))
+  const byName = [...new Set([officeHome, ...sensitive, ...harnessHomes])]
+  const denied = byName.filter((d) => !folders.some((f) => within(d, f.path)))
   for (const resolved of [workspace, tmpdir, fence, home, ...folders.map((f) => f.path), ...denied]) {
     if (PATTERN.test(resolved)) throw new UnsafeProfile(`the harness would read ${resolved} as a pattern`)
   }
@@ -252,8 +292,9 @@ function checked(p: EmployeePermission): Checked {
     folders,
     home,
     denied,
+    writableRoots: writable,
     kept: keptPaths(workspace),
-    path: pathOf(folders, writable),
+    path: pathOf(folders, [...writable, ...(p.othersWritable ?? []).map((dir) => realPath(dir))]),
   }
 }
 
@@ -326,30 +367,44 @@ function listedFolders(p: EmployeePermission, workspace: string, tmpdir: string)
   return walks.map((walk) => ({ path: walk.path, access: walk.access }))
 }
 
-/** The workspace's paths both harnesses keep read-only: `.git`'s hooks and config (a worktree's `.git` file instead),
- *  then the project config folders and files. A link is left out: both harnesses' Linux sandboxes bind a read-only
- *  path onto itself, which follows a link and would mount its target. */
+/** The workspace's paths both harnesses keep read-only: `.git` whole (a folder, a worktree's `.git` file, or missing,
+ *  which both harnesses' sandboxes hold too, so no `git init` starts a repository whose config git later runs as the
+ *  owner), then the project config folders and files. Only its parts would leave `mv .git` open, and Codex can't
+ *  mount a missing part inside a read-only `.git`. A link is left out, unprotected: both harnesses' Linux sandboxes
+ *  bind a read-only path onto itself, which follows a link and would mount its target. */
 function keptPaths(workspace: string): Kept[] {
   const git = path.join(workspace, ".git")
-  const stat = fs.lstatSync(git, { throwIfNoEntry: false })
-  const kept: Kept[] = stat?.isFile()
-    ? [{ path: git, folder: false }]
-    : stat?.isDirectory()
-      ? [
-          { path: path.join(git, "hooks"), folder: true },
-          { path: path.join(git, "config"), folder: false },
-        ]
-      : []
-  kept.push(
+  const kept: Kept[] = [
+    { path: git, folder: !fs.lstatSync(git, { throwIfNoEntry: false })?.isFile() },
     ...PROJECT_CONFIG_FOLDERS.map((name) => ({ path: path.join(workspace, name), folder: true })),
     ...PROJECT_CONFIG_FILES.map((name) => ({ path: path.join(workspace, name), folder: false })),
-  )
+  ]
   return kept.filter((k) => !fs.lstatSync(k.path, { throwIfNoEntry: false })?.isSymbolicLink())
 }
 
-/** The harness PATH over `folders`, leaving out each entry that is in, or walks through, one of `writable`. */
+/** `install` resolved, if the employee can't write it: neither it nor a folder its path walks through lies in a folder
+ *  the harness can write, and it holds none. */
+function installFolder(install: string, writable: readonly string[]): string {
+  const what = `Codex's install folder ${JSON.stringify(install)}`
+  if (!path.isAbsolute(install)) throw new UnsafeProfile(`${what} isn't absolute`)
+  const visited: string[] = []
+  const real = realPath(install, visited)
+  for (const root of writable) {
+    const through = [real, ...visited].find((p) => within(p, root)) ?? (within(root, real) ? root : undefined)
+    if (through !== undefined) {
+      throw new UnsafeProfile(`${what} is writable by the employee: ${through} is in or holds ${root}`)
+    }
+  }
+  if (PATTERN.test(real)) throw new UnsafeProfile(`the harness would read ${real} as a pattern`)
+  return real
+}
+
+/** The harness PATH over `folders`, leaving out each entry that is in, or walks through, one of `writable`, and each
+ *  listed `bin` that others than the user may write (it or its folder is group- or other-writable). */
 function pathOf(folders: readonly Listed[], writable: readonly string[]): string {
-  const bins = readOnlyOf(folders).map((folder) => path.join(folder, "bin"))
+  const bins = readOnlyOf(folders)
+    .filter((folder) => !openToOthers(folder) && !openToOthers(path.join(folder, "bin")))
+    .map((folder) => path.join(folder, "bin"))
   const entries = [...SYSTEM_PATH, ...bins].filter((entry) => {
     const visited: string[] = []
     const real = realPath(entry, visited)
@@ -360,4 +415,10 @@ function pathOf(folders: readonly Listed[], writable: readonly string[]): string
   if (bad !== undefined) throw new UnsafeProfile(`the harness PATH can't hold ${bad}, which has a ':'`)
   if (entries.length === 0) throw new UnsafeProfile("nothing is left on the harness PATH: every folder is writable")
   return [...new Set(entries)].join(":")
+}
+
+/** Whether `p` (followed) exists and its group or others may write it. */
+function openToOthers(p: string): boolean {
+  const stat = fs.statSync(p, { throwIfNoEntry: false })
+  return stat !== undefined && (stat.mode & 0o022) !== 0
 }

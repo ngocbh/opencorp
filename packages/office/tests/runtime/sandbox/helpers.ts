@@ -97,9 +97,10 @@ export function goldenSshPolicy(fields: {
 }
 
 /** The file helper's `list` of a writable workspace whose own entries are `entries`: bubblewrap first makes the
- *  project config folders it keeps read-only (Seatbelt makes none), so a fresh workspace lists them too. */
+ *  project config folders and the `.git` it keeps read-only (Seatbelt makes none), so a fresh workspace lists them
+ *  too. */
 export function listing(...entries: string[]): string {
-  const made = process.platform === "linux" ? [".agents/", ".claude/", ".codex/"] : []
+  const made = process.platform === "linux" ? [".agents/", ".claude/", ".codex/", ".git/"] : []
   return [...made, ...entries].join("\n") || "(empty)"
 }
 
