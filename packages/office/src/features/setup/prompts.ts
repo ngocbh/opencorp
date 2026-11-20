@@ -62,6 +62,21 @@ export interface Prompter {
   step(number: number, total: number, title: string, why: string): void
 }
 
+/** `prompter` with no one to ask, as a terminal with no one at it: what it says and each step still show, every
+ *  question takes its default, and a secret throws `NoTerminal`. */
+export function askingNothing(prompter: Prompter): Prompter {
+  return {
+    interactive: false,
+    ask: async (_question, defaultAnswer = "") => defaultAnswer,
+    choose: async (_question, _options, defaultAnswer = "") => defaultAnswer,
+    secret: async (question) => {
+      throw new NoTerminal(`there is no one to read ${repr(question)} from`)
+    },
+    say: (text) => prompter.say(text),
+    step: (number, total, title, why) => prompter.step(number, total, title, why),
+  }
+}
+
 /** One line from `input` without its `\n` (and a trailing `\r`), the rest left unread; the last
  *  unterminated line at the end or close; `undefined` once the input has ended or closed with nothing left.
  *  Rejects with the stream's error. */

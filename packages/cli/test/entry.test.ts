@@ -256,13 +256,13 @@ test("the npm shim refuses an unsupported OS", () => {
 /** The lines of `text` that are neither blank nor a `//` comment. */
 const code = (text: string) => text.split("\n").filter((line) => line.trim() !== "" && !line.trim().startsWith("//"))
 
-test("the entry has no shebang, is not executable, and its first statement dispatches the internal modes", () => {
+test("the entry has no shebang, is not executable, and its first statement dispatches the internal modes, handing install its hooks", () => {
   const text = fs.readFileSync(ENTRY, "utf8")
   expect(text.split("\n")[0]!.startsWith("#!")).toBe(false)
   expect(fs.statSync(ENTRY).mode & 0o111).toBe(0)
   expect(code(text).slice(0, 2)).toEqual([
     'const internal = import.meta.main && (process.argv[2] === "__fs-helper" || process.argv[2] === "__worker" || process.argv[2] === "daemon" || process.argv[2] === "install")',
-    'if (internal) process.exitCode = await (await import("@opencorp/office")).officeMain(process.argv.slice(2))',
+    'if (internal) process.exitCode = await (await import("@opencorp/office")).officeMain(process.argv.slice(2), process.argv[2] === "install" ? (await import("./chat")).installHooks() : {})',
   ])
 })
 

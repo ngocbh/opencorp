@@ -1,17 +1,21 @@
-/** The install tests' helpers (Python's `tests/install/conftest.py`, `Script` from `test_provider_setup.py`, and
- *  `flowReplies` from `test_interview.py`).
+/** The install tests' helpers (Python's `tests/install/conftest.py` and `Script` from `test_provider_setup.py`), and
+ *  chats for init's interview.
  *  Tests never run a real service tool: every install test passes a `makeHost` host, whose `run` is a `Runner`. */
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process"
 import path from "node:path"
 import { expect, onTestFinished } from "bun:test"
 import { OAuthCredentials } from "@ngocbh/yian/llm_clients"
-import type { InitOutput } from "../../../src/company/draft.ts"
+import type { Draft } from "../../../src/company/draft.ts"
+import { dontAskRefusal } from "../../../src/runtime/permissions/policy.ts"
+import type { BuiltinSession, CardAnswer, SessionBinding } from "../../../src/runtime/sessions/builtin.ts"
+import { LocalHost } from "../../../src/server/local/host.ts"
 import { type Completed, type Host, type Launch, launch, officeAnswers } from "../../../src/runtime/service/launch.ts"
+import type { InterviewChat } from "../../../src/features/setup/interview.ts"
 import type { Listers, SubscriptionAuth } from "../../../src/features/setup/onboard.ts"
+import { CREATE } from "../../../src/features/setup/tools/propose_company.ts"
 import { killGroup, sameProcess, startTime } from "../../../src/util/proc.ts"
 import { type Prompter, stepLines } from "../../../src/features/setup/prompts.ts"
 import { repr } from "../../../src/util/redact.ts"
-import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { startGroup } from "../../helpers.ts"
 
 /** Records commands and answers each from a table of `[argv prefix, code, stderr, stdout?]`: the first matching
@@ -139,20 +143,55 @@ export class Script implements Prompter {
   }
 }
 
-/** One interview round from the model: ask `question`, check `output`, then return it. */
-export function flowReplies(
-  question: string,
-  output: InitOutput,
-  options?: readonly string[],
-): ScriptedReply[] {
-  const args = { question, ...(options?.length ? { options } : {}) }
-  const check = { company: output.company, owner: output.owner, teammates: output.teammates }
-  return [
-    { tool_calls: [{ name: "ask_user", arguments: args }] },
-    { tool_calls: [{ name: "check_company", arguments: check }] },
-    { content: "That's everything." }, // ends the tool loop
-    { tool_calls: [{ name: "Record", arguments: output }] }, // forced structured output
-  ]
+/** What the no-office host binds for a session's tools, in `auto`: each card held through `ask` is answered at once
+ *  with the next of `answers`; "dontAsk" refuses it, as a host in dontAsk does. */
+export function cardBinding(answers: (CardAnswer | "dontAsk")[]): SessionBinding {
+  return {
+    sessionId: "01JDSESSION000000000000000",
+    permissions: {
+      mode: () => "auto",
+      rules: () => [],
+      where: () => ({ profile: "ssh", cwd: null, writable: [] }),
+      hold: () => "Not run: no card here",
+      check: async () => ({ verdict: "run", reason: "fine" }),
+    },
+    hold: () => "Not run: no card here",
+    ask: (card, _callId, act) => {
+      const answer = answers.shift()
+      if (answer === undefined) throw new Error("no answer left for the card")
+      return answer === "dontAsk" ? dontAskRefusal(card.reason) : act(answer, new AbortController().signal)
+    },
+    onShell: () => ({ changed: () => {}, output: () => {} }),
+    instruments: { add: () => {}, updated: () => {}, output: () => {}, remove: () => {} },
+  }
+}
+
+/** A chat for init's interview that proposes `draft` as the model would, and the owner says Yes on its card, with the
+ *  tools bound as the host binds them; each session it is given goes to `sessions`. */
+export function accepting(draft: Draft, sessions: BuiltinSession<never>[] = []): InterviewChat {
+  return async (session) => {
+    sessions.push(session)
+    const tools = await session.tools(cardBinding([{ value: CREATE, typed: false }]))
+    const { name, handle, title } = draft.owner
+    const args = { company: draft.company, owner: { name, handle, title }, teammates: draft.team }
+    await tools.groups.propose_company!.propose_company!.call(args, { callId: "r/init/1/0" })
+    return { status: "ended", error: null }
+  }
+}
+
+/** A chat that runs the interview's session on the no-office host, as the CLI's does with the TUI on it: `owner`
+ *  plays the owner on the host, then the chat ends as the session does. */
+export function hostChat(owner: (host: LocalHost) => Promise<void>): InterviewChat {
+  return async (session) => {
+    const host = await LocalHost.start(session, { log: () => {} })
+    try {
+      await owner(host)
+      await host.ended
+      return { status: host.failure === null ? "ended" : "failed", error: host.failure }
+    } finally {
+      await host.close()
+    }
+  }
 }
 
 /** Listers that list nothing, so no test reaches a provider: the model or deployment is typed. */

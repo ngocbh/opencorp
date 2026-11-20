@@ -2,10 +2,11 @@
 // is loaded only when it runs, so `opencorp doctor` never loads the TUI.
 //
 // The internal modes come first and load only the office: a sandboxed __fs-helper, a __worker,
-// the daemon or the setup commands (`install`) never load a command or the TUI. ESM runs static
+// the daemon or the setup commands (`install`) never load a command, and load the TUI only for
+// init's chat, which `install` is handed as a hook (chat.ts imports only types). ESM runs static
 // imports before any statement, so this file has none (test/entry.test.ts checks).
 const internal = import.meta.main && (process.argv[2] === "__fs-helper" || process.argv[2] === "__worker" || process.argv[2] === "daemon" || process.argv[2] === "install")
-if (internal) process.exitCode = await (await import("@opencorp/office")).officeMain(process.argv.slice(2))
+if (internal) process.exitCode = await (await import("@opencorp/office")).officeMain(process.argv.slice(2), process.argv[2] === "install" ? (await import("./chat")).installHooks() : {})
 
 // In the compiled binary (its bundle's URL has no `.ts`), OpenTUI loads its native library and
 // assets from the install, never from a copy Bun would extract to a predictable $TMPDIR path that

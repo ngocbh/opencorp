@@ -1,5 +1,6 @@
-/** A built-in agent's session on a host with no office: what a feature gives the host (`BuiltinSession`), and what the
- *  host gives the feature's tools (`SessionBinding`). The host runs the session's flow in a kept worker and serves it
+/** A built-in agent's session on a host with no office: what a feature gives the host (`BuiltinSession`), what the
+ *  host gives the feature's tools (`SessionBinding`), and the chat that runs it with the TUI on it (`BuiltinChat`),
+ *  which the CLI gives the feature. The host runs the session's flow in a kept worker and serves it
  *  as the office serves its sessions: its cards, its four modes, Auto's check and its instruments. */
 import type { ApprovalCard, Permissions, Where } from "../permissions/policy.ts"
 import type { OfficeTool } from "../worker/rpc.ts"
@@ -47,6 +48,17 @@ export interface BuiltinSession<T extends BuiltinTerminal = BuiltinTerminal> {
   readonly folder: string
   /** The session's tools, given what the host binds for them. */
   tools(binding: SessionBinding): BuiltinTools<T> | Promise<BuiltinTools<T>>
+}
+
+/** Runs `session` on the no-office host with the TUI on it, in this process, so what the session's tools leave open
+ *  stays the caller's. Resolves once the session is over, the host stopped and the TUI closed, to how it ended. */
+export type BuiltinChat<T extends BuiltinTerminal = BuiltinTerminal> = (session: BuiltinSession<T>) => Promise<ChatEnd>
+
+/** How a built-in agent's session ended: as asked (`ended`), its run failed (`failed`, `error` saying why, as the run
+ *  said it), or the owner left the TUI before it ended (`left`, which ends it). */
+export interface ChatEnd {
+  readonly status: "ended" | "failed" | "left"
+  readonly error: string | null
 }
 
 /** What a card's Yes runs: the held call's output, stopped by `signal` (Esc, End). */

@@ -14,7 +14,7 @@ import { AUTH_FILE_ENV } from "../../models/connections.ts"
 import { LISTERS, type Listers, signInRemedy, type SubscriptionAuth } from "../setup/onboard.ts"
 import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../setup/prompts.ts"
 import { embedded } from "../../platform.ts"
-import type { BuiltinSession } from "../../runtime/sessions/builtin.ts"
+import type { BuiltinChat, BuiltinSession, ChatEnd } from "../../runtime/sessions/builtin.ts"
 import type { Terminal } from "../../tools/terminal/terminal.ts"
 import { which } from "../../util/env.ts"
 import { newId } from "../../util/ids.ts"
@@ -115,20 +115,9 @@ export interface VisitDeps {
   /** Makes yian's `OpenAIAuth` for the picker's ChatGPT sign-in (the real one by default). */
   auth?: SubscriptionAuth
   /** Where there's a terminal the TUI can draw on: runs learning's session, a chat with OpenCorp, in this process on
-   *  the no-office host, with the TUI on it; see `LearnChat`. Without it, learning is refused. */
-  learnChat?: LearnChat
-}
-
-/** Runs `session` on the no-office host with the TUI on it, in this process, so the connection the session's save
- *  leaves open stays this visit's. Resolves once the session is over, the host stopped and the TUI closed, to how it
- *  ended: see `LearnEnd`. */
-export type LearnChat = (session: BuiltinSession<Terminal>) => Promise<LearnEnd>
-
-/** How learning's session ended: as asked (`ended`), its run failed (`failed`, `error` saying why, as the run said
- *  it), or the owner left the TUI before it ended (`left`, which ends it). */
-export interface LearnEnd {
-  readonly status: "ended" | "failed" | "left"
-  readonly error: string | null
+   *  the no-office host, with the TUI on it, so the connection the session's save leaves open stays this visit's.
+   *  Without it, learning is refused. */
+  learnChat?: BuiltinChat<Terminal>
 }
 
 export const USE = "Use it"
@@ -434,7 +423,7 @@ async function learnPath(
   const secrets = () => providerSecrets(provider, workerEnv(ctx.env))
   const id = newId()
   const state = new Learning(ctx, secrets, port, ctx.paths.session(id), deps.now)
-  let end: LearnEnd
+  let end: ChatEnd
   try {
     end = await deps.learnChat!(learningSession(ctx, deps, provider, inputs, id, state))
   } catch (error) {

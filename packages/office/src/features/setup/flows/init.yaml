@@ -1,109 +1,98 @@
-# `opencorp init`'s flow: interview the owner until they accept a company, then ask for a password and a remote.
-# Only calls of tools the office serves read the password and the remote, so the model never sees them.
+# `opencorp init`'s interview: a chat with OpenCorp, in the chat flow's shape, one LOOP iteration per turn. Each turn
+# takes everything the owner sent since the last one, and the reply works out with them the company, its owner and
+# its first teammates; messages sent while the reply works steer it. It proposes the company with propose_company,
+# which shows the owner a card. The chat ends once the owner has accepted the company there, or the inbox closes.
+# init asks for the password and the remote itself, before this chat, so the model never sees them.
 id: init
 name: init
-description: Make a new company with its owner, then ask for the CEO's password and a git remote.
-typedefs:
-  Owner: {name: str, handle: str, title: str}
-  Teammate: {name: str, handle: str, title: str, about: str}
-  Answers:
-    company: str
-    owner: Owner
-    teammates: list(Teammate)
+description: Interview the owner, in a chat, for a new company, its owner and its first teammates, and propose it.
 input:
-  known: !str    # JSON: facts the owner already gave (flags) and suggestions (login name)
-  remote: !str   # the --remote flag, or ""
-nodes:
-  rounds:
-    kind: loop
+  messages: !Inbox(Message)  # what the owner sends; read by each turn's take and, while the reply works, as steers
+  known: !str  # JSON: facts the owner already gave (flags) and suggestions (login name)
+
+defs:
+  turn:
     input:
-      known: ${input.known}  # carried: a loop body can't read the flow's input
-      draft: ""              # JSON of the last answers
-      changes: ""            # what's wrong with the draft, or what the owner wants changed
-      accepted: false
-    until: accepted
-    max: 10
+      messages: !Inbox(Message)
+      known: !str
+      history: !list(Message)
+      closed: !bool
+      accepted: !bool
     nodes:
-      interview:
-        kind: agent
-        tools: [ask_user, check_company]
+      # The turn: everything sent since the last one. Messages read along with a close aren't answered.
+      heard:
+        kind: call
+        call: take
         input:
+          from: ${input.messages}
+          take: all
+      route:
+        kind: case
+        cases:
+          - when: ${heard.output.events != [] and not heard.output.closed}
+            then: reply
+      reply:
+        kind: agent
+        steer_inbox: ${input.messages}
+        tools: [ask_user, propose_company]
+        input:
+          history: ${input.history}
+          said: ${heard.output.events}
           known: ${input.known}
-          draft: ${input.draft}
-          changes: ${input.changes}
-        output: !Answers
-        prompt: |-
-          You are setting up a new OpenCorp company with its owner, the human you are talking to. The owner is
-          the company's CEO. The teammates are AI agents who report to the owner.
+        output: !Optional(str)  # null only after an interrupt
+        system_prompt: |-
+          You are OpenCorp, setting up a new OpenCorp company with its owner, the human you are chatting with. The
+          owner is the company's CEO. The teammates are AI agents who report to the owner.
 
           Collect:
           - the company's name;
           - the owner's name, handle and title (default "CEO");
-          - zero or more first teammates, each with a name, a handle, a title, and one or two sentences about
-            their work, which start the profile they work from.
+          - zero or more first teammates, each with a name, a handle, a title, and one or two sentences about their
+            work, which start the profile they work from.
 
-          A handle is 1 to 32 characters: lowercase letters, digits and hyphens, starting and ending with a
-          letter or a digit. Every handle must differ from the others. Offer one made from the person's name as an
-          option, such as "minh" for Minh or "hong-ngoc" for Hong Ngoc.
+          A handle is 1 to 32 characters: lowercase letters, digits and hyphens, starting and ending with a letter or a
+          digit. Every handle must differ from the others. Offer one made from the person's name, such as "minh" for
+          Minh or "hong-ngoc" for Hong Ngoc.
 
-          Ask with the ask_user tool, one short question at a time. Offer options when there are obvious
-          choices. Don't ask about anything in "given" below; use it as it is. In "given", "name", "handle" and
-          "title" are the owner's, and "agent" and "agent_handle" are the first teammate's name and handle.
-          Ask about each owner field that isn't in "given", offering its "suggested" value as an option. Unless
-          "given" has "agent", ask who the first teammates should be; most owners start with one, such as an
-          engineer, and may also choose none.
+          Ask one short question at a time in your reply; the owner answers in the chat. When there are obvious choices,
+          ask with the ask_user tool instead, and offer them as options. Don't ask about anything in "given" below; use
+          it as it is. In "given", "name", "handle" and "title" are the owner's, and "agent" and "agent_handle" are the
+          first teammate's name and handle. Ask about each owner field that isn't in "given", offering its "suggested"
+          value. Unless "given" has "agent", ask who the first teammates should be; most owners start with one, such as
+          an engineer, and may also choose none.
 
-          Never ask for a password, an API key, a token or a git remote URL: `opencorp init` asks for those itself.
+          Never ask for a password, an API key, a token or a git remote URL: `opencorp init` asked for those itself,
+          before this chat.
 
-          When the last draft below isn't empty, start from it and ask only about what "What to change" says.
-          "What to change" and check_company's problems override "given": if either says a given handle is taken,
-          ask for a new one.
-
-          When you have everything, call check_company with the result. If it lists problems, ask the owner how to
-          fix each one, then check again. Return the result once check_company says "No problems.".
+          When you have everything, call propose_company with the company. It checks it first: if it lists problems,
+          ask the owner how to fix each one, then propose again. Otherwise it shows the owner the company on a card, and
+          tells you their answer. When they want changes, it says what, or to ask what; then propose again. Problems and
+          the owner's changes override "given": if either says a given handle is taken, ask for a new one. Once
+          propose_company says "Accepted", reply with one line for the owner.
 
           Already known (JSON):
           ${known}
-
-          Last draft (JSON, empty on the first run):
-          ${draft}
-
-          What to change:
-          ${changes}
-      confirm:
-        kind: call
-        call: confirm_company
-        input:
-          answers: ${interview.output}
-        output: {draft: !str, changes: !str, accepted: !bool}
+        prompt:
+          - ${history}
+          - ${said}
+    # The loop carries the messages inbox itself, so the output leaves it out. `accepted` is propose_company's own
+    # result, which says the owner accepted the company; the model's words can't set it.
     output:
       known: ${input.known}
-      draft: ${confirm.output.draft}
-      changes: ${confirm.output.changes}
-      accepted: ${confirm.output.accepted}
-  answers:
-    kind: code
+      history: ${input.history + heard.output.events + (reply.new_messages :- [])}
+      closed: ${heard.output.closed}
+      accepted: ${input.accepted or any([p.name == "propose_company" and startswith(p.content, "Accepted:") for m in (reply.new_messages :- []) for p in m.parts if p.type == "tool_result"])}
+
+nodes:
+  chat:
+    kind: loop
+    call: turn
     input:
-      draft: ${rounds.output.draft}
-    output: !Answers
-    code: |
-      return JSON.parse(inputs.draft)
-  password:
-    kind: call
-    call: ask_password
-    depends_on: [answers]  # without it, the password is asked before the interview
-    input: {}
-    output: !Optional(str)
-  remote:
-    kind: call
-    call: ask_remote
-    depends_on: [password]
-    input:
-      given: ${input.remote}
-    output: !str
+      messages: ${input.messages}
+      known: ${input.known}
+      history: []
+      closed: false
+      accepted: false
+    while: not closed and not accepted
 output:
-  company: ${answers.output.company}
-  owner: ${answers.output.owner}
-  teammates: ${answers.output.teammates}
-  password_hash: ${password.output}
-  remote: ${remote.output}
+  history: ${chat.output.history}

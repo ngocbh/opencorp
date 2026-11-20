@@ -69,33 +69,85 @@ for (const command of ["init", "onboard"] as const) {
       expect(offices).toEqual([])
     })
 
-    test("on a terminal, runs the install with --json-prompts behind the screen and spawns nothing itself", async () => {
-      const { deps, calls, screens } = fake()
-      await setUp(command, ["--service", "tmux"], deps)
-      expect(calls).toEqual([])
-      expect(screens).toEqual([installSpawn(command, ["--json-prompts", "--service", "tmux"])])
-    })
+    if (command === "init") {
+      test("on a terminal, runs the install on this terminal, then opens the office", async () => {
+        const { deps, calls, screens, offices } = fake()
+        expect(await setUp(command, ["--service", "tmux"], deps)).toBe(7)
+        expect(calls).toEqual([{ argv: install("--service", "tmux"), cwd: HOME_DIR }])
+        expect(screens).toEqual([])
+        expect(offices).toHaveLength(1)
+      })
 
-    test("a screen that exits non-zero returns its code and opens no office", async () => {
-      const { deps, offices } = fake({ screenCode: 130 })
-      expect(await setUp(command, [], deps)).toBe(130)
-      expect(offices).toEqual([])
-    })
+      test("an install that exits non-zero returns its code and opens no office", async () => {
+        const { deps, offices } = fake({ code: 130 })
+        expect(await setUp(command, [], deps)).toBe(130)
+        expect(offices).toEqual([])
+      })
 
-    test("a screen that exits 0 opens the office and returns its code", async () => {
-      const { deps, offices } = fake()
-      expect(await setUp(command, [], deps)).toBe(7)
-      expect(offices).toHaveLength(1)
-    })
+      test("--home reaches the install absolute and names the office that opens", async () => {
+        process.env.OPENCORP_HOME = "/tmp/elsewhere"
+        const rel = path.resolve(process.cwd(), "rel")
+        for (const [argv, given, home] of [
+          [["--home", "/tmp/h"], ["--home", "/tmp/h"], "/tmp/h"],
+          [["--home=/tmp/h"], ["--home=/tmp/h"], "/tmp/h"],
+          [["--home", "rel"], ["--home", rel], rel],
+        ] as [string[], string[], string][]) {
+          const { deps, calls, offices } = fake()
+          expect(await setUp(command, argv, deps)).toBe(7)
+          expect(calls.map((c) => c.argv)).toEqual([install(...given)])
+          expect(offices).toEqual([home])
+        }
+      })
+    }
 
-    test("a screen that can't start says to pass the provider on stdin and exits 1", async () => {
-      const { deps, errors, offices } = fake({ screenThrows: new Error("boom") })
-      expect(await setUp(command, [], deps)).toBe(1)
-      expect(errors).toEqual([
-        `opencorp ${command}: can't show the setup screen: boom; pass the provider with --provider-stdin instead`,
-      ])
-      expect(offices).toEqual([])
-    })
+    // onboard keeps the setup screen.
+    if (command === "onboard") {
+      test("on a terminal, runs the install with --json-prompts behind the screen and spawns nothing itself", async () => {
+        const { deps, calls, screens } = fake()
+        await setUp(command, ["--service", "tmux"], deps)
+        expect(calls).toEqual([])
+        expect(screens).toEqual([installSpawn(command, ["--json-prompts", "--service", "tmux"])])
+      })
+
+      test("a screen that exits non-zero returns its code and opens no office", async () => {
+        const { deps, offices } = fake({ screenCode: 130 })
+        expect(await setUp(command, [], deps)).toBe(130)
+        expect(offices).toEqual([])
+      })
+
+      test("a screen that exits 0 opens the office and returns its code", async () => {
+        const { deps, offices } = fake()
+        expect(await setUp(command, [], deps)).toBe(7)
+        expect(offices).toHaveLength(1)
+      })
+
+      test("a screen that can't start says to pass the provider on stdin and exits 1", async () => {
+        const { deps, errors, offices } = fake({ screenThrows: new Error("boom") })
+        expect(await setUp(command, [], deps)).toBe(1)
+        expect(errors).toEqual([
+          `opencorp ${command}: can't show the setup screen: boom; pass the provider with --provider-stdin instead`,
+        ])
+        expect(offices).toEqual([])
+      })
+
+      for (const argv of [["--home", "/tmp/h"], ["--home=/tmp/h"]]) {
+        test(`${argv.join(" ")} is passed to the screen and names the office that opens`, async () => {
+          process.env.OPENCORP_HOME = "/tmp/elsewhere"
+          const { deps, screens, offices } = fake()
+          expect(await setUp(command, argv, deps)).toBe(7)
+          expect(screens.map((s) => s.argv)).toEqual([install("--json-prompts", ...argv)])
+          expect(offices).toEqual(["/tmp/h"])
+        })
+      }
+
+      test("a relative --home reaches the screen absolute and names the same folder for the office that opens", async () => {
+        const { deps, screens, offices } = fake()
+        expect(await setUp(command, ["--home", "rel"], deps)).toBe(7)
+        const absolute = path.resolve(process.cwd(), "rel")
+        expect(screens.map((s) => s.argv)).toEqual([install("--json-prompts", "--home", absolute)])
+        expect(offices).toEqual([absolute])
+      })
+    }
 
     test("a missing home folder is one line and exit 1, without the screen", async () => {
       const { deps, screens, offices } = fake({
@@ -114,24 +166,6 @@ for (const command of ["init", "onboard"] as const) {
       expect(err).toEqual([`opencorp ${command}: your home folder ${os.homedir()} doesn't exist`])
       expect(screens).toEqual([])
       expect(offices).toEqual([])
-    })
-
-    for (const argv of [["--home", "/tmp/h"], ["--home=/tmp/h"]]) {
-      test(`${argv.join(" ")} is passed to the screen and names the office that opens`, async () => {
-        process.env.OPENCORP_HOME = "/tmp/elsewhere"
-        const { deps, screens, offices } = fake()
-        expect(await setUp(command, argv, deps)).toBe(7)
-        expect(screens.map((s) => s.argv)).toEqual([install("--json-prompts", ...argv)])
-        expect(offices).toEqual(["/tmp/h"])
-      })
-    }
-
-    test("a relative --home reaches the screen absolute and names the same folder for the office that opens", async () => {
-      const { deps, screens, offices } = fake()
-      expect(await setUp(command, ["--home", "rel"], deps)).toBe(7)
-      const absolute = path.resolve(process.cwd(), "rel")
-      expect(screens.map((s) => s.argv)).toEqual([install("--json-prompts", "--home", absolute)])
-      expect(offices).toEqual([absolute])
     })
 
     test("without --home, or with an empty one, OPENCORP_HOME is left as it was", async () => {

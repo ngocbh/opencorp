@@ -9,12 +9,18 @@ import os from "node:os"
 import path from "node:path"
 import { inspect } from "node:util"
 import { bearerToken, newToken } from "../../runtime/auth/tokens.ts"
+import type { BuiltinSession } from "../../runtime/sessions/builtin.ts"
+import type { Terminal } from "../../tools/terminal/terminal.ts"
 import { listenUnix, probeSocket, removeOwnSocket } from "../../util/sockets.ts"
 import { createServer, errorType, HANDLER_WAIT_MS, HttpError, logLine, requestListener, trackRequests } from "../http.ts"
 import { type LocalHost, OWNER } from "./host.ts"
 import { type LocalContext, localRoutes } from "./routes.ts"
 
 export { LocalHost, type LocalHostOptions, OWNER } from "./host.ts"
+export type { ChatEnd } from "../../runtime/sessions/builtin.ts"
+
+/** A built-in agent's session as this host runs it: its tools may drive a terminal. */
+export type LocalSession = BuiltinSession<Terminal>
 
 /** A host's folder: the prefix and `mkdtemp`'s six characters. */
 const FOLDER = /^opencorp-local-[A-Za-z0-9]{6}$/

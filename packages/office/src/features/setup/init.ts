@@ -1,6 +1,6 @@
-/** `opencorp init`: ask for the model; run the init flow with it, which interviews the owner for the company, its CEO
- *  and its first teammates, then asks for a password and a remote; write the company, push it, and onboard this
- *  machine. */
+/** `opencorp init`: ask for the model, a password and a remote on the terminal; then interview the owner, in a chat
+ *  with OpenCorp, for the company, its CEO and its first teammates; write the company, push it, and onboard this
+ *  machine, asking nothing more. */
 import path from "node:path"
 import type { Readable } from "node:stream"
 import type { ModelCheck } from "../../models/check.ts"
@@ -12,10 +12,18 @@ import { redactUrls, strip } from "../../util/redact.ts"
 import type { Env } from "../../util/env.ts"
 import { strerror } from "../../util/errors.ts"
 import { shQuote } from "../../runtime/service/fallback.ts"
-import { fallbackDraft, initFlow, type Known, ModelError, passwordStep, remoteStep, STEPS } from "./interview.ts"
+import {
+  facts,
+  fallbackDraft,
+  interview,
+  type InterviewChat,
+  type Known,
+  passwordStep,
+  remoteStep,
+  STEPS,
+} from "./interview.ts"
 import { defaultHost, type Host, type Launch, launch } from "../../runtime/service/launch.ts"
 import {
-  type Answers,
   askProvider,
   checkSocket,
   damageMessage,
@@ -26,15 +34,17 @@ import {
   loginDefaults,
   makeDevice,
   makeHome,
-  modelFailed,
+  modelAnswers,
   officeRunning,
   onboardLocked,
   setupConnectionFile,
   setupLock,
+  setupProvider,
   type SubscriptionAuth,
   userGit,
 } from "./onboard.ts"
-import { OnboardError, type Prompter } from "./prompts.ts"
+import { askingNothing, OnboardError, type Prompter } from "./prompts.ts"
+import { CHANGE, CONFIRM, CREATE, summary } from "./tools/propose_company.ts"
 import type * as service from "../../runtime/service/service.ts"
 
 /**
@@ -68,6 +78,25 @@ export async function push(company: string, url: string, prompter: Prompter, env
   return true
 }
 
+/** What the company step says before the interview's chat opens. */
+export const COMPANY_CHAT = "Tell OpenCorp about you, the company and your first AI teammates, in a chat in the TUI."
+/** Why the company comes from the flags, where there's no chat. */
+export const NO_CHAT =
+  "There's no terminal the TUI can draw on, so the company comes from your flags and defaults: " +
+  "--company, --name, --handle, --title, --agent and --agent-handle."
+/** Why init stopped when the owner didn't confirm the company from the flags. */
+export const NOT_CREATED =
+  "the company wasn't created; change it with --company, --name, --handle, --title, --agent or --agent-handle, " +
+  "or run `opencorp init` in a terminal the TUI can draw on"
+
+/** Shows `draft`, the company from the flags and defaults, and asks the owner to create it. Rejects with
+ *  `OnboardError` when they don't. */
+async function confirmed(prompter: Prompter, draft: Draft): Promise<void> {
+  prompter.say(NO_CHAT)
+  for (const line of summary(draft)) prompter.say(line)
+  if ((await prompter.choose(CONFIRM, [CREATE, CHANGE], CREATE)) !== CREATE) throw new OnboardError(NOT_CREATED)
+}
+
 /** How `init` runs. */
 export interface InitOptions {
   /** Lists deployments and models to pick from. */
@@ -89,8 +118,9 @@ export interface InitOptions {
   device?: boolean
   /** This account's default name and handle (`loginDefaults` by default). */
   loginDefaults?: LoginDefaults
-  /** Runs the init flow (`initFlow` by default). */
-  interview?: typeof initFlow
+  /** Runs the interview's chat with OpenCorp, with the TUI on it; where the TUI can't draw there is none, and the
+   *  company comes from `known` and defaults, shown to the owner to confirm. */
+  chat?: InterviewChat
   /** Makes yian's `OpenAIAuth` for a ChatGPT sign-in or its refresh (the real one by default). */
   auth?: SubscriptionAuth
 }
@@ -98,16 +128,18 @@ export interface InitOptions {
 /**
  * Creates the company at `home`, then sets up this machine's office with `onboard`.
  *
- * The model comes first: the office's setup connection from `stdin` or asked for. The company, its CEO (you), its
- * first teammates, the CEO's password hash and the remote come from the init flow with that model, which starts
- * from `known`. Without a terminal, they come from `known` and defaults, with the password and the remote asked
- * here. The company is one commit, each teammate with a seeded `memory/profile.md`. The CEO's `person.yaml` holds
- * only the hash of their password, which is asked without echo (and skipped without a terminal); with `device`, it
- * lists this device, whose token goes in `identity.json`. The remote, `known.remote` or asked for, is added and
- * pushed to.
+ * Everything is asked before the chat, and nothing after it. The model comes first: the office's setup connection
+ * from `stdin`, kept from an earlier run (checked again where the chat will run), or asked for. Then the CEO's password, asked without
+ * echo (and skipped without a terminal), of which `person.yaml` holds only the hash, and the remote, `known.remote`
+ * or asked for. Then the company, its CEO (you) and its first teammates: from the interview's `chat` with OpenCorp on
+ * that model, which starts from `known`; where there's no chat, from `known` and defaults, shown to the owner to
+ * confirm; and with no one to ask, from `known` and defaults alone. The company is one commit, each teammate with a
+ * seeded `memory/profile.md`; with `device`, the CEO's `person.yaml` lists this device, whose token goes in
+ * `identity.json`. The remote is added and pushed to.
  *
  * Holds the setup lock (see `setupLock`) from the home onward. Rejects with `OnboardError` when a company already
- * exists here, another init or onboard holds the lock, or a step failed.
+ * exists here, another init or onboard holds the lock, a step failed or the owner didn't confirm the company, and
+ * with `KeyboardInterrupt` when they left the chat.
  */
 export async function init(home: string, prompter: Prompter, options: InitOptions): Promise<void> {
   const environ = options.environ ?? process.env
@@ -159,46 +191,34 @@ async function initLocked(one: Launch, prompter: Prompter, options: InitOptions)
     "Your agents think with this model; its key stays in this office, readable only by you.",
   )
   const file = setupConnectionFile(one.office)
-  // So setting the model up again in step 2 starts from step 1's answers.
-  const answers: Answers = {}
   const { listers, checkModel, auth } = options
-  const wrote = await ensureProvider(one.office, prompter, {
-    listers,
-    stdin: options.stdin,
-    checkModel,
-    last: answers,
-    auth,
-  })
+  const chat = prompter.interactive ? options.chat : undefined
+  let wrote = await ensureProvider(one.office, prompter, { listers, stdin: options.stdin, checkModel, auth })
+  // Where the chat will run, one kept from an earlier run is checked as a new one is: a model that stopped answering
+  // is set up again here, before the chat needs it. Without a chat, init asks the model nothing.
+  if (!wrote && chat !== undefined && !(await modelAnswers(prompter, await setupProvider(file), checkModel))) {
+    await askProvider(one.office, prompter, { listers, checkModel, auth })
+    wrote = true
+  }
   prompter.say(`Model provider: ${wrote ? "saved to" : "up to date at"} ${file}`)
 
-  prompter.step(
-    2,
-    STEPS,
-    "Company",
-    "Tell the model about you, the company and your first AI teammates; it asks until it has what it needs.",
-  )
+  // Before the password, so flags that can't make a company, or a user id with no account, stop init first.
+  const told = chat === undefined ? null : facts(known, defaults)
+  const fallback = chat === undefined ? fallbackDraft(known, defaults) : null
+
+  const passwordHash = await passwordStep(prompter)
+  const url = await remoteStep(prompter, known.remote ?? "")
+
   let draft: Draft
-  let url: string
-  if (prompter.interactive) {
-    const interview = options.interview ?? initFlow
-    for (;;) {
-      try {
-        ;[draft, url] = await interview(file, prompter, known, defaults)
-        break
-      } catch (error) {
-        if (!(error instanceof ModelError)) throw error
-        if (await modelFailed(prompter, error.message)) {
-          await askProvider(one.office, prompter, { listers, checkModel, last: answers, auth })
-        }
-      }
-    }
+  if (told !== null) {
+    prompter.step(4, STEPS, "Company", COMPANY_CHAT)
+    draft = await interview(chat!, { file, sessions: path.join(one.office, "setup"), facts: told, environ })
   } else {
-    // Without a terminal there's nothing for a model to ask, so no flow runs: the flags and defaults make the
-    // company, and the password and remote steps run as they would in the flow.
-    draft = fallbackDraft(known, defaults)
-    draft = { ...draft, owner: { ...draft.owner, passwordHash: await passwordStep(prompter) } }
-    url = await remoteStep(prompter, known.remote ?? "")
+    prompter.step(4, STEPS, "Company", "Your company, you as its CEO, and your first AI teammate.")
+    draft = fallback!
+    if (prompter.interactive) await confirmed(prompter, draft)
   }
+  draft = { ...draft, owner: { ...draft.owner, passwordHash } }
   // Checked once more before identity.json is replaced, since the steps above can take a while.
   await noCompanyYet(company)
   const owner = (options.device ?? true) ? await makeDevice(one.home, draft.owner) : draft.owner
@@ -224,8 +244,9 @@ async function initLocked(one: Launch, prompter: Prompter, options: InitOptions)
   else prompter.say("Remote: none; the company lives only on this machine for now.")
 
   prompter.step(5, STEPS, "This machine", "The office service and this device, as `opencorp onboard` sets them up.")
-  // The provider stdin was used up by the model step; onboard finds the file it wrote and keeps it.
-  await onboardLocked(one, prompter, {
+  // The provider stdin was used up by the model step; onboard finds the file it wrote and keeps it. Everything was
+  // asked before the chat, so this asks nothing.
+  await onboardLocked(one, askingNothing(prompter), {
     listers,
     checkModel,
     auth,

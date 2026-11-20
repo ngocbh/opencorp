@@ -14,12 +14,12 @@ export const TMUX = Bun.which("tmux", { PATH: "/usr/bin:/bin:/usr/local/bin:/opt
 const sq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`
 
 /** A tmux server of its own (`-L`), killed and its socket removed when the test finishes, running
- *  `opencorp <command>` under `env -i` with `c.env` and `TERM` `term`, in a window `size` big (120x40 unless given);
- *  the command's exit status lands in `<c.root>/exit`. */
+ *  `opencorp <command>` under `env -i` with `c.env` and `TERM` `term`, in a window `size` big (120x40 unless given),
+ *  in `cwd` (the tmux server's own folder unless given); the command's exit status lands in `<c.root>/exit`. */
 export function terminal(
   c: { env: Record<string, string>; root: string },
   command: string[],
-  { term = "xterm", size = [120, 40] }: { term?: string; size?: [number, number] } = {},
+  { term = "xterm", size = [120, 40], cwd }: { term?: string; size?: [number, number]; cwd?: string } = {},
 ) {
   const server = `oc-tty-${randomBytes(4).toString("hex")}`
   const tmux = (...args: string[]) =>
@@ -35,7 +35,8 @@ export function terminal(
   const env = Object.entries({ ...c.env, TERM: term }).map(([k, v]) => sq(`${k}=${v}`))
   // tmux 2.7 loses the first row's text once a pane dies, so the command starts on the second.
   const line = `echo; env -i ${env.join(" ")} ${sq(WRAPPER)} ${command.map(sq).join(" ")}; echo exit=$? > ${sq(exitFile)}`
-  tmux("-f", "/dev/null", "new-session", "-d", "-s", "tty", "-x", String(size[0]), "-y", String(size[1]), line)
+  const where = cwd === undefined ? [] : ["-c", cwd]
+  tmux("-f", "/dev/null", "new-session", "-d", "-s", "tty", ...where, "-x", String(size[0]), "-y", String(size[1]), line)
   // The window stays once the command ends, so a test can still read it.
   tmux("set-window-option", "-t", "tty", "remain-on-exit", "on")
   onTestFinished(() => {

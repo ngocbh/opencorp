@@ -1,30 +1,26 @@
-/** `opencorp init`: the model, the company from the flags or the interview with its teammates, the CEO's password,
- *  this device and the remote, then onboarding this machine. */
+/** `opencorp init`: the model, the CEO's password and the remote, then the company from the interview's chat with its
+ *  teammates (or the flags), this device, and onboarding this machine. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { Readable, Writable } from "node:stream"
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
-import { ToolContext } from "@ngocbh/yian"
 import { lockFile } from "@ngocbh/yian/platform"
 import { parse } from "yaml"
 import { deviceName, readIdentity } from "../../../src/runtime/auth/identity.ts"
 import { checkPassword } from "../../../src/runtime/auth/passwords.ts"
 import { tokenSha256 } from "../../../src/runtime/auth/tokens.ts"
-import type { Draft, InitOutput } from "../../../src/company/draft.ts"
+import type { Draft } from "../../../src/company/draft.ts"
 import { CompanyGit, CompanyGitError } from "../../../src/company/git.ts"
 import { lint } from "../../../src/company/lint.ts"
 import { loadRepo } from "../../../src/company/loader.ts"
 import { companyState, missingFiles, writeCompany } from "../../../src/company/template.ts"
 import * as fallback from "../../../src/runtime/service/fallback.ts"
-import { type InitOptions, init } from "../../../src/features/setup/init.ts"
+import { type InitOptions, init, NO_CHAT, NOT_CREATED } from "../../../src/features/setup/init.ts"
 import {
-  Asking,
-  askPasswordTool,
-  askRemoteTool,
-  CONFIRM,
+  INTERVIEW_FIRST,
+  type InterviewChat,
   type Known,
-  ModelError,
   NO_REMOTE,
   passwordStep,
   REMOTE,
@@ -37,17 +33,29 @@ import {
   onboard,
   SET_UP_AGAIN,
   setupConnectionFile,
-  setupProvider,
   TRY_AGAIN,
 } from "../../../src/features/setup/onboard.ts"
 import { KeyboardInterrupt, NoTerminal, OnboardError, TtyPrompter } from "../../../src/features/setup/prompts.ts"
+import { CHANGE, CONFIRM, CREATE, summary } from "../../../src/features/setup/tools/propose_company.ts"
+import type { BuiltinSession } from "../../../src/runtime/sessions/builtin.ts"
+import { OWNER } from "../../../src/server/local/host.ts"
 import { redactUrls } from "../../../src/util/redact.ts"
 import { selfSpawnEnv } from "../../../src/platform.ts"
 import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { git, gitEnv } from "../../company/helpers.ts"
-import { shortDir, tempDir } from "../../helpers.ts"
-import { daemonHost, fakeSubscription, flowReplies, killedAtEnd, makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
+import { shortDir, tempDir, waitFor } from "../../helpers.ts"
+import {
+  accepting,
+  daemonHost,
+  fakeSubscription,
+  hostChat,
+  killedAtEnd,
+  makeHost,
+  NO_LISTING,
+  Runner,
+  Script,
+} from "./helpers.ts"
 
 // Hashing the password with scrypt and the company's git take a while.
 setDefaultTimeout(30_000)
@@ -96,27 +104,33 @@ function runInit(dir: string, ask: Script | TtyPrompter, known: Known = FLAGS, e
   return init(path.join(dir, "home"), ask, { ...base(dir), known, stdin: providerStdin(), ...extra })
 }
 
-/** An interview that returns `draft` without a model, asking for the password and the remote as its nodes do. */
-function interviewed(draft: Draft): Pick<InitOptions, "interview"> {
-  return {
-    interview: async (_file, prompter, known) => [
-      { ...draft, owner: { ...draft.owner, passwordHash: await passwordStep(prompter) } },
-      await remoteStep(prompter, known.remote ?? ""),
-    ],
-  }
+/** The interview's chat, which proposes `draft` and the owner accepts it. */
+function interviewed(draft: Draft, sessions: BuiltinSession<never>[] = []): Pick<InitOptions, "chat"> {
+  return { chat: accepting(draft, sessions) }
 }
 
-/** An interview that fails with a `ModelError` for its first `failures` calls, then returns `draft` as
- *  `interviewed` does; `calls` gets each call's arguments. */
-function failingInterview(draft: Draft, failures = 1) {
-  const real = interviewed(draft).interview!
-  const calls: unknown[][] = []
-  const interview: typeof real = async (...args) => {
-    calls.push(args)
-    if (calls.length <= failures) throw new ModelError("the model couldn't run the interview: Connection error")
-    return real(...args)
+/** A prompter that fails the test if anything is asked once `chatted` is set. */
+class NothingAfter extends Script {
+  chatted = false
+
+  private check(question: string): void {
+    if (this.chatted) throw new Error(`asked after the chat: ${question}`)
   }
-  return { interview, calls }
+
+  override async ask(question: string, defaultAnswer = ""): Promise<string> {
+    this.check(question)
+    return super.ask(question, defaultAnswer)
+  }
+
+  override async choose(question: string, options: readonly string[], defaultAnswer = "", typed = false) {
+    this.check(question)
+    return super.choose(question, options, defaultAnswer, typed)
+  }
+
+  override async secret(question: string): Promise<string> {
+    this.check(question)
+    return super.secret(question)
+  }
 }
 
 /** A bare repo at `target` whose default branch is main. */
@@ -188,9 +202,9 @@ test("init makes the company its ceo and seeded teammates in one commit", async 
   expect(ask.seen).toContain(`Company repo: created at ${company}, with you as CEO and Lan (@lan), Minh (@minh-dev)`)
   expect(ask.seen.filter((line) => line.startsWith("Step "))).toEqual([
     "Step 1 of 5: Model",
-    "Step 2 of 5: Company",
-    "Step 3 of 5: Password",
-    "Step 4 of 5: Remote",
+    "Step 2 of 5: Password",
+    "Step 3 of 5: Remote",
+    "Step 4 of 5: Company",
     "Step 5 of 5: This machine",
   ])
 })
@@ -212,17 +226,13 @@ test("the model is asked first", async () => {
 test("init can start on a ChatGPT subscription, and the interview runs on its sign-in", async () => {
   const dir = tempDir()
   const office = path.join(dir, "home", "office")
-  const runs: Record<string, string>[] = []
-  const interview: InitOptions["interview"] = async (file, prompter, known) => {
-    runs.push({ ...(await setupProvider(file)).env })
-    return interviewed(ACME).interview!(file, prompter, known)
-  }
+  const sessions: BuiltinSession<never>[] = []
   // openai, the subscription, its first model; then the password and no remote.
   const ask = new Script(["openai", "", "", PASSWORD, PASSWORD, "1"])
-  const options = { ...base(dir), interview, auth: fakeSubscription().auth }
+  const options = { ...base(dir), ...interviewed(ACME, sessions), auth: fakeSubscription().auth }
   await expect(init(path.join(dir, "home"), ask, options)).rejects.toThrow(STOP)
   const auth = path.join(office, "connections", "office.auth.json")
-  expect(runs).toEqual([{ YIAN_AUTH_FILE: auth }])
+  expect(sessions.map((session) => session.model.env)).toEqual([{ YIAN_AUTH_FILE: auth }])
   expect(JSON.parse(fs.readFileSync(setupConnectionFile(office), "utf8"))).toEqual({
     method: "subscription",
     llm_config: { provider: "openai", model: "gpt-5.5-codex" },
@@ -245,22 +255,29 @@ test("the provider from the first step is kept by the last", async () => {
   expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ llm_config: { provider: "openai" } })
 })
 
-test("the flow with a model makes the company and never sends a secret", async () => {
+test("the interview's chat with a model makes the company and never sends a secret", async () => {
   const dir = tempDir()
   const home = path.join(dir, "home")
   const company = path.join(home, "company")
   const remote = bare(path.join(dir, "remote-sentinel-3b8e.git"))
-  const out: InitOutput = {
-    company: "Acme",
-    owner: { name: "Hong Ngoc Bui", handle: "ngocbh", title: "CEO" },
-    teammates: [{ name: "Lan", handle: "lan", title: "QA", about: "Tests every release." }],
-  }
+  const lan = { name: "Lan", handle: "lan", title: "QA", about: "Tests every release." }
+  const proposed = { company: "Acme", owner: { name: "Hong Ngoc Bui", handle: "ngocbh", title: "CEO" }, teammates: [lan] }
   const fake = await fakeLlm()
-  fake.script(...flowReplies("Tell me about the company.", out))
-  const ask = new Script(["Acme; I'm ngocbh; hire Lan for QA", "1", PASSWORD, PASSWORD, remote])
+  fake.script(
+    { match: INTERVIEW_FIRST, content: "Tell me about the company." },
+    { match: "hire Lan for QA", tool_calls: [{ id: "call_propose", name: "propose_company", arguments: proposed }] },
+    { match: '"tool_call_id":"call_propose"', content: "Acme is ready." },
+  )
+  const chat = hostChat(async (host) => {
+    await waitFor(async () => JSON.stringify(await host.messages()).includes("Tell me about the company."))
+    await host.prompt("Acme; I'm ngocbh; hire Lan for QA", OWNER)
+    const card = await waitFor(() => host.questions({ status: ["open"] })[0], { what: "the company's card" })
+    host.answer(card.id, CREATE, "option", OWNER)
+  })
+  const ask = new NothingAfter([PASSWORD, PASSWORD, remote])
   const provider = { llm_config: { ...LLM_CONFIG, api_key: KEY }, env: fake.env() }
   const stdin = Readable.from([JSON.stringify(provider)])
-  await expect(init(home, ask, { ...base(dir), stdin })).rejects.toThrow(STOP)
+  await expect(init(home, ask, { ...base(dir), stdin, chat })).rejects.toThrow(STOP)
   const sent = JSON.stringify(fake.requests())
   const repo = loadRepo(company)
   expect([repo.company?.name, repo.company?.ceo]).toEqual(["Acme", "ngocbh"])
@@ -271,68 +288,123 @@ test("the flow with a model makes the company and never sends a secret", async (
   expect(fs.readFileSync(path.join(company, "people/lan/memory/profile.md"), "utf8")).toBe(
     "# Lan, QA\n\nTests every release.\n",
   )
-  expect(ask.seen).toContain("Tell me about the company.")
-  expect(ask.seen).toContain(CONFIRM)
   expect(sent).toContain("Acme; I'm ngocbh; hire Lan for QA")
   const hashed = parse(git(company, "show", "HEAD:people/ngocbh/person.yaml")).password_hash
   for (const secret of [PASSWORD, KEY, "remote-sentinel-3b8e", hashed]) expect(sent).not.toContain(secret)
   expect(git(remote, "rev-parse", "main")).toBe(git(company, "rev-parse", "HEAD"))
-  expect(ask.seen.filter((line) => line.startsWith("Step "))).toEqual([
-    "Step 1 of 5: Model",
-    "Step 2 of 5: Company",
-    "Step 3 of 5: Password",
-    "Step 4 of 5: Remote",
-    "Step 5 of 5: This machine",
-  ])
+  expect(fake.pending()).toEqual([])
+  // The session's folder is office/setup's own.
+  expect(fs.readdirSync(path.join(home, "office", "setup")).filter((name) => name !== "lock")).toHaveLength(1)
 })
 
-test("without a terminal the flags make the company without asking to confirm", async () => {
+test("init asks the model, the password and the remote before the chat, and nothing after it", async () => {
+  const dir = tempDir()
+  const ask = new NothingAfter(["openai", "2", "", "", PASSWORD, PASSWORD, "1"])
+  const asked: string[] = []
+  const chat: InterviewChat = async (session) => {
+    asked.push(...ask.seen)
+    ask.chatted = true
+    return accepting(ACME)(session)
+  }
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), chat })).rejects.toThrow(STOP)
+  expect(asked.filter((line) => line.startsWith("Step "))).toEqual([
+    "Step 1 of 5: Model",
+    "Step 2 of 5: Password",
+    "Step 3 of 5: Remote",
+    "Step 4 of 5: Company",
+  ])
+  expect(asked).toContain("Model provider")
+  expect(asked).toContain(REMOTE)
+  expect(asked.at(-1)).toBe("Tell OpenCorp about you, the company and your first AI teammates, in a chat in the TUI.")
+  // The company and this machine come after, with nothing more to answer.
+  expect(ask.seen.slice(asked.length).filter((line) => line.startsWith("Step "))).toEqual(["Step 5 of 5: This machine"])
+  expect(ask.answers).toEqual([])
+  expect(loadRepo(path.join(dir, "home", "company")).company?.name).toBe("Acme")
+})
+
+test("a kept model that doesn't answer asks Try again or Set up the model again before the chat", async () => {
+  for (const [pick, provider] of [
+    ["1", { provider: "openai" }],
+    ["2", { provider: "anthropic", api_key: KEY, model: "claude-sonnet-4-5" }],
+  ] as const) {
+    const dir = tempDir()
+    const office = path.join(dir, "home", "office")
+    // From an earlier init, whose chat failed.
+    fs.mkdirSync(path.join(office, "connections"), { recursive: true, mode: 0o700 })
+    fs.chmodSync(office, 0o700)
+    fs.writeFileSync(setupConnectionFile(office), JSON.stringify({ llm_config: { provider: "openai" } }), { mode: 0o600 })
+    const problems: (string | null)[] = ["Connection error", null]
+    const checkModel = async () => problems.shift() ?? null
+    const setUpAgain = pick === "2" ? ["anthropic", KEY, ""] : []
+    const ask = new NothingAfter([pick, ...setUpAgain, PASSWORD, PASSWORD, "1"])
+    const chat: InterviewChat = async (session) => {
+      ask.chatted = true
+      return accepting(ACME)(session)
+    }
+    await expect(init(path.join(dir, "home"), ask, { ...base(dir), checkModel, chat })).rejects.toThrow(STOP)
+    expect(problems).toEqual([])
+    expect(ask.seen).toContain("The model didn't answer: Connection error")
+    expect(ask.offered[0]).toEqual([TRY_AGAIN, SET_UP_AGAIN])
+    expect(ask.seen.indexOf("The model didn't answer: Connection error")).toBeLessThan(ask.seen.indexOf("Step 2 of 5: Password"))
+    expect(JSON.parse(fs.readFileSync(setupConnectionFile(office), "utf8"))).toEqual({ llm_config: provider })
+    expect(ask.seen.filter((line) => line.includes(KEY))).toEqual([])
+  }
+})
+
+test("a kept model is checked only where the chat runs", async () => {
+  const dir = tempDir()
+  const office = path.join(dir, "home", "office")
+  fs.mkdirSync(path.join(office, "connections"), { recursive: true, mode: 0o700 })
+  fs.chmodSync(office, 0o700)
+  fs.writeFileSync(setupConnectionFile(office), JSON.stringify({ llm_config: { provider: "openai" } }), { mode: 0o600 })
+  let checks = 0
+  const checkModel = async () => {
+    checks++
+    return "Connection error"
+  }
+  // No chat, as where the TUI can't draw: the flags make the company, and the model isn't asked anything.
+  const ask = new Script([PASSWORD, PASSWORD, "1", ""])
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), known: FLAGS, checkModel })).rejects.toThrow(STOP)
+  expect(checks).toBe(0)
+  expect(ask.seen).toContain(`Model provider: up to date at ${setupConnectionFile(office)}`)
+  expect(loadRepo(path.join(dir, "home", "company")).company?.name).toBe("Acme")
+})
+
+test("without chat, init says why, shows the company from the flags and defaults, and asks to create it; No stops", async () => {
+  const dir = tempDir()
+  const ask = new Script([PASSWORD, PASSWORD, "1", ""])
+  await expect(runInit(dir, ask, FLAGS)).rejects.toThrow(STOP)
+  const draft = { company: "Acme", owner: { handle: "me", name: "Me", title: "CEO" }, team: [{ name: "Minh", handle: "minh", title: "Engineer", about: "" }] }
+  const shown = ask.seen.indexOf(NO_CHAT)
+  expect(shown).toBeGreaterThan(ask.seen.indexOf("Step 4 of 5: Company"))
+  expect(ask.seen.slice(shown + 1, shown + 2 + summary(draft).length)).toEqual([...summary(draft), CONFIRM])
+  expect(ask.offered.at(-1)).toEqual([CREATE, CHANGE])
+  expect(loadRepo(path.join(dir, "home", "company")).company?.name).toBe("Acme")
+  expect(NO_CHAT).toBe(
+    "There's no terminal the TUI can draw on, so the company comes from your flags and defaults: " +
+      "--company, --name, --handle, --title, --agent and --agent-handle.",
+  )
+  // No stops before the company is made.
+  const other = tempDir()
+  const no = new Script([PASSWORD, PASSWORD, "1", "2"])
+  const error = await rejection(runInit(other, no, FLAGS))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toBe(NOT_CREATED)
+  expect(await companyState(path.join(other, "home", "company"))).toEqual({ kind: "absent" })
+})
+
+test("--provider-stdin asks nothing and opens no chat", async () => {
   const dir = tempDir()
   const ask = scripted()
   const known: Known = { company: "Acme", name: "Bo", handle: "bo", agent: "Lan", agent_handle: "lan" }
-  const interview = async (): Promise<never> => {
-    throw new Error("the flow ran")
+  const chat = async (): Promise<never> => {
+    throw new Error("the chat opened")
   }
-  await expect(runInit(dir, ask, known, { interview })).rejects.toThrow(STOP)
+  await expect(runInit(dir, ask, known, { chat })).rejects.toThrow(STOP)
   const repo = loadRepo(path.join(dir, "home", "company"))
   expect(repo.company?.name).toBe("Acme")
   expect(new Set(repo.people.keys())).toEqual(new Set(["bo", "lan"]))
   expect(ask.seen).not.toContain(CONFIRM)
-})
-
-test("a failed interview can be tried again with the same model", async () => {
-  const dir = tempDir()
-  const { interview, calls } = failingInterview(ACME)
-  const ask = new Script(["openai", "2", "", "", "1", PASSWORD, PASSWORD, "1"])
-  await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow(STOP)
-  expect(calls).toHaveLength(2)
-  expect(ask.seen).toContain("The model couldn't run the interview: Connection error")
-  expect(ask.offered).toContainEqual([TRY_AGAIN, SET_UP_AGAIN])
-  expect(loadRepo(path.join(dir, "home", "company")).company?.name).toBe("Acme")
-})
-
-test("a failed interview can set up the model again", async () => {
-  const dir = tempDir()
-  const { interview } = failingInterview(ACME)
-  const ask = new Script(["openai", "2", "", "", "2", "anthropic", KEY, "", PASSWORD, PASSWORD, "1"])
-  await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow(STOP)
-  const file = setupConnectionFile(path.join(dir, "home", "office"))
-  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
-    llm_config: { provider: "anthropic", api_key: KEY, model: "claude-sonnet-4-5" },
-  })
-  expect(ask.seen.filter((line) => line.includes(KEY))).toEqual([])
-})
-
-test("setting the model up again starts from step ones answers", async () => {
-  const dir = tempDir()
-  const { interview } = failingInterview(ACME)
-  const ask = new Script(["openai", "2", KEY, "gpt-x", "2", "", "", "", "", PASSWORD, PASSWORD, "1"])
-  await expect(init(path.join(dir, "home"), ask, { ...base(dir), interview })).rejects.toThrow(STOP)
-  const file = setupConnectionFile(path.join(dir, "home", "office"))
-  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
-    llm_config: { provider: "openai", api_key: KEY, model: "gpt-x" },
-  })
-  expect(ask.seen).toContain("openai API key (empty keeps the one you just typed; not shown)")
 })
 
 test("the model is checked before it is saved", async () => {
@@ -711,27 +783,21 @@ test("a token in the remote url is never shown", async () => {
   expect(redactUrls(url)).toBe("http://***@127.0.0.1:9/acme.git")
 })
 
-/** The context of a call to the tool `toolName`, outside a run, with the owner's terminal `prompter`. */
-function toolContext(toolName: string, prompter: Script): ToolContext {
-  const [context, signal] = [new Asking(prompter), new AbortController().signal]
-  return new ToolContext({ callId: "t", attempt: 1, toolName, runId: "", node: "", context, signal })
-}
-
-test("the password node shows step 3 and returns the hash", async () => {
+test("the password step shows step 2 and returns the hash", async () => {
   const prompter = new Script([PASSWORD, PASSWORD])
-  const hash = await askPasswordTool.execute({}, toolContext("ask_password", prompter))
+  const hash = await passwordStep(prompter)
   expect(typeof hash).toBe("string")
   expect(hash).not.toBe(PASSWORD)
   expect(await checkPassword(PASSWORD, hash as string)).toBe(true)
-  expect(prompter.seen[0]).toBe("Step 3 of 5: Password")
+  expect(prompter.seen[0]).toBe("Step 2 of 5: Password")
 })
 
-test("the remote node uses the flag or asks", async () => {
+test("the remote step shows step 3 and uses the flag or asks", async () => {
   const [flagged, none, typed] = [new Script(), new Script(["1"]), new Script(["git@example.com:a.git"])]
-  expect(await askRemoteTool.execute({ given: "u" }, toolContext("ask_remote", flagged))).toBe("u")
-  expect(await askRemoteTool.execute({ given: "" }, toolContext("ask_remote", none))).toBe("")
-  expect(await askRemoteTool.execute({ given: "" }, toolContext("ask_remote", typed))).toBe("git@example.com:a.git")
-  expect(flagged.seen).not.toContain(REMOTE)
+  expect(await remoteStep(flagged, "u")).toBe("u")
+  expect(await remoteStep(none, "")).toBe("")
+  expect(await remoteStep(typed, "")).toBe("git@example.com:a.git")
+  expect(flagged.seen).toEqual(["Step 3 of 5: Remote", flagged.seen[1]])
   expect(none.seen.at(-1)).toBe(REMOTE)
   expect(typed.seen.at(-1)).toBe(REMOTE)
   expect(typed.offered).toEqual([[NO_REMOTE]])
@@ -743,9 +809,9 @@ test("the remote is asked before the company is written", async () => {
   const ask = scripted()
   await expect(runInit(dir, ask)).rejects.toThrow(STOP)
   const created = ask.seen.findIndex((line) => line.startsWith("Company repo: created at"))
-  expect(ask.seen).toContain("Step 3 of 5: Password")
+  expect(ask.seen).toContain("Step 2 of 5: Password")
   expect(ask.seen).toContain(REMOTE)
-  expect(ask.seen.indexOf("Step 3 of 5: Password")).toBeLessThan(ask.seen.indexOf(REMOTE))
+  expect(ask.seen.indexOf("Step 2 of 5: Password")).toBeLessThan(ask.seen.indexOf(REMOTE))
   expect(ask.seen.indexOf(REMOTE)).toBeLessThan(created)
 })
 

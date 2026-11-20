@@ -19,30 +19,6 @@ export interface Draft {
   readonly team: readonly Teammate[]
 }
 
-/** The init flow's output, as `draftFromOutput` reads it. */
-export interface InitOutput {
-  readonly company: string
-  readonly owner: { readonly name: string; readonly handle: string; readonly title: string }
-  readonly teammates: readonly {
-    readonly name: string
-    readonly handle: string
-    readonly title: string
-    readonly about: string
-  }[]
-  readonly password_hash?: string | null
-}
-
-/** The draft in the init flow's output, with its `company`, `owner` and `teammates`, and the CEO's
- *  `password_hash` when it has one. */
-export function draftFromOutput(output: InitOutput): Draft {
-  const { owner } = output
-  return {
-    company: output.company,
-    owner: { handle: owner.handle, name: owner.name, title: owner.title, passwordHash: output.password_hash ?? null },
-    team: output.teammates.map((t) => ({ name: t.name, handle: t.handle, title: t.title, about: t.about })),
-  }
-}
-
 /** A problem after the field it is about, or null when it is about the whole draft. */
 export type FieldProblem = readonly [field: string | null, message: string]
 

@@ -1,6 +1,6 @@
 /** A proposed company and its problems. */
 import { expect, test } from "bun:test"
-import { type Draft, draftFromOutput, draftProblems, fieldProblems } from "../../src/company/draft.ts"
+import { type Draft, draftProblems, fieldProblems } from "../../src/company/draft.ts"
 import type { Owner } from "../../src/company/template.ts"
 
 const ME: Owner = { handle: "ngocbh", name: "Hong Ngoc Bui", title: "CEO", passwordHash: null }
@@ -76,22 +76,4 @@ test("a teammate's name and title are one line of text a hire takes", () => {
     ["teammate.title", "the teammate @minh's title can't hold line breaks or control characters"],
   ])
   expect(one("  Nguyễn Minh 👩‍💻 ", "Engineer")).toEqual([])
-})
-
-test("answers come from the flows output", () => {
-  const output = {
-    company: "Acme",
-    owner: { name: "Hong Ngoc Bui", handle: "ngocbh", title: "CEO" },
-    teammates: [
-      { name: "Minh", handle: "minh", title: "Engineer", about: "Writes the backend." },
-      { name: "Lan", handle: "lan", title: "QA", about: "" },
-    ],
-  }
-  expect(draftFromOutput(output)).toEqual(GOOD)
-})
-
-test("a draft takes the password hash from the flows output when it has one", () => {
-  const out = { company: "Acme", owner: { name: "Hong Ngoc Bui", handle: "ngocbh", title: "CEO" }, teammates: [] }
-  expect(draftFromOutput(out).owner.passwordHash).toBeNull()
-  expect(draftFromOutput({ ...out, password_hash: "scrypt$x" }).owner.passwordHash).toBe("scrypt$x")
 })
