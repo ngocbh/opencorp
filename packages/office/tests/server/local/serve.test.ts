@@ -4,6 +4,7 @@
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
+import { inspect } from "node:util"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { serveLocal } from "../../../src/server/local/serve.ts"
 import { listenUnix } from "../../../src/util/sockets.ts"
@@ -68,4 +69,17 @@ test("the local host serves on a socket in a 0700 folder, refuses a request with
   expect(fs.existsSync(served.socket)).toBe(false)
   expect(fs.existsSync(dir)).toBe(false)
   expect(folders(tmp)).toEqual(["opencorp-local-notdir"])
+})
+
+test("the served host never shows its token when inspected or turned to JSON", async () => {
+  const fake = await fakeLlm()
+  const { host } = await startHost(fake)
+  const served = await serveLocal(host, { tmpdir: shortDir() })
+  onTestFinished(() => served.close())
+  expect(served.token).toMatch(/^act_/)
+  expect(Object.keys(served)).not.toContain("token")
+  expect(inspect(served)).not.toContain(served.token)
+  expect(inspect(served, { showHidden: true, depth: 5 })).not.toContain(served.token)
+  expect(JSON.stringify(served)).not.toContain(served.token)
+  expect(`${served}`).not.toContain(served.token)
 })

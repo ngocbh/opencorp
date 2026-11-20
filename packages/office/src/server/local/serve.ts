@@ -7,6 +7,7 @@ import { createHash, timingSafeEqual } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { inspect } from "node:util"
 import { bearerToken, newToken } from "../../runtime/auth/tokens.ts"
 import { listenUnix, probeSocket, removeOwnSocket } from "../../util/sockets.ts"
 import { createServer, errorType, HANDLER_WAIT_MS, HttpError, logLine, requestListener, trackRequests } from "../http.ts"
@@ -27,7 +28,8 @@ const UNBOUND_MS = 60_000
 /** A served host: its socket, the token its requests carry, and how to stop serving it. */
 export interface LocalServer {
   readonly socket: string
-  /** The token, for the TUI in this process: `Authorization: Bearer <token>`. */
+  /** The token, for the TUI in this process: `Authorization: Bearer <token>`. It isn't enumerable, and inspecting
+   *  or serializing the server shows only its socket. */
   readonly token: string
   /** Stops serving, ending open streams, and removes the socket and its folder. Never rejects. */
   close(): Promise<void>
@@ -151,12 +153,16 @@ export async function serveLocal(host: LocalHost, options: ServeOptions = {}): P
     removeDir()
     process.off("exit", removeDir)
   }
-  return {
+  const served = {
     socket,
-    token,
     close: () =>
       (closing ??= close().catch((error: unknown) => {
         log(logLine("ERROR", "opencorp.local", `the host's socket didn't close cleanly: ${errorType(error)}`))
       })),
+    // What inspecting or logging it shows: never the token.
+    [inspect.custom]: () => ({ socket }),
+    toJSON: () => ({ socket }),
   }
+  // Not enumerable, so no copy, spread or listing of the server carries the token.
+  return Object.defineProperty(served, "token", { value: token, enumerable: false }) as typeof served & LocalServer
 }

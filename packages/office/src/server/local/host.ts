@@ -64,10 +64,12 @@ export const OWNER = "owner"
 const NO_FOLDER: Where = { profile: "ssh", cwd: null, writable: [] }
 /** A flow's name: the pin's file name, `<name>.yaml`. */
 const FLOW_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
-/** How long, in ms, End waits for the run and its worker to end before it closes the worker. */
-const END_MS = 10_000
+/** How long, in ms, End waits for the run and its worker to end before it asks the worker's run to stop. */
+export const END_STOP_MS = 5_000
+/** How long, in ms after End, a worker that hasn't ended is killed: the longest End waits for it. */
+export const END_KILL_MS = 8_000
 /** How long, in ms, a worker has to end after it is asked to stop, before its group is killed. */
-const STOP_MS = 5_000
+const STOP_MS = END_KILL_MS - END_STOP_MS
 
 /** What the host is given beside the session. */
 export interface LocalHostOptions {
@@ -151,10 +153,13 @@ class HostWorkers implements CheckWorkers {
   }
 }
 
-/** One held card: its question as it is now, and what its Yes runs (approval cards). */
+/** One held card: its question as it is now, what its Yes runs (approval cards), and whether the session's
+ *  permissions held it (`gated`), so a new session rule may decide it again. A card a feature holds itself is the
+ *  owner's to answer, always. */
 interface Held {
   question: QuestionRecord
   readonly act?: CardAct
+  readonly gated: boolean
 }
 
 /**
@@ -356,13 +361,13 @@ export class LocalHost {
       mode: () => this.#record.mode,
       rules: () => this.#book.list(),
       where: () => ({ ...NO_FOLDER }),
-      hold: (card, callId) => this.#hold(card, callId, (signal) => this.#runApproved(card, signal)),
+      hold: (card, callId) => this.#hold(card, callId, (signal) => this.#runApproved(card, signal), true),
       check: (input, signal) => this.#check.judge(input, signal),
     }
     return {
       sessionId: this.id,
       permissions,
-      hold: (card, callId, act) => this.#hold(card, callId, act),
+      hold: (card, callId, act) => this.#hold(card, callId, act, false),
       onShell: (id, name) => {
         const terminal = this.#tools.terminal
         if (terminal !== undefined) {
@@ -458,16 +463,17 @@ export class LocalHost {
     })
   }
 
-  /** End: interrupts a busy reply, closes the inbox, and the run and its worker end. Ending a session that is ending
-   *  or has ended does nothing. */
+  /** End: interrupts a busy reply, closes the inbox, and the run and its worker end. A worker that hasn't ended
+   *  `END_STOP_MS` later is asked to stop, and killed at `END_KILL_MS`. Ending a session that is ending or has ended does
+   *  nothing. */
   async end(): Promise<void> {
     if (this.#finished || this.#ending) return
     const busy = this.#job === "running" || this.#approved.size > 0 || this.#open().length > 0
     this.#ending = true
     this.#settle()
     this.#stopCalls()
-    // A worker that never ends is closed, so End always ends.
-    this.#endTimer = setTimeout(() => void this.#workers.close(this.id).catch(() => {}), END_MS)
+    // A worker that never ends is asked to stop, then killed, so End always ends.
+    this.#endTimer = setTimeout(() => void this.#workers.close(this.id, STOP_MS).catch(() => {}), END_STOP_MS)
     this.#endTimer.unref?.()
     if (busy) await this.#deliver({ id: newId(), op: "interrupt", inbox: MAIN_CHAT.inbox })
     await this.#deliver({ id: newId(), op: "close", inbox: MAIN_CHAT.inbox })
@@ -520,6 +526,8 @@ export class LocalHost {
   /** Answers open question `id` as `by` and acts on it: the first answer wins. Only the owner answers the session's
    *  cards. Throws `HarnessError` 404 `not_found`, 403 `forbidden`, 409 `not_open` or 422 `invalid_answer`. */
   answer(id: string, value: unknown, kind: "option" | "text", by: string): QuestionRecord {
+    // Once End began, a Yes would run its action only for the end to stop it.
+    this.#live()
     const held = this.#held.get(id)
     if (held === undefined) throw new HarnessError(404, "not_found", `no question ${id}`)
     if (by !== OWNER) throw new HarnessError(403, "forbidden", `only @${OWNER} may answer this session's cards`)
@@ -536,15 +544,15 @@ export class LocalHost {
     return { ...answered }
   }
 
-  /** Stops the host: ends the session (closing its worker if it doesn't end in time), stops Auto's checks and ends the
-   *  bus's streams. Never rejects. */
+  /** Stops the host: ends the session (its worker killed by `END_KILL_MS` if it doesn't end), stops Auto's checks and
+   *  ends the bus's streams. Never rejects. */
   async close(): Promise<void> {
     try {
       // A worker that never started has nothing to end.
       if (!this.#finished && this.#job !== "gone") {
         await this.end().catch(() => {})
         let timer: ReturnType<typeof setTimeout> | undefined
-        await Promise.race([this.ended, new Promise((resolve) => (timer = setTimeout(resolve, END_MS)))])
+        await Promise.race([this.ended, new Promise((resolve) => (timer = setTimeout(resolve, END_KILL_MS)))])
         clearTimeout(timer)
       }
       await this.#workers.closeAll()
@@ -736,23 +744,22 @@ export class LocalHost {
 
   // --- cards --------------------------------------------------------------------------
 
-  /** Holds `callId` on approval card `card`, whose Yes runs `act`: `pending()`, or in `dontAsk` the refusal. */
-  #hold(card: ApprovalCard, callId: string, act: CardAct): unknown {
+  /** Holds `callId` on approval card `card`, whose Yes runs `act`: `pending()`, or in `dontAsk` the refusal. `gated`
+   *  when the session's permissions hold it. */
+  #hold(card: ApprovalCard, callId: string, act: CardAct, gated: boolean): unknown {
     if (this.#record.mode === "dontAsk") return dontAskRefusal(card.reason)
-    return holdApproval(this.#record, this.#runId, (question) => this.#keep(question, act), { always: false })(
-      card,
-      callId,
-    )
+    const keep = (question: QuestionRecord) => this.#keep(question, { act, gated })
+    return holdApproval(this.#record, this.#runId, keep, { always: false })(card, callId)
   }
 
   /** Keeps `question` and publishes it, unless one is kept for its call: then that one, consumed if answered. */
-  #keep(question: QuestionRecord, act?: CardAct): QuestionRecord {
+  #keep(question: QuestionRecord, how: { act?: CardAct; gated: boolean } = { gated: false }): QuestionRecord {
     const kept = [...this.#held.values()].find((held) => held.question.call_id === question.call_id)
     if (kept !== undefined) {
       if (kept.question.status === "answered") this.#update(kept, { status: "consumed" })
       return { ...kept.question }
     }
-    const held: Held = act === undefined ? { question } : { question, act }
+    const held: Held = { question, ...how }
     this.#held.set(question.id, held)
     this.#publish("question.created", question.id, question)
     this.#settle()
@@ -816,12 +823,12 @@ export class LocalHost {
       })
   }
 
-  /** After "don't ask again" added rules: each open card the session's mode and rules now allow is answered Yes as
-   *  `by` and its act run; the others stay open. */
+  /** After "don't ask again" added rules: each open card the session's permissions held that its mode and rules now
+   *  allow is answered Yes as `by` and its act run; the others, and every card a feature held, stay open. */
   #recheck(by: string | null): void {
     for (const held of this.#open()) {
       const card = held.question.approval
-      if (card === null || held.question.source !== "approval") continue
+      if (card === null || held.question.source !== "approval" || !held.gated) continue
       const into = card.into === null ? {} : { into: card.into }
       const action = { kind: card.kind, text: card.action, partial: card.partial, ...into }
       const shell = typeof card.args.shell === "string" ? card.args.shell : undefined

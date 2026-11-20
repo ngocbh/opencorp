@@ -2,13 +2,16 @@
  *  its instruments, as the office runs a chat. Each test runs the fixture flow on the fake model. */
 import { createHash } from "node:crypto"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
+import { isPending } from "@ngocbh/yian/tools"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import type { Instrument } from "@opencorp/protocol"
+import { type Instrument, now } from "@opencorp/protocol"
 import { STOPPED } from "../../../src/runtime/permissions/classifier.ts"
+import type { ApprovalCard } from "../../../src/runtime/permissions/policy.ts"
 import { sessionOption, YES } from "../../../src/runtime/questions/approval.ts"
 import type { LiveInstrument } from "../../../src/runtime/sessions/instruments.ts"
-import { OWNER } from "../../../src/server/local/host.ts"
+import { END_KILL_MS, OWNER } from "../../../src/server/local/host.ts"
 import { readRecord } from "../../../src/tools/terminal/record.ts"
 import { newId } from "../../../src/util/ids.ts"
 import { fakeLlm } from "../../features/chat/helpers.ts"
@@ -376,4 +379,136 @@ test("End closes the inbox, the run and its worker end, and the host's instrumen
   expect(readRecord(path.join(folder, "terminal", shell!.id))?.state).toBe("ended")
   expect(feature.calls).toEqual([])
   await expect(host.prompt("more", OWNER)).rejects.toMatchObject({ status: 409, code: "not_live" })
+})
+
+/** What `call` throws, or null. */
+function thrown(call: () => unknown): unknown {
+  try {
+    call()
+  } catch (error) {
+    return error
+  }
+  return null
+}
+
+test("a worker killed mid-session fails the session: its cards go stale and every listing is removed", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    { tool_calls: [terminalCall("run", { command: "echo ready", why: "ready" })], match: AGENT },
+    { content: "Ready.", match: AGENT },
+    { tool_calls: [terminalCall("run", { command: "touch a", why: "a", shell: "shell 1" })], match: AGENT },
+  )
+  const { host, binding, spawned, work } = await startHost(fake)
+  const seen = follow(host)
+  await until(host, "idle")
+  const feature = owned(host.id)
+  binding.instruments.add(feature)
+  await host.prompt("get ready", OWNER)
+  await replied(host, "Ready.")
+  host.setMode("ask", OWNER)
+  await host.prompt("touch a", OWNER)
+  const [card] = await cards(host, 1)
+  await until(host, "waiting")
+  expect(host.instruments.list(host.id)).toHaveLength(2)
+
+  process.kill(spawned[0]!.pid, "SIGKILL")
+  await host.ended
+  expect(host.session()).toMatchObject({ status: "failed", waiting_on: [] })
+  expect(host.question(card!.id)?.status).toBe("stale")
+  expect(host.instruments.list(host.id)).toEqual([])
+  await waitFor(() => seen.live.filter((e) => e.type === "instrument.removed").length === 2, { what: "the removals" })
+  expect(feature.calls).toEqual([])
+  expect(fs.existsSync(path.join(work, "a"))).toBe(false)
+})
+
+test("End ends a worker that stopped answering within its bound", async () => {
+  const fake = await fakeLlm()
+  const { host, spawned } = await startHost(fake)
+  await until(host, "idle")
+  const { pid } = spawned[0]!
+  process.kill(pid, "SIGSTOP")
+  onTestFinished(() => {
+    try {
+      process.kill(pid, "SIGKILL")
+    } catch {}
+  })
+  const started = performance.now()
+  await host.end()
+  await host.ended
+  expect(performance.now() - started).toBeLessThan(END_KILL_MS + 2_000)
+  expect(host.session()!.status).toBe("ended")
+  await waitFor(() => gone(pid), { what: "the stopped worker to be gone" })
+})
+
+test("shells an earlier session left running read interrupted once a host starts", async () => {
+  const sessions = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-sessions-")))
+  onTestFinished(() => fs.rmSync(sessions, { recursive: true, force: true }))
+  const id = newId()
+  const dir = path.join(sessions, newId(), "terminal", id)
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const meta = { id, name: "shell 1", kind: "terminal", profile: "ssh", driver: "opencorp", started: now() }
+  const command = { command: "sleep 100", by: "opencorp", at: now() }
+  fs.writeFileSync(path.join(dir, "meta.json"), JSON.stringify({ ...meta, state: "running", commands: [command] }), {
+    mode: 0o600,
+  })
+  expect(readRecord(dir)?.state).toBe("running")
+  const fake = await fakeLlm()
+  const { host } = await startHost(fake, { sessions })
+  expect(readRecord(dir)).toMatchObject({ state: "interrupted", commands: [command] })
+  await host.close()
+})
+
+test("an answer once End has begun is refused, and its command never runs", async () => {
+  const fake = await fakeLlm()
+  fake.script({ tool_calls: [terminalCall("run", { command: "touch a", why: "a" })], match: AGENT })
+  const { host, work } = await startHost(fake)
+  await until(host, "idle")
+  host.setMode("ask", OWNER)
+  await host.prompt("touch a", OWNER)
+  const [card] = await cards(host, 1)
+  const ending = host.end()
+  expect(thrown(() => host.answer(card!.id, YES, "option", OWNER))).toMatchObject({ status: 409, code: "ending" })
+  await ending
+  await host.ended
+  expect(thrown(() => host.answer(card!.id, YES, "option", OWNER))).toMatchObject({ status: 409, code: "not_live" })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  expect(fs.existsSync(path.join(work, "a"))).toBe(false)
+})
+
+test("a card a feature holds is never answered by a re-check: a session rule can't approve it", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    { tool_calls: [terminalCall("run", { command: "touch a", why: "a" })], match: AGENT },
+    { content: "Made a.", match: AGENT },
+  )
+  const { host, binding, work } = await startHost(fake)
+  await until(host, "idle")
+  host.setMode("default", OWNER)
+  // The feature's own card, for what the session rule below would allow.
+  const card: ApprovalCard = {
+    kind: "command",
+    tool: "save",
+    action: "touch b",
+    args: {},
+    why: "save it",
+    reason: "saving asks in every mode",
+    rules: ["touch *"],
+    partial: false,
+    into: null,
+  }
+  const ran: string[] = []
+  const runId = host.session()!.run_ids[0]!
+  const act = async () => {
+    ran.push("save")
+    return "saved"
+  }
+  expect(isPending(binding.hold(card, `${runId}/feature/1`, act))).toBe(true)
+  await host.prompt("touch a", OWNER)
+  const [own, gated] = await cards(host, 2)
+  expect(own).toMatchObject({ question: "touch b" })
+  await host.answer(gated!.id, sessionOption(["touch *"]), "option", OWNER)
+  await replied(host, "Made a.")
+  expect(fs.existsSync(path.join(work, "a"))).toBe(true)
+  expect(host.question(own!.id)).toMatchObject({ status: "open", answer: null, answered_by: null })
+  expect(ran).toEqual([])
 })
