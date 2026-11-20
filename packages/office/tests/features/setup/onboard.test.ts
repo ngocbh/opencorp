@@ -22,6 +22,8 @@ import {
   type OnboardOptions,
   onboard,
   ownerDefaults,
+  REPO_URL,
+  repoUrlProblem,
   setupConnectionFile,
   stopToTopUp,
   WHO,
@@ -462,6 +464,40 @@ test("onboard clones the company and commits this device for the human you pick"
   expect(ask.seen.filter((line) => line.startsWith("The company's"))).toEqual([])
   expect(ask.seen.filter((line) => line.includes(me.token))).toEqual([])
   expect(ask.seen.join("\n")).not.toContain("--from ignored")
+})
+
+test("a typed repo URL holding a password or token is refused, never echoed back, and the next answer is cloned", async () => {
+  const dir = tempDir()
+  const remote = await published(dir)
+  const home = path.join(dir, "home")
+  const token = "ghp_sentinel4242"
+  const ask = new Script([
+    `https://x-access-token:${token}@github.com/acme/company.git`,
+    `https://${token}@github.com/acme/company.git`,
+    `ssh://git:${token}@example.com/acme/company.git`,
+    remote,
+    "lan",
+  ])
+  const error = await rejection(onboard(home, ask, { ...base(dir), ...stopAfterTheDevice() }))
+  expect(error.message).toBe("stop")
+  expect(ask.seen.filter((line) => line === REPO_URL)).toHaveLength(4)
+  const refused = "That doesn't work: keep the password or token out of the URL; git asks for it, or uses your" +
+    " credential helper or ssh key"
+  expect(ask.seen.filter((line) => line === refused)).toHaveLength(3)
+  expect(ask.seen.filter((line) => line.includes(token))).toEqual([])
+  expect(git(path.join(home, "company"), "remote", "get-url", "origin")).toBe(remote)
+})
+
+test("a repo URL with no password or token in it is taken as typed", () => {
+  for (const url of [
+    "",
+    "git@github.com:acme/company.git",
+    "ssh://git@example.com/acme/company.git",
+    "https://github.com/acme/company.git",
+    "/srv/git/acme.git",
+    "file:///srv/git/acme.git",
+  ])
+    expect([url, repoUrlProblem(url)]).toEqual([url, null])
 })
 
 test("joining as a human with a password needs it", async () => {

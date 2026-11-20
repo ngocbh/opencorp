@@ -661,3 +661,26 @@ test("options sit on consecutive rows; a description takes the row under its opt
     office.stop()
   }
 })
+
+test("a resize that makes a read question longer hides its answers until its new end is read", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  // About 600 characters of prose: the card shows it whole with its answers at 100x30, and not at 50 columns.
+  const question = `${Array.from({ length: 80 }, (_, i) => `word${i}`).join(" ")} QUESTION-END`
+  office.addQuestion({ session_id: s.id, question, options: ["login1", "login2"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    let f = await app.until((f) => f.includes("QUESTION-END") && f.includes("1. login1"))
+    expect(f).not.toContain("Read to the end")
+    // Narrower, it takes twice the rows: it no longer fits, and its new end hasn't been read.
+    app.setup.resize(50, 30)
+    f = await app.until((f) => f.includes("Read to the end"))
+    expect(f).not.toContain("login1")
+    // End: the last row on screen, where the question's end now wraps across two rows.
+    app.input.pressKey("\u001b[F")
+    await app.until((f) => /lines \d+–(\d+) of \1\b/.test(f) && f.includes("1. login1"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

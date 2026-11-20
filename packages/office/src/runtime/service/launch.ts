@@ -1,7 +1,7 @@
 /** How the office daemon is started: its command, environment, folder and log, the host it runs on, and the
  *  check that pins a running daemon to them. Imports only `node:*`, `platform.ts`, `util/sockets.ts`,
  *  `util/proc.ts` and `util/env.ts`: `daemonMain` runs `pinDaemon` before the daemon module loads. */
-import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process"
+import { type ChildProcess, type SpawnOptions, spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
@@ -246,15 +246,48 @@ export interface Completed {
   stderr: string
 }
 
+/** How long a command stopped at its timeout has after SIGTERM before it gets SIGKILL. */
+export const KILL_GRACE_MS = 2_000
+
+/** A terminal's mode, saved before a command that may prompt on it and put back if the command is cut off. */
+export interface TerminalMode {
+  /** The mode now, or null when there is no terminal to save it from. */
+  save(): string | null
+  restore(mode: string): void
+}
+
+/** `stty`, from where the systems keep it rather than PATH, which a project folder could shadow. */
+function sttyPath(): string | undefined {
+  return ["/bin/stty", "/usr/bin/stty"].find((file) => fs.existsSync(file))
+}
+
+/** The terminal this process's stdin is, through `stty` on it; nothing when stdin is no terminal. */
+export const STDIN_TERMINAL: TerminalMode = {
+  save: () => {
+    const stty = sttyPath()
+    if (!process.stdin.isTTY || stty === undefined) return null
+    const done = spawnSync(stty, ["-g"], { stdio: ["inherit", "pipe", "ignore"], encoding: "utf8", timeout: 5_000 })
+    return done.status === 0 && done.stdout.trim() ? done.stdout.trim() : null
+  },
+  restore: (mode) => {
+    const stty = sttyPath()
+    if (stty !== undefined) spawnSync(stty, [mode], { stdio: ["inherit", "ignore", "ignore"], timeout: 5_000 })
+  },
+}
+
 /**
  * Runs `argv` with this process's environment, or exactly `env` when given, and captures its output. A program that
- * can't start is exit 127 and one still running after `timeoutMs` is killed and exit 124, not an exception: the output
- * it wrote before the kill is kept, and stderr becomes `<argv[0]> timed out`. One killed by a signal is minus the
+ * can't start is exit 127 and one still running after `timeoutMs` is stopped and exit 124, not an exception: the
+ * output it wrote before is kept, and stderr becomes `<argv[0]> timed out`. One killed by a signal is minus the
  * signal's number.
  *
+ * At the timeout the command gets SIGTERM, which lets git or ssh put back a terminal a password prompt changed, and
+ * SIGKILL after `KILL_GRACE_MS` if it is still running. With `terminal`, its mode is saved before the command starts
+ * and put back once a command cut off at its timeout has ended, for one that didn't put it back itself.
+ *
  * With `group`, the command runs in a new session and process group, and the timeout or this process exiting kills
- * the whole group, so what the command started doesn't outlive it. Leave it off for anything that may prompt on the
- * terminal (git, ssh): a new session has no controlling terminal, so it can't open /dev/tty.
+ * the whole group at once, so what the command started doesn't outlive it. Leave it off for anything that may prompt
+ * on the terminal (git, ssh): a new session has no controlling terminal, so it can't open /dev/tty.
  */
 export function runCommand(
   argv: readonly [string, ...string[]],
@@ -262,9 +295,11 @@ export function runCommand(
     timeoutMs = 60_000,
     env,
     group = false,
-  }: { timeoutMs?: number; env?: Record<string, string>; group?: boolean } = {},
+    terminal,
+  }: { timeoutMs?: number; env?: Record<string, string>; group?: boolean; terminal?: TerminalMode } = {},
 ): Promise<Completed> {
   return new Promise((resolve) => {
+    const mode = terminal?.save() ?? null
     const child = spawn(argv[0], argv.slice(1), {
       stdio: ["ignore", "pipe", "pipe"],
       detached: group,
@@ -280,13 +315,18 @@ export function runCommand(
     let stderr = ""
     let failed = false
     let timedOut = false
+    let kill: ReturnType<typeof setTimeout> | undefined
     child.stdout!.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk))
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk))
     const timer = setTimeout(() => {
       timedOut = true
       // The group is killed even once the command has exited: a grandchild holding the pipes is what this catches.
       if (group) killGroup(child.pid!)
-      else child.kill("SIGKILL")
+      else {
+        // SIGKILL first would leave a terminal whose password prompt turned echo off without it.
+        child.kill("SIGTERM")
+        kill = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS)
+      }
       // A grandchild may hold the pipes open; closing our ends lets `close` follow the child's own exit.
       child.stdout!.destroy()
       child.stderr!.destroy()
@@ -302,9 +342,12 @@ export function runCommand(
     child.on("close", (code, signal) => {
       clearTimeout(timer)
       process.off("exit", onExit)
+      clearTimeout(kill)
       if (failed) return
-      if (timedOut) resolve({ code: 124, stdout, stderr: `${argv[0]} timed out` })
-      else resolve({ code: code ?? (signal ? -os.constants.signals[signal] : 0), stdout, stderr })
+      if (timedOut) {
+        if (mode !== null) terminal!.restore(mode)
+        resolve({ code: 124, stdout, stderr: `${argv[0]} timed out` })
+      } else resolve({ code: code ?? (signal ? -os.constants.signals[signal] : 0), stdout, stderr })
     })
   })
 }

@@ -266,46 +266,55 @@ function opencorp(c: Home, argv: string[], input: string, cwd: string): Promise<
   )
 }
 
+/** `opencorp onboard --home <c.home> --from <first> --service background` in a terminal of its own (`term`), in the
+ *  project folder, where `first` is a company made first by `opencorp init --provider-stdin` in `<c.root>/first`, its
+ *  office stopped, whose CEO @ngocbh has PASSWORD. The first home's init checks its model; the second home's onboard
+ *  keeps the model its office.json names. When the test finishes, after the terminal is gone, both offices are
+ *  stopped, the home goes, and every scripted reply must have been used. */
+async function onboarding(c: Home, term?: string): Promise<Terminal> {
+  const first = path.join(c.root, "first")
+  const stop = (home: string) =>
+    execFileSync(WRAPPER, ["stop", "--home", home], { env: c.env, stdio: "ignore", timeout: 60_000 })
+  let t: Terminal | undefined
+  // The hooks run in the order they are added: the terminal's own, added after this one, ends it first, and the last
+  // one stops the second office and removes the home.
+  onTestFinished(() => {
+    stop(first)
+    if (!t) fs.rmSync(c.root, { recursive: true, force: true })
+  })
+  const flags = ["--company", "Acme Robotics", "--name", "Hong Ngoc Bui", "--handle", "ngocbh", "--no-device"]
+  const provider = JSON.stringify({ llm_config: LLM_CONFIG, env: c.llm.env() })
+  const argv = ["init", "--home", first, "--provider-stdin", ...flags, "--service", "background"]
+  const made = await opencorp(c, argv, provider, c.root)
+  expect(made.code, made.out).toBe(0)
+  stop(first)
+  // The CEO gets a password, as `opencorp password` would give them one.
+  const company = path.join(first, "company")
+  const person = path.join(company, "people", "ngocbh", "person.yaml")
+  fs.appendFileSync(person, `password_hash: ${JSON.stringify(phc(PASSWORD))}\n`)
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", ...args], {
+      cwd: company,
+      env: { ...c.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+      stdio: "ignore",
+      timeout: 30_000,
+    })
+  git("add", "-A")
+  git("commit", "-qm", "Give the CEO a password")
+  const command = ["onboard", "--home", c.home, "--from", company, "--service", "background"]
+  t = terminal(c, command, { cwd: c.project, ...(term ? { term } : {}) })
+  onTestFinished(() => {
+    stop(c.home)
+    fs.rmSync(c.root, { recursive: true, force: true })
+  })
+  onTestFinished(() => expect(c.llm.pending()).toEqual([]))
+  return t
+}
+
 describe.skipIf(!TMUX)("onboard on a real terminal: every question on the plain terminal, then the office", () => {
   test("onboard --from the first home's company asks which human you are and their password on the terminal, then opens the office", async () => {
-    // The first home's init checks its model; the second home's onboard keeps the model its office.json names.
     const c = await setUp([{ match: CHECK, content: "OK" }])
-    const first = path.join(c.root, "first")
-    const stop = (home: string) =>
-      execFileSync(WRAPPER, ["stop", "--home", home], { env: c.env, stdio: "ignore", timeout: 60_000 })
-    let t: Terminal | undefined
-    // The hooks run in the order they are added: with a terminal, its own (added after this one) ends it first, and
-    // the last hook stops the second office and removes the home.
-    onTestFinished(() => {
-      stop(first)
-      if (!t) fs.rmSync(c.root, { recursive: true, force: true })
-    })
-    const flags = ["--company", "Acme Robotics", "--name", "Hong Ngoc Bui", "--handle", "ngocbh", "--no-device"]
-    const provider = JSON.stringify({ llm_config: LLM_CONFIG, env: c.llm.env() })
-    const argv = ["init", "--home", first, "--provider-stdin", ...flags, "--service", "background"]
-    const made = await opencorp(c, argv, provider, c.root)
-    expect(made.code, made.out).toBe(0)
-    stop(first)
-    // The CEO gets a password, as `opencorp password` would give them one.
-    const company = path.join(first, "company")
-    const person = path.join(company, "people", "ngocbh", "person.yaml")
-    fs.appendFileSync(person, `password_hash: ${JSON.stringify(phc(PASSWORD))}\n`)
-    const git = (...args: string[]) =>
-      execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", ...args], {
-        cwd: company,
-        env: { ...c.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
-        stdio: "ignore",
-        timeout: 30_000,
-      })
-    git("add", "-A")
-    git("commit", "-qm", "Give the CEO a password")
-
-    t = terminal(c, ["onboard", "--home", c.home, "--from", company, "--service", "background"], { cwd: c.project })
-    onTestFinished(() => {
-      stop(c.home)
-      fs.rmSync(c.root, { recursive: true, force: true })
-    })
-    onTestFinished(() => expect(c.llm.pending()).toEqual([]))
+    const t = await onboarding(c)
     await t.see("Step 1 of 4: Company")
     await t.see("Which of them are you?")
     expect(t.screen()).toContain("ngocbh")
@@ -326,5 +335,24 @@ describe.skipIf(!TMUX)("onboard on a real terminal: every question on the plain 
     expect(fs.readFileSync(path.join(c.home, "company", "people", "ngocbh", "person.yaml"), "utf8")).toContain(me.device)
     expect(holding(c.root, PASSWORD)).toEqual([])
     expect(t.ended()).toBe(false)
+  })
+
+  test("on a dumb terminal onboard asks line by line, the password unshown, and opens no office", async () => {
+    const c = await setUp([{ match: CHECK, content: "OK" }])
+    const t = await onboarding(c, "dumb")
+    await t.see("Step 1 of 4: Company")
+    // A numbered list and a line to answer it on, not a drawn one.
+    await t.see("Which of them are you? [ngocbh]:")
+    expect(t.screen()).toContain("1. ngocbh")
+    expect(t.alternate()).toBe(false)
+    t.keys("Enter")
+    await t.see("@ngocbh's password (not shown)")
+    t.type(PASSWORD)
+    await t.see("Done. Run `opencorp` in a project folder to talk to your team.", 120_000)
+    expect(await t.exit(60_000)).toBe("exit=0")
+    expect(t.screen()).not.toContain(PASSWORD)
+    expect(t.alternate()).toBe(false)
+    expect(JSON.parse(fs.readFileSync(path.join(c.home, "identity.json"), "utf8")).handle).toBe("ngocbh")
+    expect(holding(c.root, PASSWORD)).toEqual([])
   })
 })
