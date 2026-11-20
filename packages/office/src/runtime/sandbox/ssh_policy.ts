@@ -1,15 +1,16 @@
-/** The SSH-only sandbox: what OpenCorp's `hq` shell and reach.sh may touch as the owner. They get the network and
- *  their SSH, but never the model's key or sign-in in hq/, OpenCorp's other files, nor the rest of the home.
+/** The SSH-only sandbox: what OpenCorp's `hq` shell may touch as the owner. It gets the network and the owner's SSH,
+ *  but never the model's key or sign-in in hq/, OpenCorp's other files, nor the rest of the home.
  *
- *  The shell's ssh keeps its control sockets in a folder of its own, `controlDir`, inside its temp folder. `hq/cm`,
- *  where the office's own ssh calls keep their masters outside the sandbox, is never mounted, so a call can't plant
- *  a socket there that the office would take for its master. The shell's ssh must name `controlDir` in its
- *  ControlPath, through a config of its own: under the visit's config, which names hq/cm, ssh only warns and goes on
- *  without a master. */
+ *  `~/.ssh` is read-only, as is the owner's ControlPath folder where the profile binds one, so the shell's ssh rides a
+ *  connection the owner has open there and can bind no socket of its own: its config says `ControlMaster no`. `hq/cm`,
+ *  where OpenCorp's own ssh calls keep their masters outside the sandbox, is never mounted, so a call can't ride or
+ *  end them, nor plant a socket there that OpenCorp would take for its master. */
 import fs from "node:fs"
 import path from "node:path"
+import { SYSTEM_DIRS } from "./bwrap.ts"
 import { existingDir, realPath, within } from "./policy.ts"
 import { run } from "./run.ts"
+import { SYSTEM_SUBPATHS } from "./seatbelt.ts"
 
 /** The host `sshFiles` asks about: one no config names, so only its `Host *` and defaults apply. */
 const UNKNOWN_HOST = "opencorp-hq"
@@ -23,8 +24,8 @@ const MAX_CONFIGS = 256
 /** How many entries a scan for hard links reads in one folder tree before it refuses. */
 const MAX_SCANNED = 10_000
 
-/** What ssh reads a file `ssh -G` names as. */
-export type SshFileKind = "identity" | "certificate" | "known_hosts"
+/** What ssh reads a file `ssh -G` names as; `control` is the socket a master listens on (ControlPath). */
+export type SshFileKind = "identity" | "certificate" | "known_hosts" | "control"
 
 /** A file `ssh -G` names, as an absolute path. */
 export interface SshFile {
@@ -45,8 +46,10 @@ export interface SshPolicyInit {
   agentSocket?: string | null
   /** A Kerberos ticket cache as KRB5CCNAME names it: a file (`FILE:<path>` or its path), or a KCM socket's path. */
   kerberos?: string | null
-  /** `sshFiles`'s answer for the visit's config. */
+  /** `sshFiles`'s answer for the config the call's ssh reads. */
   sshFiles?: readonly SshFile[]
+  /** The ssh program the call runs (`findSsh`'s), bound read-only where it lies outside the system's folders. */
+  ssh?: string
   /** More read-only paths: tests bind the fake ssh and its Bun here. */
   readOnly?: readonly string[]
 }
@@ -64,16 +67,19 @@ export class SshPolicy {
   readonly home: string
   /** The call's TMPDIR and working folder, read-write. */
   readonly tmpdir: string
-  /** `<tmpdir>/cm` (0700): the folder the shell's ssh binds its control sockets in. */
+  /** `<tmpdir>/cm` (0700): a folder where the call's ssh could bind control sockets of its own. */
   readonly controlDir: string
-  /** Bound read-only, in this order: `~/.ssh`, the files `ssh -G` names that the profile takes (the constructor
-   *  says which), `hq/ssh`, then the extra paths. */
+  /** Bound read-only, in this order: `~/.ssh`, the files and ControlPath folder `ssh -G` names that the profile takes
+   *  (the constructor says which), the ssh program, `hq/ssh`, then the extra paths. */
   readonly readOnly: readonly string[]
   /** Files bound read-write for their data only, never to be removed, renamed or linked, in this order:
    *  `~/.ssh/known_hosts`, the status file, and a ticket file. */
   readonly writable: readonly string[]
   /** The sockets the call may connect to, and do nothing else with: the agent's and a KCM's. */
   readonly sockets: readonly string[]
+  /** The folders whose sockets the call may connect to, and do nothing else with: `~/.ssh`, then the owner's
+   *  ControlPath folder outside it where the profile binds one. ssh rides a master the owner keeps there. */
+  readonly socketFolders: readonly string[]
   /** The agent's socket, where the call finds it (its SSH_AUTH_SOCK), or null. */
   readonly agentSocket: string | null
   /** KRB5CCNAME for a ticket cache that is a file (`FILE:<path>`), or null: a KCM socket is found from krb5.conf. */
@@ -107,9 +113,16 @@ export class SshPolicy {
    * Of `sshFiles`, a file in `~/.ssh` or the system's ssh folder is mounted with it, and a missing one binds
    * nothing. Any other is bound only when it is a regular file the user owns, with no other hard link, outside
    * OpenCorp's home and its company, and not a shell history; the rest get a note. A bound private key brings its
-   * `.pub` and `-cert.pub` when they are there, as ssh reads them beside it. An agent's socket that is no socket,
-   * a ticket cache that names no file or socket by its absolute path (a kernel keyring), and either one in
-   * OpenCorp's home (the office's own socket is there) get a note too.
+   * `.pub` and `-cert.pub` when they are there, as ssh reads them beside it. A ControlPath's folder outside `~/.ssh`
+   * is bound, to connect to, only when it is the user's own folder, mode 0700, outside OpenCorp's home, holding only
+   * sockets; another gets a note. ssh prints the ControlPath for a host no config names, so one the owner sets only
+   * under a `Host` line isn't found, and ssh then logs in directly. An agent's socket that is no socket, a ticket
+   * cache that names no file or socket by its absolute path (a kernel keyring), and either one in OpenCorp's home
+   * (the office's own socket is there) get a note too.
+   *
+   * `ssh` is bound, as the file it resolves to, when it lies outside the system's folders and the temp folder; one
+   * that would expose hq, the home, a secret or OpenCorp's files throws, and one that is no regular file gets a
+   * note.
    *
    * Throws `Error` when `tmpdir` or `hq/ssh` is not an existing folder.
    */
@@ -136,6 +149,8 @@ export class SshPolicy {
     if (statusDir !== hqSsh) {
       throw new UnsafeProfile(`the SSH-only sandbox's status file ${status} is not in ${hqSsh}`)
     }
+    // Mounted whole: a link there to hq would bind it.
+    denied.check(hqSsh, "hq/ssh")
     writableFile(knownHosts, "known_hosts")
     writableFile(status, "the status file")
     const folder = lstat(controlDir)
@@ -174,9 +189,38 @@ export class SshPolicy {
       else if (!bound.includes(real)) bound.push(real)
       return why === null
     }
+    const controlFolders: string[] = []
+    /** Binds the folder of the ControlPath `socket`, to connect to, when it fits, else notes why. */
+    const control = (socket: string) => {
+      const folder = path.dirname(socket)
+      const real = realPath(folder)
+      if (within(real, ssh) || controlFolders.includes(real)) return
+      const entry = lstat(real)
+      const why = ours(real)
+        ? "it is in OpenCorp's home"
+        : entry === undefined
+          ? "nothing is there"
+          : !entry.isDirectory()
+            ? "it is not a folder"
+            : entry.uid !== uid()
+              ? "it is not the user's"
+              : (entry.mode & 0o777) !== 0o700
+                ? "it is not 0700"
+                : !onlySockets(real)
+                  ? "it holds something other than sockets"
+                  : null
+      if (why !== null) return void notes.push(`the ControlPath folder ${folder} is not bound: ${why}`)
+      denied.check(real, "the ControlPath folder")
+      controlFolders.push(real)
+      bound.push(real)
+    }
     for (const file of init.sshFiles ?? []) {
       if (!path.isAbsolute(file.path)) {
         notes.push(`${file.path} is not bound: it is not an absolute path`)
+        continue
+      }
+      if (file.kind === "control") {
+        control(file.path)
         continue
       }
       const real = realPath(file.path)
@@ -232,6 +276,15 @@ export class SshPolicy {
         }
       }
     }
+    if (init.ssh !== undefined) {
+      const real = realPath(init.ssh)
+      denied.check(real, "ssh")
+      if (ours(real)) throw new UnsafeProfile(`the SSH-only sandbox would expose OpenCorp's files through ssh ${real}`)
+      const system = (process.platform === "darwin" ? SYSTEM_SUBPATHS : SYSTEM_DIRS).map((dir) => realPath(dir))
+      const mounted = system.some((dir) => within(real, dir)) || within(real, tmpdir) || bound.includes(real)
+      if (!lstat(real)?.isFile()) notes.push(`ssh ${init.ssh} is not bound: it is not a regular file`)
+      else if (!mounted) bound.push(real)
+    }
     const extras = (init.readOnly ?? []).map((p) => realPath(p))
     for (const p of extras) denied.check(p, "the extra path")
     // Mounted whole, so a hard link to a credential anywhere in them would be readable.
@@ -257,6 +310,7 @@ export class SshPolicy {
     this.readOnly = [ssh, ...bound, hqSsh, ...extras]
     this.writable = [knownHosts, status, ...(ticket === null ? [] : [ticket])]
     this.sockets = [agent, kcm].filter((p) => p !== null)
+    this.socketFolders = [ssh, ...controlFolders]
     this.agentSocket = agent
     this.ccache = ticket === null ? null : `FILE:${ticket}`
     this.systemConfig =
@@ -310,6 +364,18 @@ class Denied {
       }
     }
   }
+}
+
+/** Whether every entry of the folder `dir` is a socket, links not followed: false past `MAX_SCANNED` entries, or when
+ *  it can't be read. */
+function onlySockets(dir: string): boolean {
+  let names: string[]
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return false
+  }
+  return names.length <= MAX_SCANNED && names.every((name) => lstat(path.join(dir, name))?.isSocket() === true)
 }
 
 /** The regular files at or under `p`, links not followed; throws `UnsafeProfile` past `MAX_SCANNED` entries. */
@@ -366,8 +432,8 @@ function writableFile(p: string, what: string): void {
 }
 
 /** The absolute files `ssh -G -F <config> opencorp-hq` names under identityfile, certificatefile,
- *  userknownhostsfile and globalknownhostsfile, with their kinds, each once. It runs in the SSH-only sandbox
- *  `policy`, one built without `sshFiles`, so a config's `Match exec` runs there, as under the shell's own ssh;
+ *  userknownhostsfile, globalknownhostsfile and controlpath, with their kinds, each once. It runs in the SSH-only
+ *  sandbox `policy`, one built without `sshFiles`, so a config's `Match exec` runs there, as under the shell's own ssh;
  *  `ssh` and `config` are the office's, and none of its arguments comes from the agent. ssh prints `~` and `%d`
  *  (the home) as written, so both become the policy's home; a relative path names no file the profile can know. An
  *  ssh that fails names nothing: it would fail the same way in the call. */
@@ -380,7 +446,7 @@ export async function sshFiles(policy: SshPolicy, ssh: string, config: string): 
     if (match === null) continue
     const kind = KINDS[match[1]!.toLowerCase()]
     if (kind === undefined) continue
-    // One identity or certificate per line; the known-hosts lists are space-separated on one.
+    // One identity, certificate or ControlPath per line; the known-hosts lists are space-separated on one.
     const values = kind === "known_hosts" ? match[2]!.split(" ") : [match[2]!]
     for (const value of values) {
       const file = value.replace(/^(~|%d)(?=\/|$)/, policy.home)
@@ -396,6 +462,7 @@ const KINDS: Record<string, SshFileKind> = {
   certificatefile: "certificate",
   userknownhostsfile: "known_hosts",
   globalknownhostsfile: "known_hosts",
+  controlpath: "control",
 }
 
 /** The config files `starts` name and reach through their `Include` lines, as ssh reads them, each resolved, that

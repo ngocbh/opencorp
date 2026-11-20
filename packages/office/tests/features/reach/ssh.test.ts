@@ -8,6 +8,7 @@ import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import {
+  agentConfigText,
   breakingOptions,
   CONTROL_HOST,
   CONTROL_MS,
@@ -115,6 +116,39 @@ test("with the owner's ControlMaster, ControlPath and ControlPersist, a real ssh
   expect(node).toMatch(new RegExp(`\\ncontrolpath ${dir}/cm/[0-9a-f]{40}\\n`))
   expect(node).toContain("\ncontrolpersist 60\n")
   expect(node).toContain("\ncontrolmaster auto\n")
+})
+
+test("the agent's config is ControlMaster no, then the user's config and the system's, and nothing else", () => {
+  expect(agentConfigText(["/t/a b/cfg", "/etc/ssh/ssh_config"])).toBe(
+    [
+      "# Written by opencorp hq on each visit; edits are lost.",
+      "ControlMaster no",
+      'Include "/t/a b/cfg"',
+      'Include "/etc/ssh/ssh_config"',
+      "",
+    ].join("\n"),
+  )
+  expect(() => agentConfigText(['/t/a"b'])).toThrow()
+  expect(() => agentConfigText(["/t/a\nProxyCommand x"])).toThrow()
+  // A real ssh: the first value read wins, so the agent's ssh never keeps a master, and rides one at the owner's
+  // ControlPath, with the rest of their settings.
+  const dir = shortDir()
+  const owner = path.join(dir, "owner")
+  fs.writeFileSync(
+    owner,
+    ["Host login1", "  ControlMaster auto", `  ControlPath ${dir}/mine/%h`, "  ControlPersist 7200", "  User alice", ""].join("\n"),
+  )
+  const config = path.join(dir, "agent.config")
+  fs.writeFileSync(config, agentConfigText([owner]))
+  const login = sshG(["-F", config, "--", "login1"]).split("\n")
+  expect(login).toContain("controlmaster false")
+  expect(login).toContain(`controlpath ${dir}/mine/login1`)
+  expect(login).toContain("user alice")
+  // Nothing of OpenCorp's: no ControlPath where the owner set none, and no keep-alives of ours.
+  const node = sshG(["-F", config, "--", "node1"]).split("\n")
+  expect(node).toContain("controlmaster false")
+  expect(node.filter((line) => line.startsWith("controlpath "))).toEqual([])
+  expect(node).toContain("serveraliveinterval 0")
 })
 
 test("where ssh knows them, the session options follow the includes as defaults", () => {
@@ -294,12 +328,14 @@ test("writeSshFiles writes the configs 0600 and the wrapper 0700", async () => {
   await writeSshFiles(paths, "/usr/bin/ssh", ["/i/one"])
   expect(fs.statSync(paths.config).mode & 0o777).toBe(0o600)
   expect(fs.statSync(paths.batchConfig).mode & 0o777).toBe(0o600)
+  expect(fs.statSync(paths.agentConfig).mode & 0o777).toBe(0o600)
   expect(fs.statSync(paths.wrapper).mode & 0o777).toBe(0o700)
   const sessionOptions = knowsSessionOptions("/usr/bin/ssh")
   expect(fs.readFileSync(paths.config, "utf8")).toBe(configText(paths.cm, { includes: ["/i/one"], sessionOptions }))
   expect(fs.readFileSync(paths.batchConfig, "utf8")).toBe(
     configText(paths.cm, { batch: true, includes: ["/i/one"], sessionOptions }),
   )
+  expect(fs.readFileSync(paths.agentConfig, "utf8")).toBe(agentConfigText(["/i/one"]))
   expect(fs.readFileSync(paths.wrapper, "utf8")).toBe(wrapperText("/usr/bin/ssh"))
 })
 

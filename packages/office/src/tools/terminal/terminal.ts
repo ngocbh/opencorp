@@ -103,8 +103,8 @@ const MOVED_SINCE =
 const MOVED_FOLDER = (was: string | null, now: string | null) =>
   `the shell is in another folder than when this command was approved (${was ?? "unknown"}, now ` +
   `${now ?? "unknown"}); run it again to have it checked there`
-/** What a start failure for want of a sandbox adds, so the agent can tell the owner what to fix. */
-const SANDBOX_FIX =
+/** What a start failure for want of a sandbox adds, so the agent can tell the owner what to fix; doctor says it too. */
+export const SANDBOX_FIX =
   "the shell needs a sandbox: on Linux, install bubblewrap (bwrap) and allow unprivileged user namespaces; on " +
   "macOS, sandbox-exec comes with the system"
 const STARTING: ShellState = { status: "starting", waiting: null, command: null, exit: null, error: null }

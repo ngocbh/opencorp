@@ -2,8 +2,9 @@
  *  read-only, what is a file operation inside the workspace, what runs code and what is risky. */
 import { expect, test } from "bun:test"
 import {
-  classify, CREDENTIALS, credentialOf, fileOp, programOf, pushOf, readCommand, sshHosts, type Where,
+  classify, CREDENTIALS, credentialOf, fileOp, ownerOnly, programOf, pushOf, readCommand, sshHosts, type Where,
 } from "../../../src/runtime/permissions/commands.ts"
+import { decide, type Mode } from "../../../src/runtime/permissions/policy.ts"
 
 const words = (text: string) => readCommand(text).parts.map((p) => p.words)
 const why = (text: string) => readCommand(text).unreadable
@@ -379,7 +380,7 @@ test("a command run over ssh is read on its own, on that host", () => {
       "ssh -4 -6 -C -q -t -T -v -x h ls", "ssh -tt -vvv h", "ssh -l u -p 22 -i k -J j h squeue",
       "ssh -p22 -lu h", "ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=1 h",
       "ssh -o ServerAliveCountMax=1 -o User=u -o Port=2 -o IdentitiesOnly=yes -o IdentityFile=k h",
-      "ssh -o ControlMaster=auto -o ControlPath=p -o ControlPersist=1 h", "ssh h -v ls -la", "ssh h 'squeue; sinfo'",
+      "ssh -o ControlPersist=1 h", "ssh h -v ls -la", "ssh h 'squeue; sinfo'",
     ],
     readOnly,
     true,
@@ -389,6 +390,38 @@ test("a command run over ssh is read on its own, on that host", () => {
   expect(risk("ssh a ssh b scancel 1")).toBe("on a: on b: it kills or cancels processes or jobs")
   expect(risk("ssh h ssh -o ProxyCommand=x g")).toBe("on h: it runs a local command for ssh")
   expect(kinds("ssh h make")[0]).toEqual({ readOnly: false, runsCode: true, risk: null })
+})
+
+test("ssh -O exit, stop, cancel and forward, and -S, ControlPath or ControlMaster on a command line, ask in every mode and are refused in dontAsk; ssh -O check is read-only", () => {
+  const controls = "it controls a shared ssh connection"
+  const lines = [
+    "ssh -O exit h", "ssh -O stop h", "ssh -O cancel -L 1:h:2 h", "ssh -O forward -L 1:h:2 h", "ssh -Oexit h",
+    "ssh -O proxy h", "ssh h -O exit", "ssh -S ~/.ssh/tmp/x h", "ssh -S none h ls", "ssh -Sx h",
+    "ssh -o ControlPath=/tmp/x h", "ssh -o 'ControlPath /tmp/x' h", "ssh -oControlPath=x h", "ssh -o controlpath=x h",
+    "ssh -o ControlMaster=yes h", "ssh -o ControlMaster=no h ls", "ssh -O check -S x h",
+  ]
+  each(lines, risk, controls)
+  each(lines, readOnly, false)
+  each(lines, (line) => ownerOnly(readCommand(line).parts[0]!, true), controls)
+  // Over ssh too, and whatever allows it: no rule or mode lets one run unasked.
+  expect(ownerOnly(readCommand("ssh a ssh -O exit b").parts[0]!, true)).toBe(`on a: ${controls}`)
+  const S: Where = { profile: "ssh", cwd: "/tmp/w", writable: [] }
+  const allows = ["ssh *", "ssh -O exit h"].map((pattern) => ({ effect: "allow" as const, kind: "command" as const, pattern }))
+  for (const mode of ["auto", "default", "ask", "dontAsk"] as Mode[]) {
+    for (const line of ["ssh -O exit h", "ssh -S /tmp/x h ls", "ssh -o ControlMaster=yes h"]) {
+      const decided = decide({ kind: "command", text: line }, mode, allows, S)
+      expect([mode, line, decided]).toEqual([
+        mode, line,
+        mode === "dontAsk"
+          ? { verdict: "deny", reason: `this session doesn't ask (dontAsk mode): ${controls}` }
+          : { verdict: "ask", reason: controls, rules: [] },
+      ])
+    }
+  }
+  // -O check only asks whether a master is up: read-only, and nothing a mode must hold.
+  each(["ssh -O check h", "ssh -Ocheck h", "ssh -O check -p 22 u@h"], readOnly, true)
+  each(["ssh -O check h", "ssh -o ControlPersist=yes h"], risk, null)
+  expect(ownerOnly(readCommand("ssh -O check h").parts[0]!, true)).toBeNull()
 })
 
 test("host-key options and known_hosts writes are ordinary", () => {

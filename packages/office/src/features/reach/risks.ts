@@ -39,6 +39,13 @@ export const beforeLearning = (paths: ReachPaths): string[] => text("beforeLearn
 export const beforeSaving = (paths: ReachPaths): string[] =>
   text("beforeSaving", { persist_s: PERSIST_S, provider: paths.provider, auth: paths.auth })
 
+/** Shown before learning's shells start with no sandbox; `why` says why there's none. */
+export const noSandbox = (paths: ReachPaths, why: string): string[] => text("noSandbox", { why, dir: paths.dir })
+/** Asked after `noSandbox`, offering `RUN_UNSANDBOXED` and `STOP`, the default. */
+export const NO_SANDBOX_QUESTION = text("NO_SANDBOX_QUESTION").join("\n")
+export const RUN_UNSANDBOXED = text("RUN_UNSANDBOXED").join("\n")
+export const STOP = text("STOP").join("\n")
+
 /** The answer that starts a learning run. */
 export const LEARN = text("LEARN").join("\n")
 /** Asked before learning a first path. */

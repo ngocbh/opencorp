@@ -170,8 +170,9 @@ export function profile(
  * Allowed: what every profile allows of the system, plus ssh's and Kerberos's configuration, read-only; the
  * policy's read-only paths (`~/.ssh` among them); the data of its writable files (`known_hosts`, the status file, a
  * ticket), which can't be removed, renamed or replaced; its temp folder; binding and reaching the shell's own
- * control sockets in `controlDir`; connecting to the agent's socket and a KCM's, and nothing more on them; and IP
- * networking with the DNS responder. The setuid programs macOS ships can't run. `canary`, `developerDir` and `tty`
+ * control sockets in `controlDir`; connecting to the owner's control sockets in `socketFolders` (`~/.ssh` and their
+ * ControlPath folder), to the agent's socket and to a KCM's, and nothing more on them; and IP networking with the
+ * DNS responder. The setuid programs macOS ships can't run. `canary`, `developerDir` and `tty`
  * are `profile`'s. Unverified on macOS.
  */
 export function sshProfile(
@@ -203,6 +204,8 @@ export function sshProfile(
     `(allow file-read* file-write* (subpath ${quote(policy.tmpdir)}))`,
     ";; ssh's control sockets: the shell's masters bind theirs in its own folder, and its calls connect there.",
     `(allow network-bind network-inbound network-outbound (subpath ${quote(policy.controlDir)}))`,
+    ";; The user's own control sockets, in ~/.ssh and their ControlPath folder: connected to, never bound.",
+    allow("network-outbound", policy.socketFolders.map((p) => `(subpath ${quote(p)})`)),
   )
   if (policy.sockets.length > 0) {
     lines.push(

@@ -98,6 +98,7 @@ function runChecks(
     answers = false,
     locked = () => false,
     probe = async () => null,
+    terminal = async () => null,
     platform = "darwin",
     lstat,
     command = COMMAND,
@@ -108,6 +109,7 @@ function runChecks(
     answers?: boolean
     locked?: (lockPath: string) => boolean
     probe?: (officeHome: string) => Promise<string | null>
+    terminal?: () => Promise<string | null>
     platform?: NodeJS.Platform
     lstat?: (p: string) => fs.Stats
     command?: readonly [string, ...string[]]
@@ -121,6 +123,7 @@ function runChecks(
     command,
     repo: path.join(dir, "repo"),
     probe,
+    terminal,
     codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
     environ,
     hq: async () => "unreachable",
@@ -934,6 +937,7 @@ test("a symlink at the socket path is never asked anything even when something a
     command: COMMAND,
     repo: path.join(dir, "repo"),
     probe: async () => null,
+    terminal: async () => null,
     codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
     environ: {},
     hq: async () => (asked.push("hq"), "unreachable"),
@@ -1164,6 +1168,30 @@ test("a crash marker followed by other output is the failed start of that output
   expect(got.detail).toContain('its last start failed: error: Module not found "/old/main.ts" (log:')
 })
 
+test("doctor's terminal line says a sandboxed program runs on a terminal", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const found = await runChecks(dir, paths)
+  expect(byName(found).terminal).toEqual({ name: "terminal", status: "ok", detail: "sandboxed programs run on a terminal" })
+  // Beside the sandbox line.
+  const names = found.map((c) => c.name)
+  expect(names[names.indexOf("sandbox") + 1]).toBe("terminal")
+})
+
+test("doctor's terminal line fails with the fix when a sandboxed program can't run on a terminal", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const found = await runChecks(dir, paths, { terminal: async () => "bwrap: setting up uid map: Permission denied" })
+  expect(byName(found).terminal).toEqual({
+    name: "terminal",
+    status: "fail",
+    detail:
+      "bwrap: setting up uid map: Permission denied; the shell needs a sandbox: on Linux, install bubblewrap (bwrap) " +
+      "and allow unprivileged user namespaces; on macOS, sandbox-exec comes with the system",
+  })
+  expect(doctor.exitCode(found)).toBe(1)
+})
+
 test("a sandbox that cant start fails", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)
@@ -1204,6 +1232,7 @@ async function checksSeeingCodex(
     command: COMMAND,
     repo: path.join(dir, "repo"),
     probe: async () => null,
+    terminal: async () => null,
     codex: async (env, environ, mode) => {
       seen.push({ env, environ, mode })
       return { name: "codex", status: "ok", detail: "stand-in" }
@@ -1622,6 +1651,7 @@ function runningChecks(
     command: COMMAND,
     repo: path.join(dir, "repo"),
     probe: async () => null,
+    terminal: async () => null,
     codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
     environ,
     hq: async () => hq,
@@ -1650,6 +1680,7 @@ test("a running office reports hq", async () => {
     "hq",
     "web app",
     "sandbox",
+    "terminal",
     "codex",
   ])
 })
@@ -1969,6 +2000,10 @@ test.skipIf(!sandboxAvailable())("the sandbox probe runs the file helper under i
   expect(await doctor.sandboxProblem(path.join(tempDir(), "home"))).toBeNull()
 })
 
+test.skipIf(!sandboxAvailable())("the terminal probe runs a sandboxed program on a terminal of its own", async () => {
+  expect(await doctor.terminalProblem()).toBeNull()
+})
+
 test("a helper inside the office home fails the sandbox check", async () => {
   // The checkout root holds the helper's source, so no sandboxed call is ever made.
   const root = fs.realpathSync(fileURLToPath(new URL("../../../../..", import.meta.url)))
@@ -1978,6 +2013,7 @@ test("a helper inside the office home fails the sandbox check", async () => {
     host: makeHost(tempDir(), new Runner()),
     command: COMMAND,
     repo: root,
+    terminal: async () => null,
     codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
     environ: {},
     hq: async () => "unreachable",
@@ -2023,7 +2059,7 @@ test("a worked folder holding the install fails the folders check", async () => 
     status: "fail",
     detail: `workspace ${work} contains ${work}/checkout, where the office or a program it runs is installed; use a project folder`,
   })
-  expect(found.map((c) => c.name).slice(-3)).toEqual(["sandbox", "folders", "codex"])
+  expect(found.map((c) => c.name).slice(-4)).toEqual(["sandbox", "terminal", "folders", "codex"])
   expect(doctor.exitCode(found)).toBe(1)
 })
 

@@ -139,6 +139,10 @@ license, the upstream paths and commit, and our paths.
   `collapseShellCommand`, `collapseTail`), read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/tui/src/routes/session/index.tsx` (`toolView`, `Shell`, `TypedLine`, `ShellCall`),
   `packages/tui/src/util/collapse-tool-output.ts`, `packages/tui/test/util/collapse-tool-output.test.ts`.
+- **What:** the check before a terminal starts that its folder is a directory, since a PTY's library may start the
+  shell in the home instead, ported for learning's shells.
+- **Upstream:** `packages/core/src/persistent-pty/index.ts` (`create`), read at commit `df46f69` (2026-11-16).
+- **Ours:** `packages/office/src/features/reach/terminal.ts` (`startsIn`).
 
 ## Paperclip
 

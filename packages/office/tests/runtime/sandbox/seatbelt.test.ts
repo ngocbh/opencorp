@@ -358,6 +358,8 @@ const SSH_G1 = `(version 1)
 (allow file-read* file-write* (subpath "/private/tmp/oc-ssh-1"))
 ;; ssh's control sockets: the shell's masters bind theirs in its own folder, and its calls connect there.
 (allow network-bind network-inbound network-outbound (subpath "/private/tmp/oc-ssh-1/cm"))
+;; The user's own control sockets, in ~/.ssh and their ControlPath folder: connected to, never bound.
+(allow network-outbound (subpath "/Users/me/.ssh"))
 ;; The agent's socket and a KCM's: connected to, nothing more.
 (allow file-read-metadata (literal "/private/tmp/com.apple.launchd.abc/Listeners"))
 (allow network-outbound (remote unix-socket (path-literal "/private/tmp/com.apple.launchd.abc/Listeners")))
@@ -404,4 +406,22 @@ test("the SSH-only profile allows exactly those paths and the network", () => {
   expect(lines.findIndex((l) => l.startsWith("(deny process-exec*"))).toBeGreaterThan(
     lines.indexOf("(allow process-exec process-fork)"),
   )
+})
+
+test("the profile lets a call connect to sockets in ~/.ssh and the ControlPath folder, and write nothing there", () => {
+  // Unverified on macOS: only the profile's text is checked here.
+  const policy = goldenSshPolicy({ ...SSH_LAYOUT, bound: ["/Users/me/keys/id", "/Users/me/cm"], controlFolders: ["/Users/me/cm"] })
+  const lines = sshProfile(policy, SHELL_OPTIONS).split("\n")
+  const at = lines.indexOf(";; The user's own control sockets, in ~/.ssh and their ControlPath folder: connected to, never bound.")
+  expect(lines.slice(at, at + 2)).toEqual([
+    ";; The user's own control sockets, in ~/.ssh and their ControlPath folder: connected to, never bound.",
+    '(allow network-outbound (subpath "/Users/me/.ssh") (subpath "/Users/me/cm"))',
+  ])
+  expect(lines).toContain('(allow file-read* (subpath "/Users/me/.ssh") (subpath "/Users/me/keys/id") (subpath "/Users/me/cm") (subpath "/Users/me/.opencorp/hq/ssh"))')
+  // Read and connected to only: no write, bind or listen there.
+  const there = lines.filter((l) => l.includes('"/Users/me/cm"') || l.includes('(subpath "/Users/me/.ssh")'))
+  expect(there.filter((l) => /file-write|network-bind|network-inbound/.test(l))).toEqual([])
+  expect(lines.filter((l) => l.includes("file-write") && l.includes("/Users/me/"))).toEqual([
+    '(allow file-read* file-write-data (literal "/Users/me/.ssh/known_hosts") (literal "/Users/me/.opencorp/hq/ssh/status.4242") (literal "/private/tmp/krb5cc_501"))',
+  ])
 })

@@ -33,9 +33,12 @@ import {
 } from "../../../src/features/reach/ssh.ts"
 import { writeAccess } from "../../../src/features/reach/state.ts"
 import { visit } from "../../../src/features/reach/run.ts"
+import { agentPolicy } from "../../../src/features/reach/sandbox.ts"
+import { run as sandboxed } from "../../../src/runtime/sandbox/run.ts"
 import { startOffice } from "../../../src/testing/office.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
 import { isGone, shortDir, waitFor } from "../../helpers.ts"
+import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import { fakeHome, fakeRemote, freePort, holdConnection, holdingServer, reachCtx, visitDeps } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -479,6 +482,92 @@ describe.skipIf(!REAL)("a real sshd", () => {
     expect((await runChild(controlArgv(SSH, login, "check"), RUN)).code).toBe(0)
     expect(await accepts(port)).toBe(false)
   })
+
+  /** A user's home whose `~/.ssh` holds the sshd's client key, a known_hosts and a config that shares connections in
+   *  `~/.ssh/tmp`, as the owner keeps one; OpenCorp's home in it with the visit's ssh files; and the agent's policy
+   *  over them. When the test finishes, every master in `~/.ssh/tmp` is ended, then the folder removed. */
+  async function agentHome() {
+    const root = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
+    const home = path.join(root, "home")
+    const ssh = path.join(home, ".ssh")
+    const tmp = path.join(ssh, "tmp")
+    for (const dir of [home, ssh, tmp]) fs.mkdirSync(dir, { mode: 0o700 })
+    onTestFinished(async () => {
+      for (const name of fs.readdirSync(tmp)) await runChild(controlArgv(SSH, path.join(tmp, name), "exit"), RUN)
+      for (const pid of processesWith(root)) process.kill(pid, "SIGKILL")
+      fs.rmSync(root, { recursive: true, force: true })
+    })
+    fs.copyFileSync(path.join(sshd.dir, "client_key"), path.join(ssh, "id_test"))
+    fs.chmodSync(path.join(ssh, "id_test"), 0o600)
+    const config = path.join(ssh, "config")
+    const lines = [
+      "Host *",
+      `  Port ${sshd.port}`,
+      `  IdentityFile ${ssh}/id_test`,
+      "  IdentitiesOnly yes",
+      `  UserKnownHostsFile ${ssh}/known_hosts`,
+      "  GlobalKnownHostsFile /dev/null",
+      "  StrictHostKeyChecking accept-new",
+      "  BatchMode yes",
+      "  LogLevel ERROR",
+      "  ControlMaster auto",
+      `  ControlPath ${tmp}/%C`,
+      "  ControlPersist 30",
+    ]
+    fs.writeFileSync(config, `${lines.join("\n")}\n`, { mode: 0o600 })
+    const paths = new ReachPaths(path.join(home, ".opencorp"))
+    makeDirs(paths)
+    await writeSshFiles(paths, SSH, [config])
+    const tmpdir = path.join(root, "tmp")
+    fs.mkdirSync(tmpdir, { mode: 0o700 })
+    const policy = await agentPolicy(paths, { home, tmpdir, ssh: SSH, env: {} })
+    return { home, ssh, tmp, config, paths, policy }
+  }
+
+  /** The last line `argv` printed, run in the agent's sandbox, with its exit and stderr. */
+  async function inSandbox(a: Awaited<ReturnType<typeof agentHome>>, argv: string[]) {
+    const ran = await sandboxed(a.policy, argv, { timeout: 30 })
+    return { exit: ran.exit, last: ran.stdout.toString("utf8").trim().split("\n").at(-1), stderr: ran.stderr.toString("utf8") }
+  }
+
+  test.skipIf(!sandboxAvailable())(
+    "the agent's ssh in the SSH-only sandbox rides a live master of the user's through the read-only ~/.ssh",
+    async () => {
+      const a = await agentHome()
+      // The user's terminal connects, and its master stays for its ControlPersist.
+      const opened = await runChild([SSH, "-F", a.config, "127.0.0.1", "true"], RUN)
+      expect(opened.code, opened.stderr).toBe(0)
+      const sockets = fs.readdirSync(a.tmp)
+      expect(sockets).toHaveLength(1)
+      // Without the key, only that connection can let the agent's ssh in.
+      fs.rmSync(path.join(a.ssh, "id_test"))
+      const rode = await inSandbox(a, [SSH, "-F", a.paths.agentConfig, "127.0.0.1", "echo rode"])
+      expect([rode.exit, rode.last], rode.stderr).toEqual([0, "rode"])
+      // The user's connection is still up, and the agent's ssh kept none of its own.
+      expect(fs.readdirSync(a.tmp)).toEqual(sockets)
+      expect((await runChild(controlArgv(SSH, path.join(a.tmp, sockets[0]!), "check"), RUN)).code).toBe(0)
+    },
+  )
+
+  test.skipIf(!sandboxAvailable())("with none open, it connects directly and runs its command", async () => {
+    const a = await agentHome()
+    const direct = await inSandbox(a, [SSH, "-F", a.paths.agentConfig, "127.0.0.1", "echo direct"])
+    expect([direct.exit, direct.last], direct.stderr).toEqual([0, "direct"])
+    expect(fs.readdirSync(a.tmp)).toEqual([])
+  })
+
+  test.skipIf(!sandboxAvailable())(
+    "without the agent's config, it logs in and exits 255, unable to bind in ~/.ssh",
+    async () => {
+      const a = await agentHome()
+      // The user's own config alone: ControlMaster auto, with no master to ride and ~/.ssh read-only.
+      const bound = await inSandbox(a, [SSH, "-F", a.config, "127.0.0.1", "echo ran"])
+      expect(bound.exit).toBe(255)
+      expect(bound.stderr).toContain("Read-only file system")
+      expect(bound.last).not.toBe("ran")
+      expect(fs.readdirSync(a.tmp)).toEqual([])
+    },
+  )
 
   /** One step run against a context; what it yields is compared between the fake and the real ssh. */
   type Scenario = (ctx: ReachContext) => Promise<[string | number, boolean]>

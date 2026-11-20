@@ -43,6 +43,33 @@ Asked before learning again in place of a saved path.
 
 - Relearn? This uses the model.
 
+## noSandbox
+
+Shown before learning's shells start with no sandbox, ahead of asking whether to run them anyway; Stop is the
+default. `{why}` says why there's none; `{dir}` is the hq folder.
+
+- OpenCorp can't sandbox the agent's shells here: {why}.
+- Without a sandbox, each command the agent runs can read and change everything you can: your files, your SSH keys, and the model's key or ChatGPT sign-in in {dir}.
+- Then the session's mode is all that stands between the agent and them: in ask mode you approve each command before it runs.
+
+## NO_SANDBOX_QUESTION
+
+Asked after noSandbox.
+
+- Run the agent's shells with no sandbox?
+
+## RUN_UNSANDBOXED
+
+The answer that runs them anyway.
+
+- Run them with no sandbox
+
+## STOP
+
+The answer that starts no shell: the default.
+
+- Stop
+
 ## HAND_OVER_COMMAND
 
 Said on the plain terminal when the learning screen steps aside for an approved command.
