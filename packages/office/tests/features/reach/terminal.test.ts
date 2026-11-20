@@ -282,7 +282,7 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
     // The reader asks before a command that names them: here the owner says Yes, and the sandbox still holds.
     expect(isPending(await t.call("run", { command, why: "look" }))).toBe(true)
     expect(held[0]!.card.reason).toBe(`it names a credential path: ${provider}`)
-    const reply = json(await t.terminal.runApproved("run", held[0]!.card.args, new AbortController().signal))
+    const reply = json(await t.terminal.runApproved("terminal_run", held[0]!.card.args, new AbortController().signal))
     const output = reply.output as string
     expect(output).not.toContain("decoy")
     expect(output).toContain("[cat 1]")

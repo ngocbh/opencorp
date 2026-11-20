@@ -205,14 +205,16 @@ export class Terminal {
     return { profile: "ssh", cwd, writable: [], ...credentials }
   }
 
-  /** Runs held call `tool` with `args` once its card says Yes, with no gate; the tools' own refusals still apply (the
-   *  shell may have ended or moved on, and a typed line must still be the one approved). The host's approved runner. */
+  /** Runs held call `tool` (its card's tool, `terminal_run` or `terminal_type`) with `args` once its card says Yes,
+   *  with no gate; the tools' own refusals still apply (the shell may have ended or moved on, and a typed line must
+   *  still be the one approved). The host's approved runner. */
   async runApproved(tool: string, args: Record<string, unknown>, signal: AbortSignal): Promise<string> {
     if (this.closed) return refusalText(CLOSED)
-    if (tool !== "run" && tool !== "type") {
-      return refusalText(`${tool} never waits for the owner's approval; only run and type do`)
+    if (tool !== "terminal_run" && tool !== "terminal_type") {
+      return refusalText(`${tool} never waits for the owner's approval; only terminal_run and terminal_type do`)
     }
-    const parsed = parseArgs(tool, args, tool === "type" ? ["line", "into"] : ["cwd"])
+    const parsed =
+      tool === "terminal_type" ? parseArgs("type", args, ["line", "into"]) : parseArgs("run", args, ["cwd"])
     if (typeof parsed === "string") return refusalText(parsed)
     if (parsed.tool === "run") {
       const { cwd } = args
@@ -317,7 +319,8 @@ export class Terminal {
         if (call.approved && call.folder !== folder) {
           return this.text(entry, shell, shell.refusal(MOVED_FOLDER(call.folder ?? null, folder)))
         }
-        const gated = await this.gated(action, "run", why, { ...cardArgs(parsed), cwd: folder }, call, entry.id)
+        const args = { ...cardArgs(parsed), cwd: folder }
+        const gated = await this.gated(action, "terminal_run", why, args, call, entry.id)
         if (!gated.run) return gated.result
         return this.text(entry, shell, await shell.run(command, waitMs, call.signal))
       })
@@ -329,7 +332,7 @@ export class Terminal {
     if (problem !== null) return refusalText(problem)
     const folder = this.where().cwd
     if (call.approved && call.folder !== folder) return refusalText(MOVED_FOLDER(call.folder ?? null, folder))
-    const gated = await this.gated(action, "run", why, { ...cardArgs(parsed), cwd: folder }, call)
+    const gated = await this.gated(action, "terminal_run", why, { ...cardArgs(parsed), cwd: folder }, call)
     if (!gated.run) return gated.result
     const entry = this.create()
     if (typeof entry === "string") return refusalText(entry)
@@ -358,7 +361,7 @@ export class Terminal {
       return this.text(entry, shell, shell.refusal(MOVED_SINCE))
     }
     const action: Action = { kind: "input", text: line, partial: !enter, ...(into === null ? {} : { into }) }
-    const gated = await this.gated(action, "type", why, { ...cardArgs(parsed), line, into }, call, entry.id)
+    const gated = await this.gated(action, "terminal_type", why, { ...cardArgs(parsed), line, into }, call, entry.id)
     if (!gated.run) return gated.result
     // Auto's check takes time: the owner's keys or the command's end may have changed what the line would be.
     if (!same()) return this.text(entry, shell, shell.refusal(MOVED))
@@ -366,11 +369,11 @@ export class Terminal {
   }
 
   /** The gate for `action` in shell `id` (a new shell when undefined): the session's permissions, with the shell's
-   *  `where`, or the owner's approval already given. A call stopped before or during it runs nothing and holds
-   *  nothing. */
+   *  `where`, or the owner's approval already given. A held call's card names `tool` as the model called it, which
+   *  `runApproved` takes back. A call stopped before or during it runs nothing and holds nothing. */
   private async gated(
     action: Action,
-    tool: "run" | "type",
+    tool: "terminal_run" | "terminal_type",
     why: string,
     args: Record<string, unknown>,
     call: Call,

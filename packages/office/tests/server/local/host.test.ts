@@ -131,7 +131,12 @@ test("a terminal command the mode asks about holds on an approval card; Yes runs
   host.setMode("ask", OWNER)
   await host.prompt("count", OWNER)
   const [card] = await cards(host, 1)
-  expect(card).toMatchObject({ source: "approval", asker: "opencorp", question: "echo x >> count" })
+  expect(card).toMatchObject({
+    source: "approval",
+    asker: "opencorp",
+    question: "echo x >> count",
+    approval: { tool: "terminal_run" },
+  })
   await until(host, "waiting")
   expect(host.session()!.waiting_on).toEqual(["owner"])
   await host.answer(card!.id, YES, "option", OWNER)
