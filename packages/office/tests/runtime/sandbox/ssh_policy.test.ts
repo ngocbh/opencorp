@@ -5,15 +5,10 @@ import net from "node:net"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { UnsafeProfile } from "../../../src/runtime/sandbox/policy.ts"
 import { run, startOnTerminal } from "../../../src/runtime/sandbox/run.ts"
 import { SETUID_PROGRAMS } from "../../../src/runtime/sandbox/seatbelt.ts"
-import {
-  includedConfigs,
-  SshPolicy,
-  type SshPolicyInit,
-  sshFiles,
-  UnsafeProfile,
-} from "../../../src/runtime/sandbox/ssh_policy.ts"
+import { includedConfigs, SshPolicy, type SshPolicyInit, sshFiles } from "../../../src/runtime/sandbox/ssh_policy.ts"
 import { installFakeSsh } from "../../../src/testing/fake_ssh.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import { sandboxAvailable } from "./helpers.ts"

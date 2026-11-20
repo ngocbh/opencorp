@@ -491,7 +491,8 @@ const NPROC_SCRIPT =
   '{ ulimit -S -p "$n" && ulimit -H -p "$n"; } 2>/dev/null; exec "$@"'
 
 test("the call argv is pinned with a process cap and without one", () => {
-  const policy = goldenPolicy({ workspace: "/w", writable: true, network: false, tmpdir: "/private/tmp/call" })
+  // A real folder: a writable workspace's bubblewrap argv makes its project config folders first.
+  const policy = goldenPolicy({ workspace: tempDir(), writable: true, network: false, tmpdir: "/private/tmp/call" })
   const seatbelt = ["/usr/bin/sandbox-exec", "-p", profile(policy, { canary: "/c" }), "x"]
   const wrapper = ["/bin/sh", "-c", NPROC_SCRIPT, "sh", "7000"]
   expect(command(policy, ["x"], "/c", "darwin", 7000)).toEqual([...wrapper, ...seatbelt])
@@ -504,7 +505,8 @@ test("the call argv is pinned with a process cap and without one", () => {
 })
 
 test("a terminal call's argv keeps its terminal under bubblewrap and names it to the Seatbelt profile", () => {
-  const policy = goldenPolicy({ workspace: "/w", writable: true, network: false, tmpdir: "/private/tmp/call" })
+  // A real folder: a writable workspace's bubblewrap argv makes its project config folders first.
+  const policy = goldenPolicy({ workspace: tempDir(), writable: true, network: false, tmpdir: "/private/tmp/call" })
   const wrapper = ["/bin/sh", "-c", NPROC_SCRIPT, "sh", "7000"]
   const linux = bwrap.command(policy, ["x"], { tty: true })
   expect(terminalCommand(policy, ["x"], undefined, "linux", null)).toEqual(linux)

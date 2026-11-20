@@ -8,7 +8,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { SYSTEM_DIRS } from "./bwrap.ts"
-import { existingDir, realPath, within } from "./policy.ts"
+import { existingDir, realPath, UnsafeProfile, within } from "./policy.ts"
 import { run } from "./run.ts"
 import { SYSTEM_SUBPATHS } from "./seatbelt.ts"
 
@@ -55,11 +55,6 @@ export interface SshPolicyInit {
   /** Folders bound read-write whole: only a test's own folder, checked by its caller first, which holds its fake ssh
    *  and the state it writes. */
   readWrite?: readonly string[]
-}
-
-/** Refused: a bind would expose hq's credentials, hq itself, the home, or a file through a link. */
-export class UnsafeProfile extends Error {
-  override name = "UnsafeProfile"
 }
 
 /** The access one SSH-only call gets: the network, the system as the workspace profile has it plus ssh's and

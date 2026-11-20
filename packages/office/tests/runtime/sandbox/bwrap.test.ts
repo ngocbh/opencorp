@@ -72,10 +72,53 @@ test("git paths are read only over a writable workspace", () => {
   expect(triples(argv, "--bind")).toContainEqual(["--bind", git, git])
   // Later mounts cover earlier ones: workspace, then .git, then the read-only paths.
   expect(argv.indexOf(ws)).toBeLessThan(argv.indexOf(git))
-  for (const p of policy.protectedPaths.slice(1)) {
+  const { hooks, config } = policy.protectedPaths
+  for (const p of [hooks, config]) {
     expect(triples(argv, "--ro-bind-try")).toContainEqual(["--ro-bind-try", p, p])
     expect(argv.indexOf(p)).toBeGreaterThan(argv.indexOf(git))
   }
+})
+
+test("the workspace shell keeps .codex, .agents, .claude and .mcp.json read-only, as it keeps .git", () => {
+  const policy = setup().make()
+  const ws = policy.workspace
+  const { folders, files } = policy.protectedPaths
+  for (const folder of folders) fs.mkdirSync(folder)
+  fs.writeFileSync(path.join(ws, ".mcp.json"), "{}")
+  const argv = command(policy, ["x"])
+  // Each is bound read-only onto itself after the workspace, so it covers the workspace's bind and, as a mount
+  // point, can't be renamed or removed.
+  for (const p of [...folders, ...files]) {
+    expect(triples(argv, "--ro-bind")).toContainEqual(["--ro-bind", p, p])
+    expect(argv.indexOf(p)).toBeGreaterThan(argv.indexOf(ws))
+  }
+  // A read-only workspace is read-only whole, so it needs none of them.
+  const ro = command(setup().make({ writable: false }), ["x"])
+  expect(ro.filter((a) => /\/\.(codex|agents|claude|mcp\.json)$/.test(a))).toEqual([])
+})
+
+test("missing .codex, .agents and .claude folders are made first, and a link is never bound", () => {
+  const { root, make } = setup()
+  const policy = make()
+  const ws = policy.workspace
+  const { folders, files } = policy.protectedPaths
+  const argv = command(policy, ["x"])
+  for (const folder of folders) {
+    expect(fs.lstatSync(folder).isDirectory()).toBe(true)
+    expect(triples(argv, "--ro-bind")).toContainEqual(["--ro-bind", folder, folder])
+  }
+  // A bind needs an existing source, and a missing .mcp.json can't be held without creating it, so it isn't.
+  expect(argv).not.toContain(files[0])
+  expect(fs.existsSync(path.join(ws, ".mcp.json"))).toBe(false)
+  // bwrap follows links on both sides, so a planted link would mount its target.
+  const secret = path.join(root, "secret")
+  fs.mkdirSync(secret)
+  for (const folder of folders) fs.rmdirSync(folder)
+  for (const p of [...folders, ...files]) fs.symlinkSync(secret, p)
+  const linked = command(policy, ["x"])
+  for (const p of [...folders, ...files]) expect(linked).not.toContain(p)
+  expect(linked).not.toContain(secret)
+  for (const p of folders) expect(fs.lstatSync(p).isSymbolicLink()).toBe(true)
 })
 
 test("missing git hooks is created so it can be bound", () => {
@@ -140,7 +183,8 @@ test("home is not mounted", () => {
   expect(argv.join(" ")).not.toContain("/run/user")
 })
 
-/** Line 1 of the Python office's bwrap goldens: a writable, offline workspace with `.git` and `.git/config`. */
+/** Line 1 of the Python office's bwrap goldens, with the harnesses' project config folders bound read-only: a
+ *  writable, offline workspace with `.git` and `.git/config`. */
 function b1(root: string): string[] {
   return [
     "bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try",
@@ -166,6 +210,9 @@ function b1(root: string): string[] {
     "--bind", `${root}/ws/.git`, `${root}/ws/.git`,
     "--ro-bind-try", `${root}/ws/.git/hooks`, `${root}/ws/.git/hooks`,
     "--ro-bind-try", `${root}/ws/.git/config`, `${root}/ws/.git/config`,
+    "--ro-bind", `${root}/ws/.codex`, `${root}/ws/.codex`,
+    "--ro-bind", `${root}/ws/.agents`, `${root}/ws/.agents`,
+    "--ro-bind", `${root}/ws/.claude`, `${root}/ws/.claude`,
     "--remount-ro", "/",
     "--chdir", `${root}/ws`,
     "--", "/bin/sh", "-c", "ls",
@@ -252,11 +299,13 @@ test("the checkout helper binds bun and its entry read only", () => {
 })
 
 test("a shell argv binds no helper", () => {
-  const { make, file } = b1Layout()
+  const { ws, make, file } = b1Layout()
   const helperPaths = [file("install/bin/opencorp"), file("bun/bun")]
   const argv = command(make(), SHELL)
   for (const p of helperPaths) expect(argv).not.toContain(p)
-  expect(triples(argv, "--ro-bind")).toEqual([])
+  // Its only read-only binds are the workspace's project config folders.
+  const config = [".codex", ".agents", ".claude"].map((name) => path.join(ws, name))
+  expect(triples(argv, "--ro-bind")).toEqual(config.map((p) => ["--ro-bind", p, p]))
 })
 
 test("a terminal call keeps its terminal: no new session, every other flag the same", () => {

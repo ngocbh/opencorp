@@ -58,7 +58,7 @@ export function command(policy: SandboxPolicy, argv: readonly string[], { tty = 
   for (const p of policy.readOnly) args.push("--ro-bind-try", p, p)
   args.push("--bind", policy.tmpdir, policy.tmpdir)
   const ws = policy.workspace
-  if (policy.writable) args.push("--bind", ws, ws, ...gitBinds(policy))
+  if (policy.writable) args.push("--bind", ws, ws, ...protectedBinds(policy))
   else args.push("--ro-bind", ws, ws)
   if (policy.helper) {
     for (const f of helperFiles(policy.helper)) args.push("--ro-bind", f, f)
@@ -110,7 +110,8 @@ function system({ tty, network, files }: { tty: boolean; network: boolean; files
 }
 
 /**
- * Returns the mounts that keep a writable workspace's `.git` protected.
+ * Returns the mounts that keep a writable workspace's protected paths read-only: `.git`'s hooks and config, then
+ * the harnesses' project config.
  *
  * They come after the workspace bind so they cover it. `.git` is bound onto itself:
  * Linux refuses to rename a mount point, but not a directory that merely contains one,
@@ -118,11 +119,32 @@ function system({ tty, network, files }: { tty: boolean; network: boolean; files
  * A missing `.git/hooks` is created first, since a bind needs an existing source; a
  * missing `.git/config` stays missing, and is then writable.
  *
+ * Each project config folder (`.codex`, `.agents`, `.claude`) is bound read-only onto itself, so it can't be written,
+ * renamed or removed; a missing one is created first, as `.git/hooks` is. A project config file (`.mcp.json`) is
+ * bound only when it exists: a missing file can't be held without creating it, so the call can still create one.
+ *
  * Symlinks are never bound: bwrap follows them on both sides, so model code could point
  * `.git/config` at `~/.ssh/id_ed25519` and have the next call mount the key.
  */
+function protectedBinds(policy: SandboxPolicy): string[] {
+  const { folders, files } = policy.protectedPaths
+  const binds = gitBinds(policy)
+  for (const p of folders) {
+    const stat = lstat(p)
+    if (stat === undefined) fs.mkdirSync(p)
+    else if (stat.isSymbolicLink()) continue
+    binds.push("--ro-bind", p, p)
+  }
+  for (const p of files) {
+    const stat = lstat(p)
+    if (stat !== undefined && !stat.isSymbolicLink()) binds.push("--ro-bind", p, p)
+  }
+  return binds
+}
+
+/** The mounts of `protectedBinds` that keep `.git` protected. */
 function gitBinds(policy: SandboxPolicy): string[] {
-  const [git, hooks, config] = policy.protectedPaths
+  const { git, hooks, config } = policy.protectedPaths
   const stat = lstat(git)
   if (stat === undefined || stat.isSymbolicLink()) return []
   if (stat.isFile()) {
