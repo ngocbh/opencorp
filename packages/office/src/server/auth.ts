@@ -26,7 +26,7 @@ const UNREADABLE_HINT = "; a person.yaml at HEAD doesn't load: run `opencorp doc
 
 /** The handle the request acts as: its token's person, or the CEO while no human has a device. Throws
  *  `HttpError` 401 when there is none. */
-export function actingPerson(ctx: RequestContext): string {
+export function actingPerson(ctx: Pick<RequestContext, "person">): string {
   if (ctx.person === null) throw new HttpError(401, "unauthenticated", "this request has no person to act as")
   return ctx.person
 }

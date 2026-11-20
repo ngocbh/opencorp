@@ -14,7 +14,7 @@ import { makePrivateFolder } from "../../util/private_files.ts"
 import type { Frame } from "../worker/channel.ts"
 import { type Job, parseJob, type WorkerEnv } from "../worker/job.ts"
 import { BaseHandlers, type WorkerHandlers } from "../worker/rpc.ts"
-import { type Worker, workerEnv } from "../worker/spawn.ts"
+import type { Worker } from "../worker/spawn.ts"
 import type { CheckInput, Verdict } from "./policy.ts"
 
 /** The model connection the host chose (the office's), as `llm_config` and its env; the key stays in these. */
@@ -186,23 +186,6 @@ export function inWorker(workers: CheckWorkers, model: () => Promise<CheckModel>
       signal.removeEventListener("abort", stop)
       fs.rmSync(dir, { recursive: true, force: true })
     }
-  }
-}
-
-/** A runner in this process, running the flow as a `classify` worker does: the no-office host's. The run's
- *  environment is `env` (by default a worker's, from this process's) with the connection's env on top. */
-export function here(model: () => Promise<CheckModel>, o: { logDir: string; env?: WorkerEnv }): CheckRunner {
-  return async (input, { runId, signal, spend }) => {
-    const connection = await untilAborted(model(), signal)
-    makePrivateFolder(o.logDir)
-    return classify(input, connection.llm_config, {
-      env: { ...(o.env ?? workerEnv(process.env)), ...connection.env },
-      log: path.join(o.logDir, `${runId}.jsonl`),
-      runId,
-      signal,
-      deadlineMs: CLASSIFY_DEADLINE_MS,
-      spend,
-    })
   }
 }
 

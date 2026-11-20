@@ -1,0 +1,57 @@
+# A built-in agent's chat, for the no-office host's tests, in the chat flow's shape: one LOOP iteration per turn.
+# Each turn takes everything sent to `messages` since the last one, and the reply answers it with the terminal and
+# ask_user; messages sent while the reply works steer it. Closing `messages` ends the chat.
+id: local_chat
+name: local_chat
+description: Chat with OpenCorp's built-in agent.
+
+input:
+  messages: !Inbox(Message)  # what the owner sends; read by each turn's take and, while the reply works, as steers
+
+defs:
+  turn:
+    input:
+      messages: !Inbox(Message)
+      history: !list(Message)
+      closed: !bool
+    nodes:
+      # The turn: everything sent since the last one. Messages read along with a close aren't answered.
+      heard:
+        kind: call
+        call: take
+        input:
+          from: ${input.messages}
+          take: all
+      route:
+        kind: case
+        cases:
+          - when: ${heard.output.events != [] and not heard.output.closed}
+            then: reply
+      reply:
+        kind: agent
+        steer_inbox: ${input.messages}
+        tools: [terminal, ask_user]
+        input:
+          history: ${input.history}
+          said: ${heard.output.events}
+        output: !Optional(str)  # null only after an interrupt
+        system_prompt: You are OpenCorp's built-in agent. Use your terminal to do what the owner asks.
+        prompt:
+          - ${history}
+          - ${said}
+    # The loop carries the messages inbox itself, so the output leaves it out.
+    output:
+      history: ${input.history + heard.output.events + (reply.new_messages :- [])}
+      closed: ${heard.output.closed}
+
+nodes:
+  chat:
+    kind: loop
+    call: turn
+    input:
+      messages: ${input.messages}
+      history: []
+      closed: false
+    while: not closed
+output:
+  history: ${chat.output.history}

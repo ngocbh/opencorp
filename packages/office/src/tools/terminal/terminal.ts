@@ -138,6 +138,8 @@ export function profileOf(shells: TerminalShells): TerminalProfile {
 export class Terminal {
   /** The sandbox the shells run in. */
   readonly profile: TerminalProfile
+  /** Whether the shells take typed keys: PTYs, not the workspace's pipes. */
+  readonly interactive: boolean
   /** The owner's home as the kernel names it, which a PTY shell's folder is told the gate under as `~`; null for
    *  shells in a workspace's sandbox, whose home is their temp folder. */
   private readonly home: string | null
@@ -150,6 +152,7 @@ export class Terminal {
   /** Throws a `RangeError` when a PTY's `HOME` or `TMPDIR` isn't its sandbox's (see `TerminalShells`). */
   constructor(private readonly host: TerminalHost) {
     this.profile = profileOf(host.shells)
+    this.interactive = host.shells.kind === "pty"
     const { shells } = host
     if (shells.kind === "pty" && shells.sandbox !== null) {
       const { sandbox, env } = shells

@@ -477,11 +477,17 @@ test("the wait is capped at two minutes", async () => {
   expect(read.mock.calls.map(([options]) => options.waitMs)).toEqual([120_000, 30_000, 500])
   await t.call("run", { command: "true", why: "x", shell: "shell 1", wait: 1e9 })
   expect(run.mock.calls.map(([, waitMs]) => waitMs)).toEqual([120_000])
-  for (const wait of [-1, "30", Number.NaN, null]) {
+  for (const wait of [-1, "30", Number.NaN]) {
     expect(json(await t.call("read", { shell: "shell 1", wait }))).toEqual({
       refused: "wait is a number of seconds, from 0 to 120",
     })
   }
+  // A worker hands an optional argument the model left out as null, which reads as left out.
+  await t.call("read", { shell: "shell 1", wait: null, from: null })
+  await t.call("run", { command: "true", why: "x", shell: null, wait: null })
+  expect(read.mock.calls.map(([options]) => options.waitMs).slice(3)).toEqual([30_000])
+  expect(read.mock.calls[3]![0]).not.toHaveProperty("from")
+  expect(t.terminal.shells().map((s) => s.name)).toEqual(["shell 1", "shell 2"])
 })
 
 test("a call whose run stops ends its wait", async () => {
