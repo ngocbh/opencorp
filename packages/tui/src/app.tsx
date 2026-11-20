@@ -119,11 +119,22 @@ export type TuiInput = {
   /** Keybinds and display settings; the defaults when omitted. */
   config?: TuiConfig.Resolved
   onSnapshot?: () => Promise<string[]>
+  /** A local session, on a host with no office in this process: the TUI opens on it as its owner, the only route
+   *  there is (no home, no other session), and closes once `until` settles, printing what it resolves to. */
+  local?: LocalInput
 }
+
+/** A local session the TUI runs on: its id, and what settles once it is over, with the epilogue to print then. */
+export type LocalInput = { sessionID: string; until: Promise<string | undefined> }
+
+/** Who every request to a host with no office acts as: its owner. */
+const LOCAL_OWNER = "owner"
 
 export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
   const input = {
     ...opts,
+    // A local session's owner is who every request acts as.
+    ...(opts.local && { person: LOCAL_OWNER, args: { ...opts.args, sessionID: opts.local.sessionID } }),
     config: opts.config ?? resolveConfig({}, { terminalSuspend: process.platform !== "win32" }),
   }
   const global = yield* Global.Service
@@ -168,6 +179,14 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
         () => Effect.sync(() => process.off("SIGHUP", onSighup)),
       )
       renderer.once("destroy", () => Deferred.doneUnsafe(shutdown, Effect.void))
+      // A local session's end closes the TUI, with its epilogue in place of the session's own.
+      void input.local?.until.then(
+        (epilogue) => {
+          exit.epilogue = epilogue
+          destroyRenderer(renderer)
+        },
+        () => destroyRenderer(renderer),
+      )
 
       yield* Effect.tryPromise(async () => {
         // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
@@ -184,7 +203,7 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
                 destroyRenderer(renderer)
               }}
             >
-              <EpilogueProvider set={(value) => (exit.epilogue = value)}>
+              <EpilogueProvider set={(value) => void (input.local === undefined && (exit.epilogue = value))}>
                 <ErrorBoundary fallback={(error, reset) => <ErrorComponent error={error} reset={reset} mode={mode} />}>
                   <TuiPathsProvider
                     value={{
@@ -216,13 +235,14 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
                             <ArgsProvider {...input.args}>
                               <KVProvider>
                                 <ToastProvider>
-                                  <RouteProvider>
+                                  <RouteProvider only={input.local?.sessionID}>
                                     <TuiConfigProvider config={input.config}>
                                       <OfficeProvider
                                         socket={input.socket}
                                         token={input.token}
                                         person={input.person}
                                         cwd={input.cwd}
+                                        local={input.local !== undefined}
                                       >
                                         <PermissionProvider>
                                           <ThemeProvider mode={mode}>
@@ -370,6 +390,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "session.list",
         title: "Switch session",
         category: "Session",
+        // A local session is the only one there is.
+        hidden: office.local,
+        enabled: !office.local,
         suggested: sessionsIn(office.state, office.cwd).length > 0,
         slashName: "sessions",
         slashAliases: ["resume", "continue"],
@@ -380,6 +403,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       {
         name: "session.new",
         title: "New session",
+        hidden: office.local,
+        enabled: !office.local,
         suggested: route.data.type === "session",
         category: "Session",
         slashName: "new",
@@ -396,6 +421,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         title: `Switch to session in quick slot ${i + 1}`,
         category: "Session",
         hidden: true,
+        enabled: !office.local,
         run: () => {
           local.session.quickSwitch(i + 1)
         },
@@ -523,7 +549,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           // An interrupted session has no live run either, until something resumes it.
           const over = status === "ended" || status === "failed" || status === "interrupted"
           toast.show({
-            message: over ? "Press again to leave." : "Press again to leave; the session is saved.",
+            // A local session ends with the TUI: leaving it isn't a pause.
+            message: over
+              ? "Press again to leave."
+              : office.local
+                ? "Press again to leave; this ends the session."
+                : "Press again to leave; the session is saved.",
             variant: "info",
           })
         },

@@ -85,6 +85,7 @@ export function goldenSshPolicy(fields: {
     controlDir: path.join(fields.tmpdir, "cm"),
     readOnly: [ssh, ...(fields.bound ?? []), path.join(fields.hq, "ssh"), ...(fields.readOnly ?? [])],
     writable: [path.join(ssh, "known_hosts"), fields.statusFile, ...(fields.ticket === undefined ? [] : [fields.ticket])],
+    readWrite: [],
     sockets: [fields.agentSocket, fields.kcm].filter((p) => p !== undefined),
     socketFolders: [ssh, ...(fields.controlFolders ?? [])],
     agentSocket: fields.agentSocket ?? null,

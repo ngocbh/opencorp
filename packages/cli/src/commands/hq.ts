@@ -4,7 +4,7 @@
 import { isMissingRoute, isNotImplemented, OfficeTimeout, OfficeUnavailable } from "@opencorp/client"
 import { defaultSocket, opencorpHome } from "@opencorp/client/node"
 import { otherPort, SETTINGS_IGNORED } from "@opencorp/office/server/hq/config"
-import type { LearnScreen, VisitOptions } from "@opencorp/office/features/reach/run"
+import type { LearnChat, VisitOptions } from "@opencorp/office/features/reach/run"
 import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
 import os from "node:os"
 import path from "node:path"
@@ -193,34 +193,36 @@ export const realHqDeps: HqDeps = {
     // Loaded only for a visit: it brings in yian and the SSH plumbing.
     const v = await import("@opencorp/office/features/reach/run")
     const deps = v.realVisitDeps(opencorpHome())
-    // Where the setup screen can draw, learning runs behind it; elsewhere it asks line by line, as before.
-    return v.visit(options, terminal() ? { ...deps, learnScreen: learnScreen(deps.echo) } : deps)
+    // Learning is a chat in the TUI: where the TUI can't draw, the visit refuses it.
+    return v.visit(options, terminal() ? { ...deps, learnChat } : deps)
   },
 }
 
-/** The setup screen for learning the way to HQ, in this process, `echo` taking a child's output while it has the
- *  terminal; loaded only once learning starts. */
-export function learnScreen(echo: (text: string) => void): LearnScreen {
-  return async (learn, interrupt) => {
-    let started = false
-    try {
-      // The screen is Solid JSX, loaded as `opencorp` loads the TUI.
-      const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin")
-      ensureSolidTransformPlugin()
-      const { runInProcess } = await import("@opencorp/tui/setup")
-      // Questions and output go to stderr, as the visit's do, so stdout holds only links and the visit line.
-      return await runInProcess(
-        (io) => {
-          started = true
-          return learn(io)
-        },
-        { interrupt, echo, out: process.stderr, command: "opencorp hq", title: "Learning the way to HQ" },
-      )
-    } catch (e) {
-      if (started) throw e
-      // The visit then asks on the plain terminal.
-      throw new Error(`can't show the learning screen: ${e instanceof Error ? e.message : e}`)
-    }
+/** Learning's chat: its session on the no-office host in this process, served on a private socket to the TUI, which
+ *  opens on it and closes once the session ends; the host stops once both are over. Resolves `left` when the owner
+ *  left the TUI before the session ended, which ends it. Loaded only once learning starts. */
+export const learnChat: LearnChat = async (session) => {
+  const { LocalHost, OWNER, serveLocal } = await import("@opencorp/office/server/local")
+  const host = await LocalHost.start(session)
+  let served: Awaited<ReturnType<typeof serveLocal>> | undefined
+  try {
+    served = await serveLocal(host)
+    let ended = false
+    const until = host.ended.then(() => {
+      ended = true
+      return undefined
+    })
+    // The TUI is Solid JSX, loaded as `opencorp` loads it.
+    const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin")
+    ensureSolidTransformPlugin()
+    const [{ Effect }, { Global, run: runTui }] = await Promise.all([import("effect"), import("@opencorp/tui")])
+    const local = { sessionID: host.id, until }
+    const input = { socket: served.socket, token: served.token, person: OWNER, cwd: process.cwd(), args: {}, local }
+    await Effect.runPromise(runTui(input).pipe(Effect.provide(Global.layer)))
+    return ended ? "ended" : "left"
+  } finally {
+    await host.close()
+    await served?.close()
   }
 }
 

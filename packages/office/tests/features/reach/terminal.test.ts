@@ -124,6 +124,10 @@ async function learning(o: {
   }
 }
 
+/** The office's connections and secrets under OpenCorp's home, as learning's terminal marks them. */
+const officeSecrets = (paths: ReachPaths) =>
+  ["connections", "secrets"].map((name) => `${path.join(paths.home, "office", name)}/**`)
+
 /** Waits until the first shell's command has ended. */
 const idle = (t: Awaited<ReturnType<typeof learning>>) =>
   waitFor(() => t.terminal.shells()[0]?.state.status === "idle", { timeout: 20_000, what: "the command to end" })
@@ -142,7 +146,7 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
   test("learning's shells run in the SSH-only profile, and the gate reads it as ssh", async () => {
     const t = await learning({ perms: permissions({ check: RUNS }).perms })
     expect(t.terminal.profile).toBe("ssh")
-    const credentials = [t.paths.provider, t.paths.auth]
+    const credentials = [t.paths.provider, t.paths.auth, ...officeSecrets(t.paths)]
     expect(t.terminal.where()).toEqual({ profile: "ssh", cwd: t.tmpdir, writable: [], credentials })
     const command = 'echo "$HOME $TMPDIR $OPENCORP_SSH_CONFIG"; command -v ssh; pwd'
     const reply = json(await t.call("run", { command, why: "look around" }))
@@ -331,7 +335,7 @@ test("with no sandbox the owner is asked first, Stop by default, and Stop starts
   // On Yes they run with no sandbox, and the gate still reads them as the SSH-only profile.
   const yes = await learning({ perms: permissions({ check: RUNS }).perms, noSandbox: true, consent: async () => RUN_UNSANDBOXED })
   expect(yes.terminal.profile).toBe("none")
-  const credentials = [yes.paths.provider, yes.paths.auth]
+  const credentials = [yes.paths.provider, yes.paths.auth, ...officeSecrets(yes.paths)]
   expect(yes.terminal.where()).toEqual({ profile: "ssh", cwd: yes.tmpdir, writable: [], credentials })
   const command = 'echo "$HOME $TMPDIR $OPENCORP_SSH_CONFIG"; command -v ssh; pwd'
   const reply = json(await yes.call("run", { command, why: "x" }))
@@ -374,16 +378,24 @@ test("where the sandbox can't run a call, the owner is asked as where there is n
   expect([asking.held, t.terminal.shells()]).toEqual([[], []])
 })
 
-test("hq's key and sign-in, and what the session marks, are credentials to the gate, wherever OpenCorp's home is", async () => {
+test("hq's key and sign-in, the office's connections and secrets, and what the session marks, are credentials to the gate, wherever OpenCorp's home is", async () => {
   const marked = "/srv/keys/deploy"
   const where = { profile: "workspace" as const, cwd: "/w", writable: ["/"], credentials: [marked] }
   const { perms, held } = permissions({ check: RUNS, where })
   // OpenCorp's home where no built-in pattern knows it, and no sandbox to keep its files out of reach.
   const t = await learning({ perms, office: "oc", noSandbox: true, consent: async () => RUN_UNSANDBOXED })
   const { provider, auth } = t.paths
-  expect(t.terminal.where()).toEqual({ profile: "ssh", cwd: t.tmpdir, writable: [], credentials: [marked, provider, auth] })
-  for (const file of [provider, auth, marked]) expect(isPending(await t.call("run", { command: `cat ${file}`, why: "x" }))).toBe(true)
-  expect(held.map((h) => h.card.reason)).toEqual([provider, auth, marked].map((f) => `it names a credential path: ${f}`))
+  const connections = path.join(t.paths.home, "office", "connections")
+  const secrets = path.join(t.paths.home, "office", "secrets")
+  expect(t.terminal.where()).toEqual({
+    profile: "ssh",
+    cwd: t.tmpdir,
+    writable: [],
+    credentials: [marked, provider, auth, `${connections}/**`, `${secrets}/**`],
+  })
+  const files = [provider, auth, path.join(connections, "work.json"), path.join(secrets, "github"), marked]
+  for (const file of files) expect(isPending(await t.call("run", { command: `cat ${file}`, why: "x" }))).toBe(true)
+  expect(held.map((h) => h.card.reason)).toEqual(files.map((f) => `it names a credential path: ${f}`))
   expect(t.terminal.shells()).toEqual([])
 })
 

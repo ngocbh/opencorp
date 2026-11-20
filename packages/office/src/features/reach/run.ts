@@ -1,6 +1,6 @@
 /** `opencorp hq` from a machine where no office answers, and the runs of its flows: approve the saved path (or learn
- *  one with learn_hq's agent), replay it with reach_hq, connect to HQ's machine, sign the browser in or open HQ, and
- *  hold the connection until Ctrl-C, reconnecting after a drop. */
+ *  one in a chat with OpenCorp, learn_hq's agent), replay it with reach_hq, connect to HQ's machine, sign the browser
+ *  in or open HQ, and hold the connection until Ctrl-C, reconnecting after a drop. */
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
@@ -8,20 +8,15 @@ import type { Readable } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createTwoFilesPatch } from "diff"
 import { loadFlow, runFlow } from "@ngocbh/yian"
-import { type ModelCheck, modelProblem, providerSecrets, runSetup } from "../../models/check.ts"
-import { AUTH_FILE_ENV } from "../../models/connections.ts"
+import { type ModelCheck, modelProblem, providerSecrets } from "../../models/check.ts"
 import type { Provider } from "../../models/provider.ts"
-import { askUser } from "../setup/interview.ts"
-import { JsonPrompter } from "../setup/json_prompts.ts"
-import {
-  LISTERS,
-  type Listers,
-  signInRemedy,
-  type SubscriptionAuth,
-} from "../setup/onboard.ts"
+import { LISTERS, type Listers, type SubscriptionAuth } from "../setup/onboard.ts"
 import { clean, isTTY, KeyboardInterrupt, type Prompter, readLine, TtyPrompter } from "../setup/prompts.ts"
 import { embedded } from "../../platform.ts"
+import type { BuiltinSession } from "../../runtime/sessions/builtin.ts"
+import type { Terminal } from "../../tools/terminal/terminal.ts"
 import { which } from "../../util/env.ts"
+import { newId } from "../../util/ids.ts"
 import { writePrivate } from "../../util/private_files.ts"
 import { workerEnv } from "../../runtime/worker/spawn.ts"
 import {
@@ -34,7 +29,8 @@ import {
   signIn,
   withProblems,
 } from "./connect.ts"
-import { Learning, learning, withOwnerOrStop } from "./learning.ts"
+import { ConnectionShell } from "./connection.ts"
+import { Learning } from "./learning.ts"
 import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
 import { learnProvider } from "./provider.ts"
 import {
@@ -56,6 +52,8 @@ import {
   writeSshFiles,
 } from "./ssh.ts"
 import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "./risks.ts"
+import { sshHome } from "./sandbox.ts"
+import { type ConsentAsk, learningTerminal } from "./terminal.ts"
 import { lineCount, numberedLines, shownCode } from "../../util/show.ts"
 import { safePath, Spec } from "./spec.ts"
 import {
@@ -73,7 +71,6 @@ import {
 } from "./state.ts"
 import { type Reached, readScript, Replaying, replayTool, ScriptError } from "./tools/replay.ts"
 import { saveAccessTool } from "./tools/save_access.ts"
-import { shellTool } from "./tools/shell.ts"
 import learnYaml from "./flows/learn_hq.yaml" with { type: "file" }
 import reachYaml from "./flows/reach_hq.yaml" with { type: "file" }
 
@@ -104,8 +101,10 @@ export interface VisitDeps {
   onSigint(fn: () => void): () => void
   exit(code: number): never
   limits?: ReachContext["limits"]
-  /** The `Include`s of `hq/ssh/config`: `defaultIncludes(os.userInfo().homedir)` for real; tests pass their own. */
+  /** The `Include`s of `hq/ssh/config`: `defaultIncludes` of `sshHome` for real; tests pass their own. */
   sshIncludes: readonly string[]
+  /** ssh's home, where the agent's ssh reads `~/.ssh`: the passwd entry's (`sandbox.ts`'s `sshHome`). */
+  sshHome: string
   /** List deployments and models for the model picker of a first learning run. */
   listers: Listers
   /** Why a provider's model doesn't answer, or null; checked before `hq/provider.json` is saved, and stopped once
@@ -113,23 +112,15 @@ export interface VisitDeps {
   checkModel(provider: Provider, signal: AbortSignal): Promise<string | null>
   /** Makes yian's `OpenAIAuth` for the picker's ChatGPT sign-in (the real one by default). */
   auth?: SubscriptionAuth
-  /** Where there's a terminal to draw on: runs `learn` behind the setup screen in this process, so the SSH connections
-   *  learning opens stay this visit's, and the screen's Ctrl-C calls `interrupt`; rejects without calling `learn` when
-   *  the screen can't start (a window too small for it, say), and learning then asks on `prompter`. Without it,
-   *  learning asks on `prompter`. */
-  learnScreen?: LearnScreen
+  /** Where there's a terminal the TUI can draw on: runs learning's session, a chat with OpenCorp, in this process on
+   *  the no-office host, with the TUI on it; see `LearnChat`. Without it, learning is refused. */
+  learnChat?: LearnChat
 }
 
-/** The setup screen's side of a run behind it in this process: where its `JsonPrompter` writes prompts, where the
- *  answers come from, and how a child's output reaches the owner (on the plain terminal while a child has it). */
-export interface ScreenIo {
-  readonly prompts: { write(text: string): unknown }
-  readonly answers: Readable
-  echo(text: string): void
-}
-
-/** Runs `learn` behind the setup screen; see `VisitDeps.learnScreen`. */
-export type LearnScreen = <T>(learn: (io: ScreenIo) => Promise<T>, interrupt: () => void) => Promise<T>
+/** Runs `session` on the no-office host with the TUI on it, in this process, so the connection the session's save
+ *  leaves open stays this visit's. Resolves once the session has ended (`ended`) or the owner left the TUI before it
+ *  did (`left`, which ends it), the host stopped and the TUI closed. */
+export type LearnChat = (session: BuiltinSession<Terminal>) => Promise<"ended" | "left">
 
 export const USE = "Use it"
 export const STOP = "Stop"
@@ -146,14 +137,13 @@ export const NO_PATH = (paths: ReachPaths) =>
   `agent, or write ${paths.script}, a sh script whose last line of output is the connection spec ` +
   "(see https://opencorp.readthedocs.io/hq/#hq-from-another-machine), then run `opencorp hq` again."
 export const NOT_LEARNED = "opencorp hq: stopped; nothing was learned."
-export const LEARN_NEEDS_TERMINAL = "opencorp hq: learning needs a terminal; run `opencorp hq --relearn` in one."
+export const LEARN_NEEDS_TERMINAL = "opencorp hq: learning needs a terminal the TUI can draw on"
 export const RELEARN_BUSY =
   "opencorp hq: another `opencorp hq` here holds the connection to HQ; end it with Ctrl-C there, then run `opencorp hq --relearn`."
-export const CAPPED =
-  "opencorp hq: the model stopped after 30 turns without a working path, so nothing was saved. The commands it asked for:"
-export const ASKED_FOR = "The commands the model asked for:"
-/** After the commands at the turn cap: why the model's answer after the cap failed. */
-export const AFTER_CAP = (why: string) => `opencorp hq: the model's answer after the cap failed: ${why}`
+export const NOT_SAVED = "opencorp hq: learning ended, and nothing was saved."
+export const ASKED_FOR = "The commands the agent ran:"
+/** The owner's first message in learning's chat: their choice to learn. */
+export const LEARN_FIRST = "Learn how this machine reaches HQ"
 /** Signed in longer than this, a visit hints at `--sign-in`: HQ's browser session lasts 30 days. */
 export const SIGN_IN_HINT_DAYS = 30
 export const SIGN_IN_HINT =
@@ -228,13 +218,18 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
       return 3
     }
     deps.error(NO_OFFICE_HERE)
+    // Before asking: there's nowhere to learn without the TUI.
+    if (deps.learnChat === undefined) {
+      deps.error(LEARN_NEEDS_TERMINAL)
+      return 3
+    }
     // Stop by default: a stray Enter on HQ's own machine, its office stopped, must not start a model run.
     const asked = await askBeforeAnything(deps, () => askToLearn(deps, LEARN_QUESTION, STOP))
     if (asked !== true) {
       if (asked === false) deps.error(NOT_LEARNED)
       return asked === false ? 3 : 130
     }
-  } else if (options.relearn && !deps.prompter.interactive) {
+  } else if (options.relearn && (!deps.prompter.interactive || deps.learnChat === undefined)) {
     deps.error(LEARN_NEEDS_TERMINAL)
     return 1
   }
@@ -261,14 +256,14 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
   const lock = takeLock(paths)
   if (lock === null) return alreadyRunning(options, deps, paths, ssh)
   using _lock = lock
-  const { ctx, off, interrupt } = start(paths, ssh, deps)
+  const { ctx, off } = start(paths, ssh, deps)
   let watcher: Watcher | undefined
   let port = options.port ?? DEFAULT_PORT
   try {
     await writeSshFiles(paths, ssh, deps.sshIncludes)
     await cleanUp(ctx, deps.now().getTime())
     watcher = startWatcher(ctx)
-    if (learnFirst) return await learnAndHold(ctx, deps, { notes: "", script: "", failure: "" }, port, options, interrupt)
+    if (learnFirst) return await learnAndHold(ctx, deps, { notes: "", script: "", failure: "" }, port, options)
     let saved: Access | null
     try {
       saved = await readAccess(paths)
@@ -284,7 +279,7 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
         deps.error(NOT_LEARNED)
         return 1
       }
-      return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: "" }, port, options, interrupt)
+      return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: "" }, port, options)
     }
     const approved = await approve(ctx, deps, saved, options.port)
     if (typeof approved === "number") return approved
@@ -297,12 +292,12 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
       conn = await reach(ctx, port)
     } catch (error) {
       // Only the first reach offers to relearn, defaulting to Stop: a drop's reconnect never does.
-      if (!(error instanceof ReachFailure) || error.kind !== "broken" || ctx.signal?.aborted || !deps.prompter.interactive)
-        throw error
+      const canLearn = deps.prompter.interactive && deps.learnChat !== undefined
+      if (!(error instanceof ReachFailure) || error.kind !== "broken" || ctx.signal?.aborted || !canLearn) throw error
       const { line, code } = describe(error, port)
       deps.error(line)
       if (!(await inVisit(ctx, deps.stdin, () => askToLearn(deps, RELEARN_QUESTION, STOP)))) return code
-      return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: line }, port, options, interrupt)
+      return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: line }, port, options)
     }
     return await hold(ctx, conn, access, options, deps)
   } catch (error) {
@@ -328,18 +323,22 @@ async function hold(ctx: ReachContext, conn: Connection, access: Access, options
   return waitLoop(ctx, conn, deps)
 }
 
-/** Learns a path, then holds the connection that saved it; the exit code when nothing was saved. `interrupt` is the
- *  visit's Ctrl-C. */
+/** Learns a path, then holds the connection that saved it; the exit code when nothing was saved. OpenCorp's
+ *  connection shell, which holds the tunnel, closes at the end. */
 async function learnAndHold(
   ctx: ReachContext,
   deps: VisitDeps,
   inputs: { notes: string; script: string; failure: string },
   port: number,
   options: VisitOptions,
-  interrupt: () => void,
 ): Promise<number> {
-  const learned = await learnPath(ctx, deps, inputs, port, interrupt)
-  return typeof learned === "number" ? learned : hold(ctx, learned.conn, learned.access, options, deps)
+  const learned = await learnPath(ctx, deps, inputs, port)
+  if (typeof learned === "number") return learned
+  try {
+    return await hold(ctx, learned.conn, learned.access, options, deps)
+  } finally {
+    await learned.shell.close()
+  }
 }
 
 /** The most of the old notes.md or reach.sh a relearning run is given. */
@@ -398,25 +397,16 @@ async function askBeforeAnything<T>(deps: VisitDeps, ask: () => Promise<T>): Pro
   }
 }
 
-/** Where a learning run meets the owner: the prompter, the stream it reads answers from (paused after each), and
- *  where children's output goes. */
-interface Owner {
-  prompter: Prompter
-  stdin: Readable
-  echo(text: string): void
-}
-
-/** A learning run with the owner's consent already given, behind the setup screen when there is one: the model from
- *  `hq/provider.json` (asked for the first time), then learn_hq. Resolves to the saved path's record and the
- *  connection that tested it, or to the exit code once it says why nothing was saved; that and anything after goes
- *  on the plain terminal. `interrupt` is the visit's Ctrl-C. */
+/** A learning run with the owner's consent already given: the model from `hq/provider.json` (asked for on the
+ *  plain terminal the first time), then learn_hq as a chat with OpenCorp, through `deps.learnChat`. Resolves to the
+ *  saved path's record, the connection that tested it and OpenCorp's connection shell it runs in, or to the exit code
+ *  once it says why nothing was saved: 1, or 130 when the owner left the chat (or stopped the visit) first. */
 async function learnPath(
   ctx: ReachContext,
   deps: VisitDeps,
   inputs: { notes: string; script: string; failure: string },
   port: number,
-  interrupt: () => void,
-): Promise<{ access: Access; conn: Connection } | number> {
+): Promise<{ access: Access; conn: Connection; shell: ConnectionShell } | number> {
   const signal = ctx.signal!
   // The first Ctrl-C stops a model check that may take a minute, its request included.
   const checkModel: ModelCheck = async (provider) => {
@@ -424,152 +414,100 @@ async function learnPath(
     signal.throwIfAborted()
     return problem as string | null
   }
-  const run: { state?: Learning } = {}
-  const learn = async (owner: Owner): Promise<Learned> => {
-    // The first Ctrl-C stops a device sign-in too.
-    const provider = await learnProvider(ctx.paths, owner.prompter, {
-      listers: deps.listers,
-      checkModel,
-      auth: deps.auth,
-      signal,
-    })
-    quietStdin(owner.stdin)
-    // Read again at each use: the run's first model call may refresh a subscription's tokens.
-    const secrets = () => providerSecrets(provider, workerEnv(ctx.env))
-    // The connection save_access opens is the visit's: its master's output goes where the owner sees it then.
-    run.state = new Learning({ ...ctx, echo: owner.echo }, owner.prompter, owner.stdin, secrets, port, deps.now)
-    return await runLearn(provider, inputs, run.state)
-  }
-  const plain = () => learn({ prompter: deps.prompter, stdin: deps.stdin, echo: ctx.echo })
-  /** Learning behind the screen; when the screen can't start (a window too small for it, say), on the plain
-   *  terminal instead, after saying why. A failure once learning started is the run's own. */
-  const behindScreen = async (screen: LearnScreen): Promise<Learned> => {
-    let started = false
-    try {
-      // The owner read the risks on the plain terminal when they chose to learn; the screen doesn't repeat them, so
-      // the save view's files aren't pushed off by them.
-      return await screen((io) => {
-        started = true
-        const prompter = new JsonPrompter(io.prompts, io.answers)
-        return learn({ prompter, stdin: io.answers, echo: io.echo })
-      }, interrupt)
-    } catch (error) {
-      if (started || signal.aborted) throw error
-      deps.error(`opencorp hq: ${messageOf(error)}; asking here instead.`)
-      return plain()
-    }
-  }
-  let learned: Learned
+  // The first Ctrl-C stops a device sign-in too.
+  const provider = await inVisit(ctx, deps.stdin, () =>
+    learnProvider(ctx.paths, deps.prompter, { listers: deps.listers, checkModel, auth: deps.auth, signal }),
+  )
+  quietStdin(deps.stdin)
+  // Read again at each use: the run's first model call may refresh a subscription's tokens.
+  const secrets = () => providerSecrets(provider, workerEnv(ctx.env))
+  const id = newId()
+  const state = new Learning(ctx, secrets, port, ctx.paths.session(id), deps.now)
+  let how: "ended" | "left"
   try {
-    learned = deps.learnScreen ? await behindScreen(deps.learnScreen) : await plain()
+    how = await deps.learnChat!(learningSession(ctx, deps, provider, inputs, id, state))
   } catch (error) {
-    // Ctrl-C, or the owner's input ending: what ran is still worth knowing.
-    if (run.state !== undefined && run.state.commands.length > 0) listCommands(deps, run.state, ASKED_FOR)
+    await state.shell?.close()
     throw error
   }
-  const state = run.state!
-  // Saved and connected, whatever the model did after.
-  if (state.connection !== null) {
+  // Saved and connected, whatever the agent did after.
+  if (state.connection !== null && state.shell !== null) {
     const access = await readAccess(ctx.paths)
     if (access === null) throw new Error(`${ctx.paths.access} went missing after it was saved`)
-    return { access, conn: state.connection }
+    return { access, conn: state.connection, shell: state.shell }
   }
-  if (learned.capped) {
-    listCommands(deps, state, CAPPED)
-    if (learned.message !== null) deps.error(AFTER_CAP(clean(state.scrub(learned.message))))
-    return 1
-  }
-  deps.error(`opencorp hq: nothing was saved: ${clean(state.scrub(learned.message ?? learned.output ?? "the model stopped"))}`)
-  if (state.commands.length > 0) listCommands(deps, state, ASKED_FOR)
-  return 1
+  await state.shell?.close()
+  deps.error(NOT_SAVED)
+  listCommands(deps, state)
+  return how === "left" || signal.aborted ? 130 : 1
 }
 
-/** `header`, then a line for each command the model asked for: its exit, or "not run", and its first line as it
- *  was shown to the owner. */
-function listCommands(deps: VisitDeps, state: Learning, header: string): void {
-  deps.error(header)
-  for (const { command, code } of state.commands) {
+/** The commands the agent's shells ran, each with its exit, or none; its first line as the record holds it. */
+function listCommands(deps: VisitDeps, state: Learning): void {
+  const tried = state.tried()
+  if (tried.length === 0) return
+  deps.error(ASKED_FOR)
+  for (const { command, code } of tried) {
     const lines = command.split("\n")
     const more = lines.length > 1 ? ` (and ${lines.length - 1} more line${lines.length > 2 ? "s" : ""})` : ""
-    deps.error(`  (${code === null ? "not run" : `exit ${code}`}) ${shownCode(lines[0]!)}${more}`)
+    deps.error(`  (${code === null ? "no exit" : `exit ${code}`}) ${shownCode(lines[0]!)}${more}`)
   }
 }
 
-/** The error of a tool call yian didn't run because its reply came at the turn cap. */
-const CAPPED_CALL = "tool_limit"
-
-/** Said before each of the agent's questions. */
-export const ANSWER_GOES_TO_MODEL =
-  "Your answer goes to the model. Type passwords, passphrases and codes only at ssh's own prompts, never here."
-
-/** `ask_user`: the agent's question, marked as its own, after a line on where the answer goes. */
-function askOwner(request: { question: string; options?: readonly string[] | null }, state: Learning): Promise<string> {
-  return withOwnerOrStop(state, (p) => {
-    p.say(ANSWER_GOES_TO_MODEL)
-    return askUser({ ...request, question: `The agent asks: ${request.question}` }, state.asking)
-  })
-}
-
-/** What a learning run ended with: the agent's last reply when it finished, why it failed (null when it didn't), and
- *  whether it reached the turn cap. */
-export interface Learned {
-  output: string | null
-  message: string | null
-  capped: boolean
-}
-
-/** Runs learn_hq with `provider`'s model and the host tools, in this process (no workers), with no run log, then
- *  removes the folder its commands ran in. At the turn cap yian runs none of the reply's calls, finishing each with
- *  `tool_limit`, and the model answers once more; that reply is the run's output.
- *  Rejects with the owner's `KeyboardInterrupt` or `OnboardError` (their input ended), and with the visit's stop. */
-export async function runLearn(
+/** Learning's session for the no-office host: learn_hq with the old path's `inputs`, from the owner's choice to
+ *  learn, on `provider`'s model, in `hq/sessions/<id>`. Its tools are learning's terminal, its shells in the agent's
+ *  SSH-only sandbox under the session's permissions (where there's no sandbox, the owner is asked here first), and
+ *  `save_access`, whose card the session holds and whose chain test runs in OpenCorp's connection shell. */
+function learningSession(
+  ctx: ReachContext,
+  deps: VisitDeps,
   provider: Provider,
   inputs: { notes: string; script: string; failure: string },
+  id: string,
   state: Learning,
-): Promise<Learned> {
-  const flow = await loadFlow(embedded(learnYaml).toString("utf8"), { sourceLabel: "features/reach/flows/learn_hq.yaml" })
-  const text = { notes: wellFormed(inputs.notes), script: wellFormed(inputs.script), failure: wellFormed(inputs.failure) }
-  let ran: Awaited<ReturnType<typeof runSetup>>
-  let capped = false
-  try {
-    ran = await runSetup(flow, text, provider, {
-      tools: {
-        shell: shellTool,
-        save_access: saveAccessTool,
-        ask: (request, c) => askOwner(request, learning(c)),
-      },
-      context: state,
-      env: workerEnv(state.ctx.env),
-      signal: state.ctx.signal,
-      onEvent: (event) => {
-        if (event.type === "ToolCallFinished" && event.error === CAPPED_CALL) capped = true
-      },
-    })
-  } finally {
-    state.close()
-  }
-  const { result, message } = ran
-  if (state.asking.stopped) throw state.asking.stopped
+): BuiltinSession<Terminal> {
   return {
-    output: result?.status === "succeeded" ? (result.output as string) : null,
-    message: learnedMessage(message, provider, state.ctx.paths),
-    capped,
+    agent: { handle: "opencorp", name: "OpenCorp" },
+    flow: { name: "learn_hq", text: embedded(learnYaml).toString("utf8") },
+    inputs: { notes: wellFormed(inputs.notes), script: wellFormed(inputs.script), failure: wellFormed(inputs.failure) },
+    first: LEARN_FIRST,
+    model: { llm_config: { ...(provider.llm_config ?? {}) }, env: { ...provider.env } },
+    folder: state.folder,
+    tools: async (binding) => {
+      const terminal = await learningTerminal({
+        paths: ctx.paths,
+        session: id,
+        home: deps.sshHome,
+        ssh: ctx.ssh,
+        env: ctx.env,
+        permissions: binding.permissions,
+        consent: (ask) => consentHere(deps, ask),
+        onShell: (shell, name) => binding.onShell(shell, name),
+      })
+      const connection = () =>
+        (state.shell ??= new ConnectionShell({
+          ctx,
+          folder: state.folder,
+          sessionId: binding.sessionId,
+          instruments: binding.instruments,
+        }))
+      const save = saveAccessTool({ state, binding, connection })
+      return { groups: { terminal: terminal.tools(), save_access: { save_access: save } }, terminal }
+    },
   }
 }
 
-/** Why a learning run on `provider` failed, `message`, with yian's hint to run `yian auth openai` replaced, on the
- *  sign-in in `paths.auth`, by how to sign in again here: that command writes another file. */
-export function learnedMessage(message: string | null, provider: Provider, paths: ReachPaths): string | null {
-  if (message === null || provider.env[AUTH_FILE_ENV] !== paths.auth) return message
-  return signInRemedy(message, {
-    refused: `delete ${paths.auth} and run \`opencorp hq\` again`,
-    retry: "run `opencorp hq` again later",
-  })
+/** Asks the owner on the plain terminal whether learning's shells may run with no sandbox, before the chat opens. */
+async function consentHere(deps: VisitDeps, ask: ConsentAsk): Promise<string> {
+  for (const line of ask.lines) deps.prompter.say(clean(line))
+  const answer = await deps.prompter.choose(ask.question, [...ask.choices], ask.default)
+  quietStdin(deps.stdin)
+  return answer
 }
 
-/** A visit's context, its Ctrl-C (a second one exits 130 at once; the watcher then ends the masters), which the
- *  learning screen calls too, and the function that stops listening for it. */
-function start(paths: ReachPaths, ssh: string, deps: VisitDeps): { ctx: ReachContext; off: () => void; interrupt: () => void } {
+/** A visit's context, its Ctrl-C (a second one exits 130 at once; the watcher then ends the masters), and the
+ *  function that stops listening for it. */
+function start(paths: ReachPaths, ssh: string, deps: VisitDeps): { ctx: ReachContext; off: () => void } {
   const stop = new AbortController()
   const interrupt = () => (stop.signal.aborted ? deps.exit(130) : stop.abort())
   const off = deps.onSigint(interrupt)
@@ -582,7 +520,7 @@ function start(paths: ReachPaths, ssh: string, deps: VisitDeps): { ctx: ReachCon
     signal: stop.signal,
     limits: deps.limits ?? LIMITS,
   }
-  return { ctx, off, interrupt }
+  return { ctx, off }
 }
 
 /** What a visit that threw `error` says, and its exit code: 130 for Ctrl-C (at a question, too), the failure
@@ -887,8 +825,10 @@ function messageOf(error: unknown): string {
 export const opener = (platform: string) => (platform === "darwin" ? "open" : "xdg-open")
 
 /** This process's terminal, signals and clock. Questions and children's output go to stderr, so stdout holds only
- *  links and the visit line; the ssh config includes the passwd entry's `~/.ssh/config`, where ssh's own `~` points. */
+ *  links and the visit line; the ssh config includes the passwd entry's `~/.ssh/config`, where ssh's own `~` points
+ *  (`$HOME`'s in a test that names its fake ssh's folder; see `sandbox.ts`). */
 export function realVisitDeps(home: string): VisitDeps {
+  const ssh = sshHome(os.userInfo().homedir, process.env)
   return {
     home,
     env: process.env,
@@ -917,7 +857,8 @@ export function realVisitDeps(home: string): VisitDeps {
       return () => void process.off("SIGINT", fn)
     },
     exit: (code) => process.exit(code),
-    sshIncludes: defaultIncludes(os.userInfo().homedir),
+    sshIncludes: defaultIncludes(ssh),
+    sshHome: ssh,
     listers: LISTERS,
     checkModel: (provider, signal) => modelProblem(provider, { signal }),
   }

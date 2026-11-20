@@ -24,19 +24,36 @@ terminals reuse for as long as your `ControlPersist` says. Where you set none, O
 `~/.opencorp/hq/cm`: you log in once per visit, and those connections close when it ends. OpenCorp closes only
 the connections it keeps there.
 
-With no `reach.sh` yet, `opencorp hq` in a terminal offers to learn the way there with an agent, after
-saying what the model will see: each command it runs and its output (hostnames, your username, paths, job
-lists). The agent asks you questions, and each command it wants runs, as you and with your SSH keys, only
-once you approve it; SSH's prompts (passwords, Duo, host keys) come to you, never to the model. It then
-shows you `reach.sh` and `notes.md` (how your cluster is reached, in plain words) with the risks of your
-setup, and saves them only once you approve and the whole connection works: the script, the login, the
-check on HQ's machine, the forward and HQ's health through it. That connection becomes the visit's. The
-first learning run asks for a model with `opencorp init`'s picker and keeps it in
+With no `reach.sh` yet, `opencorp hq` in a terminal offers to learn the way there in a chat with OpenCorp,
+which opens in the TUI. It needs a terminal the TUI can draw on; elsewhere, `TERM=dumb` included, it says so
+and asks nothing. Before the chat it says what the model will see: what the agent's shell shows (hostnames,
+your username, paths, job lists).
+
+- **The mode.** The chat starts in `auto`: read-only commands and short answers to a prompt (a host key's
+  `yes`, Duo's `1`) run at once, and the rest goes to Auto's check, a model call on your connection, or asks
+  you. Press Shift+Tab for `default` or `ask` to approve more of it yourself, as for a careful relearn.
+- **The agent's shell** runs in a sandbox that reaches your SSH files (`~/.ssh`, your SSH config, your agent)
+  and nothing else of your home or of `~/.opencorp`.
+- **Passwords.** When ssh asks for a password or a code, the shell opens itself in the chat and you type it
+  there. The agent sees the prompt as the screen shows it, never what you type at it.
+- **One login.** The agent's ssh uses a connection you have open to the cluster, with no password prompt.
+  Without one, each separate ssh may ask you to log in. Connect from your own terminal first, or let the agent
+  log in once and type its commands into that shell. The agent's commands could end a connection of yours;
+  the mode asks first.
+- **Saving.** The agent shows you `reach.sh` and `notes.md` (how your cluster is reached, in plain words)
+  with the risks of your setup on a card, which you read to the end before you choose. It asks in every
+  mode. "Test it, then save it" runs the whole connection in OpenCorp's own connection shell, which the chat
+  shows: the script, the login, the check on HQ's machine, the forward and HQ's health through it. SSH asks
+  you there for any password or Duo. Only when it all works are the files saved; the chat then closes, and the
+  visit holds that connection. Type what should change instead, and the agent tries again.
+
+The first learning run asks for a model with `opencorp init`'s picker, before the chat, and keeps it in
 `~/.opencorp/hq/provider.json`. For OpenAI you can sign in to your ChatGPT subscription instead of giving
 an API key: it shows a link and a code to enter in a browser on any device, and keeps the sign-in in
 `~/.opencorp/hq/auth.json`. To forget the model, delete `provider.json` and `auth.json`. Later visits replay
-`reach.sh` and use no model. `opencorp hq --relearn` learns again, starting from the old notes and script, and a saved path that
-breaks offers to; the old path stays until a new one works.
+`reach.sh` and use no model. `opencorp hq --relearn` learns again, starting from the old notes and script, and
+a saved path that breaks offers to; the old path stays until a new one works. Press Ctrl-C twice in the chat
+to stop learning: the visit lists the commands the agent ran.
 
 You can also write `reach.sh` yourself: a `sh` script that finds HQ's machine (a Slurm job's node, say) and
 prints, as its last line of output, how to reach it:

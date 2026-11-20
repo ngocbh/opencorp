@@ -164,6 +164,8 @@ export function Session() {
   const codex = createMemo(() => session()?.harness === "codex")
   // The open card is an approval card, which shows as the permission prompt.
   const approval = createMemo(() => !codex() && question()?.source === "approval")
+  // A card on the chat (an approval, a question), which takes what room it needs and scrolls in the rest.
+  const card = createMemo(() => !codex() && question() !== undefined)
   const permission = usePermission()
   // Whether the chat's mode can be switched here. Never while a card is open: the card hides the prompt and its mode
   // label, and a switch to dontAsk would answer an approval card.
@@ -1009,9 +1011,9 @@ export function Session() {
                     stickyScroll={true}
                     stickyStart="bottom"
                     flexGrow={1}
-                    // Under an approval card the transcript takes what the card leaves, and keeps a few rows.
-                    flexBasis={approval() ? 0 : "auto"}
-                    minHeight={approval() ? 3 : 0}
+                    // Under a card the transcript takes what the card leaves, and keeps a few rows.
+                    flexBasis={card() ? 0 : "auto"}
+                    minHeight={card() ? 3 : 0}
                     scrollAcceleration={scrollAcceleration()}
                   >
                     <For each={shown()}>
@@ -1039,8 +1041,8 @@ export function Session() {
                       The shell closed: keys are dropped until Enter
                     </text>
                   </Show>
-                  {/* An approval card may shrink to what the chat leaves it: its body scrolls in what remains. */}
-                  <box flexShrink={approval() ? 1 : 0}>
+                  {/* A card may shrink to what the chat leaves it: its body scrolls in what remains. */}
+                  <box flexShrink={card() ? 1 : 0}>
                     <Show
                       when={codex()}
                       fallback={

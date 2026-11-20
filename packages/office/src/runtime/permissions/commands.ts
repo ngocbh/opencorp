@@ -241,8 +241,8 @@ const SSH_CONTROL_KEYS = set("controlmaster controlpath localforward remoteforwa
 const SSH_CONTROL_LETTERS = "SOLRD"
 /** Variables that name a local command or config for ssh: git's, and the config the ssh wrapper passes with `-F`. */
 const SSH_COMMAND_VARS = ["GIT_SSH_COMMAND", "GIT_SSH", "OPENCORP_SSH_CONFIG"]
-/** Builtins that set, export or unset the variables they name. */
-const SETS_VARIABLES = set("export declare typeset readonly local unset")
+/** Builtins that set, export or unset the variables they name, and those that read a value into them. */
+const SETS_VARIABLES = set("export declare typeset readonly local unset read mapfile readarray")
 const SSH_LOCAL_KEYS = set("proxycommand localcommand permitlocalcommand knownhostscommand")
 const SSH_IDENTITY_KEYS = set("identityfile certificatefile")
 /** Programs that read only names and metadata, so a credential path given to them reads no secret. */
@@ -1329,6 +1329,10 @@ function riskOf(part: SimpleCommand, prog: string, args: readonly string[], sets
   const name = base(prog)
   // An exported variable of the shell's keeps its export when assigned, so a bare assignment counts too.
   if (sets.some(namesSshCommand) || (SETS_VARIABLES.has(name) && args.some(namesSshCommand))) return LOCAL_SSH
+  // printf -v writes its output into the variable it names.
+  const printsInto = (w: string, i: number) =>
+    w === "-v" ? namesSshCommand(args[i + 1] ?? "") : w.startsWith("-v") && namesSshCommand(w.slice(2))
+  if (name === "printf" && args.some(printsInto)) return LOCAL_SSH
   const own = programRisk(name, args, part) ?? FIXED_RISKS.get(name) ?? null
   if (own !== null) return own
   return part.writes.some((w) => w !== "/dev/null") ? WRITES : null

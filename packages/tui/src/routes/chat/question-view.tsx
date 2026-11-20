@@ -10,18 +10,22 @@ import {
   untrack,
   type ParentProps,
 } from "solid-js"
-import { useRenderer } from "@opentui/solid"
-import type { KeyEvent, Renderable, TextareaRenderable } from "@opentui/core"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
+import type { BoxRenderable, KeyEvent, Renderable, TextareaRenderable } from "@opentui/core"
 import type { Binding } from "@opentui/keymap"
 import { tint, useTheme } from "../../context/theme"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
 import { clearFirst, useBindings, useOpenCorpModeStack } from "../../keymap"
 import { SecretInput } from "../../setup/secret"
+import { createReadThrough, wrap } from "../../ui/read-through"
 import type { CardPage, PageAnswer } from "./answer"
 import { display } from "../../util/printable"
 
 export const QUESTION_MODE = "question"
+
+/** Shown in place of the answers until the question has been on screen whole. */
+const READ_ON = "Read to the end (PageDown, Space, arrows) to see the answers"
 
 /** A row after the answers that runs something, such as "Chat about this". */
 export interface QuestionAction {
@@ -46,7 +50,9 @@ export interface QuestionViewHandle {
 
 /**
  * A question card: a page per question with options to pick (several when `multi`) and, when `typed`, a last row
- * that is a box to type the answer in (showing only dots on a `secret` page). Enter on the last page hands every
+ * that is a box to type the answer in (showing only dots on a `secret` page). A question taller than the screen
+ * leaves scrolls, and its answers show only once all of it has been on screen (a file to save, say, is read whole
+ * before it is answered). Enter on the last page hands every
  * page's answer to `onSubmit` once each single-pick page has one. Ctrl+C or Esc in the box with text clears it. It
  * takes no office: callers supply the header, actions, extra key bindings, hints and a notice.
  */
@@ -78,6 +84,7 @@ export function QuestionView(
 ) {
   const { theme } = useTheme()
   const renderer = useRenderer()
+  const dimensions = useTerminalDimensions()
   const tuiConfig = useTuiConfig()
   const modeStack = useOpenCorpModeStack()
 
@@ -110,6 +117,53 @@ export function QuestionView(
   const shown = createMemo(() => options().slice(first(), props.maxOptions ? first() + props.maxOptions : undefined))
   // A signal, so the effects below see a box that mounts later.
   const [box, setBox] = createSignal<TextareaRenderable>()
+
+  // The question's text as rows of the width it is drawn at, and as many as the screen leaves it; wrapped anew when
+  // the width changes, which starts the count again.
+  const [size, setSize] = createSignal<{ rows: readonly string[]; width: number; height: number }>()
+  const textWidth = createMemo(() => Math.max(1, size()?.width ?? dimensions().width))
+  const lines = createMemo(() =>
+    display(page()?.question ?? "")
+      .split("\n")
+      .flatMap((line) => wrap(line.replace(/\t/g, "  "), textWidth())),
+  )
+  const measured = () => {
+    const s = size()
+    return s?.rows === lines() ? s : undefined
+  }
+  const view = createMemo(() => Math.min(measured()?.height ?? 0, lines().length))
+  const maxTop = createMemo(() => Math.max(0, lines().length - view()))
+  // The scroll position, for the rows it was set on; at the end it stays there when the answers take rows from it.
+  const [scroll, setScroll] = createSignal<{ rows?: readonly string[]; top: number; end?: boolean }>({ top: 0 })
+  const textTop = () => {
+    const s = scroll()
+    if (s.rows !== lines()) return 0
+    return s.end ? maxTop() : Math.min(s.top, maxTop())
+  }
+  const scrollTo = (t: number) => {
+    const top = Math.max(0, Math.min(maxTop(), t))
+    setScroll({ rows: lines(), top, end: top === maxTop() })
+  }
+  const read = createReadThrough({ rows: lines, top: textTop, view, ready: () => measured() !== undefined })
+  const scrolls = createMemo(() => measured() !== undefined && view() < lines().length)
+  const visibleLines = createMemo(() => lines().slice(textTop(), textTop() + (measured() ? view() : lines().length)))
+  const scrollPage = () => Math.max(1, view() - 1)
+  const scrollKeys = (always: boolean) =>
+    (
+      [
+        ["pageup", () => scrollTo(textTop() - scrollPage())],
+        ["pagedown", () => scrollTo(textTop() + scrollPage())],
+        ["home", () => scrollTo(0)],
+        ["end", () => scrollTo(maxTop())],
+        ...(always
+          ? []
+          : ([
+              ["space", () => scrollTo(textTop() + scrollPage())],
+              ["up", () => scrollTo(textTop() - 1)],
+              ["down", () => scrollTo(textTop() + 1)],
+            ] as const)),
+      ] as const
+    ).map(([key, run]) => ({ key, desc: "Scroll the question", group: "Question", cmd: () => void run() }))
 
   props.ref?.({ select: (row) => setStore("selected", row) })
 
@@ -203,7 +257,7 @@ export function QuestionView(
   createEffect(() => {
     const el = box()
     if (!el || el.isDestroyed) return
-    if (onTyped() && active()) {
+    if (onTyped() && active() && read()) {
       el.focus()
       el.gotoLineEnd()
       // Only a focused box: an edit buffer's blur always resets the cursor, which would hide the cursor of
@@ -231,23 +285,26 @@ export function QuestionView(
       enabled: active(),
       bindings: !props.pages.length
         ? keys
-        : [
-            { key: "up", desc: "Previous answer", group: "Question", cmd: () => move(-1) },
-            { key: "down", desc: "Next answer", group: "Question", cmd: () => move(1) },
-            { key: "return", desc: "Select answer", group: "Question", cmd: () => selectRow() },
-            ...paging,
-            // Before the caller's keys: in a box with text, Ctrl+C and Esc only clear it. On an empty box they go
-            // on to the caller's keys, such as the card's stop and leave.
-            ...clearFirst(tuiConfig.keybinds.get("prompt.clear"), clearBox),
-            ...keys,
-          ],
+        : !read()
+          ? [...scrollKeys(false), ...paging, ...keys]
+          : [
+              ...(scrolls() ? scrollKeys(true) : []),
+              { key: "up", desc: "Previous answer", group: "Question", cmd: () => move(-1) },
+              { key: "down", desc: "Next answer", group: "Question", cmd: () => move(1) },
+              { key: "return", desc: "Select answer", group: "Question", cmd: () => selectRow() },
+              ...paging,
+              // Before the caller's keys: in a box with text, Ctrl+C and Esc only clear it. On an empty box they go
+              // on to the caller's keys, such as the card's stop and leave.
+              ...clearFirst(tuiConfig.keybinds.get("prompt.clear"), clearBox),
+              ...keys,
+            ],
     }
   })
 
-  // Off on the typed row, where these keys are text for the box.
+  // Off on the typed row, where these keys are text for the box, and until the question has been read.
   useBindings(() => ({
     mode: QUESTION_MODE,
-    enabled: active() && props.pages.length > 0 && !onTyped(),
+    enabled: active() && props.pages.length > 0 && !onTyped() && read(),
     bindings: [
       ...Array.from({ length: Math.min(answerRows(), 9) }, (_, index) => ({
         key: String(index + 1),
@@ -281,29 +338,65 @@ export function QuestionView(
   return (
     <box
       visible={!props.hidden}
+      flexShrink={1}
       backgroundColor={theme.backgroundPanel}
       border={["left"]}
       borderColor={theme.accent}
       customBorderChars={SplitBorder.customBorderChars}
     >
-      <box gap={1} paddingLeft={1} paddingRight={3} paddingTop={1} paddingBottom={1}>
+      <box gap={1} paddingLeft={1} paddingRight={3} paddingTop={1} paddingBottom={1} flexShrink={1}>
         <Show when={props.header}>
-          <box paddingLeft={1}>
+          <box paddingLeft={1} flexShrink={0}>
             <text fg={theme.textMuted}>{display(props.header ?? "")}</text>
           </box>
         </Show>
         {props.children}
         <Show when={props.pages.length > 0}>
-          <box paddingLeft={1} gap={1}>
-            <box>
+          <box paddingLeft={1} gap={1} flexShrink={1}>
+            <box flexShrink={1}>
               <Show when={props.pages.length > 1}>
                 <text fg={theme.textMuted}>
                   {`Question ${store.page + 1} of ${props.pages.length} · ${display(page()?.header ?? "")}`}
                 </text>
               </Show>
-              <text fg={theme.text}>{display(page()?.question ?? "")}</text>
+              {/* As tall as its rows, shrunk to what the screen leaves: a basis, since a set height stops it shrinking. */}
+              <box flexBasis={lines().length} minHeight={1} flexShrink={1}>
+                <Show when={lines()} keyed>
+                  {(wrapped) => {
+                    let el: BoxRenderable | undefined
+                    // Only the live viewport of the current rows counts, and only its rows inside the screen.
+                    const measure = () => {
+                      if (!el || el.isDestroyed || props.hidden || wrapped !== lines()) return
+                      if (!Number.isFinite(el.width) || !Number.isFinite(el.height)) return
+                      const height = Math.max(0, Math.min(el.height, dimensions().height - el.y))
+                      setSize({ rows: wrapped, width: el.width, height })
+                    }
+                    return (
+                      <box ref={(r: BoxRenderable) => (el = r)} flexGrow={1} overflow="hidden" onSizeChange={measure}>
+                        <For each={visibleLines()}>
+                          {(row) => (
+                            <text fg={theme.text} wrapMode="none">
+                              {row === "" ? " " : row}
+                            </text>
+                          )}
+                        </For>
+                      </box>
+                    )
+                  }}
+                </Show>
+              </box>
+              <Show when={scrolls()}>
+                <text fg={theme.textMuted} wrapMode="none" flexShrink={0}>
+                  {`lines ${Math.min(textTop() + 1, lines().length)}–${Math.min(textTop() + view(), lines().length)} of ${lines().length}`}
+                </text>
+              </Show>
             </box>
-            <box>
+            <Show when={!read()}>
+              <text fg={theme.accent} flexShrink={0}>
+                {READ_ON}
+              </text>
+            </Show>
+            <box visible={read()} flexShrink={0}>
               <For each={shown()}>
                 {(opt, at) => {
                   const i = () => first() + at()

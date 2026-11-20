@@ -5,7 +5,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, test } from "bun:test"
 import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
-import { agentPolicy } from "../../../src/features/reach/sandbox.ts"
+import { agentPolicy, sshHome, TEST_SSH_DIR, testFolder } from "../../../src/features/reach/sandbox.ts"
 import { writeSshFiles } from "../../../src/features/reach/ssh.ts"
 import { refusal, type run, SandboxUnavailable } from "../../../src/runtime/sandbox/run.ts"
 import { type SshPolicy, UnsafeProfile } from "../../../src/runtime/sandbox/ssh_policy.ts"
@@ -110,4 +110,76 @@ test("a sandbox that can't run a call counts as none: bubblewrap's refusal, or a
   // A call that runs is a sandbox.
   const works = standIn("exit 0")
   expect((await make(works.runIn)).home).toBe(h.dir)
+})
+
+test("the test fake's folder is bound only when OPENCORP_TEST_SSH_DIR names it, and is refused when it is or holds hq or the home, lies in the home, $HOME or OpenCorp's home, is a link or another user's", async () => {
+  const h = await home()
+  const envHome = path.join(h.root, "env-home")
+  fs.mkdirSync(envHome, { mode: 0o700 })
+  const make = (dir?: string) =>
+    agentPolicy(h.paths, {
+      home: h.dir,
+      tmpdir: h.tmpdir,
+      ssh: SSH,
+      env: { HOME: envHome, ...(dir === undefined ? {} : { [TEST_SSH_DIR]: dir }) },
+    })
+  expect((await make()).readWrite).toEqual([])
+  const fake = path.join(h.root, "fake")
+  fs.mkdirSync(fake, { mode: 0o700 })
+  const bound = await make(fake)
+  expect(bound.readWrite).toEqual([fake])
+  // Nothing else changes: the same home, read-only paths and writable files.
+  expect([bound.home, bound.readOnly, bound.writable]).toEqual([h.dir, [h.ssh, h.paths.ssh], (await make()).writable])
+  const folder = (at: string, mode = 0o700) => {
+    fs.mkdirSync(at, { recursive: true, mode })
+    fs.chmodSync(at, mode)
+    return at
+  }
+  const link = path.join(h.root, "link")
+  fs.symlinkSync(fake, link)
+  // OpenCorp's home outside the user's.
+  const office = new ReachPaths(path.join(h.root, "oc"))
+  makeDirs(office)
+  await writeSshFiles(office, SSH, [path.join(h.ssh, "config")])
+  const refused: [string, string, ReachPaths][] = [
+    [h.paths.dir, `it lies in ${h.dir}`, h.paths],
+    [h.dir, `it holds ${h.dir}`, h.paths],
+    [h.root, `it holds ${h.dir}`, h.paths],
+    [folder(path.join(h.dir, "fake")), `it lies in ${h.dir}`, h.paths],
+    [folder(path.join(envHome, "fake")), `it lies in ${envHome}`, h.paths],
+    [office.dir, `it lies in ${office.home}`, office],
+    [folder(path.join(office.home, "fake")), `it lies in ${office.home}`, office],
+    [link, "it is a link", h.paths],
+    [folder(path.join(h.root, "open"), 0o755), "it is not 0700", h.paths],
+    ["/usr", "it is not the user's", h.paths],
+    [path.join(h.root, "missing"), "nothing is there", h.paths],
+  ]
+  for (const [dir, why, paths] of refused) {
+    const env = { HOME: envHome, [TEST_SSH_DIR]: dir }
+    const error = await agentPolicy(paths, { home: h.dir, tmpdir: h.tmpdir, ssh: SSH, env }).catch((e: unknown) => e)
+    expect([dir, error instanceof UnsafeProfile, (error as Error).message]).toEqual([
+      dir,
+      true,
+      `the test folder ${dir} can't be bound: ${why}`,
+    ])
+  }
+  expect(testFolder(fake, [h.dir, envHome, h.paths.home])).toBe(fake)
+})
+
+test("with it, ssh's home is $HOME, and nothing in the passwd home is read or made", async () => {
+  const h = await home()
+  const fake = path.join(h.root, "fake")
+  fs.mkdirSync(fake, { mode: 0o700 })
+  // The passwd entry's home, which nothing may read: a folder no one can enter.
+  const passwd = path.join(h.root, "passwd")
+  fs.mkdirSync(passwd, { mode: 0o700 })
+  fs.chmodSync(passwd, 0o000)
+  expect(sshHome(passwd, { HOME: h.dir })).toBe(passwd)
+  const env = { HOME: h.dir, [TEST_SSH_DIR]: fake }
+  expect(sshHome(passwd, env)).toBe(h.dir)
+  const policy = await agentPolicy(h.paths, { home: sshHome(passwd, env), tmpdir: h.tmpdir, ssh: SSH, env })
+  expect(policy.home).toBe(h.dir)
+  expect(policy.readOnly[0]).toBe(h.ssh)
+  fs.chmodSync(passwd, 0o700)
+  expect(fs.readdirSync(passwd)).toEqual([])
 })

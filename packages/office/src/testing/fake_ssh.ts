@@ -1,13 +1,14 @@
-/** A stand-in for ssh in tests, run through a sh shim with this Bun: it logs each argv and acts, on this machine, as a
- *  plain session, a master, a mux client or an `-O` command.
+/** A stand-in for ssh in tests, run through a sh shim with this Bun, or compiled (`bun build --compile` of this file),
+ *  which a sandbox runs with neither Bun nor the checkout: it logs each argv and acts, on this machine, as a plain
+ *  session, a master, a mux client or an `-O` command.
  *
- *  Each host logs in by its mode (`FakeHost`); a session's command runs here under `/bin/sh -c`. It reads `-o`, then
- *  the `-F` file, the first value of each option winning; it acts on `ControlMaster`, `ControlPath` (`%C` is
- *  `fakeControlName`), `BatchMode` and `RemoteCommand` (a command beside one is refused, as ssh does). It never reads
- *  an included file: the first `Include` stands for the owner's config, `userConfig`. A `Host` line's options apply
- *  when one of its names is `*` or the destination's host; `Match` turns them off. `-G` accepts every option, as a
- *  current ssh would, and prints those it read, `%C` expanded, without logging the call. A master
- *  listens on its control socket and takes one JSON line per connection: `{"op":"check"|"exit"|"session"}` or
+ *  Each host logs in by its mode (`FakeHost`); a session's command runs here under `/bin/sh -c`, and with
+ *  `interactive`, a session with none on a terminal runs an interactive sh. It reads `-o`, then the `-F` file, the
+ *  first value of each option winning; it acts on `ControlMaster`, `ControlPath` (`%C` is `fakeControlName`),
+ *  `BatchMode` and `RemoteCommand` (a command beside one is refused, as ssh does). It never reads an included file:
+ *  the first `Include` stands for the owner's config, `userConfig`. A `Host` line's options apply when one of its
+ *  names is `*` or the destination's host; `Match` turns them off. `-G` accepts every option, as a current ssh would,
+ *  and prints those it read, `%C` expanded, without logging the call. A master listens on its control socket and takes one JSON line per connection: `{"op":"check"|"exit"|"session"}` or
  *  `{"op":"forward","port":P,"target":T}`, answering `ok` or `error <why>`. */
 import { spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
@@ -15,6 +16,7 @@ import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
+import { isatty } from "node:tty"
 import { fileURLToPath } from "node:url"
 import { selfCommand } from "../platform.ts"
 
@@ -42,6 +44,9 @@ export interface FakeSshBehavior extends FakeHost {
   banner?: string
   /** The lines of the owner's own ssh config, read where the `-F` file's first `Include` stands. */
   userConfig?: string[]
+  /** A session with no command, on a terminal, runs an interactive sh, as a login's shell does; else it ends at
+   *  once. */
+  interactive?: boolean
 }
 export interface FakeSsh {
   /** The folder holding `ssh`, to put first on PATH. */
@@ -67,23 +72,38 @@ export const fakeControlName = (host: string) => createHash("sha1").update(host)
 export const FAKE_MASTER_MAX_MS = 120_000
 
 const SELF = fileURLToPath(import.meta.url)
-/** This Bun, as the office runs its own code in a checkout, where every test runs. */
+/** This Bun, as the office runs its own code in a checkout, where every test runs; the fake itself, compiled. */
 const BUN = selfCommand()[0]
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 const NO_CACHE = "BUN_RUNTIME_TRANSPILER_CACHE_PATH"
+/** How the fake runs itself again (an auto master): compiled, the program alone; else this Bun on this file. */
+const SELF_ARGV: readonly string[] = selfCommand().length === 1 ? selfCommand() : [BUN, ...BUN_FLAGS, SELF]
 
-/** Installs `<dir>/bin/ssh`, state in `<dir>/state` (behavior.json, log.jsonl, masters/, tty.txt, logins.txt). */
-export function installFakeSsh(dir: string, behavior: FakeSshBehavior = {}): FakeSsh {
+/** Installs `<dir>/bin/ssh`, state in `<dir>/state` (behavior.json, log.jsonl, masters/, tty.txt, logins.txt). With
+ *  `program`, a compiled fake, the shim runs it, linked (or copied) into `<dir>/bin`; else this Bun on this file. */
+export function installFakeSsh(dir: string, behavior: FakeSshBehavior = {}, { program }: { program?: string } = {}): FakeSsh {
   const bin = path.join(dir, "bin")
   const state = path.join(dir, "state")
   const ssh = path.join(bin, "ssh")
-  for (const p of [BUN, SELF, state])
+  const compiled = path.join(bin, "fake_ssh")
+  for (const p of [BUN, SELF, state, compiled])
     if (p.includes("'")) throw new Error(`the fake ssh's shim can't quote ${p}`)
   fs.mkdirSync(bin, { recursive: true })
   fs.mkdirSync(path.join(state, "masters"), { recursive: true })
+  if (program !== undefined) {
+    try {
+      fs.linkSync(program, compiled)
+    } catch {
+      fs.copyFileSync(program, compiled)
+    }
+    fs.chmodSync(compiled, 0o700)
+  }
   // Paths baked in: ssh's children get no test variables. No transpiler cache, which Bun keeps under HOME: a fake
   // that outlives its test would recreate the test's removed folder.
-  const shim = `#!/bin/sh\n${NO_CACHE}=0 exec '${BUN}' ${BUN_FLAGS.join(" ")} '${SELF}' '${state}' "$@"\n`
+  const shim =
+    program !== undefined
+      ? `#!/bin/sh\nexec '${compiled}' '${state}' "$@"\n`
+      : `#!/bin/sh\n${NO_CACHE}=0 exec '${BUN}' ${BUN_FLAGS.join(" ")} '${SELF}' '${state}' "$@"\n`
   fs.writeFileSync(ssh, shim, { mode: 0o700 })
   const set = (b: FakeSshBehavior) => fs.writeFileSync(path.join(state, "behavior.json"), JSON.stringify(b))
   set(behavior)
@@ -368,12 +388,14 @@ class Run {
   }
 
   /** Runs `command` here under `/bin/sh -c`, stdio inherited, and resolves to ssh's exit for it: 255 when `over`, the
-   *  session it runs in, closes first. */
+   *  session it runs in, closes first. With no command it ends at once, but with `interactive`, on a terminal, runs an
+   *  interactive sh, as a login's shell. */
   command(command: string, over?: net.Socket): Promise<number> {
-    if (command === "") return Promise.resolve(0)
+    if (command === "" && !(this.behavior.interactive === true && isatty(0))) return Promise.resolve(0)
     return new Promise((resolve) => {
       const { [NO_CACHE]: _, ...env } = process.env
-      const child = spawn("/bin/sh", ["-c", command], { env, stdio: "inherit" })
+      const argv = command === "" ? ["-i"] : ["-c", command]
+      const child = spawn("/bin/sh", argv, { env, stdio: "inherit" })
       const lost = () => {
         child.kill("SIGTERM")
         resolve(255)
@@ -469,7 +491,7 @@ class Run {
     if (!(await this.login(p.host, batch))) return 255
     if (sock !== null && controlMaster === "auto") {
       // As ControlPersist does: a master goes to the background and this session runs over it.
-      spawn(BUN, [...BUN_FLAGS, SELF, this.state, "--auto-master", sock, ...this.argv], {
+      spawn(SELF_ARGV[0]!, [...SELF_ARGV.slice(1), this.state, "--auto-master", sock, ...this.argv], {
         detached: true,
         stdio: "ignore",
       }).unref()

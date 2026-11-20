@@ -194,7 +194,10 @@ export function sshProfile(
     ],
   })
   lines.push(
-    ...metadata([...policy.readOnly, ...policy.writable, ...policy.sockets, policy.tmpdir], developer),
+    ...metadata(
+      [...policy.readOnly, ...policy.writable, ...policy.readWrite, ...policy.sockets, policy.tmpdir],
+      developer,
+    ),
     ";; ~/.ssh, the files ssh -G names, hq/ssh and any extra paths, read-only.",
     allow("file-read*", policy.readOnly.map((p) => `(subpath ${quote(p)})`)),
     ";; known_hosts, this call's status file and a ticket file: their data only, " +
@@ -202,6 +205,12 @@ export function sshProfile(
     allow("file-read* file-write-data", policy.writable.map((p) => `(literal ${quote(p)})`)),
     ";; The private temp directory, which holds the shell's own control sockets.",
     `(allow file-read* file-write* (subpath ${quote(policy.tmpdir)}))`,
+    ...(policy.readWrite.length > 0
+      ? [
+          ";; A test's own folder, read-write.",
+          allow("file-read* file-write*", policy.readWrite.map((p) => `(subpath ${quote(p)})`)),
+        ]
+      : []),
     ";; ssh's control sockets: the shell's masters bind theirs in its own folder, and its calls connect there.",
     `(allow network-bind network-inbound network-outbound (subpath ${quote(policy.controlDir)}))`,
     ";; The user's own control sockets, in ~/.ssh and their ControlPath folder: connected to, never bound.",

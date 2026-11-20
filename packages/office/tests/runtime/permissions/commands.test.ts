@@ -458,18 +458,31 @@ test("the ssh wrapper's config variable is a local command for ssh, set, exporte
     "export OPENCORP_SSH_CONFIG=/tmp/x", "export OPENCORP_SSH_CONFIG", "declare -x OPENCORP_SSH_CONFIG=/tmp/x",
     "typeset OPENCORP_SSH_CONFIG=x", "readonly OPENCORP_SSH_CONFIG=x", "local OPENCORP_SSH_CONFIG=x",
     "unset OPENCORP_SSH_CONFIG", "export GIT_SSH_COMMAND=x", "unset GIT_SSH",
+    // Set by a builtin that writes the variable it names.
+    "printf -v OPENCORP_SSH_CONFIG %s /tmp/x", "printf -vOPENCORP_SSH_CONFIG %s /tmp/x",
+    "read OPENCORP_SSH_CONFIG", "read -r OPENCORP_SSH_CONFIG", "read -r a OPENCORP_SSH_CONFIG <f",
+    "mapfile GIT_SSH_COMMAND", "readarray -t GIT_SSH",
   ]
   each(lines, (line) => readCommand(line).parts.map((p) => ownerOnly(p, false)).find((r) => r !== null) ?? null, local)
   expect(risk("OPENCORP_SSH_CONFIG=/tmp/x ssh h")).toBe(local)
   const S: Where = { profile: "ssh", cwd: "/tmp/w", writable: [] }
   for (const mode of ["auto", "dontAsk"] as Mode[]) {
-    for (const line of ["OPENCORP_SSH_CONFIG=/tmp/x ssh h", "export OPENCORP_SSH_CONFIG=/tmp/x; ssh h"]) {
+    for (const line of [
+      "OPENCORP_SSH_CONFIG=/tmp/x ssh h", "export OPENCORP_SSH_CONFIG=/tmp/x; ssh h",
+      "printf -v OPENCORP_SSH_CONFIG %s /tmp/x; ssh h", "read OPENCORP_SSH_CONFIG </tmp/f; ssh h",
+    ]) {
       const decided = decide({ kind: "command", text: line }, mode, [], S)
       expect([mode, line, decided.verdict]).toEqual([mode, line, mode === "dontAsk" ? "deny" : "ask"])
     }
   }
   // Another variable of the same name's start isn't it.
   each(["OPENCORP_SSH_CONFIGS=x ls", "export OPENCORP_SSH_CONFIGURED=1"], (line) => ownerOnly(readCommand(line).parts[0]!, false), null)
+  // printf that only prints the name, and a read into another variable, aren't it either.
+  each(
+    ["printf %s OPENCORP_SSH_CONFIG", "read -r line", "printf -v line %s OPENCORP_SSH_CONFIG"],
+    (line) => ownerOnly(readCommand(line).parts[0]!, false),
+    null,
+  )
 })
 
 test("host-key options and known_hosts writes are ordinary", () => {

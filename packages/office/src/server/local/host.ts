@@ -5,15 +5,19 @@
 import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
+import { type FileLock, FileLockError, lockFile } from "@ngocbh/yian/platform"
+import { pending } from "@ngocbh/yian/tools"
 import {
   type Event,
   type Message,
   type Person,
   Person as PersonSchema,
+  Question,
   type RemoveRuleRequest,
   type RuleList,
   Session,
   now,
+  validationMessage,
 } from "@opencorp/protocol"
 import { MAIN_CHAT } from "../../company/chat_flow.ts"
 import { LiveRelay } from "../../features/chat/live.ts"
@@ -33,7 +37,14 @@ import { approvalResult, holdApproval, readAnswer, YES } from "../../runtime/que
 import { makeAskUser } from "../../runtime/questions/ask.ts"
 import { checkAnswer, InvalidAnswer } from "../../runtime/questions/checker.ts"
 import { formatAnswer, INTERRUPTED } from "../../runtime/questions/format.ts"
-import type { BuiltinSession, BuiltinTools, CardAct, SessionBinding } from "../../runtime/sessions/builtin.ts"
+import type {
+  BuiltinSession,
+  BuiltinTools,
+  CardAct,
+  QuestionAct,
+  QuestionCard,
+  SessionBinding,
+} from "../../runtime/sessions/builtin.ts"
 import type { AnswerKind } from "../../runtime/sessions/harness.ts"
 import { Instruments, type LiveInstrument } from "../../runtime/sessions/instruments.ts"
 import { HarnessError } from "../../runtime/sessions/state.ts"
@@ -153,13 +164,20 @@ class HostWorkers implements CheckWorkers {
   }
 }
 
-/** One held card: its question as it is now, what its Yes runs (approval cards), and whether the session's
- *  permissions held it (`gated`), so a new session rule may decide it again. A card a feature holds itself is the
- *  owner's to answer, always. */
+/** One held card: its question as it is now, what its Yes runs (approval cards), whether the session's permissions
+ *  held it (`gated`), so a new session rule may decide it again, and, for a feature's question card, what its answer
+ *  runs and why it asks. A card a feature holds itself (`hold`, `ask`) is the owner's to answer, always. */
 interface Held {
   question: QuestionRecord
   readonly act?: CardAct
   readonly gated: boolean
+  readonly answered?: QuestionAct
+  readonly reason?: string
+}
+
+/** A host's sessions folder is another live host's: only one runs the sessions of a folder at a time. */
+export class SessionsBusy extends Error {
+  override name = "SessionsBusy"
 }
 
 /**
@@ -170,10 +188,15 @@ interface Held {
  * delivery: a `deliver` frame while the worker runs a job, else an `advance` job to the parked worker. A result that
  * isn't kept ends the session. There is one run: no restart or resume.
  *
- * **Cards.** A held call (an approval, an `ask_user`) is a question in memory, published as the store would publish
- * it, and the call waits in yian. The owner's answer makes the call's output, which goes back by `complete`: a Yes runs
- * the card's act, a No is the owner's words and answers the run's other open cards the same way, and "don't ask again"
- * adds session rules and runs the other open cards they now allow. There is no "always": rules last for the session.
+ * **Cards.** A held call (an approval, an `ask_user`, a feature's question card) is a question in memory, published as
+ * the store would publish it, and the call waits in yian. The owner's answer makes the call's output, which goes back
+ * by `complete`: a Yes runs the card's act, a No is the owner's words and answers the run's other open cards the same
+ * way, and "don't ask again" adds session rules and runs the other open cards they now allow. There is no "always":
+ * rules last for the session. A feature's question card asks in every mode but `dontAsk`, which refuses it, and its
+ * answer, whatever it is, goes to the feature's act.
+ *
+ * **One host per sessions folder.** The host holds `<sessions>/lock` (the parent of its session's folder) while it
+ * runs, so no other host starts on that folder meanwhile and marks this one's live shells interrupted.
  *
  * **Permissions.** The session's mode, starting in `auto`; its rules, the session's own only; where shells run, as the
  * terminal says; Auto's check, a `classify` worker job on the spec's model, each verdict a line of
@@ -238,6 +261,8 @@ export class LocalHost {
   #finishing: Promise<void> | null = null
   #endTimer: ReturnType<typeof setTimeout> | undefined
   #resolveEnded!: () => void
+  /** The sessions folder's lock, held from the start until the host closes. */
+  #lock: FileLock | null = null
 
   private constructor(spec: BuiltinSession<Terminal>, options: LocalHostOptions) {
     this.#spec = spec
@@ -275,8 +300,9 @@ export class LocalHost {
     })
   }
 
-  /** Starts `spec`'s session: marks the shells earlier sessions left running as interrupted, writes the flow's pin,
-   *  binds the tools and starts the flow in its worker. Throws, leaving nothing running, when it can't. */
+  /** Starts `spec`'s session: takes its sessions folder's lock, marks the shells earlier sessions left running as
+   *  interrupted, writes the flow's pin, binds the tools, starts the flow in its worker and sends the owner's first
+   *  message. Throws, leaving nothing running, when it can't: `SessionsBusy` while another host holds the folder. */
   static async start(spec: BuiltinSession<Terminal>, options: LocalHostOptions = {}): Promise<LocalHost> {
     if (!FLOW_NAME.test(spec.flow.name)) throw new RangeError("a flow's name is letters, digits, _ and -")
     const host = new LocalHost(spec, options)
@@ -295,7 +321,15 @@ export class LocalHost {
 
   async #start(): Promise<void> {
     const { folder, flow } = this.#spec
-    this.#recover(path.dirname(folder))
+    const sessions = path.dirname(folder)
+    makePrivateFolder(sessions)
+    try {
+      this.#lock = lockFile(path.join(sessions, "lock"), { private: true })
+    } catch (error) {
+      if (!(error instanceof FileLockError && error.reason === "busy")) throw error
+      throw new SessionsBusy(`another host is running the sessions in ${sessions}`)
+    }
+    this.#recover(sessions)
     makePrivateFolder(folder)
     const pin = path.join(folder, "pin")
     makePrivateFolder(pin)
@@ -312,6 +346,7 @@ export class LocalHost {
       this.#job = "gone"
       throw error
     }
+    if (this.#spec.first !== undefined) await this.prompt(this.#spec.first, OWNER)
   }
 
   /** Marks the shells each earlier session in `sessions` left running as interrupted, in its `terminal/` folder. */
@@ -368,6 +403,7 @@ export class LocalHost {
       sessionId: this.id,
       permissions,
       hold: (card, callId, act) => this.#hold(card, callId, act, false),
+      ask: (card, callId, act) => this.#ask(card, callId, act),
       onShell: (id, name) => {
         const terminal = this.#tools.terminal
         if (terminal !== undefined) {
@@ -488,6 +524,12 @@ export class LocalHost {
       const refusal = (card: QuestionRecord) =>
         `this session is now in dontAsk mode, which doesn't ask: ${card.approval?.reason ?? ""}`
       this.#answerOpen(refusal, by, null)
+      // A feature's question card is refused as it would have been, had it come now; its act never runs.
+      for (const held of this.#open()) {
+        if (held.answered === undefined) continue
+        const answered = this.#answer(held, "this session is now in dontAsk mode, which doesn't ask", "text", by)
+        void this.#complete(answered, dontAskRefusal(held.reason ?? ""))
+      }
     }
     return { ...this.#record }
   }
@@ -561,6 +603,8 @@ export class LocalHost {
       this.#log(`the host didn't stop cleanly: ${errorName(error)}`)
     } finally {
       this.bus.close()
+      this.#lock?.release()
+      this.#lock = null
     }
   }
 
@@ -752,8 +796,41 @@ export class LocalHost {
     return holdApproval(this.#record, this.#runId, keep, { always: false })(card, callId)
   }
 
+  /** Holds `callId` on a feature's question card `card`, whose answer runs `act`: `pending()`, or in `dontAsk` the
+   *  refusal. */
+  #ask(card: QuestionCard, callId: string, act: QuestionAct): unknown {
+    if (this.#record.mode === "dontAsk") return dontAskRefusal(card.reason)
+    const at = now()
+    const data = {
+      id: newId(),
+      session_id: this.id,
+      run_id: this.#runId,
+      node_id: null,
+      call_id: callId,
+      source: "ask_user",
+      asker: this.#record.person,
+      work_item_id: this.#record.work_item_id,
+      title: card.title,
+      question: card.question,
+      options: [...card.options],
+      status: "open",
+      created_at: at,
+      updated_at: at,
+    }
+    const parsed = Question.safeParse(data)
+    // Only validationMessage's text leaves: the error's issues can quote the card's values.
+    if (!parsed.success) throw new TypeError(validationMessage(Question, parsed.error, data))
+    // Never gated: no session rule answers it.
+    const kept = this.#keep(parsed.data, { gated: false, answered: act, reason: card.reason })
+    if (kept.status === "open") return pending()
+    throw new Error(`question ${kept.id} was answered before; its result went with it`)
+  }
+
   /** Keeps `question` and publishes it, unless one is kept for its call: then that one, consumed if answered. */
-  #keep(question: QuestionRecord, how: { act?: CardAct; gated: boolean } = { gated: false }): QuestionRecord {
+  #keep(
+    question: QuestionRecord,
+    how: { act?: CardAct; gated: boolean; answered?: QuestionAct; reason?: string } = { gated: false },
+  ): QuestionRecord {
     const kept = [...this.#held.values()].find((held) => held.question.call_id === question.call_id)
     if (kept !== undefined) {
       if (kept.question.status === "answered") this.#update(kept, { status: "consumed" })
@@ -780,6 +857,12 @@ export class LocalHost {
    *  runs the other open cards they allow. A No completes its call with the owner's words, and answers every other open
    *  card the same way. A question's answer completes its call. */
   #acted(question: QuestionRecord): void {
+    const answered = this.#held.get(question.id)?.answered
+    if (answered !== undefined) {
+      const answer = { value: String(question.answer), typed: question.answer_kind === "text" }
+      this.#run(question, (signal) => answered(answer, signal))
+      return
+    }
     if (question.source !== "approval") {
       void this.#complete(question, formatAnswer(question))
       return
@@ -806,7 +889,12 @@ export class LocalHost {
   /** Runs approved card `question`'s act while the session reads busy; its output (or `error: <its type>`)
    *  completes the call. Esc and End stop it. */
   #approve(question: QuestionRecord): void {
-    const act = this.#held.get(question.id)?.act
+    this.#run(question, this.#held.get(question.id)?.act)
+  }
+
+  /** Runs `act` for answered card `question` while the session reads busy; its output (or `error: <its type>`)
+   *  completes the call. Esc and End stop it. */
+  #run(question: QuestionRecord, act: CardAct | undefined): void {
     const stop = new AbortController()
     this.#approved.set(question.id, stop)
     this.#settle()

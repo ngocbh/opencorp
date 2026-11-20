@@ -302,3 +302,39 @@ test("a secret page on a Codex card masks what is typed, and sends it only as th
     office.stop()
   }
 })
+
+test("a question taller than the screen shows its answers only once read to the end", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    const lines = Array.from({ length: 60 }, (_, i) => `  ${i + 1}  echo step ${i + 1}`)
+    const q = office.addQuestion({
+      session_id: s.id,
+      title: "OpenCorp wants to save how this machine reaches HQ",
+      question: ["reach.sh, which runs on every visit:", ...lines, "Save it? QUESTION-END"].join("\n"),
+      options: ["Test it, then save it", "Don't save it"],
+    })
+    let f = await app.until((f) => f.includes("Read to the end"))
+    expect(f).toContain("reach.sh, which runs on every visit:")
+    expect(f).not.toContain("QUESTION-END")
+    expect(f).not.toContain("Test it, then save it")
+    // A digit picks nothing before the answers show.
+    app.input.pressKey("1")
+    await Bun.sleep(100)
+    expect(office.state.questions[q.id].status).toBe("open")
+    app.input.pressKey("\u001b[F")
+    f = await app.until((f) => f.includes("QUESTION-END") && f.includes("Test it, then save it"))
+    expect(f).toMatch(/lines \d+–62 of 62/)
+    app.input.pressKey("1")
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    expect(office.requests.find((r) => r.path === `/questions/${q.id}/answer`)?.body).toEqual({
+      answer: "Test it, then save it",
+      answer_kind: "option",
+    })
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

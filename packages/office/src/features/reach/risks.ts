@@ -1,6 +1,5 @@
-/** The fixed texts the owner reads before learning the path to HQ and before saving it, and while ssh has the
- *  terminal, kept out of the flow so the model can't edit them; the agent's risks specific to the setup follow them.
- *  The texts are risks.md's. */
+/** The fixed texts the owner reads before learning the path to HQ and before saving it, kept out of the flow so the
+ *  model can't edit them; the agent's risks specific to the setup follow them. The texts are risks.md's. */
 import { embedded } from "../../platform.ts"
 import type { ReachPaths } from "./paths.ts"
 import { PERSIST_S } from "./ssh.ts"
@@ -35,7 +34,7 @@ function text(name: string, values: Record<string, string | number> = {}): strin
 /** Shown before every learning run, ahead of asking to use the model. */
 export const beforeLearning = (paths: ReachPaths): string[] => text("beforeLearning", { dir: paths.dir })
 
-/** Shown by save_access with the two files, before the owner saves; the agent's risks for this setup follow. */
+/** Shown on save_access's card with the two files, before the owner saves; the agent's risks for this setup follow. */
 export const beforeSaving = (paths: ReachPaths): string[] =>
   text("beforeSaving", { persist_s: PERSIST_S, provider: paths.provider, auth: paths.auth })
 
@@ -52,7 +51,3 @@ export const LEARN = text("LEARN").join("\n")
 export const LEARN_QUESTION = text("LEARN_QUESTION").join("\n")
 /** Asked before learning again in place of a saved path. */
 export const RELEARN_QUESTION = text("RELEARN_QUESTION").join("\n")
-/** Said when an approved command takes the terminal. */
-export const HAND_OVER_COMMAND = text("HAND_OVER_COMMAND").join("\n")
-/** Said when the chain test takes the terminal. */
-export const HAND_OVER_TEST = text("HAND_OVER_TEST").join("\n")

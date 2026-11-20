@@ -9,10 +9,14 @@ import { PassThrough } from "node:stream"
 import { onTestFinished } from "bun:test"
 import { OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import type { Provider } from "../../../src/models/provider.ts"
+import { ConnectionShell } from "../../../src/features/reach/connection.ts"
 import { Learning } from "../../../src/features/reach/learning.ts"
+import { type SaveAccessHost, saveAccess } from "../../../src/features/reach/tools/save_access.ts"
+import { dontAskRefusal } from "../../../src/runtime/permissions/policy.ts"
+import type { CardAnswer, QuestionCard } from "../../../src/runtime/sessions/builtin.ts"
 import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import type { Spec } from "../../../src/features/reach/spec.ts"
-import { type ReachContext, writeSshFiles } from "../../../src/features/reach/ssh.ts"
+import { exitAll, type ReachContext, writeSshFiles } from "../../../src/features/reach/ssh.ts"
 import { DEFAULT_PORT, sha256, writeAccess } from "../../../src/features/reach/state.ts"
 import type { VisitDeps } from "../../../src/features/reach/run.ts"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../../src/testing/fake_ssh.ts"
@@ -257,6 +261,7 @@ export function visitDeps(
     },
     limits: SHORT_LIMITS,
     sshIncludes: [],
+    sshHome: dir,
     listers: NO_LISTING,
     checkModel: async () => null,
     ...more,
@@ -264,19 +269,51 @@ export function visitDeps(
   return { deps, prompter, stdin, printed, errors, echoed, opened, sigint: () => handler?.() }
 }
 
-/** A learning run over a fake ssh: its context, the owner's `answers`, and what reached the owner's terminal. */
+/** A learning run over a fake ssh: its context, its state with the session's folder in hq/sessions, and the cards
+ *  its `save_access` held, each answered by the next of `answers` at once ("dontAsk": refused, as a host in that
+ *  mode refuses it). OpenCorp's connection shell is made on first use; the test's end ends the masters and closes
+ *  it. */
 export async function learning(
-  answers: string[],
+  answers: (CardAnswer | "dontAsk")[],
   { behavior, secrets = [], port = 49381, ...more }: { behavior?: FakeSshBehavior; secrets?: string[]; port?: number } & Partial<ReachContext> = {},
 ) {
   const { dir, fake } = fakeHome(behavior)
-  const echoed: string[] = []
-  const ctx = await reachCtx(dir, fake, { echo: (t) => void echoed.push(t), ...more })
-  const prompter = new Script(answers)
-  const stdin = new PassThrough()
-  const state = new Learning(ctx, prompter, stdin, secrets, port)
-  onTestFinished(() => state.close())
-  return { dir, fake, ctx, prompter, stdin, state, echoed }
+  const ctx = await reachCtx(dir, fake, more)
+  const folder = path.join(ctx.paths.sessions, "01JDLEARNSESSION0000000000")
+  const state = new Learning(ctx, secrets, port, folder)
+  const cards: QuestionCard[] = []
+  const listed: string[] = []
+  const host: SaveAccessHost = {
+    state,
+    binding: {
+      ask: (card, _callId, act) => {
+        cards.push(card)
+        const answer = answers.shift()
+        if (answer === undefined) throw new Error("no answer left for the card")
+        return answer === "dontAsk" ? dontAskRefusal(card.reason) : act(answer, new AbortController().signal)
+      },
+    },
+    connection: () =>
+      (state.shell ??= new ConnectionShell({
+        ctx,
+        folder,
+        sessionId: "01JDSESSION000000000000000",
+        instruments: {
+          add: (instrument) => void listed.push(instrument.id),
+          updated: () => {},
+          output: () => {},
+          remove: () => {},
+        },
+      })),
+  }
+  onTestFinished(async () => {
+    await exitAll(ctx)
+    await state.shell?.close()
+  })
+  /** save_access on `files`, as the model calls it. */
+  const save = (files: { script: string; notes: string; risks: readonly string[] }) =>
+    Promise.resolve(saveAccess({ ...files, risks: [...files.risks] }, "r/learn/1/0", host)) as Promise<string>
+  return { dir, fake, ctx, state, cards, listed, host, save, folder }
 }
 
 /** What `promise` rejects with; fails the test when it resolves. */
@@ -295,7 +332,7 @@ export const KEY = "sk-ant-test-0123456789abcdef"
 export const NOTES = "Log in to login1, then find the job's node with squeue.\n"
 
 /** A learning run whose owner answers `answers`, HQ's machine reached as node1 through login1, and a free port. */
-export async function chain(answers: string[], behavior: FakeSshBehavior = {}) {
+export async function chain(answers: (CardAnswer | "dontAsk")[], behavior: FakeSshBehavior = {}) {
   const port = await freePort()
   const run = await learning(answers, { behavior, port })
   const remote = await fakeRemote(run.dir)

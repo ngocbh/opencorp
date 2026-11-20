@@ -1,21 +1,22 @@
 # What `opencorp hq` risks
 
-The fixed texts the owner reads before learning the path to HQ and before saving it, and while ssh has the terminal,
-kept out of the flow so the model can't edit them; the agent's risks specific to the setup follow them. `risks.ts` reads this file: each `##`
-heading names a text, each `- ` line is one line of it, and `{name}` is filled in.
+The fixed texts the owner reads before learning the path to HQ and before saving it, kept out of the flow so the model
+can't edit them; the agent's risks specific to the setup follow them. `risks.ts` reads this file: each `##` heading
+names a text, each `- ` line is one line of it, and `{name}` is filled in.
 
 ## beforeLearning
 
 Shown before every learning run, ahead of asking to use the model. `{dir}` is the hq folder.
 
-- Learning uses a model, which sees each command it runs and their output and errors: hostnames, your username, paths and job lists.
-- Approving a command runs it as you, with your SSH keys, and only you check it.
-- While learning runs, anything running as you on this machine can reuse its SSH connections without Duo.
-- {dir} holds the model's key or its ChatGPT sign-in: don't approve a command that reads it.
+- Learning is a chat with OpenCorp, whose agent uses a model: it sees each command its shell runs and what the screen shows, hostnames, your username, paths and job lists, but never what you type at a password prompt.
+- The chat starts in auto: read-only commands and short answers to a prompt run at once (a host key's yes, Duo's 1); the rest goes to Auto's check, a model call on your connection, or asks you.
+- Press Shift+Tab to switch to default or ask for a careful relearn.
+- The agent's shell is sandboxed to your SSH files: {dir}, which holds the model's key or its ChatGPT sign-in, is out of its reach.
+- If you have a connection open to the cluster, the agent's ssh uses it, with no password prompt, and could end it; otherwise each ssh may ask you to log in.
 
 ## beforeSaving
 
-Shown by save_access with the two files, before the owner saves. `{persist_s}` is how long a login master of
+Shown on save_access's card with the two files, before the owner saves. `{persist_s}` is how long a login master of
 OpenCorp's stays after its last use, in seconds; `{provider}` and `{auth}` are hq's provider.json and auth.json.
 
 - The script, and `opencorp hq --check` on HQ's machine, run now and on every visit.
@@ -69,15 +70,3 @@ The answer that runs them anyway.
 The answer that starts no shell: the default.
 
 - Stop
-
-## HAND_OVER_COMMAND
-
-Said on the plain terminal when the learning screen steps aside for an approved command.
-
-- The approved command runs now with the terminal: SSH asks here for any password, Duo or host key. The learning screen comes back when it ends.
-
-## HAND_OVER_TEST
-
-Said on the plain terminal when the learning screen steps aside to test the whole connection before saving.
-
-- Testing the whole connection now (reach.sh, then the login to HQ's machine) with the terminal: SSH asks here for any password, Duo or host key. The learning screen comes back when it ends.

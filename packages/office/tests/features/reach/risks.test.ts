@@ -24,10 +24,11 @@ function expectRisks(lines: readonly string[], phrases: string[][]): void {
 
 test("the fixed risks are the design's, and the provider file is named", () => {
   expectRisks(beforeLearning(new ReachPaths("/h")), [
-    ["model", "each command it runs", "output and errors", "hostnames", "username", "paths", "job lists"],
-    ["Approving a command runs it as you", "SSH keys", "only you check it"],
-    ["While learning runs", "anything running as you on this machine", "SSH connections without Duo"],
-    ["/h/hq holds the model's key or its ChatGPT sign-in", "don't approve a command that reads it"],
+    ["a chat with OpenCorp", "model", "each command", "the screen shows", "hostnames", "username", "job lists", "never what you type at a password prompt"],
+    ["starts in auto", "read-only commands", "short answers to a prompt run", "Auto's check, a model call on your connection", "asks you"],
+    ["Shift+Tab", "default or ask", "careful relearn"],
+    ["sandboxed to your SSH files", "/h/hq", "the model's key or its ChatGPT sign-in", "out of its reach"],
+    ["a connection open to the cluster", "the agent's ssh uses it", "no password prompt", "could end it", "each ssh may ask you to log in"],
   ])
   const saving = beforeSaving(new ReachPaths("/h"))
   expectRisks(saving, [
@@ -60,13 +61,14 @@ test("the fixed risks are the design's, and the provider file is named", () => {
   expect(RELEARN_QUESTION).toContain("uses the model")
 })
 
-/** The texts as risks.ts held them before they moved to risks.md. */
+/** The texts as risks.md holds them. */
 const HELD = {
   beforeLearning: (paths: ReachPaths): string[] => [
-    "Learning uses a model, which sees each command it runs and their output and errors: hostnames, your username, paths and job lists.",
-    "Approving a command runs it as you, with your SSH keys, and only you check it.",
-    "While learning runs, anything running as you on this machine can reuse its SSH connections without Duo.",
-    `${paths.dir} holds the model's key or its ChatGPT sign-in: don't approve a command that reads it.`,
+    "Learning is a chat with OpenCorp, whose agent uses a model: it sees each command its shell runs and what the screen shows, hostnames, your username, paths and job lists, but never what you type at a password prompt.",
+    "The chat starts in auto: read-only commands and short answers to a prompt run at once (a host key's yes, Duo's 1); the rest goes to Auto's check, a model call on your connection, or asks you.",
+    "Press Shift+Tab to switch to default or ask for a careful relearn.",
+    `The agent's shell is sandboxed to your SSH files: ${paths.dir}, which holds the model's key or its ChatGPT sign-in, is out of its reach.`,
+    "If you have a connection open to the cluster, the agent's ssh uses it, with no password prompt, and could end it; otherwise each ssh may ask you to log in.",
   ],
   beforeSaving: (paths: ReachPaths): string[] => [
     "The script, and `opencorp hq --check` on HQ's machine, run now and on every visit.",
@@ -82,7 +84,7 @@ const HELD = {
   RELEARN_QUESTION: "Relearn? This uses the model.",
 }
 
-test("risks.md holds the texts risks.ts held, byte for byte, whatever the hq folder's path holds", () => {
+test("risks.md holds the texts, byte for byte, whatever the hq folder's path holds", () => {
   for (const home of ["/h", "/h/we$&ird$`{auth}"]) {
     const paths = new ReachPaths(home)
     expect(beforeLearning(paths)).toEqual(HELD.beforeLearning(paths))
