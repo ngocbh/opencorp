@@ -683,7 +683,7 @@ async function signedInAnswers(
   })
   let works: boolean
   try {
-    works = check === undefined || (await answers(prompter, withSignIn(provider, pendingSignIn(file)), check))
+    works = check === undefined || (await modelAnswers(prompter, withSignIn(provider, pendingSignIn(file)), check))
   } catch (error) {
     try {
       removePendingSignIn(file)
@@ -707,8 +707,9 @@ export async function modelFailed(prompter: Prompter, problem: string): Promise<
   return (await prompter.choose("What now?", [TRY_AGAIN, SET_UP_AGAIN], TRY_AGAIN)) === SET_UP_AGAIN
 }
 
-/** Whether `provider`'s model answers, checking again for as long as the owner chooses to try again. */
-async function answers(prompter: Prompter, provider: Provider, checkModel: ModelCheck): Promise<boolean> {
+/** Whether `provider`'s model answers, checking again for as long as the owner chooses to try again; false once they
+ *  choose to set it up again. Throws `OnboardError` when it doesn't answer and there's no one to ask. */
+export async function modelAnswers(prompter: Prompter, provider: Provider, checkModel: ModelCheck): Promise<boolean> {
   for (;;) {
     prompter.say("Checking that the model answers...")
     const problem = await checkModel(provider)
@@ -743,7 +744,7 @@ async function workingProvider(
     }
     if (subscribed !== undefined) {
       if (await signedInAnswers(prompter, provider, subscribed.creds, signIn!.file, checkModel)) return provider
-    } else if (checkModel === undefined || (await answers(prompter, provider, checkModel))) return provider
+    } else if (checkModel === undefined || (await modelAnswers(prompter, provider, checkModel))) return provider
   }
 }
 

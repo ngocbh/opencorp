@@ -1,128 +1,66 @@
-/** `opencorp init`'s setup flows on TS yian: they load, use only agent, code, loop and call nodes, and run. */
+/** `opencorp init`'s setup flow on TS yian: it loads as the office loads it, in the chat flow's shape, and its agent
+ *  sees only what it is given. */
 import { expect, setDefaultTimeout, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { loadFlow, runFlow, tool } from "@ngocbh/yian"
+import { loadFlow } from "@ngocbh/yian"
 import { readFlow } from "../../../src/company/flow_yaml.ts"
 import { loadConfined } from "../../../src/company/flows.ts"
-import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
-import { checkCompanyTool } from "../../../src/features/setup/tools/draft.ts"
-import { fakeLlm } from "../chat/helpers.ts"
+import { embedded } from "../../../src/platform.ts"
+import initYaml from "../../../src/features/setup/flows/init.yaml" with { type: "file" }
 
 setDefaultTimeout(30_000)
 
 const DIR = fileURLToPath(new URL("../../../src/features/setup/flows/", import.meta.url))
 const FLOWS = fs.readdirSync(DIR).filter((name) => name.endsWith(".yaml"))
 
-/** A setup flow as the office loads its embedded text. */
-function load(name: string) {
-  return loadFlow(fs.readFileSync(path.join(DIR, name), "utf8"), { sourceLabel: name })
-}
-
 /** A setup flow's YAML, as the office's strict reader parses it. */
 function read(name: string): Record<string, any> {
   return readFlow(fs.readFileSync(path.join(DIR, name), "utf8")) as Record<string, any>
 }
 
-/** Every node of a flow: the top level's and each LOOP's inline ones; a single-node flow is its own node. */
-function nodes(flow: Record<string, any>): Record<string, any>[] {
-  const top: Record<string, any>[] = flow.nodes ? Object.values(flow.nodes) : [flow]
-  return top.flatMap((node) => [node, ...(node.kind === "loop" && node.nodes ? Object.values<any>(node.nodes) : [])])
-}
-
 test.each(FLOWS)("every setup flow loads on ts yian [%s]", async (name) => {
   const base = path.basename(name, ".yaml")
   expect((await loadConfined(DIR, path.join(DIR, name))).name).toBe(base)
-  expect((await load(name)).name).toBe(base)
+  expect((await loadFlow(fs.readFileSync(path.join(DIR, name), "utf8"), { sourceLabel: name })).name).toBe(base)
 })
 
-test("the setup flows use only agent code loop and call nodes", () => {
-  for (const name of FLOWS) {
-    for (const node of nodes(read(name))) {
-      expect(["agent", "code", "loop", "call"]).toContain(node.kind)
-      expect(node).not.toHaveProperty("steerable")
-      // yian's built-ins (`ask_user` is `ask`'s old name): the setup flows' call nodes call only office tools.
-      if (node.kind === "call") expect(["ask", "ask_user", "sleep", "take"]).not.toContain(node.call)
-    }
-  }
+test("init loads from its embedded bytes", async () => {
+  const flow = await loadFlow(embedded(initYaml).toString("utf8"), { sourceLabel: "features/setup/flows/init.yaml" })
+  expect(flow.name).toBe("init")
+  expect(flow.input.map((p) => p.name)).toEqual(["messages", "known"])
 })
 
-test("the model never sees the password or the remote", () => {
+test("init loads with the chat flow's shape, grants ask_user and propose_company, steers from messages, and its prompt never asks for a password, a key, a token or a remote", () => {
   const flow = read("init.yaml")
-  const interview = flow.nodes.rounds.nodes.interview
-  expect(interview.kind).toBe("agent")
-  expect(Object.keys(interview.input)).toEqual(["known", "draft", "changes"])
-  expect(interview.tools).toEqual(["ask_user", "check_company"])
-  expect([flow.nodes.password.kind, flow.nodes.password.call]).toEqual(["call", "ask_password"])
-  expect([flow.nodes.remote.kind, flow.nodes.remote.call]).toEqual(["call", "ask_remote"])
-})
-
-const OWNER = { name: "Hong Ngoc Bui", handle: "ngocbh", title: "CEO" }
-const ANSWERS = {
-  company: "Acme",
-  owner: OWNER,
-  teammates: [{ name: "Minh", handle: "minh", title: "Engineer", about: "Writes the backend." }],
-}
-
-test("init runs its interview then asks for the password and the remote through the office tools", async () => {
-  const calls: string[] = []
-  const confirm_company = tool({
-    name: "confirm_company",
-    description: "Confirm.",
-    parameters: { type: "object", properties: { answers: { type: "object" } } },
-    execute: (a: any) => {
-      calls.push("confirm_company")
-      return { draft: JSON.stringify(a.answers), changes: "", accepted: true }
-    },
-  })
-  const ask_password = tool({
-    name: "ask_password",
-    description: "Ask.",
-    parameters: { type: "object", properties: {} },
-    execute: () => {
-      calls.push("ask_password")
-      return "scrypt$x"
-    },
-  })
-  const ask_remote = tool({
-    name: "ask_remote",
-    description: "Ask.",
-    parameters: { type: "object", properties: { given: { type: "string" } } },
-    execute: (a: any) => {
-      calls.push("ask_remote")
-      return a.given
-    },
-  })
-  const fake = await fakeLlm()
-  fake.script({ tool_calls: [{ name: "check_company", arguments: { company: "Acme", owner: OWNER, teammates: [] } }] })
-  fake.script({ content: "done" })
-  // yian takes an AGENT's structured output by a forced Record call.
-  fake.script({ tool_calls: [{ name: "Record", arguments: ANSWERS }] })
-  const result = await runFlow(
-    await load("init.yaml"),
-    { known: "{}", remote: "git@example.com:acme.git" },
-    {
-      llmConfig: LLM_CONFIG,
-      env: (n) => fake.env()[n],
-      numWorkers: 0,
-      tools: {
-        check_company: checkCompanyTool,
-        confirm_company,
-        ask_password,
-        ask_remote,
-        ask: async () => "x",
-      },
-    },
-  )
-  expect(result.status).toBe("succeeded")
-  expect(result.output).toEqual({ ...ANSWERS, password_hash: "scrypt$x", remote: "git@example.com:acme.git" })
-  expect(calls).toEqual(["confirm_company", "ask_password", "ask_remote"])
-  const requests = fake.requests() as {
-    tools?: { function: { name: string } }[]
-    messages: { role: string; content: unknown }[]
-  }[]
-  expect(requests[0]!.tools!.map((t) => t.function.name)).toEqual(["ask_user", "check_company"])
-  expect(requests[1]!.messages).toContainEqual(expect.objectContaining({ role: "tool", content: "No problems." }))
-  expect(JSON.stringify(requests)).not.toContain("git@example.com:acme.git")
+  // No remote: a remote URL can hold credentials, so it never reaches the model.
+  expect(Object.keys(flow.input)).toEqual(["messages", "known"])
+  expect(flow.input.messages).toBe("!Inbox(Message)")
+  // One LOOP of turns, as the chat flow's, ending once the owner accepted the company or the inbox closes.
+  expect(Object.keys(flow.nodes)).toEqual(["chat"])
+  expect(flow.nodes.chat).toMatchObject({ kind: "loop", call: "turn", while: "not closed and not accepted" })
+  const turn = flow.defs.turn
+  expect(Object.keys(turn.nodes)).toEqual(["heard", "route", "reply"])
+  expect(turn.nodes.heard).toEqual({ kind: "call", call: "take", input: { from: "${input.messages}", take: "all" } })
+  const reply = turn.nodes.reply
+  expect(reply.kind).toBe("agent")
+  expect(reply.steer_inbox).toBe("${input.messages}")
+  expect(reply.tools).toEqual(["ask_user", "propose_company"])
+  expect(reply.prompt).toEqual(["${history}", "${said}"])
+  expect(Object.keys(reply.input).sort()).toEqual(["history", "known", "said"])
+  // `accepted` is propose_company's own result, never the model's words.
+  expect(turn.output.accepted).toContain('p.name == "propose_company"')
+  expect(turn.output.accepted).toContain('p.type == "tool_result"')
+  expect(turn.output.accepted).toContain('startswith(p.content, "Accepted:")')
+  // Every placeholder in the system prompt is one of its inputs: nothing else reaches the model there.
+  const placeholders = [...(reply.system_prompt as string).matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1])
+  expect(placeholders).toEqual(["known"])
+  const prompt = (reply.system_prompt as string).replace(/\s+/g, " ")
+  expect(prompt).toContain("Never ask for a password, an API key, a token or a git remote URL")
+  expect(prompt).toContain("Ask one short question at a time in your reply")
+  expect(prompt).toContain("call propose_company")
+  expect(prompt).toContain('Once propose_company says "Accepted", reply with one line for the owner')
+  expect(prompt).toContain("Offer one made from the person's name, such as")
+  for (const word of ["password", "remote", "token"]) expect(JSON.stringify(reply.input)).not.toContain(word)
 })

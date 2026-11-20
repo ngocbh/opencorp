@@ -3,9 +3,10 @@
  * `opencorp start`, `opencorp stop` and `opencorp restart` run, in a child. `install` is hidden, so a command's
  * usage and errors name it as the user typed it: `opencorp <command>`.
  *
- * `opencorp`'s setup screen runs init and onboard with `--json-prompts`: each question is a JSON line on stdout,
- * each answer a JSON line on stdin. Flags are matched whole; a prefix (`--prov` for `--provider-stdin`) is
- * unknown.
+ * `opencorp init` runs on this terminal: its interview is a chat with OpenCorp in the TUI, through the chat the CLI's
+ * entry hands it (`Setup.chat`). `opencorp`'s setup screen runs onboard with `--json-prompts`: each question is a JSON
+ * line on stdout, each answer a JSON line on stdin. Flags are matched whole; a prefix (`--prov` for
+ * `--provider-stdin`) is unknown.
  *
  * Exit codes: 0 done, 1 failed, 2 usage, 3 (`start`, `restart`) no office yet, 130 Ctrl-C.
  */
@@ -25,7 +26,7 @@ import type { Env } from "../../util/env.ts"
 import { strerror } from "../../util/errors.ts"
 import { type CheckOptions, checks, exitCode, report } from "../../features/doctor/doctor.ts"
 import * as fallback from "../../runtime/service/fallback.ts"
-import { init } from "../../features/setup/init.ts"
+import { type InitOptions, init } from "../../features/setup/init.ts"
 import { JsonPrompter, type TextOut } from "../../features/setup/json_prompts.ts"
 import { defaultHost, type Host, type Launch, launch, ServiceError, wantedHome } from "../../runtime/service/launch.ts"
 import { Declined, OffboardError, offboard } from "../../features/setup/offboard.ts"
@@ -67,6 +68,9 @@ export interface Setup {
   auth: SubscriptionAuth
   /** Runs `opencorp init`. */
   init: typeof init
+  /** Runs init's interview, a chat with OpenCorp, with the TUI on it; none where the TUI can't draw, as the CLI's entry
+   *  decides. */
+  chat?: InitOptions["chat"]
   /** Runs `opencorp onboard`. */
   onboard: typeof onboard
   /** Runs `opencorp offboard`. */
@@ -102,6 +106,7 @@ function defaults(given: Partial<Setup>): Setup {
     checkModel: given.checkModel ?? modelProblem,
     auth: given.auth ?? OPENAI_AUTH,
     init: given.init ?? init,
+    chat: given.chat,
     onboard: given.onboard ?? onboard,
     offboard: given.offboard ?? offboard,
     doctor: given.doctor ?? {},
@@ -455,6 +460,7 @@ async function initCommand(args: Args, s: Setup): Promise<number> {
       device: !args["no-device"],
       host: s.host,
       environ: s.environ,
+      chat: s.chat,
     }),
   )
   if (code === 0) await reportHq(home(args.home, s), s)

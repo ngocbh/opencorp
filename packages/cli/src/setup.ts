@@ -1,6 +1,10 @@
-// `opencorp init` and `opencorp onboard`: the install asks its questions on the TUI's setup screen, and the
-// office opens once it's done. Without a terminal to draw on, the install runs on this terminal's stdin and stdout.
+// `opencorp init` and `opencorp onboard`: the install runs, and the office opens once it's done. init's install runs on
+// this terminal, its interview a chat in the TUI; onboard's asks its questions on the TUI's setup screen. Without a
+// terminal to draw on, the install runs on this terminal's stdin and stdout.
+import { terminal } from "./chat"
 import { type Deps, type InstallSpec, install, installSpec, realDeps } from "./office"
+
+export { drawable, terminal } from "./chat"
 
 /** What setting up touches beyond running the install; tests pass fakes. */
 export interface SetupDeps extends Deps {
@@ -13,14 +17,6 @@ export interface SetupDeps extends Deps {
   /** Says what went wrong on stderr. */
   error(message: string): void
 }
-
-/** Whether the setup screen can draw here: stdin and stdout are terminals, and TERM names one that moves the cursor. */
-export function drawable(env: Record<string, string | undefined>, stdinTTY: boolean, stdoutTTY: boolean) {
-  return stdinTTY && stdoutTTY && !!env.TERM && env.TERM !== "dumb"
-}
-
-/** Whether this process's terminal can draw the setup screen or the TUI (`drawable` on its env, stdin and stdout). */
-export const terminal = () => drawable(process.env, Boolean(process.stdin.isTTY), Boolean(process.stdout.isTTY))
 
 export const realSetupDeps: SetupDeps = {
   ...realDeps,
@@ -47,8 +43,9 @@ function homeFlag(argv: string[]): string | undefined {
 }
 
 /**
- * `opencorp init`/`opencorp onboard`: the install's questions on the setup screen, then the office. With
- * --provider-stdin or --help, or without a terminal to draw on, the install runs on this terminal.
+ * `opencorp init`/`opencorp onboard`: the install, then the office. init's install runs on this terminal, its
+ * interview a chat in the TUI; onboard's questions are on the setup screen. With --provider-stdin or --help, or
+ * without a terminal to draw on, the install runs on this terminal and no office opens.
  */
 export async function setUp(
   command: "init" | "onboard",
@@ -57,12 +54,16 @@ export async function setUp(
 ): Promise<number> {
   const plain = argv.some((a) => a === "--provider-stdin" || a === "-h" || a === "--help")
   if (plain || !deps.terminal()) return install(command, argv, deps)
-  const spec = installSpec(command, ["--json-prompts", ...argv], deps)
+  const spec = installSpec(command, command === "init" ? argv : ["--json-prompts", ...argv], deps)
   if (!spec) return 1
   // The office that opens after must be the one the install set up, which --home names: the spec's, already made
   // absolute where it was typed (the install runs in the home dir); `~` the TUI expands as the install does.
   const home = homeFlag(spec.argv)
   if (home) process.env.OPENCORP_HOME = home
+  if (command === "init") {
+    const code = await deps.spawn(spec.argv, { cwd: spec.cwd, env: spec.env })
+    return code === 0 ? deps.openOffice() : code
+  }
   let code: number
   try {
     code = await deps.screen(spec)

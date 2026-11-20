@@ -226,6 +226,17 @@ test("init flags are known answers for the interview", async () => {
   expect(seen!.options.environ).toBe(s.environ)
 })
 
+test("init hands its interview to the chat it was given, and to none without one", async () => {
+  const dir = tempDir()
+  const chats: unknown[] = []
+  const init = async (_home: string, _prompter: Prompter, options: InitOptions) => void chats.push(options.chat)
+  const chat: InitOptions["chat"] = async () => ({ status: "ended", error: null })
+  const argv = ["init", "--home", path.join(dir, "home")]
+  expect(await main(argv, { ...standIns(dir), init, chat })).toBe(0)
+  expect(await main(argv, { ...standIns(dir), init })).toBe(0)
+  expect(chats).toEqual([chat, undefined])
+})
+
 test("ctrl c during init is exit 130 with only a newline", async () => {
   const dir = tempDir()
   const s = { ...standIns(dir), init: interrupted }

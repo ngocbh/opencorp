@@ -1,79 +1,43 @@
-/** `opencorp init`'s interview: what the model is told, the draft without a terminal, the summary the owner
- *  confirms, the questions the model asks the owner, and the init flow run with the fake model. */
+/** `opencorp init`'s interview: what the model is told, the draft without a chat, and the interview as a chat with
+ *  OpenCorp, a built-in session handed to the chat init was given, whose result is the company the owner accepted. */
+import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { loadFlow } from "@ngocbh/yian"
-import { checkPassword } from "../../../src/runtime/auth/passwords.ts"
-import { Provider } from "../../../src/models/provider.ts"
-import { type Draft, type InitOutput, draftFromOutput, draftProblems } from "../../../src/company/draft.ts"
-import { readFlow } from "../../../src/company/flow_yaml.ts"
-import type { Owner } from "../../../src/company/template.ts"
+import type { Draft } from "../../../src/company/draft.ts"
+import type { BuiltinSession, CardAnswer, ChatEnd } from "../../../src/runtime/sessions/builtin.ts"
+import { OWNER } from "../../../src/server/local/host.ts"
 import initYaml from "../../../src/features/setup/flows/init.yaml" with { type: "file" }
 import {
-  Asking, CHANGE, CONFIRM, CREATE, type Known, ModelError, REMOTE, WHAT_TO_CHANGE, askUser, confirm, facts,
-  fallbackDraft, initFlow, runInitFlow, summary,
+  facts,
+  fallbackDraft,
+  INTERVIEW_FIRST,
+  interview,
+  type InterviewChat,
+  type Known,
 } from "../../../src/features/setup/interview.ts"
-import type { LoginDefaults } from "../../../src/features/setup/onboard.ts"
-import { KeyboardInterrupt, OnboardError, type Prompter, TRIES, clean } from "../../../src/features/setup/prompts.ts"
-import { pyJson } from "../../../src/util/redact.ts"
+import { type LoginDefaults, setupConnectionFile } from "../../../src/features/setup/onboard.ts"
+import { KeyboardInterrupt, OnboardError, clean } from "../../../src/features/setup/prompts.ts"
+import { ACCEPTED, CHANGE, CREATE } from "../../../src/features/setup/tools/propose_company.ts"
 import { embedded } from "../../../src/platform.ts"
-import { LLM_CONFIG, type ScriptedReply } from "../../../src/testing/fake_llm.ts"
+import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
+import { pyJson } from "../../../src/util/redact.ts"
 import { fakeLlm } from "../chat/helpers.ts"
-import { tempDir } from "../../helpers.ts"
-import { Script, flowReplies } from "./helpers.ts"
+import { tempDir, waitFor } from "../../helpers.ts"
+import { cardBinding, hostChat } from "./helpers.ts"
 
-// The init flow runs scrypt and many model rounds.
-setDefaultTimeout(30_000)
+// The no-office host's worker runs the flow with the fake model.
+setDefaultTimeout(60_000)
 
 const login: LoginDefaults = () => ["Me", "me"]
-
-const ME: Owner = { handle: "ngocbh", name: "Hong Ngoc Bui", title: "CEO" }
-const GOOD: Draft = {
-  company: "Acme",
-  owner: ME,
-  team: [
-    { name: "Minh", handle: "minh", title: "Engineer", about: "Writes the backend." },
-    { name: "Lan", handle: "lan", title: "QA", about: "" },
-  ],
-}
-const OUT: InitOutput = {
-  company: "Acme",
-  owner: { name: "Hong Ngoc Bui", handle: "ngocbh", title: "CEO" },
-  teammates: [{ name: "Minh", handle: "minh", title: "Engineer", about: "Writes the backend." }],
-}
-const PASSWORD = "pw-sentinel-5d1f"
-const FLOW = embedded(initYaml).toString("utf8")
-const RAW = readFlow(FLOW) as any // the YAML as written; readFlow leaves it untyped
-const MAX = RAW.nodes.rounds.max as number
-
-/** The fake model, and a provider for it. */
-async function model(): Promise<{ fake: Awaited<ReturnType<typeof fakeLlm>>; provider: Provider }> {
-  const fake = await fakeLlm()
-  return { fake, provider: Provider.parse({ llm_config: LLM_CONFIG, env: fake.env() }) }
-}
-
-/** An interview round that returns `output` without asking or checking. */
-function roundReplies(output: InitOutput): ScriptedReply[] {
-  return [{ content: "Done." }, { tool_calls: [{ name: "Record", arguments: output }] }]
-}
-
-/** The owner for one accepted run: `answers` to the model's questions, "1" (create) to confirm, `PASSWORD` twice,
- *  and `remote` typed (none when empty). */
-function owner(answers: string[] = [], remote = ""): Script {
-  return new Script([...answers, "1", PASSWORD, PASSWORD, remote || "1"])
-}
-
-function run(provider: Provider, prompter: Prompter, known: Known = {}) {
-  return runInitFlow(provider, prompter, known, login)
-}
-
-/** Each message's content in a model request, as text. */
-function contents(request: Record<string, unknown>): string[] {
-  return (request.messages as { content: unknown }[]).map((m) =>
-    typeof m.content === "string" ? m.content : JSON.stringify(m.content),
-  )
-}
+const KEY = "sk-ant-sentinel-1c9e04b7a2d6"
+const CEO = { name: "Hong Ngoc Bui", handle: "ngocbh", title: "CEO" }
+const MINH = { name: "Minh", handle: "minh", title: "Engineer", about: "Writes the backend." }
+const ACME = { company: "Acme", owner: CEO, teammates: [MINH] }
+const DRAFT: Draft = { company: "Acme", owner: CEO, team: [MINH] }
+const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/
+const YES: CardAnswer = { value: CREATE, typed: false }
+const NO: CardAnswer = { value: CHANGE, typed: false }
 
 /** What `promise` rejects with; fails the test when it resolves. */
 async function rejection(promise: Promise<unknown>): Promise<Error> {
@@ -95,38 +59,36 @@ function refusal(call: () => void): Error {
   throw new Error("expected a throw")
 }
 
-/** A prompter whose input has ended. */
-class Closed extends Script {
-  static readonly error = new OnboardError("no answer to 'Company?' (stdin closed)")
+/** An office whose setup connection is `provider`: its folder, the connection's `file` and where init's sessions
+ *  go. */
+async function office(provider: Record<string, unknown>): Promise<{ office: string; file: string; sessions: string }> {
+  const office = path.join(tempDir(), "office")
+  // 0700, as a connection's folder must be.
+  fs.mkdirSync(path.join(office, "connections"), { recursive: true, mode: 0o700 })
+  const file = setupConnectionFile(office)
+  await writePrivate(file, JSON.stringify(provider))
+  return { office, file, sessions: path.join(office, "setup") }
+}
 
-  override async ask(question: string): Promise<string> {
-    this.seen.push(question)
-    throw Closed.error
+/** A chat that binds the session's tools as the host does, the owner answering its cards with `answers`, calls
+ *  propose_company with each of `proposals`, and ends as `end` says. It keeps each session it was given, and what each
+ *  call returned. */
+function chat(
+  proposals: Record<string, unknown>[] = [],
+  { answers = [], end = { status: "ended", error: null } }: { answers?: (CardAnswer | "dontAsk")[]; end?: ChatEnd } = {},
+) {
+  const sessions: BuiltinSession<never>[] = []
+  const told: unknown[] = []
+  const run: InterviewChat = async (session) => {
+    sessions.push(session)
+    const tools = await session.tools(cardBinding(answers))
+    for (const args of proposals) {
+      told.push(await tools.groups.propose_company!.propose_company!.call(args, { callId: `r/init/${told.length}/0` }))
+    }
+    return end
   }
-
-  override async choose(question: string): Promise<string> {
-    this.seen.push(question)
-    throw Closed.error
-  }
+  return { run, sessions, told }
 }
-
-/** The state of a run whose owner gives `replies`, and its prompter. */
-function confirming(...replies: string[]): { state: Asking; prompter: Script } {
-  const prompter = new Script(replies)
-  return { state: new Asking(prompter), prompter }
-}
-
-function badOutput(handle = "Minh"): InitOutput {
-  return { ...OUT, teammates: [{ ...OUT.teammates[0]!, handle }] }
-}
-
-test("the flow takes what init knows and the remote flag", async () => {
-  const flow = await loadFlow(FLOW, { sourceLabel: "features/setup/flows/init.yaml" })
-  expect(Object.fromEntries(flow.input.map((p) => [p.name, p.contract?.type.kind]))).toEqual({
-    known: "str",
-    remote: "str",
-  })
-})
 
 test("known facts are the given flags and suggestions but never the remote", () => {
   const known: Known = { company: "Acme", agent_handle: "bo", remote: "https://user:secret@example.com/acme.git" }
@@ -170,32 +132,13 @@ test("a fallback with problems names the flag to pass", () => {
   expect(broken.message).toMatch(/name can't hold line breaks.*; pass --agent$/)
 })
 
-test("the summary lists the company you and each teammate", () => {
-  expect(summary(GOOD)).toEqual([
-    "Company: Acme", "You: Hong Ngoc Bui (@ngocbh), CEO", "Teammates:",
-    "  Minh (@minh), Engineer: Writes the backend.", "  Lan (@lan), QA",
-  ])
-  expect(summary({ company: "Acme", owner: ME, team: [] }).at(-1)).toBe("Teammates: none yet")
-})
-
-test("the summary strips control characters from model text", () => {
-  const answers: Draft = {
-    company: "Ac\x1b[2Jme",
-    owner: { handle: "ngocbh", name: "Hong\nNgoc\x07 Bui" },
-    team: [{ name: "Mi\rnh", handle: "minh", title: "Eng\tineer", about: "Writes\x7f the backend." }],
-  }
-  expect(summary(answers)).toEqual([
-    "Company: Ac[2Jme", "You: Hong Ngoc Bui (@ngocbh), CEO", "Teammates:",
-    "  Mi nh (@minh), Eng ineer: Writes the backend.",
-  ])
-})
-
-test("clean turns line breaks and tabs into spaces and drops other control characters", () => {
-  expect(clean("a\nb\rc\td\x00e\x1bf\x7fg")).toBe("a b c defg")
-})
-
-test("clean drops c1 control characters which some terminals read as escapes", () => {
-  expect(clean("a\x80b\x9b2Jc\x9fd\xa0e")).toBe("ab2Jcd\xa0e")
+test.each([
+  ["--company", { company: " " }], ["--name", { name: " " }], ["--handle", { handle: "Me" }],
+  ["--agent", { agent: " " }], ["--agent-handle", { agent_handle: "Bad_Handle" }],
+] as [string, Known][])("each fallback problem names the flag that sets its field [%s]", (flag, known) => {
+  const error = refusal(() => fallbackDraft(known, login))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toMatch(new RegExp(`; pass ${flag}$`))
 })
 
 test("the fallback needs an account even with every flag", () => {
@@ -208,332 +151,108 @@ test("the fallback needs an account even with every flag", () => {
   expect(error.message).toMatch(/no account/)
 })
 
-test("the interview asks on the terminal and returns the flows output", async () => {
-  const { fake, provider } = await model()
-  fake.script(...flowReplies("What's the company called?", OUT))
-  const prompter = owner(["Acme"])
-  const out = await run(provider, prompter)
-  expect({ company: out.company, owner: out.owner, teammates: out.teammates }).toEqual(OUT)
-  expect(await checkPassword(PASSWORD, out.password_hash)).toBe(true)
-  expect(out.remote).toBe("")
-  expect(prompter.seen).toContain("What's the company called?")
-  expect(contents(fake.requests()[1]!).at(-1)).toContain("Acme")
-  const after = prompter.seen.slice(prompter.seen.indexOf(CONFIRM))
-  expect(after.filter((line) => line.startsWith("Step "))).toEqual(["Step 3 of 5: Password", "Step 4 of 5: Remote"])
+test("clean turns line breaks and tabs into spaces and drops other control characters", () => {
+  expect(clean("a\nb\rc\td\x00e\x1bf\x7fg")).toBe("a b c defg")
 })
 
-test.each(["2", "Founder"])("a question with options is a list with a way to type an answer [%s]", async (answer) => {
-  const { fake, provider } = await model()
-  fake.script(...flowReplies("Your title?", OUT, ["CEO", "Founder"]))
-  const prompter = owner([answer])
-  await run(provider, prompter)
-  expect([prompter.seen[0], prompter.offered[0], prompter.typed[0]]).toEqual(["Your title?", ["CEO", "Founder"], true])
-  expect(contents(fake.requests()[1]!).at(-1)).toBe("Founder")
+test("clean drops c1 control characters which some terminals read as escapes", () => {
+  expect(clean("a\x80b\x9b2Jc\x9fd\xa0e")).toBe("ab2Jcd\xa0e")
 })
 
-test("a typed answer to a question with options goes back as typed", async () => {
-  const { fake, provider } = await model()
-  fake.script(...flowReplies("Your title?", OUT, ["CEO", "Founder"]))
-  const prompter = owner(["Chair"])
-  await run(provider, prompter)
-  expect(prompter.seen.filter((line) => line === "Your title?")).toHaveLength(1)
-  expect(contents(fake.requests()[1]!).at(-1)).toBe("Chair")
+test("the interview hands chat a session on the setup model in office/setup/<id>, its first message the owner's", async () => {
+  const llm_config = { ...LLM_CONFIG, api_key: KEY }
+  const env = { OPENAI_BASE_URL: "http://127.0.0.1:9/v1" }
+  const { file, sessions } = await office({ llm_config, env })
+  const told = facts({ company: "Acme", remote: "https://user:remote-sentinel@example.com/a.git" }, login)
+  const c = chat([ACME], { answers: [YES] })
+  expect(await interview(c.run, { file, sessions, facts: told })).toEqual(DRAFT)
+  const [session] = c.sessions
+  expect(session!.agent).toEqual({ handle: "opencorp", name: "OpenCorp" })
+  expect(session!.flow).toEqual({ name: "init", text: embedded(initYaml).toString("utf8") })
+  expect(session!.inputs).toEqual({ known: pyJson(told, true) })
+  expect(JSON.stringify(session!.inputs)).not.toContain("remote-sentinel")
+  expect(session!.first).toBe(INTERVIEW_FIRST)
+  expect(INTERVIEW_FIRST).toBe("Set up my company")
+  expect(session!.model).toEqual({ llm_config, env })
+  // Its own folder under office/setup, apart from the daemon's sessions, so a host locks and recovers only setup's.
+  expect(path.dirname(session!.folder)).toBe(sessions)
+  expect(path.basename(session!.folder)).toMatch(ULID)
+  // Its one tool is propose_company, a group of one; it drives no terminal.
+  const tools = await session!.tools(cardBinding([]))
+  expect(Object.keys(tools.groups)).toEqual(["propose_company"])
+  expect(Object.keys(tools.groups.propose_company!)).toEqual(["propose_company"])
+  expect(tools.terminal).toBeUndefined()
+  // Each interview gets a folder of its own.
+  const again = chat([ACME], { answers: [YES] })
+  await interview(again.run, { file, sessions, facts: told })
+  expect(again.sessions[0]!.folder).not.toBe(session!.folder)
 })
 
-test("questions and options are asked without control characters", async () => {
-  const { fake, provider } = await model()
-  fake.script(...flowReplies("Clear\x1b[2J?", OUT, ["a\x9bb", "c"]))
-  const prompter = owner(["2"])
-  await run(provider, prompter)
-  expect([prompter.seen[0], prompter.offered[0]]).toEqual(["Clear[2J?", ["ab", "c"]])
-})
-
-test("an option goes back to the model as it wrote it", async () => {
-  const { fake, provider } = await model()
-  fake.script(...flowReplies("Pick?", OUT, ["a\x9bb", "c"]))
-  await run(provider, owner(["1"]))
-  expect(contents(fake.requests()[1]!).at(-1)).toBe("a\x9bb")
-})
-
-test("a long option is offered and goes back whole", async () => {
-  const label = Array(4).fill("Keep the CI pipeline we have and add a nightly run").join(" ")
-  const prompter = new Script(["1"])
-  expect(await askUser({ question: "Which plan?", options: [label, "b"] }, new Asking(prompter))).toBe(label)
-  expect(prompter.offered).toEqual([[label, "b"]])
-  expect(prompter.typed).toEqual([true])
-})
-
-/** A prompter whose lists give an empty answer, as an empty line does when there's no default. */
-class Blank extends Script {
-  override async choose(question: string): Promise<string> {
-    this.seen.push(question)
-    return ""
-  }
-}
-
-test("an answer that isnt an option goes back as typed", async () => {
-  const { fake, provider } = await model()
-  fake.script(...flowReplies("Pick?", OUT, ["a", "b"]))
-  await run(provider, new Blank([PASSWORD, PASSWORD, ""]))
-  expect(contents(fake.requests()[1]!).at(-1)).toBe("")
-})
-
-test("the providers env is set only during the run", async () => {
-  const before = { ...process.env }
-  const { fake, provider } = await model()
-  fake.script(...flowReplies("Company?", OUT))
-  await run(provider, owner(["Acme"]))
-  expect({ ...process.env }).toEqual(before)
-  expect(fake.requests()).toHaveLength(4)
-})
-
-/** A prompter whose questions throw `error`. */
-class Raising extends Script {
-  constructor(readonly error: Error) {
-    super()
-  }
-
-  override async ask(question: string): Promise<string> {
-    this.seen.push(question)
-    throw this.error
-  }
-}
-
-const BOOM = new Error("boom")
-const INTERRUPT = new KeyboardInterrupt()
-
-test.each([
-  ["error", BOOM],
-  ["interrupt", INTERRUPT],
-] as const)("the env is restored when the run raises [%s]", async (kind, error) => {
-  const before = { ...process.env }
-  const { fake, provider } = await model()
-  fake.script({ tool_calls: [{ name: "ask_user", arguments: { question: "Company?" } }] })
-  const raised = await rejection(run(provider, new Raising(error)))
-  if (kind === "error") {
-    expect(raised).toBeInstanceOf(ModelError)
-    expect(raised.message).toContain("boom")
-  } else {
-    expect(raised).toBe(INTERRUPT)
-  }
-  expect(fake.requests()).toHaveLength(1)
-  expect({ ...process.env }).toEqual(before)
-})
-
-test("a failed run says the model couldnt run the interview", async () => {
-  const { fake, provider } = await model()
-  fake.script({ error: 500 })
-  const error = await rejection(run(provider, new Script()))
-  expect(error).toBeInstanceOf(ModelError)
-  expect(error.message).toMatch(/^the model couldn't run the interview: /)
-  expect(fake.requests()).toHaveLength(1)
-})
-
-test("when the owners input ends its error stops the interview", async () => {
-  const { fake, provider } = await model()
-  fake.script(...flowReplies("Company?", OUT))
-  expect(await rejection(run(provider, new Closed()))).toBe(Closed.error)
-  expect(fake.requests()).toHaveLength(1)
-})
-
-test("the model is told what is known", async () => {
-  const { fake, provider } = await model()
-  fake.script(...flowReplies("Company?", OUT))
-  await run(provider, owner(["Acme"]), { company: "Acme" })
-  expect(contents(fake.requests()[0]!).join("\n")).toContain('"given": {"company": "Acme"}')
-})
-
-test("confirm shows the clean draft and accepts on yes", async () => {
-  const { state, prompter } = confirming("")
-  expect(await confirm({ answers: OUT }, state)).toEqual({ draft: pyJson(OUT, true), changes: "", accepted: true })
-  expect(prompter.seen).toEqual([...summary(draftFromOutput(OUT)), CONFIRM])
-  expect(prompter.offered).toEqual([[CREATE, CHANGE]])
-})
-
-test("confirm sends problems back without asking the owner", async () => {
-  const { state, prompter } = confirming()
-  expect(await confirm({ answers: badOutput() }, state)).toEqual({
-    draft: pyJson(badOutput(), true),
-    changes: draftProblems(draftFromOutput(badOutput())).join("\n"),
-    accepted: false,
+test("an interview on a subscription runs on the sign-in beside office.json", async () => {
+  const { office: dir, file, sessions } = await office({
+    method: "subscription",
+    llm_config: { provider: "openai", model: "gpt-5.5" },
   })
-  expect(prompter.seen).toEqual([])
+  const c = chat([ACME], { answers: [YES] })
+  await interview(c.run, { file, sessions, facts: facts({}, login) })
+  expect(c.sessions[0]!.model.env).toEqual({ YIAN_AUTH_FILE: path.join(dir, "connections", "office.auth.json") })
 })
 
-test("confirm sends back a teammate name a hire would refuse", async () => {
-  const { state, prompter } = confirming()
-  const answers = { ...OUT, teammates: [{ ...OUT.teammates[0]!, name: "Mi\nnh" }] }
-  const changes = draftProblems(draftFromOutput(answers))
-  expect(changes).toEqual(["the teammate @minh's name can't hold line breaks or control characters"])
-  expect(await confirm({ answers }, state)).toEqual({
-    draft: pyJson(answers, true), changes: changes.join("\n"), accepted: false,
-  })
-  expect(prompter.seen).toEqual([])
-})
-
-test.each(["2", CHANGE])("confirm turns the owners change into changes [%s]", async (pick) => {
-  const { state, prompter } = confirming(pick, "rename Minh to Bo")
-  expect(await confirm({ answers: OUT }, state)).toEqual({
-    draft: pyJson(OUT, true), accepted: false, changes: "The owner wants changes: rename Minh to Bo",
-  })
-  expect(prompter.seen.slice(-2)).toEqual([CONFIRM, WHAT_TO_CHANGE])
-})
-
-test("no change given asks the model to ask", async () => {
-  expect(await confirm({ answers: OUT }, confirming("2", "").state)).toEqual({
-    draft: pyJson(OUT, true), accepted: false, changes: "The owner wants changes; ask what to change",
-  })
-})
-
-test("an onboard error inside owner prompter is kept for the caller", async () => {
-  const state = new Asking(new Closed())
-  expect(await rejection(confirm({ answers: OUT }, state))).toBeInstanceOf(OnboardError)
-  expect(state.stopped).toBe(Closed.error)
-})
-
-test("the interview offers a handle made from the name as an option", () => {
-  const prompt: string = RAW.nodes.rounds.nodes.interview.prompt
-  expect(prompt.split(/\s+/).filter(Boolean).join(" ")).toContain(
-    "Offer one made from the person's name as an option, such as",
-  )
-})
-
-test("no agent node reads the password or the remote", () => {
-  function* agents(nodes: Record<string, any>): Generator<Record<string, any>> {
-    for (const node of Object.values(nodes)) {
-      if (node.kind === "agent") yield node
-      yield* agents(node.nodes ?? {})
-    }
-  }
-  const found = [...agents(RAW.nodes)]
-  expect(found.length).toBeGreaterThan(0)
-  for (const node of found) {
-    const inputs = JSON.stringify(node.input)
-    expect(inputs).not.toContain("password")
-    expect(inputs).not.toContain("remote")
+test("the accepted draft is the interview's result", async () => {
+  const { file, sessions } = await office({ llm_config: LLM_CONFIG })
+  // A No first, then a Yes: the result is the company the owner said Yes to.
+  const c = chat([{ ...ACME, company: "Acme Labs" }, ACME], { answers: [NO, YES] })
+  expect(await interview(c.run, { file, sessions, facts: facts({}, login) })).toEqual(DRAFT)
+  expect(c.told).toEqual(["The owner wants changes; ask what to change", ACCEPTED])
+  // Accepted on its card, the company is made however the chat ends after.
+  for (const end of [
+    { status: "left", error: null },
+    { status: "failed", error: "scripted error 400" },
+  ] as ChatEnd[]) {
+    const after = chat([ACME], { answers: [YES], end })
+    expect(await interview(after.run, { file, sessions, facts: facts({}, login) })).toEqual(DRAFT)
   }
 })
 
-test("the tools problems go back to the model", async () => {
-  const { fake, provider } = await model()
-  const partial = { company: "Acme", owner: OUT.owner, teammates: [{ name: "Lan", handle: "lan" }] }
+test("on the no-office host, the init flow's chat ends once the owner says Yes on the company's card", async () => {
+  const fake = await fakeLlm()
   fake.script(
-    { tool_calls: [{ name: "check_company", arguments: badOutput() }] }, // its "about"s are ignored
-    { tool_calls: [{ name: "check_company", arguments: partial }] }, // no title yet
-    ...roundReplies(OUT),
+    { match: INTERVIEW_FIRST, content: "What's the company called?" },
+    { match: "Acme Robotics", tool_calls: [{ id: "call_propose", name: "propose_company", arguments: ACME }] },
+    { match: '"tool_call_id":"call_propose"', content: "Acme is ready." },
   )
-  await run(provider, owner())
-  const reply = contents(fake.requests()[1]!).at(-1)!
-  expect(reply.startsWith("Problems; ask the owner")).toBe(true)
-  expect(reply).toContain("@Minh can't be a handle")
-  expect(contents(fake.requests()[2]!).at(-1)).toContain("the teammate @lan needs a title")
+  const { file, sessions } = await office({ llm_config: LLM_CONFIG, env: fake.env() })
+  const run = hostChat(async (host) => {
+    const said = async () => JSON.stringify(await host.messages())
+    await waitFor(async () => (await said()).includes("What's the company called?"), { what: "the agent's question" })
+    await host.prompt("Acme Robotics", OWNER)
+    const card = await waitFor(() => host.questions({ status: ["open"] })[0], { what: "the company's card" })
+    expect(card.question).toContain("Company: Acme")
+    host.answer(card.id, CREATE, "option", OWNER)
+    await host.ended
+    expect(await said()).toContain("Acme is ready.")
+  })
+  expect(await interview(run, { file, sessions, facts: facts({}, login) })).toEqual(DRAFT)
+  expect(fake.pending()).toEqual([])
 })
 
-test("a result with problems goes back to the interview without asking the owner", async () => {
-  const { fake, provider } = await model()
-  fake.script(...roundReplies(badOutput()), ...roundReplies(OUT))
-  const prompter = owner()
-  expect((await run(provider, prompter)).teammates).toEqual(OUT.teammates)
-  expect(prompter.seen.filter((line) => line === CONFIRM)).toHaveLength(1)
-  const second = contents(fake.requests()[2]!).join("\n")
-  expect(second).toContain("@Minh can't be a handle")
-  expect(second).toContain('"handle": "Minh"')
-})
-
-test("the owners changes start the next round from the draft", async () => {
-  const { fake, provider } = await model()
-  const renamed = { ...OUT, teammates: [{ ...OUT.teammates[0]!, name: "Bo", handle: "bo" }] }
-  fake.script(...flowReplies("Company?", OUT), ...roundReplies(renamed))
-  const out = await run(provider, new Script(["Acme", "2", "rename Minh to Bo", "1", PASSWORD, PASSWORD, "1"]))
-  expect(out.teammates).toEqual(renamed.teammates)
-  const second = contents(fake.requests()[4]!).join("\n")
-  expect(second).toContain('"name": "Minh"')
-  expect(second).toContain("The owner wants changes: rename Minh to Bo")
-})
-
-test("the flow gives up after max rounds", async () => {
-  const { fake, provider } = await model()
-  for (let i = 0; i < MAX; i++) fake.script(...roundReplies(badOutput()))
-  const prompter = new Script()
-  const error = await rejection(run(provider, prompter))
+test("a failed session stops init naming why, the key redacted, and says init checks the model next time", async () => {
+  const { file, sessions } = await office({ llm_config: { ...LLM_CONFIG, api_key: KEY } })
+  const c = chat([], { end: { status: "failed", error: `401 from the server: bad key ${KEY}` } })
+  const error = await rejection(interview(c.run, { file, sessions, facts: facts({}, login) }))
   expect(error).toBeInstanceOf(OnboardError)
-  expect(error.message).toMatch(/didn't settle on a company; run `opencorp init` again/)
-  expect(fake.requests()).toHaveLength(2 * MAX)
-  expect(prompter.seen).toEqual([])
+  expect(error.message).toContain("the model couldn't run the interview: 401 from the server: bad key")
+  expect(error.message).not.toContain(KEY)
+  expect(error.message).toEndWith("; run `opencorp init` again: it checks the model first and offers to set it up again")
 })
 
-test("when the input ends at the confirmation its error stops the flow", async () => {
-  const { fake, provider } = await model()
-  fake.script(...roundReplies(OUT))
-  expect(await rejection(run(provider, new Closed()))).toBe(Closed.error)
-})
-
-test("no usable password stops the flow with that error", async () => {
-  const { fake, provider } = await model()
-  fake.script(...roundReplies(OUT))
-  const error = await rejection(run(provider, new Script(["1", ...Array<string>(TRIES).fill("short")])))
+test("leaving the chat is a KeyboardInterrupt, and ending it with nothing accepted says so", async () => {
+  const { file, sessions } = await office({ llm_config: LLM_CONFIG })
+  const left = chat([ACME], { answers: [NO], end: { status: "left", error: null } })
+  const interrupted = await rejection(interview(left.run, { file, sessions, facts: facts({}, login) }))
+  expect(interrupted).toBeInstanceOf(KeyboardInterrupt)
+  const ended = chat([], { end: { status: "ended", error: null } })
+  const error = await rejection(interview(ended.run, { file, sessions, facts: facts({}, login) }))
   expect(error).toBeInstanceOf(OnboardError)
-  expect(error.message).toBe("no usable password")
-})
-
-class InterruptedAtPassword extends Script {
-  static readonly error = new KeyboardInterrupt()
-
-  override async secret(): Promise<string> {
-    throw InterruptedAtPassword.error
-  }
-}
-
-test("ctrl c at the password stops the flow and restores the env", async () => {
-  const before = { ...process.env }
-  const { fake, provider } = await model()
-  fake.script(...roundReplies(OUT))
-  expect(await rejection(run(provider, new InterruptedAtPassword(["1"])))).toBe(InterruptedAtPassword.error)
-  expect({ ...process.env }).toEqual(before)
-})
-
-test("the remote flag is used without asking and never sent", async () => {
-  const url = "https://user:tok-sentinel-77@example.com/acme.git"
-  const { fake, provider } = await model()
-  fake.script(...roundReplies(OUT))
-  const prompter = new Script(["1", PASSWORD, PASSWORD])
-  expect((await run(provider, prompter, { remote: url })).remote).toBe(url)
-  expect(prompter.seen).not.toContain(REMOTE)
-  expect(JSON.stringify(fake.requests())).not.toContain("tok-sentinel-77")
-})
-
-test("init flow gives the draft with the hash and the remote apart", async () => {
-  const { fake, provider } = await model()
-  // A temp dir is made 0700, as a provider file's folder must be.
-  const file = path.join(tempDir(), "provider.json")
-  await writePrivate(file, JSON.stringify({ llm_config: provider.llm_config, env: provider.env }))
-  fake.script(...roundReplies(OUT))
-  const [draft, url] = await initFlow(file, owner([], "git@example.com:a.git"), {}, login)
-  expect(draft.company).toBe("Acme")
-  expect(await checkPassword(PASSWORD, draft.owner.passwordHash)).toBe(true)
-  expect(url).toBe("git@example.com:a.git")
-})
-
-test("init flow on a subscription office.json runs on the sign-in beside it", async () => {
-  const dir = tempDir()
-  const file = path.join(dir, "office.json")
-  await writePrivate(file, JSON.stringify({ method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }))
-  // A sign-in the run can't read, so it stops reading it, before any request.
-  const auth = path.join(dir, "office.auth.json")
-  await writePrivate(auth, "{nope")
-  const error = await initFlow(file, owner(), {}, login).then(
-    () => null,
-    (e: unknown) => e as Error,
-  )
-  expect(error).toBeInstanceOf(ModelError)
-  expect(error!.message).toContain(`Credential storage at ${auth}`)
-})
-
-test.each([
-  ["--company", { company: " " }], ["--name", { name: " " }], ["--handle", { handle: "Me" }],
-  ["--agent", { agent: " " }], ["--agent-handle", { agent_handle: "Bad_Handle" }],
-] as [string, Known][])("each fallback problem names the flag that sets its field [%s]", (flag, known) => {
-  const error = refusal(() => fallbackDraft(known, login))
-  expect(error).toBeInstanceOf(OnboardError)
-  expect(error.message).toMatch(new RegExp(`; pass ${flag}$`))
+  expect(error.message).toBe("the interview ended before a company was accepted; run `opencorp init` again")
 })

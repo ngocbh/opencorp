@@ -1,11 +1,15 @@
 /**
  * The office's entry: the first argument picks the mode. `packages/cli/src/main.ts` hands its
  * internal modes (`__worker`, `__fs-helper`), `daemon` and `install` here before it loads anything
- * else.
+ * else, with the hooks `install` takes.
  */
 
 /** A mode's entry point: takes the arguments after the mode, resolves to an exit code. */
 export type ModeMain = (argv: string[]) => Promise<number>
+
+/** What the CLI's entry hands the office's modes; only `install` takes them. `chat` runs init's interview with the TUI
+ *  on it, where this terminal can draw it. An `import()` type, as this file has no static imports. */
+export type OfficeHooks = Pick<import("./server/commands/main.ts").Setup, "chat">
 
 /** The office daemon, one per home. It exits as soon as `main` returns, so a live handle (a git child, a timer)
  *  can't keep an old daemon running after it released the lock, and at once on a crash. */
@@ -32,24 +36,26 @@ export const workerMain: ModeMain = async (argv) => {
 }
 /** One file operation inside the sandbox. */
 export const fsHelperMain: ModeMain = async () => (await import("./runtime/sandbox/fs_helper.ts")).fsHelperMain()
-/** The setup commands (init, onboard, offboard, doctor, start, restart). It exits once stdout and stderr have
- *  drained, with 130 on Ctrl-C and 1 for an unexpected error, its stack on stderr. */
-export const installMain: ModeMain = async (argv) => (await import("./server/commands/main.ts")).run(argv)
+/** The setup commands (init, onboard, offboard, doctor, start, restart), with the CLI's `hooks`. It exits once stdout
+ *  and stderr have drained, with 130 on Ctrl-C and 1 for an unexpected error, its stack on stderr. */
+export const installMain = async (argv: string[], hooks: OfficeHooks = {}): Promise<number> =>
+  (await import("./server/commands/main.ts")).run(argv, { chat: hooks.chat })
 
-const MODES: Record<string, ModeMain> = {
+const MODES: Record<string, (argv: string[], hooks: OfficeHooks) => Promise<number>> = {
   daemon: daemonMain,
   __worker: workerMain,
   "__fs-helper": fsHelperMain,
   install: installMain,
 }
 
-/** Runs the mode `argv[0]` names with the rest; resolves to the exit code (2 for an unknown mode). */
-export async function officeMain(argv: string[]): Promise<number> {
+/** Runs the mode `argv[0]` names with the rest, and `hooks` for `install`; resolves to the exit code (2 for an unknown
+ *  mode). */
+export async function officeMain(argv: string[], hooks: OfficeHooks = {}): Promise<number> {
   const [mode, ...rest] = argv
   const run = mode !== undefined && Object.hasOwn(MODES, mode) ? MODES[mode] : undefined
   if (!run) {
     console.error("opencorp: unknown office mode")
     return 2
   }
-  return run(rest)
+  return run(rest, hooks)
 }

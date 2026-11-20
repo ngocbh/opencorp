@@ -23,8 +23,6 @@ import {
   lastPath,
   LEARN_FIRST,
   LEARN_NEEDS_TERMINAL,
-  type LearnChat,
-  type LearnEnd,
   learnedMessage,
   MAX_OLD_CHARS,
   LOST,
@@ -55,7 +53,14 @@ import { control, isSocket, type ReachContext } from "../../../src/features/reac
 import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
 import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../../src/features/reach/risks.ts"
 import { signInLine, withSignIn } from "../../../src/features/setup/onboard.ts"
-import type { BuiltinSession, BuiltinTools, CardAnswer, SessionBinding } from "../../../src/runtime/sessions/builtin.ts"
+import type {
+  BuiltinChat,
+  BuiltinSession,
+  BuiltinTools,
+  CardAnswer,
+  ChatEnd,
+  SessionBinding,
+} from "../../../src/runtime/sessions/builtin.ts"
 import type { Terminal } from "../../../src/tools/terminal/terminal.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
 import { workerEnv } from "../../../src/runtime/worker/spawn.ts"
@@ -858,11 +863,11 @@ function binding(answers: CardAnswer[] = []) {
  *  `end` says. Each spec it was given is kept. */
 function chat(
   play: (spec: BuiltinSession<Terminal>, tools: BuiltinTools<Terminal>) => Promise<void> = async () => {},
-  { answers = [], end = { status: "ended", error: null } }: { answers?: CardAnswer[]; end?: LearnEnd } = {},
+  { answers = [], end = { status: "ended", error: null } }: { answers?: CardAnswer[]; end?: ChatEnd } = {},
 ) {
   const specs: BuiltinSession<Terminal>[] = []
   const b = binding(answers)
-  const learnChat: LearnChat = async (spec) => {
+  const learnChat: BuiltinChat<Terminal> = async (spec) => {
     specs.push(spec)
     const tools = await spec.tools(b.bound)
     try {
