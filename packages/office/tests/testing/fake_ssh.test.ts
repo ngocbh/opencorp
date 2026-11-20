@@ -488,4 +488,8 @@ test("the owner's config stands at the first Include, its Host blocks by name, a
   // A -J hop reads its own host's options, as the hop's own ssh would, so it rides that master.
   expect((await runAsync(fake, ["-F", file, "-J", "login1", "--", "node1", "echo there"])).stdout).toBe("there\n")
   expect(fake.logins()).toEqual(["login1", "node1"])
+  // As ProxyJump's hop gets only -F, the hop reads none of the -o options.
+  const options = ["-o", "ControlMaster=no", "-o", "ControlPath=/nowhere/%C"]
+  expect((await runAsync(fake, ["-F", file, ...options, "-J", "login1", "--", "node2", "echo again"])).stdout).toBe("again\n")
+  expect(fake.logins()).toEqual(["login1", "node1", "node2"])
 })

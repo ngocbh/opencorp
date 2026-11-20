@@ -20,7 +20,7 @@ import { writePrivate } from "../../../src/util/private_files.ts"
 import { ACCOUNT, fakeSubscription, NO_LISTING, Script } from "../setup/helpers.ts"
 
 /** Limits short enough that a test which hits one still finishes. */
-export const SHORT_LIMITS = Object.freeze({ promptMs: 5000, stepMs: 5000 })
+export const SHORT_LIMITS = Object.freeze({ promptMs: 5000, stepMs: 5000, quietMs: 5000 })
 
 /** A short home folder with a fake ssh in `<dir>/fake`. When the test finishes, every fake master is killed, then
  *  the folder removed (in that order, so no master outlives its state). */

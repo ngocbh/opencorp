@@ -151,6 +151,9 @@ test("after a failure, a visit names what the owner's config sets for each host 
       "  ControlMaster auto",
       `  ControlPath ${dir}/mine/%C`,
       "  ControlPersist 2h",
+      // A hop the owner's config names is checked too.
+      "Host behind",
+      "  ProxyJump login3,fine",
       "",
     ].join("\n"),
   )
@@ -162,11 +165,33 @@ test("after a failure, a visit names what the owner's config sets for each host 
     named(`a ControlPath whose folder ${dir}/missing doesn't exist`, "u@login2"),
     named(`a ControlPath whose folder ${dir}/readonly you can't write to`, "login3"),
   ])
+  expect(await configProblems(ctx, [{ host: "behind" }])).toEqual([
+    named(`a ControlPath whose folder ${dir}/readonly you can't write to`, "login3"),
+  ])
   // OpenCorp's own defaults break nothing.
   expect(await configProblems(ctx, [{ host: "node1" }])).toEqual([])
   // An ssh that can't read the config names nothing.
   fs.writeFileSync(owner, "NoSuchOption yes\n")
   expect(await configProblems(ctx, [{ host: "login1" }])).toEqual([])
+})
+
+test("the visit's stop ends the checks at once", async () => {
+  const dir = shortDir()
+  const paths = new ReachPaths(path.join(dir, "h"))
+  makeDirs(paths)
+  // An ssh whose -G never answers, as a config's slow `Match exec` might.
+  const slow = path.join(dir, "slow-ssh")
+  fs.writeFileSync(slow, `#!/bin/sh\necho "$*" >>'${dir}/calls'\nexec sleep 30\n`, { mode: 0o700 })
+  const stop = new AbortController()
+  const ctx = { ...context(paths, { PATH: "/usr/bin:/bin" }), ssh: slow, signal: stop.signal }
+  setTimeout(() => stop.abort(), 300)
+  const started = performance.now()
+  expect(await configProblems(ctx, [{ host: "a" }, { host: "b" }, { host: "c" }])).toEqual([])
+  expect(performance.now() - started).toBeLessThan(CONTROL_MS)
+  expect(fs.readFileSync(path.join(dir, "calls"), "utf8").trim().split("\n")).toHaveLength(1)
+  // Stopped before it starts, it runs nothing.
+  expect(await configProblems(ctx, [{ host: "d" }])).toEqual([])
+  expect(fs.readFileSync(path.join(dir, "calls"), "utf8").trim().split("\n")).toHaveLength(1)
 })
 
 test("the session options an older ssh doesn't print are named where a newer one prints them", () => {
@@ -214,6 +239,20 @@ test("the wrapper runs the real ssh with our config and records each exit status
   }
   execFileSync("/bin/sh", ["-c", "ssh bad | cat; ssh -p 2222 u@good.example true; exit 0"], { env, timeout: 10_000 })
   expect(fs.readFileSync(path.join(dir, "status"), "utf8")).toBe("255 bad\n0 u@good.example\n")
+  // The jump hosts follow the host: from -J, attached or not, and from -o ProxyJump, however it's written.
+  fs.writeFileSync(path.join(dir, "status"), "")
+  const jumps = [
+    "ssh -J u@gw:2222,login1 node1 true",
+    "ssh -Jgw node2 true",
+    "ssh -oProxyJump=gw node3 true",
+    "ssh -o 'proxyjump = gw2' -- node4 true",
+    "ssh -o ProxyJump=none node5 true",
+    "ssh -J 'gw;x' node6 true",
+  ]
+  execFileSync("/bin/sh", ["-c", jumps.join("\n")], { env, timeout: 10_000 })
+  expect(fs.readFileSync(path.join(dir, "status"), "utf8")).toBe(
+    ["0 node1 u@gw:2222,login1", "0 node2 gw", "0 node3 gw", "0 node4 gw2", "0 node5 none", "0 node6", ""].join("\n"),
+  )
   // With no status file named, it records nothing and still passes the exit through.
   const run = () =>
     execFileSync("/bin/sh", ["-c", "ssh bad; echo $?"], {
@@ -326,9 +365,10 @@ test("status files are reset before a run and read as numbers and hosts", () => 
   const file = paths.status(process.pid)
   expect(fs.statSync(file).mode & 0o777).toBe(0o600)
   expect(readStatuses(ctx)).toEqual([])
-  fs.appendFileSync(file, "255 login1\n0\nnot a number\n\n1 u@node1\n0 login1\n")
+  fs.appendFileSync(file, "255 login1\n0\nnot a number\n\n1 u@node1 u@gw:2222,login1,none,bad:port\n0 login1\n")
   expect(readStatuses(ctx)).toEqual([255, 0, 1, 0])
-  expect(readHosts(ctx)).toEqual(["login1", "u@node1"])
+  // Each host once, a call's jump hosts before its destination.
+  expect(readHosts(ctx)).toEqual([{ host: "login1" }, { host: "u@gw", port: 2222 }, { host: "u@node1" }])
   resetStatus(ctx)
   expect(fs.readFileSync(file, "utf8")).toBe("")
   expect(readHosts(ctx)).toEqual([])

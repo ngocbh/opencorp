@@ -183,7 +183,7 @@ async function replayed(ctx: ReachContext): Promise<Spec> {
   const reached = await runReach(ctx)
   if (reached.outcome === "ok") return reached.spec!
   const failure = new ReachFailure(reached.outcome, reached.detail)
-  throw await withProblems(ctx, failure, readHosts(ctx).map((host) => ({ host })))
+  throw await withProblems(ctx, failure, readHosts(ctx))
 }
 
 /** Runs reach_hq with no `llmConfig` and no provider: one TOOL node, so yian resolves no model. */
@@ -809,14 +809,17 @@ async function waitLoop(ctx: ReachContext, conn: Connection, deps: VisitDeps): P
   }
 }
 
-/** After a drop: close our masters, try once quietly in BatchMode (it fails at once where a login needs Duo), then
+/** After a drop: close our masters, try once quietly in BatchMode (it fails at once where a login needs Duo, and
+ *  each of its steps within `quietMs`, as over a stale connection of the owner's that we don't close), then
  *  reconnect each time the owner presses Enter; Enters typed before the prompt don't count. A failed retry has
  *  ended only the node master (`connect` does that), so the next rides the login master without a new Duo. Never
  *  offers relearning. Null when stdin ends or on Ctrl-C. */
 async function reconnect(ctx: ReachContext, port: number, deps: VisitDeps): Promise<Connection | null> {
   await exitAll(ctx)
+  const { quietMs } = ctx.limits
+  const quiet = { ...ctx.limits, promptMs: quietMs, stepMs: Math.min(ctx.limits.stepMs, quietMs) }
   try {
-    return await reach({ ...ctx, batch: true, echo: () => {} }, port)
+    return await reach({ ...ctx, batch: true, echo: () => {}, limits: quiet }, port)
   } catch {
     await exitAll(ctx)
   }

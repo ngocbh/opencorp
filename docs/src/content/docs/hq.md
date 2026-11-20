@@ -68,8 +68,8 @@ Each visit runs `opencorp hq --check` on HQ's machine, so that checkout needs th
 ## Troubleshooting
 
 A visit can't work with some SSH settings for the hosts it reaches. When a visit fails, `opencorp hq` reads
-your config for each host that `reach.sh` and its spec name, with `ssh -G` (which connects nowhere), and names
-any of these you set:
+your config for each host that `reach.sh` and its spec name, and for their jump hosts, with `ssh -G` (which
+connects nowhere), and names any of these you set:
 
 - `RemoteCommand`: SSH refuses to run a command of its own beside it, such as the one in `reach.sh`.
 - `RequestTTY force`.
@@ -87,3 +87,7 @@ Host login-tmux
   RemoteCommand tmux new -A -s main
   RequestTTY force
 ```
+
+If a visit can't reconnect after your machine sleeps, a connection your own SSH config shares may be stale: end
+it with `ssh -O exit <login host>`, or set `ServerAliveInterval` in your SSH config so SSH notices a dead
+connection.

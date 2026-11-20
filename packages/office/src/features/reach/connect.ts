@@ -9,6 +9,7 @@ import {
   control,
   endNode,
   forward,
+  jumpHost,
   lastStderr,
   type Master,
   mux,
@@ -51,10 +52,7 @@ export async function withProblems(ctx: ReachContext, error: unknown, hosts: rea
 
 /** The hosts a visit's ssh reaches for `spec`: each jump host, then HQ's machine, with their ports. */
 export function specHosts(spec: Spec): SshHost[] {
-  const jumps = (spec.jump ?? []).map((jump) => {
-    const [, host, port] = /^(.*?)(?::([0-9]+))?$/.exec(jump)!
-    return port === undefined ? { host: host! } : { host: host!, port: Number(port) }
-  })
+  const jumps = (spec.jump ?? []).flatMap((jump) => jumpHost(jump) ?? [])
   return [...jumps, spec.port === undefined ? { host: spec.host } : { host: spec.host, port: spec.port }]
 }
 

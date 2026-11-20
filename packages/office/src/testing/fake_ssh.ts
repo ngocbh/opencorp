@@ -149,17 +149,17 @@ function parse(argv: readonly string[]): Parsed {
   return { values, flags, host: argv[i], command: argv.slice(i + 1).join(" ") }
 }
 
-/** Every option the fake reads for `target` (`p`'s destination unless given), by lowercase name: `-o` first, then
- *  the `-F` file, with `userConfig` at its first `Include`; the first value of each wins, as in ssh. After the include
- *  the file reads on as before it, as in ssh. */
-function settings(p: Parsed, behavior: FakeSshBehavior, target = p.host ?? ""): Map<string, string> {
+/** Every option the fake reads for `p`'s destination, by lowercase name: `-o` first, then the `-F` file, with
+ *  `userConfig` at its first `Include`; the first value of each wins, as in ssh. After the include the file reads on
+ *  as before it, as in ssh. With `hop`, the options a ProxyJump hop to that host reads: its ssh gets `-F` alone. */
+function settings(p: Parsed, behavior: FakeSshBehavior, hop?: string): Map<string, string> {
   const found = new Map<string, string>()
-  const host = hostName(target)
+  const host = hostName(hop ?? p.host ?? "")
   const option = (line: string) => /^\s*([A-Za-z]+)\s*(?:=|\s)\s*(.*?)\s*$/.exec(line)
   const take = (key: string, value: string) => {
     if (!found.has(key)) found.set(key, value)
   }
-  for (const o of p.values.get("o") ?? []) {
+  for (const o of hop === undefined ? (p.values.get("o") ?? []) : []) {
     const m = option(o)
     if (m) take(m[1]!.toLowerCase(), m[2]!)
   }
@@ -342,7 +342,7 @@ class Run {
   }
 
   /** Reaches the last of `p`'s jump hosts: rides the nearest one with a live master (a session held on it) at the
-   *  ControlPath the config gives that hop, as a hop's own ssh would read it, then logs in to each after it; with
+   *  ControlPath the `-F` file gives that hop, as a hop's own ssh would read it, then logs in to each after it; with
    *  `logIn` false only rides. Null when a login is refused. */
   async hops(p: Parsed, batch: boolean, logIn = true): Promise<net.Socket[] | null> {
     const hops = (p.values.get("J") ?? []).flatMap((j) => j.split(","))

@@ -123,20 +123,34 @@ export interface SshHost {
   readonly port?: number
 }
 
-/** After a failed visit: `ssh -G` with the visit's config for each of `hosts`, once (a read; it connects nowhere),
- *  and a line for each host naming what the owner's config sets for it that a visit can't work with. A host ssh
- *  prints no options for names nothing. */
+/** `[user@]host[:port]`, as a jump host is written, or null for anything else (`none`, say). */
+export function jumpHost(jump: string): SshHost | null {
+  const m = /^([A-Za-z0-9_.@-]+?)(?::([0-9]{1,5}))?$/.exec(jump)
+  if (m === null || m[1] === "none") return null
+  return m[2] === undefined ? { host: m[1]! } : { host: m[1]!, port: Number(m[2]) }
+}
+
+/** After a failed visit: `ssh -G` with the visit's config for each of `hosts`, and each jump host the config gives
+ *  one, once each (a read; it connects nowhere), and a line for each host naming what the owner's config sets for it
+ *  that a visit can't work with. A host ssh prints no options for names nothing. Stops at the visit's stop. */
 export async function configProblems(ctx: ReachContext, hosts: readonly SshHost[]): Promise<string[]> {
   const lines: string[] = []
   const seen = new Set<string>()
-  for (const { host, port } of hosts) {
+  const queue = [...hosts]
+  for (let next = queue.shift(); next !== undefined && !ctx.signal?.aborted; next = queue.shift()) {
+    const { host, port } = next
     const key = `${host} ${port ?? ""}`
     if (seen.has(key)) continue
     seen.add(key)
     const ported = port === undefined ? [] : ["-p", String(port)]
     const argv: [string, ...string[]] = [ctx.ssh, "-F", ctx.paths.config, "-G", ...ported, "--", host]
-    const ran = await runChild(argv, { env: sshEnv(ctx), cwd: ctx.paths.dir, timeoutMs: CONTROL_MS })
+    const ran = await runChild(argv, { env: sshEnv(ctx), cwd: ctx.paths.dir, timeoutMs: CONTROL_MS, signal: ctx.signal })
     if (ran.code !== 0 || ran.timedOut) continue
+    const jumps = /^proxyjump (\S+)$/m.exec(ran.stdout)?.[1] ?? ""
+    for (const jump of jumps.split(",")) {
+      const hop = jumpHost(jump)
+      if (hop !== null) queue.push(hop)
+    }
     const found = breakingOptions(ran.stdout)
     if (found.length === 0) continue
     lines.push(`opencorp hq: your ssh config sets ${listed(found)} for ${host}, which a visit can't work with; see ${TROUBLESHOOTING}`)
@@ -151,8 +165,8 @@ const listed = (items: readonly string[]) =>
 /** `hq/ssh/bin/ssh`, first on PATH for reach.sh and the shell tool: the real ssh by absolute path (so ProxyJump's hop,
  *  built from the program name ssh was run as and `-F`, shares the config) with our config; each exit status but a
  *  control command's (`-O`) is appended to $OPENCORP_SSH_STATUS, so a 255 counts where a pipeline or `|| true` hides
- *  it, followed by the host it named when that's a plain `[user@]host`, which a failed visit checks the owner's config
- *  for. */
+ *  it. When the host it named is a plain `[user@]host`, the host follows, then its jump hosts from `-J` or
+ *  `-o ProxyJump`: a failed visit checks the owner's config for them. */
 export function wrapperText(realSsh: string): string {
   // The hop's command holds the program name unquoted.
   if (!safePath(realSsh)) throw new Error(`ssh's path can't be used unquoted: ${realSsh}`)
@@ -167,21 +181,39 @@ export function wrapperText(realSsh: string): string {
     "skip=",
     "last=",
     "host=",
+    "jumps=",
+    // An -o value that sets ProxyJump (`ProxyJump=a,b` or `proxyjump a,b`): its hosts, less the = and blanks.
+    "proxyjump() {",
+    "  case $1 in",
+    "    [Pp][Rr][Oo][Xx][Yy][Jj][Uu][Mm][Pp][=\\ ]*) v=${1#?????????}; jumps=${v#\"${v%%[!= ]*}\"} ;;",
+    "  esac",
+    "}",
     'for a in "$@"; do',
-    '  if [ -n "$skip" ]; then skip=; continue; fi',
+    "  case $skip in",
+    "    J) jumps=$a; skip=; continue ;;",
+    '    o) proxyjump "$a"; skip=; continue ;;',
+    "    ?) skip=; continue ;;",
+    "  esac",
     '  if [ -n "$last" ]; then host=$a; break; fi',
     "  case $a in",
     "    --) last=1 ;;",
     "    -O*) control=1; break ;;",
-    "    -[BbcDEeFIiJLlmopQRSWw]) skip=1 ;;",
+    "    -J) skip=J ;;",
+    "    -J*) jumps=${a#-J} ;;",
+    "    -o) skip=o ;;",
+    '    -o*) proxyjump "${a#-o}" ;;',
+    "    -[BbcDEeFIiLlmpQRSWw]) skip=1 ;;",
     "    -*) ;;",
     "    *) host=$a; break ;;",
     "  esac",
     "done",
-    // Only a name no option or shell word could be goes on the line.
+    // Only names no option or shell word could be go on the line.
     "case $host in -*|*[!A-Za-z0-9_.@-]*) host= ;; esac",
+    "case $jumps in -*|*[!A-Za-z0-9_.@:,-]*) jumps= ;; esac",
     // Single-quoted TS strings: `${…-}` is sh, not a template.
-    'if [ -z "$control" ] && [ -n "${OPENCORP_SSH_STATUS-}" ]; then printf \'%s\\n\' "$status${host:+ $host}" >>"$OPENCORP_SSH_STATUS"; fi',
+    'line=$status',
+    'if [ -n "$host" ]; then line="$line $host${jumps:+ $jumps}"; fi',
+    'if [ -z "$control" ] && [ -n "${OPENCORP_SSH_STATUS-}" ]; then printf \'%s\\n\' "$line" >>"$OPENCORP_SSH_STATUS"; fi',
     'exit "$status"',
     "",
   ].join("\n")
@@ -222,8 +254,9 @@ function realOrSelf(p: string): string {
   }
 }
 
-/** A step that can prompt (Duo, a password, a host key) gets 5 minutes; one over an open master 60 s. */
-export const LIMITS = Object.freeze({ promptMs: 5 * 60_000, stepMs: 60_000 })
+/** A step that can prompt (Duo, a password, a host key) gets 5 minutes; one over an open master 60 s; each step of
+ *  the quiet try after a drop, which never prompts, 20 s, so one riding a stale connection soon asks for Enter. */
+export const LIMITS = Object.freeze({ promptMs: 5 * 60_000, stepMs: 60_000, quietMs: 20_000 })
 
 /** What every reach step needs; `signal` is the visit's Ctrl-C. */
 export interface ReachContext {
@@ -237,7 +270,7 @@ export interface ReachContext {
   /** Children's output for the owner, already cleaned, as it comes. */
   readonly echo: (text: string) => void
   readonly signal?: AbortSignal
-  readonly limits: { readonly promptMs: number; readonly stepMs: number }
+  readonly limits: { readonly promptMs: number; readonly stepMs: number; readonly quietMs: number }
 }
 
 /** The env of reach.sh, the shell tool and every ssh: our wrapper first on PATH, HOME, the agent socket, and the
@@ -258,8 +291,9 @@ export function resetStatus(ctx: ReachContext): void {
   replaceFile(ctx.paths.ssh, path.basename(ctx.paths.status(process.pid)), "")
 }
 
-/** The lines the wrapper recorded since `resetStatus`, in order: each exit status, and the host its ssh named. */
-function statusLines(ctx: ReachContext): { status: number; host: string | null }[] {
+/** The lines the wrapper recorded since `resetStatus`, in order: each exit status, and the hosts its ssh named, its
+ *  jump hosts before its destination. */
+function statusLines(ctx: ReachContext): { status: number; hosts: SshHost[] }[] {
   let text: string
   try {
     text = fs.readFileSync(ctx.paths.status(process.pid), "utf8")
@@ -268,18 +302,25 @@ function statusLines(ctx: ReachContext): { status: number; host: string | null }
     throw error
   }
   return text.split("\n").flatMap((line) => {
-    const m = /^([0-9]+)(?: ([A-Za-z0-9_.@-]+))?$/.exec(line.trim())
-    return m === null ? [] : [{ status: Number(m[1]), host: m[2] ?? null }]
+    const m = /^([0-9]+)(?: ([A-Za-z0-9_.@-]+)(?: ([A-Za-z0-9_.@:,-]+))?)?$/.exec(line.trim())
+    if (m === null) return []
+    const jumps = (m[3] ?? "").split(",").flatMap((jump) => jumpHost(jump) ?? [])
+    return [{ status: Number(m[1]), hosts: m[2] === undefined ? [] : [...jumps, { host: m[2] }] }]
   })
 }
 
 /** The exit statuses the wrapper recorded since `resetStatus`, in order. */
 export const readStatuses = (ctx: ReachContext): number[] => statusLines(ctx).map((line) => line.status)
 
-/** The hosts the wrapper's ssh calls named since `resetStatus`, each once, in order. */
-export const readHosts = (ctx: ReachContext): string[] => [
-  ...new Set(statusLines(ctx).flatMap((line) => (line.host === null ? [] : [line.host]))),
-]
+/** The hosts the wrapper's ssh calls named since `resetStatus`, jump hosts included, each once, in order. */
+export function readHosts(ctx: ReachContext): SshHost[] {
+  const hosts = new Map<string, SshHost>()
+  for (const { host, port } of statusLines(ctx).flatMap((line) => line.hosts)) {
+    const key = `${host} ${port ?? ""}`
+    if (!hosts.has(key)) hosts.set(key, port === undefined ? { host } : { host, port })
+  }
+  return [...hosts.values()]
+}
 
 /** Leaves raw mode on a terminal and pauses `stdin`, so this process holds no read that would take the keys meant for
  *  ssh's prompt on /dev/tty; after each answer, before each child that may prompt. */

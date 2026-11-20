@@ -126,7 +126,7 @@ test("commands get our env, stdin from /dev/null, an empty private folder that i
   const work = state.workDir()
   state.close()
   expect(fs.existsSync(work)).toBe(false)
-  const short = new Learning({ ...ctx, limits: { promptMs: 300, stepMs: 300 } }, new Script(["1"]), new PassThrough(), [], 49381)
+  const short = new Learning({ ...ctx, limits: { promptMs: 300, stepMs: 300, quietMs: 300 } }, new Script(["1"]), new PassThrough(), [], 49381)
   onTestFinished(() => short.close())
   expect(JSON.parse(await runShell({ command: "sleep 10", why: "wait" }, short))).toMatchObject({
     exit: null,

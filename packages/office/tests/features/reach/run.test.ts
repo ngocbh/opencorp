@@ -640,6 +640,22 @@ test("a drop is retried once quietly in BatchMode before asking for Enter", asyn
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
 })
 
+test("a drop's quiet try gives each step at most quietMs, so a login that hangs soon asks for Enter", async () => {
+  const { dir, fake, paths } = await approvedHome({}, { signed_in_at: new Date().toISOString() })
+  // Long enough for a step that may prompt; the quiet try never does.
+  const v = await connected(dir, fake, { signIn: false, open: false }, { limits: { promptMs: 60_000, stepMs: 5000, quietMs: 500 } })
+  // As over a stale connection, login1 answers nothing.
+  fake.set({ hosts: { login1: { login: "hang" } } })
+  const dropped = performance.now()
+  dropNode(paths)
+  await waitFor(() => v.errors.includes(LOST), { timeout: 10_000, what: "press Enter" })
+  expect(performance.now() - dropped).toBeLessThan(10_000)
+  expect(v.errors).toEqual([LOST])
+  v.sigint()
+  expect(await v.done).toBe(0)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
 test("when the quiet try fails it waits for Enter, and again after each failure", async () => {
   const { dir, fake } = fakeHome({ batch: "refuse" })
   const remote = await fakeRemote(dir)
