@@ -21,8 +21,8 @@ init takes five steps. It asks the first three on the terminal:
    yian's own login. For OpenAI you can sign in to your ChatGPT subscription instead: init shows a
    link and a code to enter in a browser on any device, and keeps the sign-in in
    `office/connections/office.auth.json`. The model is checked before it's saved, and the key or
-   sign-in stays in the office, readable only by you. A model kept from an earlier run is checked
-   again; if it doesn't answer, choose "Try again" or "Set up the model again".
+   sign-in stays in the office, readable only by you. Before the chat, a model kept from an earlier
+   run is checked again; if it doesn't answer, choose "Try again" or "Set up the model again".
 2. Password: it logs in your new devices.
 3. Remote: the git remote for the company's repo, or "None for now".
 4. Company: a chat with OpenCorp in the TUI. Tell it about yourself, the company and your first AI
@@ -30,8 +30,9 @@ init takes five steps. It asks the first three on the terminal:
 5. This machine: installs the office as a service (launchd on macOS, systemd on Linux, otherwise
    tmux or a background process) and adds this device. There's nothing to answer.
 
-Leaving the chat (Ctrl+C twice) stops init, and nothing is created. If the model fails in the
-chat, init says why and stops; the next `opencorp init` checks the model first.
+Leaving the chat (Ctrl+C twice) before you say Yes stops init, and nothing is created. If the
+model fails in the chat, init says why and stops; the next `opencorp init` checks the model first.
+If the chat can't start, init says why; run it again with `TERM=dumb` or `--provider-stdin`.
 
 Where the TUI can't draw (no terminal, or `TERM=dumb`), there's no chat: init shows the company
 made from your flags and defaults and asks "Create this company?".

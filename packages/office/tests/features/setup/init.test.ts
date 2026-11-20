@@ -351,6 +351,25 @@ test("a kept model that doesn't answer asks Try again or Set up the model again 
   }
 })
 
+test("a kept model is checked only where the chat runs", async () => {
+  const dir = tempDir()
+  const office = path.join(dir, "home", "office")
+  fs.mkdirSync(path.join(office, "connections"), { recursive: true, mode: 0o700 })
+  fs.chmodSync(office, 0o700)
+  fs.writeFileSync(setupConnectionFile(office), JSON.stringify({ llm_config: { provider: "openai" } }), { mode: 0o600 })
+  let checks = 0
+  const checkModel = async () => {
+    checks++
+    return "Connection error"
+  }
+  // No chat, as where the TUI can't draw: the flags make the company, and the model isn't asked anything.
+  const ask = new Script([PASSWORD, PASSWORD, "1", ""])
+  await expect(init(path.join(dir, "home"), ask, { ...base(dir), known: FLAGS, checkModel })).rejects.toThrow(STOP)
+  expect(checks).toBe(0)
+  expect(ask.seen).toContain(`Model provider: up to date at ${setupConnectionFile(office)}`)
+  expect(loadRepo(path.join(dir, "home", "company")).company?.name).toBe("Acme")
+})
+
 test("without chat, init says why, shows the company from the flags and defaults, and asks to create it; No stops", async () => {
   const dir = tempDir()
   const ask = new Script([PASSWORD, PASSWORD, "1", ""])

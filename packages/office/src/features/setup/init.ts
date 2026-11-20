@@ -129,7 +129,7 @@ export interface InitOptions {
  * Creates the company at `home`, then sets up this machine's office with `onboard`.
  *
  * Everything is asked before the chat, and nothing after it. The model comes first: the office's setup connection
- * from `stdin`, kept from an earlier run (and checked again), or asked for. Then the CEO's password, asked without
+ * from `stdin`, kept from an earlier run (checked again where the chat will run), or asked for. Then the CEO's password, asked without
  * echo (and skipped without a terminal), of which `person.yaml` holds only the hash, and the remote, `known.remote`
  * or asked for. Then the company, its CEO (you) and its first teammates: from the interview's `chat` with OpenCorp on
  * that model, which starts from `known`; where there's no chat, from `known` and defaults, shown to the owner to
@@ -192,17 +192,17 @@ async function initLocked(one: Launch, prompter: Prompter, options: InitOptions)
   )
   const file = setupConnectionFile(one.office)
   const { listers, checkModel, auth } = options
+  const chat = prompter.interactive ? options.chat : undefined
   let wrote = await ensureProvider(one.office, prompter, { listers, stdin: options.stdin, checkModel, auth })
-  // One kept from an earlier run is checked as a new one is: a model that stopped answering is set up again here,
-  // before the chat needs it.
-  if (!wrote && !(await modelAnswers(prompter, await setupProvider(file), checkModel))) {
+  // Where the chat will run, one kept from an earlier run is checked as a new one is: a model that stopped answering
+  // is set up again here, before the chat needs it. Without a chat, init asks the model nothing.
+  if (!wrote && chat !== undefined && !(await modelAnswers(prompter, await setupProvider(file), checkModel))) {
     await askProvider(one.office, prompter, { listers, checkModel, auth })
     wrote = true
   }
   prompter.say(`Model provider: ${wrote ? "saved to" : "up to date at"} ${file}`)
 
   // Before the password, so flags that can't make a company, or a user id with no account, stop init first.
-  const chat = prompter.interactive ? options.chat : undefined
   const told = chat === undefined ? null : facts(known, defaults)
   const fallback = chat === undefined ? fallbackDraft(known, defaults) : null
 

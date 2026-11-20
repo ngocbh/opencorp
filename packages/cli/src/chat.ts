@@ -17,8 +17,9 @@ export const terminal = () => drawable(process.env, Boolean(process.stdin.isTTY)
  *  ended, with why when its run failed, or `left` when the owner left the TUI first, which ends it. */
 export async function localChat(session: LocalSession): Promise<ChatEnd> {
   const { LocalHost, OWNER, serveLocal } = await import("@opencorp/office/server/local")
-  // OpenTUI loads its native library and assets from the install, as main.ts has it load them for a command: the
-  // install child runs no command, and a caller's OTUI_ASSET_ROOT is never taken.
+  // In the binary, OpenTUI loads its native library and assets from the install, never from a caller's
+  // OTUI_ASSET_ROOT, as main.ts has it for a command: the install child runs no command. A checkout loads them from
+  // node_modules.
   const assets = (await import("@opencorp/office/platform")).tuiAssetRoot()
   if (assets !== null) process.env.OTUI_ASSET_ROOT = assets
   const host = await LocalHost.start(session)

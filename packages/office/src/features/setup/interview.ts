@@ -5,11 +5,12 @@ import { hashPassword, passwordProblem } from "../../runtime/auth/passwords.ts"
 import { providerSecrets } from "../../models/check.ts"
 import type { Provider } from "../../models/provider.ts"
 import { type Draft, fieldProblems } from "../../company/draft.ts"
-import type { BuiltinChat, BuiltinSession } from "../../runtime/sessions/builtin.ts"
+import type { BuiltinChat, BuiltinSession, ChatEnd } from "../../runtime/sessions/builtin.ts"
 import { workerEnv } from "../../runtime/worker/spawn.ts"
 import type { Env } from "../../util/env.ts"
 import { newId } from "../../util/ids.ts"
 import { pyJson, redact, strip } from "../../util/redact.ts"
+import { messageOf } from "../../util/sockets.ts"
 import { embedded } from "../../platform.ts"
 import { Proposal, proposeCompanyTool } from "./tools/propose_company.ts"
 import initYaml from "./flows/init.yaml" with { type: "file" }
@@ -181,25 +182,35 @@ export function interviewSession(
  * setup connection (on a subscription, with the sign-in beside it). Accepted on its card, the company is the result
  * however the chat ends after.
  *
- * Rejects with `KeyboardInterrupt` when the owner left the chat first; with `OnboardError` when the session failed
- * (saying why, without the model's key or sign-in, and that the next `opencorp init` checks the model first) or ended
- * with nothing accepted; and with `ProviderError` when the connection can't be used.
+ * Rejects with `KeyboardInterrupt` when the owner left the chat first; with `OnboardError` when the chat couldn't
+ * start (its host or the TUI), saying why and how to make the company without it, when the session failed (saying
+ * why and that the next `opencorp init` checks the model first), or when it ended with nothing accepted, never with
+ * the model's key or sign-in; and with `ProviderError` when the connection can't be used.
  */
 export async function interview(chat: InterviewChat, options: InterviewOptions): Promise<Draft> {
   const provider = await setupProvider(options.file)
   const proposal = new Proposal()
-  const end = await chat(interviewSession(provider, options, proposal))
+  // Read at each use: the run's first model call may refresh a subscription's tokens.
+  const secrets = () => providerSecrets(provider, workerEnv(options.environ ?? process.env))
+  let end: ChatEnd
+  try {
+    end = await chat(interviewSession(provider, options, proposal))
+  } catch (error) {
+    if (proposal.accepted !== null) return proposal.accepted
+    if (error instanceof KeyboardInterrupt) throw error
+    throw new OnboardError(
+      `can't run the interview's chat: ${clean(redact(messageOf(error), [], secrets()))}; run \`opencorp init\` with ` +
+        "TERM=dumb to make the company from your flags, or pass the provider with --provider-stdin",
+    )
+  }
   if (proposal.accepted !== null) return proposal.accepted
   if (end.status === "left") throw new KeyboardInterrupt()
   if (end.status === "failed") {
-    // Read now: the run's first model call may have refreshed a subscription's tokens.
-    const secrets = providerSecrets(provider, workerEnv(options.environ ?? process.env))
-    const why = redact(end.error ?? "the session failed", [], secrets)
-    const again = "run `opencorp init` again"
-    const message = signInRemedy(why, { refused: `${again} to sign in again`, retry: `${again} later` })
+    const why = redact(end.error ?? "the session failed", [], secrets())
+    const message = signInRemedy(why, { refused: "sign in to ChatGPT again", retry: "OpenAI may answer later" })
     throw new OnboardError(
-      `the model couldn't run the interview: ${clean(message)}; ${again}: it checks the model first and offers to ` +
-        "set it up again",
+      `the model couldn't run the interview: ${clean(message)}; run \`opencorp init\` again: it checks the model ` +
+        "first and offers to set it up again",
     )
   }
   throw new OnboardError("the interview ended before a company was accepted; run `opencorp init` again")

@@ -3,6 +3,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
+import { lockFile } from "@ngocbh/yian/platform"
 import type { Draft } from "../../../src/company/draft.ts"
 import type { BuiltinSession, CardAnswer, ChatEnd } from "../../../src/runtime/sessions/builtin.ts"
 import { OWNER } from "../../../src/server/local/host.ts"
@@ -244,6 +245,46 @@ test("a failed session stops init naming why, the key redacted, and says init ch
   expect(error.message).toContain("the model couldn't run the interview: 401 from the server: bad key")
   expect(error.message).not.toContain(KEY)
   expect(error.message).toEndWith("; run `opencorp init` again: it checks the model first and offers to set it up again")
+})
+
+test("a refused sign-in says once to run init again", async () => {
+  const { file, sessions } = await office({ llm_config: LLM_CONFIG })
+  const refused = "OpenAI refused the sign-in (HTTP 401). Run 'yian auth openai' and start a new run"
+  const c = chat([], { end: { status: "failed", error: refused } })
+  const error = await rejection(interview(c.run, { file, sessions, facts: facts({}, login) }))
+  expect(error.message).toContain("(HTTP 401): sign in to ChatGPT again;")
+  expect(error.message).not.toContain("yian auth")
+  expect(error.message.split("run `opencorp init` again")).toHaveLength(2)
+})
+
+/** What init says when its chat can't open: why, then the two ways to make the company without it. */
+const NO_CHAT_HINT =
+  "; run `opencorp init` with TERM=dumb to make the company from your flags, or pass the provider with --provider-stdin"
+
+test("a chat that can't start stops init naming why and the ways without it, the key redacted", async () => {
+  const { file, sessions } = await office({ llm_config: { ...LLM_CONFIG, api_key: KEY } })
+  const broken: InterviewChat = async () => {
+    throw new Error(`the TUI wouldn't load (${KEY})`)
+  }
+  const error = await rejection(interview(broken, { file, sessions, facts: facts({}, login) }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toStartWith("can't run the interview's chat: the TUI wouldn't load (")
+  expect(error.message).not.toContain(KEY)
+  expect(error.message).toEndWith(NO_CHAT_HINT)
+  // So does a host that can't start: here another host holds office/setup.
+  fs.mkdirSync(sessions, { mode: 0o700 })
+  const held = lockFile(path.join(sessions, "lock"), { private: true })
+  try {
+    const run = hostChat(async () => {
+      throw new Error("the host started")
+    })
+    const busy = await rejection(interview(run, { file, sessions, facts: facts({}, login) }))
+    expect(busy).toBeInstanceOf(OnboardError)
+    expect(busy.message).toStartWith(`can't run the interview's chat: another host is running the sessions in ${sessions}`)
+    expect(busy.message).toEndWith(NO_CHAT_HINT)
+  } finally {
+    held.release()
+  }
 })
 
 test("leaving the chat is a KeyboardInterrupt, and ending it with nothing accepted says so", async () => {
