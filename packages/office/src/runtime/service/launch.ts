@@ -270,8 +270,8 @@ export function runCommand(
       detached: group,
       ...(env ? { env } : {}),
     })
-    // In its own session the command gets neither a terminal's Ctrl-C nor the setup screen's SIGINT to this
-    // process's group, so this process's exit kills its group instead. The listener stays until `close`, a little
+    // In its own session the command gets neither a terminal's Ctrl-C nor a SIGINT sent to this process's group, so
+    // this process's exit kills its group instead. The listener stays until `close`, a little
     // after the command exits: a kill in between can't hit another process while the group has members (a group id
     // isn't reused while it has any), only if it empties and its id is reused as a new group's in that window.
     const onExit = () => killGroup(child.pid!)

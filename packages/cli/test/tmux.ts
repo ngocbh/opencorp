@@ -65,7 +65,7 @@ export function terminal(
       }
     },
     keys: (...keys: string[]) => void tmux("send-keys", "-t", "tty", ...keys),
-    /** Whether the window shows the alternate screen, as the setup screen draws on. */
+    /** Whether the window shows the alternate screen, as the TUI draws on. */
     alternate: () => tmux("display-message", "-p", "-t", "tty", "#{alternate_on}").trim() === "1",
     /** The `opencorp` process in the pane (the shell's child), or undefined. */
     pid: () => {

@@ -1132,7 +1132,7 @@ export async function userGit(args: readonly string[], { env = process.env }: { 
   return done.code === 127 ? { ...done, stderr: `can't run git: ${done.stderr}` } : done
 }
 
-/** What to do when a clone or push fails: under `opencorp`'s setup screen git has no terminal to ask on. */
+/** What to do when a clone or push fails: git may have had no terminal to ask on. */
 export const GIT_ACCESS =
   "if git needs a login or a new host key, set that up in a terminal first (`gh auth login`, or `ssh -T git@HOST` once)"
 

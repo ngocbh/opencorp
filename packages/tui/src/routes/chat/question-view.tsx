@@ -17,7 +17,7 @@ import { tint, useTheme } from "../../context/theme"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
 import { clearFirst, useBindings, useOpenCorpModeStack } from "../../keymap"
-import { SecretInput } from "../../setup/secret"
+import { SecretInput } from "../../ui/secret-input"
 import { createReadThrough, wrap } from "../../ui/read-through"
 import type { CardPage, PageAnswer } from "./answer"
 import { display } from "../../util/printable"
@@ -72,14 +72,6 @@ export function QuestionView(
     hidden?: boolean
     /** Gets the view's handle once, as it mounts. */
     ref?: (view: QuestionViewHandle) => void
-    /** The row the cursor starts on (default 0). */
-    selected?: number
-    /** At most this many options show at once, around the cursor; every option when unset. */
-    maxOptions?: number
-    /** Whether the box is one line, which never holds a line break. */
-    singleLine?: boolean
-    /** The text the first page's box starts with. */
-    draft?: string
   }>,
 ) {
   const { theme } = useTheme()
@@ -90,8 +82,8 @@ export function QuestionView(
 
   const [store, setStore] = createStore({
     page: 0,
-    selected: props.selected ?? 0,
-    answers: (props.draft ? [{ picked: [], text: props.draft }] : []) as PageAnswer[],
+    selected: 0,
+    answers: [] as PageAnswer[],
   })
 
   const active = () => props.enabled !== false && !props.hidden
@@ -103,18 +95,6 @@ export function QuestionView(
   const answerRows = createMemo(() => options().length + (page()?.typed ? 1 : 0))
   const rows = createMemo(() => answerRows() + actions().length)
   const onTyped = createMemo(() => page()?.typed === true && store.selected === options().length)
-  // The first option shown: moved only as far as keeps the cursor in view, so the list doesn't jump. The cursor
-  // counts as the last option when it is below them, so the typed row shows the last window.
-  let top = 0
-  const first = createMemo(() => {
-    const max = props.maxOptions
-    const count = options().length
-    if (!max || count <= max) return (top = 0)
-    const cursor = Math.min(store.selected, count - 1)
-    return (top = Math.min(Math.max(top, cursor - max + 1), cursor))
-  })
-  // Numbers and the cursor stay absolute, so a digit picks the same option however far the list has scrolled.
-  const shown = createMemo(() => options().slice(first(), props.maxOptions ? first() + props.maxOptions : undefined))
   // A signal, so the effects below see a box that mounts later.
   const [box, setBox] = createSignal<TextareaRenderable>()
 
@@ -192,8 +172,6 @@ export function QuestionView(
 
   function goTo(index: number) {
     sync()
-    // The window belongs to the page left; the new page's list starts at its top.
-    top = 0
     setStore({ page: index, selected: 0 })
   }
 
@@ -397,9 +375,8 @@ export function QuestionView(
               </text>
             </Show>
             <box visible={read()} flexShrink={0}>
-              <For each={shown()}>
-                {(opt, at) => {
-                  const i = () => first() + at()
+              <For each={options()}>
+                {(opt, i) => {
                   const current = () => i() === store.selected
                   return (
                     <box
@@ -464,19 +441,6 @@ export function QuestionView(
                           enabled={onTyped() && active()}
                           onChange={(text) => setAnswer((a) => ({ ...a, text }))}
                           onSubmit={() => {}}
-                        />
-                      ) : props.singleLine ? (
-                        // An input drops line breaks typed or pasted; Enter reaches the view's keys first.
-                        <input
-                          flexGrow={1}
-                          ref={ref}
-                          value={start}
-                          placeholder="Type your answer here"
-                          placeholderColor={theme.textMuted}
-                          textColor={theme.text}
-                          focusedTextColor={theme.text}
-                          cursorColor={theme.primary}
-                          cursorStyle={tuiConfig.cursor}
                         />
                       ) : (
                         <textarea

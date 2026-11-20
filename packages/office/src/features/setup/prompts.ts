@@ -215,7 +215,7 @@ export class TtyPrompter implements Prompter {
     const own = options.includes(defaultAnswer) ? "" : defaultAnswer
     const picked = await this.pick(question, [...options, TYPE_OWN], own ? TYPE_OWN : defaultAnswer, true)
     if (picked !== TYPE_OWN) return picked
-    // An empty typed answer is the default, as on the JSON path, so a deployment is never saved empty.
+    // An empty typed answer is the default, so a deployment is never saved empty.
     return (await this.ask(question, own)) || defaultAnswer
   }
 

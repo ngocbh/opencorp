@@ -28,8 +28,7 @@ const NAMES = [
   "VersionConflict", "ProfileManagerRequest",
   "AddDeviceRequest", "LoginRequest", "SetPasswordRequest", "Connection", "ConnectionList", "ModelOption",
   "ModelList", "SetModelRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest",
-  "ConnectionLogin", "SetupPrompt", "SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep",
-  "SetupAnswer", "OfficeInfo", "MessageText", "ModelName", "Rule", "RuleFileError", "RuleList", "RemoveRuleRequest",
+  "ConnectionLogin", "OfficeInfo", "MessageText", "ModelName", "Rule", "RuleFileError", "RuleList", "RemoveRuleRequest",
   "RulePattern", "Instrument", "InstrumentOutput", "InstrumentRemoved", "InstrumentKeysRequest", "InstrumentSizeRequest",
   "InstrumentScreen",
 ]
@@ -136,12 +135,6 @@ const BODIES = [
 
 test("every route body has a fixture", () => {
   expect(stems(FIXTURES)).toEqual(expect.arrayContaining(BODIES))
-})
-
-const SETUP = ["SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep", "SetupAnswer"]
-
-test("every setup message has a fixture", () => {
-  expect(stems(FIXTURES)).toEqual(expect.arrayContaining(SETUP))
 })
 
 test("optional fields default", () => {
@@ -498,35 +491,6 @@ test("message and part ids may be derived from the run log", () => {
     ["01JA1W0000000000000000000A:000000000012", "01JA1W0000000000000000000A:chat#0/reply:3"])
   expect(Schemas.Message.safeParse(withValue(data, ["id"], "")).success).toBe(false)
   expect(Schemas.Message.safeParse(withValue(data, ["parts", 0, "id"], "")).success).toBe(false)
-})
-
-test("setup prompts are a discriminated union", () => {
-  expect(Schemas.SetupPrompt.parse(load(FIXTURES, "SetupChoose")).type).toBe("choose")
-  const issues = Schemas.SetupPrompt.safeParse({ type: "shout", text: "hi" }).error?.issues ?? []
-  expect(issues.map((issue) => issue.code)).toEqual(["invalid_union"])
-  expect((issues[0] as { note?: string }).note).toBe("No matching discriminator")
-})
-
-test("a hand_over, take_back, command, result or review line no longer parses as a setup prompt", () => {
-  const lines = [
-    { type: "hand_over", why: "Running the command. SSH asks here for any password, Duo or host key." },
-    { type: "take_back" },
-    { type: "command", title: "The model wants to run a command: look", warning: "", lines: ["  1  ls"] },
-    { type: "result", title: "Exited 0", ok: true, lines: [] },
-    { type: "review", title: "Save", files: [{ name: "a", lines: [] }], risks: [], warning: "" },
-  ]
-  for (const line of lines) {
-    const issues = Schemas.SetupPrompt.safeParse(line).error?.issues ?? []
-    expect(issues.map((issue) => issue.code)).toEqual(["invalid_union"])
-    expect((issues[0] as { note?: string }).note).toBe("No matching discriminator")
-  }
-})
-
-test("a choice takes no typed answer unless it says so", () => {
-  const choose = Schemas.SetupChoose.parse({ type: "choose", question: "Model provider", options: ["anthropic"] })
-  expect(choose.typed).toBe(false)
-  expect(JSON.parse(JSON.stringify(choose)).typed).toBe(false)
-  expect(Schemas.SetupChoose.parse(load(FIXTURES, "SetupChoose")).typed).toBe(true)
 })
 
 test("company defaults no longer take idle end", () => {

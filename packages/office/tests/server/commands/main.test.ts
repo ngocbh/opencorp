@@ -5,9 +5,8 @@ import { EventEmitter } from "node:events"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
-import readline from "node:readline"
 import { Readable, Writable } from "node:stream"
-import { type HqStatus, SetupPrompt } from "@opencorp/protocol"
+import type { HqStatus } from "@opencorp/protocol"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { loadRepo } from "../../../src/company/loader.ts"
 import { writeCompany } from "../../../src/company/template.ts"
@@ -59,24 +58,21 @@ function standIns(dir: string) {
     },
     listers: NO_LISTING,
     checkModel: async () => null,
-    guardStdout: () => {
-      throw new Error("in-process tests never guard stdout")
-    },
   } satisfies Partial<Setup>
   return { ...setup, out: () => stdout.text(), err: () => stderr.text() }
 }
 
-test.each(["init", "onboard"])("json prompts and provider stdin together are refused [%s]", async (command) => {
+test.each(["init", "onboard"])("--json-prompts is an unknown flag of init and onboard [%s]", async (command) => {
   const dir = tempDir()
   const s = standIns(dir)
-  expect(await main([command, "--home", dir, "--json-prompts", "--provider-stdin"], s)).toBe(2)
-  expect(s.err()).toContain("not allowed with argument --json-prompts")
+  expect(await main([command, "--home", dir, "--json-prompts"], s)).toBe(2)
+  expect(s.err()).toStartWith(`usage: opencorp ${command} `)
+  expect(s.err()).toContain(`opencorp ${command}: error: Unknown option '--json-prompts'`)
 })
 
-test("json prompts is not in the help", async () => {
+test("init's help names --provider-stdin and the JSON it reads", async () => {
   const s = standIns(tempDir())
   expect(await main(["init", "--help"], s)).toBe(0)
-  expect(s.out()).not.toContain("--json-prompts")
   expect(s.out()).toContain("--provider-stdin")
   expect(s.out()).toContain("VLLM_BASE_URL")
 })
@@ -965,73 +961,6 @@ test(
     expect(fs.existsSync(path.join(dir, "calls.log"))).toBe(false)
   },
   150_000,
-)
-
-/** What the test answers `prompt` with, as the setup screen would; null when it needs no answer. */
-function answer(prompt: ReturnType<typeof SetupPrompt.parse>): string | null {
-  if (prompt.type === "choose") return prompt.question === "Model provider" ? "anthropic" : prompt.default
-  if (prompt.type === "secret") return KEY
-  if (prompt.type === "ask") return ""
-  return null
-}
-
-test(
-  "onboard with json prompts in a real process keeps the channel clean",
-  async () => {
-    const fake = await fakeLlm()
-    fake.script({ content: "OK" })
-    const dir = tempDir()
-    const env = childEnv(dir)
-    const { home, stop } = childHome(env)
-    const done = await realInit(home, env, fake.env(), dir)
-    expect(done.code, done.stderr).toBe(0)
-    await stop()
-    const file = setupConnectionFile(path.join(home, "office"))
-    fs.unlinkSync(file) // so onboard asks for the provider
-    // The stray output comes after stdout is guarded, so it must land on stderr, not between prompts.
-    const script = driver(
-      dir,
-      "{ listers: { azureDeployments: async () => [], providerModels: async () => [] }, checkModel: async () => " +
-        '{ console.log("a stray print"); process.stdout.write("a stray write\\n"); return null } }',
-    )
-    const lines: string[] = []
-    const kinds = new Set<string>()
-    const bad: string[] = []
-    const argv = [...script, "onboard", "--home", home, "--json-prompts", "--service", "background"]
-    const result = await spawnChild(argv, env, {
-      bound: 60_000,
-      cwd: dir,
-      talk: (child) => {
-        readline.createInterface({ input: child.stdout }).on("line", (line) => {
-          lines.push(line)
-          let prompt
-          try {
-            prompt = SetupPrompt.parse(JSON.parse(line))
-          } catch {
-            bad.push(line)
-            return
-          }
-          kinds.add(prompt.type)
-          const reply = answer(prompt)
-          if (reply !== null) child.stdin.write(`${JSON.stringify({ answer: reply })}\n`)
-        })
-      },
-    })
-    const out = result.stdout.toString()
-    expect(result.code, result.stderr).toBe(0)
-    expect(result.stderr).toContain("a stray print")
-    expect(result.stderr).toContain("a stray write")
-    expect(out).not.toContain("a stray print")
-    expect(out).not.toContain("a stray write")
-    expect(bad).toEqual([])
-    expect(lines.length).toBeGreaterThan(0)
-    expect(out).not.toContain(KEY)
-    expect(result.stderr).not.toContain(KEY)
-    expect([...kinds]).toEqual(expect.arrayContaining(["step", "say"]))
-    expect(JSON.parse(fs.readFileSync(file, "utf8")).llm_config.api_key).toBe(KEY)
-    expect(fs.existsSync(path.join(dir, "calls.log"))).toBe(false)
-  },
-  220_000,
 )
 
 test(

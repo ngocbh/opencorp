@@ -8,7 +8,6 @@
     ".": "./src/index.tsx",
     "./editor-launch": "./src/editor-launch.ts",
     "./profile": "./src/routes/profile/profile.ts",
-    "./setup": "./src/setup/run.tsx",
     "./fake-office": "./test/fixture/fake-office.ts"
   },
   "scripts": {

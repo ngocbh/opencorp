@@ -244,8 +244,6 @@ export function formatKeyBindings(bindings: Parameters<typeof formatCommandBindi
 
 /**
  * The keymap parts every screen needs: the mode stack, comma lists, key aliases and the base layout fallback.
- * The setup screen takes only these; it has no leader chords, and its boxes are inputs, which the managed
- * textarea layer skips.
  */
 export function registerOpenCorpBaseKeymap(keymap: OpenTuiKeymap) {
   const modeStack = createOpenCorpModeStack(keymap)

@@ -1,9 +1,11 @@
 // `opencorp init` on a real terminal, in tmux: the model, the password and the remote on the plain terminal, then the
 // interview, a chat with OpenCorp in the TUI on the no-office host, whose card the owner says Yes to; then the office
-// opens. Each test's home is a temp folder whose office.json names a fake model of its own, which answers the model
-// check; every scripted reply has a `match`, and each test uses all of them.
+// opens. `opencorp onboard` asks all of its questions on the plain terminal, then the office opens. Each test's home is
+// a temp folder whose office.json names a fake model of its own, which answers the model check; every scripted reply
+// has a `match`, and each test uses all of them.
 import { describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
+import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { FakeLLM, LLM_CONFIG, type ScriptedReply } from "@opencorp/office/testing/fake_llm"
@@ -235,5 +237,94 @@ describe.skipIf(!TMUX)("init on a real terminal: the plain steps, then a chat wi
     expect(again.alternate()).toBe(false)
     again.keys("C-c")
     expect(await again.exit()).toBe("exit=130")
+  })
+})
+
+/** `password`'s salted scrypt hash in the PHC form a person.yaml keeps, at a low cost so the test stays quick. */
+function phc(password: string): string {
+  const salt = crypto.randomBytes(16)
+  const b64 = (bytes: Buffer) => bytes.toString("base64").replace(/=+$/, "")
+  const key = crypto.scryptSync(password, salt, 32, { N: 2 ** 10, r: 8, p: 1 })
+  return `$scrypt$ln=10,r=8,p=1$${b64(salt)}$${b64(key)}`
+}
+
+/** `opencorp <argv>` through the wrapper with `c.env` in `cwd`, `input` on stdin; resolves to its exit code and output,
+ *  killed after 120 s. Async, since the fake model it may call answers from this process. */
+function opencorp(c: Home, argv: string[], input: string, cwd: string): Promise<{ code: number | null; out: string }> {
+  const child = spawn(WRAPPER, argv, { cwd, env: c.env, stdio: ["pipe", "pipe", "pipe"] })
+  let out = ""
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => (out += chunk))
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => (out += chunk))
+  child.stdin.on("error", () => {})
+  child.stdin.end(input)
+  const timer = setTimeout(() => child.kill("SIGKILL"), 120_000)
+  return new Promise((resolve) =>
+    child.on("close", (code) => {
+      clearTimeout(timer)
+      resolve({ code, out })
+    }),
+  )
+}
+
+describe.skipIf(!TMUX)("onboard on a real terminal: every question on the plain terminal, then the office", () => {
+  test("onboard --from the first home's company asks which human you are and their password on the terminal, then opens the office", async () => {
+    // The first home's init checks its model; the second home's onboard keeps the model its office.json names.
+    const c = await setUp([{ match: CHECK, content: "OK" }])
+    const first = path.join(c.root, "first")
+    const stop = (home: string) =>
+      execFileSync(WRAPPER, ["stop", "--home", home], { env: c.env, stdio: "ignore", timeout: 60_000 })
+    let t: Terminal | undefined
+    // The hooks run in the order they are added: with a terminal, its own (added after this one) ends it first, and
+    // the last hook stops the second office and removes the home.
+    onTestFinished(() => {
+      stop(first)
+      if (!t) fs.rmSync(c.root, { recursive: true, force: true })
+    })
+    const flags = ["--company", "Acme Robotics", "--name", "Hong Ngoc Bui", "--handle", "ngocbh", "--no-device"]
+    const provider = JSON.stringify({ llm_config: LLM_CONFIG, env: c.llm.env() })
+    const argv = ["init", "--home", first, "--provider-stdin", ...flags, "--service", "background"]
+    const made = await opencorp(c, argv, provider, c.root)
+    expect(made.code, made.out).toBe(0)
+    stop(first)
+    // The CEO gets a password, as `opencorp password` would give them one.
+    const company = path.join(first, "company")
+    const person = path.join(company, "people", "ngocbh", "person.yaml")
+    fs.appendFileSync(person, `password_hash: ${JSON.stringify(phc(PASSWORD))}\n`)
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", ...args], {
+        cwd: company,
+        env: { ...c.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+        stdio: "ignore",
+        timeout: 30_000,
+      })
+    git("add", "-A")
+    git("commit", "-qm", "Give the CEO a password")
+
+    t = terminal(c, ["onboard", "--home", c.home, "--from", company, "--service", "background"], { cwd: c.project })
+    onTestFinished(() => {
+      stop(c.home)
+      fs.rmSync(c.root, { recursive: true, force: true })
+    })
+    onTestFinished(() => expect(c.llm.pending()).toEqual([]))
+    await t.see("Step 1 of 4: Company")
+    await t.see("Which of them are you?")
+    expect(t.screen()).toContain("ngocbh")
+    expect(t.alternate()).toBe(false)
+    t.keys("Enter")
+    await t.see("@ngocbh's password (not shown)")
+    t.type("not-the-password-1")
+    await t.see("That doesn't work: wrong password")
+    t.type(PASSWORD)
+    await t.see(`Model provider: up to date at ${path.join(c.home, "office", "connections", "office.json")}`)
+    expect(t.screen()).not.toContain(PASSWORD)
+    expect(t.alternate()).toBe(false)
+    // The office's TUI, in the project folder, as @ngocbh on this device.
+    await t.see("Who do you want to talk to?", 120_000)
+    expect(t.alternate()).toBe(true)
+    const me = JSON.parse(fs.readFileSync(path.join(c.home, "identity.json"), "utf8"))
+    expect(me.handle).toBe("ngocbh")
+    expect(fs.readFileSync(path.join(c.home, "company", "people", "ngocbh", "person.yaml"), "utf8")).toContain(me.device)
+    expect(holding(c.root, PASSWORD)).toEqual([])
+    expect(t.ended()).toBe(false)
   })
 })

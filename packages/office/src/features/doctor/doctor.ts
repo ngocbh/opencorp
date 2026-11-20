@@ -118,8 +118,8 @@ function assetsCheck(assets: string): Check {
     name: "tui assets",
     status: "fail",
     detail:
-      `no readable folder at ${assets}: \`opencorp\` can't start its TUI or setup screen; reinstall opencorp, or ` +
-      "keep bin/ and assets/ together",
+      `no readable folder at ${assets}: \`opencorp\` can't start its TUI; reinstall opencorp, or keep bin/ and ` +
+      "assets/ together",
   }
 }
 
