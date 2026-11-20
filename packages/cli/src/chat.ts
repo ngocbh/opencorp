@@ -12,10 +12,21 @@ export function drawable(env: Record<string, string | undefined>, stdinTTY: bool
 /** Whether this process's terminal can draw the TUI (`drawable` on its env, stdin and stdout). */
 export const terminal = () => drawable(process.env, Boolean(process.stdin.isTTY), Boolean(process.stdout.isTTY))
 
+/** The value of the last `--home X` or `--home=X` in `argv`, as the install takes it. */
+export function homeFlag(argv: string[]): string | undefined {
+  let home: string | undefined
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--home" && i + 1 < argv.length) home = argv[++i]
+    else if (argv[i].startsWith("--home=")) home = argv[i].slice("--home=".length)
+  }
+  return home
+}
+
 /** A built-in agent's chat: its session on the no-office host in this process, served on a private socket to the TUI,
  *  which opens on it and closes once the session is over; the host stops once both are. Resolves to how the session
- *  ended, with why when its run failed, or `left` when the owner left the TUI first, which ends it. */
-export async function localChat(session: LocalSession): Promise<ChatEnd> {
+ *  ended, with why when its run failed, or `left` when the owner left the TUI first, which ends it. The TUI keeps its
+ *  state under the office home `home` (a path as `$OPENCORP_HOME` takes one) when given, else `$OPENCORP_HOME`'s. */
+export async function localChat(session: LocalSession, home?: string): Promise<ChatEnd> {
   const { LocalHost, OWNER, serveLocal } = await import("@opencorp/office/server/local")
   // In the binary, OpenTUI loads its native library and assets from the install, never from a caller's
   // OTUI_ASSET_ROOT, as main.ts has it for a command: the install child runs no command. A checkout loads them from
@@ -37,7 +48,16 @@ export async function localChat(session: LocalSession): Promise<ChatEnd> {
     const [{ Effect }, { Global, run: runTui }] = await Promise.all([import("effect"), import("@opencorp/tui")])
     const local = { sessionID: host.id, until }
     const input = { socket: served.socket, token: served.token, person: OWNER, cwd: process.cwd(), args: {}, local }
-    await Effect.runPromise(runTui(input).pipe(Effect.provide(Global.layer)))
+    // The TUI reads its home from $OPENCORP_HOME, as the office's TUI that opens after init does. It is put back once
+    // the TUI closes: the install reads it after, to say whether the caller's shell finds this office.
+    const caller = process.env.OPENCORP_HOME
+    if (home !== undefined) process.env.OPENCORP_HOME = home
+    try {
+      await Effect.runPromise(runTui(input).pipe(Effect.provide(Global.layer)))
+    } finally {
+      if (caller === undefined) delete process.env.OPENCORP_HOME
+      else process.env.OPENCORP_HOME = caller
+    }
     if (!over) return { status: "left", error: null }
     const failure = host.failure
     return failure === null ? { status: "ended", error: null } : { status: "failed", error: failure }
@@ -48,7 +68,10 @@ export async function localChat(session: LocalSession): Promise<ChatEnd> {
 }
 
 /** The hooks the CLI's entry hands `opencorp install`: where the TUI can draw (`drawn`, by default `terminal`, read in
- *  the install child, whose stdio are this terminal's), `chat` runs init's interview on it. */
-export function installHooks(drawn: () => boolean = terminal): OfficeHooks {
-  return drawn() ? { chat: localChat } : {}
+ *  the install child, whose stdio are this terminal's), `chat` runs init's interview on it, its TUI's state under the
+ *  install's `--home` (in `argv`, by default this process's arguments) when it has one. */
+export function installHooks(drawn: () => boolean = terminal, argv: string[] = process.argv.slice(2)): OfficeHooks {
+  if (!drawn()) return {}
+  const home = homeFlag(argv)
+  return { chat: home ? (session) => localChat(session, home) : localChat }
 }

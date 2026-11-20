@@ -1,7 +1,7 @@
 // `opencorp init` and `opencorp onboard`: the install runs on this terminal, and the office opens once it's done.
 // init's interview is a chat in the TUI. Without a terminal the TUI can draw on, the install runs on this terminal's
 // stdin and stdout, and no office opens.
-import { terminal } from "./chat"
+import { homeFlag, terminal } from "./chat"
 import { type Deps, install, installSpec, realDeps } from "./office"
 
 export { drawable, terminal } from "./chat"
@@ -21,16 +21,6 @@ export const realSetupDeps: SetupDeps = {
   openOffice: async () => (await import("./commands/tui")).run([]),
 }
 
-/** The value of the last `--home X` or `--home=X` in `argv`, as the install takes it. */
-function homeFlag(argv: string[]): string | undefined {
-  let home: string | undefined
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--home" && i + 1 < argv.length) home = argv[++i]
-    else if (argv[i].startsWith("--home=")) home = argv[i].slice("--home=".length)
-  }
-  return home
-}
-
 /**
  * `opencorp init`/`opencorp onboard`: the install on this terminal, then the office. With --provider-stdin or --help,
  * or without a terminal the TUI can draw on, no office opens.
@@ -45,7 +35,9 @@ export async function setUp(
   const spec = installSpec(command, argv, deps)
   if (!spec) return 1
   // The office that opens after must be the one the install set up, which --home names: the spec's, already made
-  // absolute where it was typed (the install runs in the home dir); `~` the TUI expands as the install does.
+  // absolute where it was typed (the install runs in the home dir); `~` the TUI expands as the install does. The
+  // install's env stays the caller's, so it can say whether this shell finds the office: init's chat points its TUI at
+  // --home itself (`installHooks`).
   const home = homeFlag(spec.argv)
   if (home) process.env.OPENCORP_HOME = home
   const code = await deps.spawn(spec.argv, { cwd: spec.cwd, env: spec.env })
