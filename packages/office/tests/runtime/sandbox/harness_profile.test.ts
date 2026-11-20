@@ -105,7 +105,8 @@ function claudeKept(ws: string, gitFolder = true): { denyWrite: string[]; deny: 
     [".mcp.json", false],
   ]
   return {
-    denyWrite: kept.map(([rel]) => path.join(ws, rel)),
+    // A .git folder's config first, so that for a missing .git the sandbox makes a folder there, not a file.
+    denyWrite: [...(gitFolder ? [path.join(ws, ".git/config")] : []), ...kept.map(([rel]) => path.join(ws, rel))],
     deny: kept.flatMap(([rel, folder]) => rules("Edit", path.join(ws, rel), folder)),
   }
 }
@@ -231,7 +232,9 @@ test("both harnesses keep .git itself read-only, a missing one too, so a command
     expect(entries[git], layoutOf).toBe("read")
     expect(Object.keys(entries).filter((k) => k.startsWith(git + "/")), layoutOf).toEqual([])
     const { denyWrite, deny } = claude()
-    expect(denyWrite, layoutOf).toContain(git)
+    // Claude Code's sandbox holds a missing path with an empty file on the host while a command runs, and host git
+    // fails on a .git file; a missing .git/config listed first makes it a folder instead.
+    expect(denyWrite.slice(0, 2), layoutOf).toEqual([path.join(git, "config"), git])
     // Claude Code's own tools can't write .git, or a .git file pointing at a planted repo.
     expect(deny, layoutOf).toEqual(expect.arrayContaining([`Edit(/${git})`, `Edit(/${git}/**)`]))
   }
@@ -378,6 +381,7 @@ test("a worktree's .git file is kept read-only whole, and a kept path that is a 
   const kept = Object.keys(filesystem(permission())).filter((p) => p.startsWith(ws + "/"))
   expect(kept).toEqual([".git", ".codex", ".agents", ".mcp.json"].map((rel) => path.join(ws, rel)))
   const { settings } = claudeStart(permission())
+  // A .git file has no config below it.
   expect((settings.sandbox as { filesystem: { denyWrite: string[] } }).filesystem.denyWrite).toEqual(kept)
   // The .git file is a file: its edit deny names it alone.
   const deny = (settings.permissions as { deny: string[] }).deny
@@ -685,17 +689,18 @@ const NO_CODEX = CODEX === undefined ? !process.env.OPENCORP_TEST_SANDBOX : !san
 /** The oldest Codex whose sandbox takes a per-thread permission profile in these tests' form. */
 const CODEX_FLOOR = [0, 167, 0]
 
-/** The native Codex behind `OPENCORP_TEST_CODEX` (npm's launcher only execs it, so no node is needed), and its
- *  install folder, the one holding its `bin`. */
-function nativeCodex(): { binary: string; install: string } {
+/** What the real-Codex tests run, and Codex's install folder (the one holding its native binary's `bin`).
+ *  `OPENCORP_TEST_CODEX` may be the native binary, npm's launcher (which needs node, so the native binary it execs runs
+ *  instead), or a wrapper script beside a `node_modules` holding Codex. */
+function testCodex(): { run: string; install: string } {
   if (CODEX === undefined) throw new Error("OPENCORP_TEST_SANDBOX is set: set OPENCORP_TEST_CODEX to a Codex 0.167.0+")
   const real = fs.realpathSync(CODEX)
-  let binary = real
-  if (real.endsWith(".js")) {
-    // <node_modules>/@openai/codex/bin/codex.js, beside <node_modules>/@openai/codex-<platform>/vendor/<target>/bin.
-    const scope = path.dirname(path.dirname(path.dirname(real)))
-    const found = fs
-      .readdirSync(scope)
+  if (fs.readFileSync(real).subarray(0, 2).toString() !== "#!") {
+    return { run: real, install: path.dirname(path.dirname(real)) }
+  }
+  // A wrapper's sibling <node_modules>/@openai, or the launcher's own: <node_modules>/@openai/codex/bin/codex.js.
+  for (const scope of [path.join(path.dirname(real), "node_modules/@openai"), path.resolve(real, "../../..")]) {
+    const found = (fs.existsSync(scope) ? fs.readdirSync(scope) : [])
       .filter((name) => name.startsWith("codex-"))
       .flatMap((pkg) => {
         const vendor = path.join(scope, pkg, "vendor")
@@ -703,10 +708,11 @@ function nativeCodex(): { binary: string; install: string } {
         return fs.readdirSync(vendor).map((target) => path.join(vendor, target, "bin/codex"))
       })
       .filter((p) => fs.existsSync(p))
-    if (found.length !== 1) throw new Error(`no single native Codex under ${scope}: ${found.join(", ")}`)
-    binary = found[0]!
+    if (found.length === 1) {
+      return { run: real.endsWith(".js") ? found[0]! : real, install: path.dirname(path.dirname(found[0]!)) }
+    }
   }
-  return { binary, install: path.dirname(path.dirname(binary)) }
+  throw new Error(`found no single native Codex behind ${CODEX}`)
 }
 
 /** Runs the test's Codex with `args` and none of this process's environment: a temp HOME and CODEX_HOME, never the
@@ -715,7 +721,7 @@ function runCodex(
   args: readonly string[],
   options: { home: string; codexHome: string; path: string; cwd: string; env?: Record<string, string> },
 ) {
-  return spawnSync(nativeCodex().binary, args, {
+  return spawnSync(testCodex().run, args, {
     cwd: options.cwd,
     env: { HOME: options.home, CODEX_HOME: options.codexHome, PATH: options.path, ...options.env },
     encoding: "utf8",
@@ -753,7 +759,7 @@ function toml(value: unknown): string {
  *  home, a scratch CODEX_HOME and the harness PATH in its environment. */
 function codexSandbox(p: EmployeePermission, codexHome: string, script: string) {
   checkCodexVersion()
-  const { permissions, config } = codexThread(p, "opencorp-t", { install: nativeCodex().install })
+  const { permissions, config } = codexThread(p, "opencorp-t", { install: testCodex().install })
   const flags = Object.entries(config).flatMap(([key, value]) => ["-c", `${key}=${toml(value)}`])
   return runCodex(["sandbox", "-P", permissions, "-C", p.workspace, ...flags, "--", "sh", "-c", script], {
     home: p.home,

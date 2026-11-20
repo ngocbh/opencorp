@@ -266,8 +266,10 @@ export async function run(policy: CallPolicy, argv: readonly string[], options: 
   }
   const start = performance.now()
   let canary: Canary | undefined
+  let releaseGit: (() => void) | undefined
   try {
     if (process.platform === "darwin") canary = new Canary(writableDirs(policy))
+    releaseGit = holdGitFor(policy)
     const [file, ...args] = command(policy, argv, canary?.allowed)
     let exited: { code: number | null; signal: NodeJS.Signals | null } | undefined
     let reason: "exit" | "timeout" | "abort" | undefined
@@ -418,7 +420,13 @@ export async function run(policy: CallPolicy, argv: readonly string[], options: 
     }
   } finally {
     canary?.close()
+    releaseGit?.()
   }
+}
+
+/** On Linux, `bwrap.holdGit` for a workspace call: the empty `.git` its argv binds, released once it has ended. */
+function holdGitFor(policy: CallPolicy): (() => void) | undefined {
+  return process.platform === "linux" && !isSsh(policy) ? bwrap.holdGit(policy) : undefined
 }
 
 /** Starts `argv` under `policy` on a new PTY, keeping that terminal (see `terminalCommand`), in the workspace (an
@@ -441,8 +449,10 @@ export function startOnTerminal(
 ): PtyProcess {
   const { cols, rows, onData, env = {}, track } = options
   const canary = process.platform === "darwin" ? new Canary(writableDirs(policy)) : undefined
+  let releaseGit: (() => void) | undefined
   let pty: PtyProcess
   try {
+    releaseGit = holdGitFor(policy)
     pty = spawnPty(terminalCommand(policy, argv, canary?.allowed), {
       cwd: workDir(policy),
       env: { ...scrubbedEnv(policy), TERM: "xterm-256color", ...env },
@@ -452,6 +462,7 @@ export function startOnTerminal(
     })
   } catch (error) {
     canary?.close()
+    releaseGit?.()
     throw error
   }
   let untrack: (() => void) | undefined
@@ -471,6 +482,7 @@ export function startOnTerminal(
       if (canary) killEscaped(canary)
     } finally {
       canary?.close()
+      releaseGit?.()
       untrack?.()
     }
     return code

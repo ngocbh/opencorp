@@ -184,7 +184,7 @@ export function claudeStart(p: EmployeePermission): {
         denyRead: [...(covered(c.home) ? [] : [c.home]), ...c.denied],
         allowRead: [c.workspace, c.tmpdir, ...c.folders.map((folder) => folder.path)],
         allowWrite: [...(c.writable ? [c.workspace] : []), c.tmpdir, ...writable],
-        denyWrite: [...(c.writable ? [] : [c.workspace]), ...readOnly, ...c.kept.map((kept) => kept.path)],
+        denyWrite: [...(c.writable ? [] : [c.workspace]), ...readOnly, ...c.kept.flatMap(denyWrites)],
       },
       network: { allowedDomains: [], strictAllowlist: true },
     },
@@ -209,6 +209,14 @@ export function claudeStart(p: EmployeePermission): {
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
   }
   return { settings, addDirs: c.folders.map((folder) => folder.path), env }
+}
+
+/** Claude Code's `denyWrite` entries for a kept path. While a command runs, its Linux sandbox holds a missing path with
+ *  an empty file on the host, and host git fails on a `.git` file (for good, if that file outlives the command); so a
+ *  `.git` folder, present or missing, gets its `config` listed first, for which the sandbox makes the missing `.git`
+ *  a folder instead. That order isn't yet checked against a real Claude Code. */
+function denyWrites(kept: Kept): string[] {
+  return path.basename(kept.path) === ".git" && kept.folder ? [path.join(kept.path, "config"), kept.path] : [kept.path]
 }
 
 /** Claude Code permission rules for `tool` on the absolute `p` (`//` starts an absolute path), and, for a folder, on

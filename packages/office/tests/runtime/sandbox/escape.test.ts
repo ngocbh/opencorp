@@ -228,8 +228,9 @@ test.skipIf(!sandboxAvailable())(
     expect(planted.exit, planted.output).not.toBe(0)
     const moved = await shell(policy, "mv .git .git-old")
     expect(moved.exit, moved.output).not.toBe(0)
-    if (ON_LINUX) expect(fs.readdirSync(path.join(ws, ".git"))).toEqual([])
-    else expect(fs.existsSync(path.join(ws, ".git"))).toBe(false)
+    // The empty .git bubblewrap is bound over goes once the call ends, so none stays in the owner's tree.
+    expect(fs.existsSync(path.join(ws, ".git"))).toBe(false)
+    expect(fs.existsSync(path.join(ws, ".git-old"))).toBe(false)
   },
 )
 

@@ -2,7 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
-import { command, sshCommand, SYSTEM_DIRS } from "../../../src/runtime/sandbox/bwrap.ts"
+import { command, holdGit, sshCommand, SYSTEM_DIRS } from "../../../src/runtime/sandbox/bwrap.ts"
 import type { Helper } from "../../../src/platform.ts"
 import { goldenPolicy, goldenSshPolicy, makePolicy } from "./helpers.ts"
 
@@ -169,6 +169,36 @@ test("a missing .git is made empty and bound read-only whole, so a call can't st
   expect(triples(argv, "--ro-bind")).toContainEqual(["--ro-bind", git, git])
   expect(triples(argv, "--bind")).not.toContainEqual(["--bind", git, git])
   expect(argv).not.toContain(path.join(git, "hooks"))
+})
+
+test("a call's hold makes a missing .git and the last release removes it while empty, so none stays in the tree", () => {
+  // An empty .git left behind would make ripgrep take the folder for a repository and drop its parent's .gitignore.
+  const policy = setup().make()
+  const git = path.join(policy.workspace, ".git")
+  const first = holdGit(policy)!
+  const second = holdGit(policy)!
+  expect(fs.readdirSync(git)).toEqual([])
+  expect(triples(command(policy, ["x"]), "--ro-bind")).toContainEqual(["--ro-bind", git, git])
+  first()
+  first()
+  expect(fs.existsSync(git)).toBe(true)
+  second()
+  expect(fs.existsSync(git)).toBe(false)
+  // An empty one a crashed office left is taken by the next call and removed after it.
+  fs.mkdirSync(git)
+  holdGit(policy)!()
+  expect(fs.existsSync(git)).toBe(false)
+  // What isn't an empty folder is left alone: a repository, a .git someone filled while held, a read-only workspace.
+  fs.mkdirSync(git)
+  fs.writeFileSync(path.join(git, "config"), "")
+  expect(holdGit(policy)).toBeUndefined()
+  fs.rmSync(git, { recursive: true })
+  const filled = holdGit(policy)!
+  fs.writeFileSync(path.join(git, "HEAD"), "")
+  filled()
+  expect(fs.existsSync(path.join(git, "HEAD"))).toBe(true)
+  fs.rmSync(git, { recursive: true })
+  expect(holdGit(setup().make({ writable: false }))).toBeUndefined()
 })
 
 test("a .git with no config isn't a repository yet, so it is bound read-only whole", () => {
