@@ -60,11 +60,15 @@ export function pickSkills(pin: string, handle: string, names: string[]): Map<st
 }
 
 /** Yian's `tools`: each office group as remote tools, plus the question stub under yian's `ask` slot, which serves
- *  the agent tool `ask_user` and a flow's `ask` node. */
+ *  the agent tool `ask_user` and a flow's `ask` node. A group whose one tool has the group's name is that tool, which
+ *  the model calls by its own name rather than `<group>_<tool>`. */
 export function jobTools(job: Job, rpc: Rpc) {
   return {
     ...Object.fromEntries(
-      Object.entries(job.groups).map(([group, specs]) => [group, specs.map((spec) => remoteTool(rpc, group, spec))]),
+      Object.entries(job.groups).map(([group, specs]) => {
+        const tools = specs.map((spec) => remoteTool(rpc, group, spec))
+        return [group, tools.length === 1 && specs[0]!.name === group ? tools[0]! : tools]
+      }),
     ),
     ask: askUserStub(rpc),
   }

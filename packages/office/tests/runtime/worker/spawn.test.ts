@@ -895,6 +895,17 @@ test.each(["chat", "advance"] as const)("every job kind gets the ask user stub [
   expect(typeof tools.ask).toBe("function")
 })
 
+test("a group whose one tool has the group's name is offered as that tool, by its own name", async () => {
+  const spec = (name: string) => ({ name, description: "", parameters: { type: "object", properties: {} } })
+  const groups = { save_access: [spec("save_access")], one: [spec("other")], two: [spec("two"), spec("more")] }
+  const rpc = await officeEnd(new Recorder())
+  const tools = jobTools(makeJob(base(), "flows/echo.yaml", { groups }), rpc) as Record<string, unknown>
+  expect((tools.save_access as { name: string }).name).toBe("save_access")
+  expect(Array.isArray(tools.save_access)).toBe(false)
+  // A group of more tools, or of one named otherwise, stays a group.
+  expect([Array.isArray(tools.one), Array.isArray(tools.two)]).toEqual([true, true])
+})
+
 test("a start frame that cannot be sent leaves nothing behind", async () => {
   const where = base()
   const fake = await fakeLlm()

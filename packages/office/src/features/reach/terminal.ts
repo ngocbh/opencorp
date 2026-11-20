@@ -234,16 +234,18 @@ function host(o: LearningTerminalOptions, shells: TerminalShells, tmpdir: string
   }
 }
 
-/** `base`, but a new shell starts in `tmpdir`, as the terminal's own `where` says, and hq's model key and sign-in
- *  are credentials beside those `base` marks: the reader's own patterns know them only under `~/.opencorp`. */
+/** `base`, but a new shell starts in `tmpdir`, as the terminal's own `where` says, and hq's model key and sign-in,
+ *  and everything in the office's connections and secrets folders, are credentials beside those `base` marks: the
+ *  reader's own patterns know them only under `~/.opencorp`. */
 function startingIn(base: Permissions, paths: ReachPaths, tmpdir: string): Permissions {
   const { check, blocked } = base
+  const office = ["connections", "secrets"].map((name) => `${path.join(paths.home, "office", name)}/**`)
   return {
     mode: () => base.mode(),
     rules: () => base.rules(),
     where: () => {
       const where = base.where()
-      const credentials = [...(where.credentials ?? []), paths.provider, paths.auth]
+      const credentials = [...(where.credentials ?? []), paths.provider, paths.auth, ...office]
       return { ...where, profile: "ssh", cwd: tmpdir, writable: [], credentials }
     },
     hold: (card, callId) => base.hold(card, callId),

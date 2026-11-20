@@ -39,6 +39,8 @@ export interface BuiltinSession<T extends BuiltinTerminal = BuiltinTerminal> {
    *  reply `chat/reply`. */
   readonly flow: { readonly name: string; readonly text: string }
   readonly inputs: Readonly<Record<string, unknown>>
+  /** The owner's first message, sent from them as the session opens: the choice that started it. */
+  readonly first?: string
   readonly model: BuiltinModel
   /** The session's own folder: its flow's pin, its run log, Auto's checks and its worker's log. Its parent holds the
    *  folders of earlier sessions, whose shells' records (`<folder>/terminal/`) an earlier host may have left running. */
@@ -49,6 +51,24 @@ export interface BuiltinSession<T extends BuiltinTerminal = BuiltinTerminal> {
 
 /** What a card's Yes runs: the held call's output, stopped by `signal` (Esc, End). */
 export type CardAct = (signal: AbortSignal) => Promise<unknown>
+
+/** A question card a feature's call holds for the owner: its title, the text they read whole before the choices, and
+ *  the choices; they may type an answer instead. `reason` says why it asks, which `dontAsk`'s refusal names. */
+export interface QuestionCard {
+  readonly title: string
+  readonly question: string
+  readonly options: readonly string[]
+  readonly reason: string
+}
+
+/** The owner's answer to a question card: one of its options, or the words they typed. */
+export interface CardAnswer {
+  readonly value: string
+  readonly typed: boolean
+}
+
+/** What a question card's answer runs: the held call's output, stopped by `signal` (Esc, End). */
+export type QuestionAct = (answer: CardAnswer, signal: AbortSignal) => Promise<unknown>
 
 /** Where one shell's state changes and live output go. */
 export interface ShellListener {
@@ -66,6 +86,10 @@ export interface SessionBinding {
    *  yian's `pending()`, or, in `dontAsk`, the refusal. On Yes `act` makes the call's output; a No's is the owner's
    *  words. */
   hold(card: ApprovalCard, callId: string, act: CardAct): unknown
+  /** Holds yian call `callId` on question card `card` for the session's owner and returns what the call returns now:
+   *  yian's `pending()`, or, in `dontAsk`, the refusal. It asks in every other mode: no rule or check answers it. The
+   *  owner's answer goes to `act`, whose output completes the call; Esc answers it interrupted. */
+  ask(card: QuestionCard, callId: string, act: QuestionAct): unknown
   /** Where new shell `id`, named `name`, reports: the host lists it as the session's instrument. */
   onShell(id: string, name: string): ShellListener
   /** The instruments the feature owns, listed in the session: the host removes their listing at the session's end and

@@ -1,6 +1,6 @@
 /** A visit from a machine where no office answers: approving the saved path, connecting, signing in or opening,
- *  another visit beside a running one, the failure table, and waiting with its reconnects; and the runs of learn_hq
- *  and reach_hq it starts. */
+ *  another visit beside a running one, the failure table, and waiting with its reconnects; learning, which it hands to
+ *  a chat with OpenCorp; and the runs of reach_hq it starts. */
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
@@ -10,33 +10,33 @@ import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { AuthStore } from "@ngocbh/yian/llm_clients"
 import { providerSecrets } from "../../../src/models/check.ts"
-import { ConnectionFile } from "../../../src/models/connections.ts"
+import { AUTH_FILE_ENV, ConnectionFile } from "../../../src/models/connections.ts"
 import { Provider } from "../../../src/models/provider.ts"
 import { Learning } from "../../../src/features/reach/learning.ts"
 import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import type { Spec } from "../../../src/features/reach/spec.ts"
 import { type Access, DEFAULT_PORT, readAccess, sha256, takeLock, writeAccess } from "../../../src/features/reach/state.ts"
 import {
-  AFTER_CAP,
-  ANSWER_GOES_TO_MODEL,
   BUSY,
   ASKED_FOR,
-  CAPPED,
   describe as describeFailure,
   lastPath,
+  LEARN_FIRST,
+  LEARN_NEEDS_TERMINAL,
+  type LearnChat,
+  type LearnEnd,
   learnedMessage,
   MAX_OLD_CHARS,
   LOST,
   NO_OFFICE_HERE,
   NO_PATH,
   NOT_LEARNED,
+  NOT_SAVED,
   RELEARN_BUSY,
   NOT_YET,
-  runLearn,
   runReach,
   runThis,
   RUNNING,
-  type LearnScreen,
   SIGN_IN_HINT,
   STOP,
   useChanged,
@@ -45,42 +45,33 @@ import {
   type VisitOptions,
   visit,
 } from "../../../src/features/reach/run.ts"
-import { learnProvider } from "../../../src/features/reach/provider.ts"
-import { SAVED, saveAccess } from "../../../src/features/reach/tools/save_access.ts"
-import { runShell } from "../../../src/features/reach/tools/shell.ts"
-import { KeyboardInterrupt, OnboardError, TtyPrompter } from "../../../src/features/setup/prompts.ts"
+import { SAVE, SAVED, saveAccess } from "../../../src/features/reach/tools/save_access.ts"
+import { KeyboardInterrupt, TtyPrompter } from "../../../src/features/setup/prompts.ts"
 import { ReachFailure } from "../../../src/features/reach/connect.ts"
 import { PassThrough } from "node:stream"
 import { defaultIncludes } from "../../../src/features/reach/ssh.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../../src/testing/fake_ssh.ts"
-import { control, exitAll, isSocket, type ReachContext } from "../../../src/features/reach/ssh.ts"
-import { LLM_CONFIG, type ScriptedReply } from "../../../src/testing/fake_llm.ts"
-import {
-  beforeLearning,
-  HAND_OVER_COMMAND,
-  HAND_OVER_TEST,
-  LEARN,
-  LEARN_QUESTION,
-  RELEARN_QUESTION,
-} from "../../../src/features/reach/risks.ts"
+import { control, isSocket, type ReachContext } from "../../../src/features/reach/ssh.ts"
+import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
+import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../../src/features/reach/risks.ts"
 import { signInLine, withSignIn } from "../../../src/features/setup/onboard.ts"
+import type { BuiltinSession, BuiltinTools, CardAnswer, SessionBinding } from "../../../src/runtime/sessions/builtin.ts"
+import type { Terminal } from "../../../src/tools/terminal/terminal.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
 import { workerEnv } from "../../../src/runtime/worker/spawn.ts"
 import { fakeLlm } from "../chat/helpers.ts"
-import { DEVICE_CODE, DEVICE_URL, fakeSubscription, Script } from "../setup/helpers.ts"
+import { DEVICE_CODE, DEVICE_URL, fakeSubscription } from "../setup/helpers.ts"
 import { ps, waitFor } from "../../helpers.ts"
+import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import {
   approved,
-  chain,
   fakeHome,
   fakeRemote,
   freePort,
   named,
   ownerConfig,
   reachCtx,
-  rejection,
   SPEC,
-  subscribed,
   SUBSCRIBED_LLM,
   tokens,
   visitDeps,
@@ -810,14 +801,15 @@ test("a failure's own closing period isn't doubled", () => {
   )
 })
 
-const call = (name: string, args: unknown): ScriptedReply => ({ tool_calls: [{ name, arguments: args }] })
 const NOTES = "Log in to login1; HQ runs on node1.\n"
 
 /** A home with no reach.sh, HQ's machine reachable as node1 through login1, the fake model, and (unless `provider` is
- *  false) hq/provider.json for it. */
+ *  false) hq/provider.json for it. The fake ssh lies outside the home, which the agent's sandbox never binds it from. */
 async function unlearnedHome({ provider = true, behavior = {} }: { provider?: boolean; behavior?: FakeSshBehavior } = {}) {
-  const { dir, fake } = fakeHome(behavior)
-  const remote = await fakeRemote(dir)
+  const { dir: root, fake } = fakeHome(behavior)
+  const dir = path.join(root, "h")
+  fs.mkdirSync(dir, { mode: 0o700 })
+  const remote = await fakeRemote(root)
   const llm = await fakeLlm()
   const spec: Spec = { host: "node1", jump: ["login1"], opencorp: remote.opencorp }
   const paths = new ReachPaths(dir)
@@ -828,21 +820,97 @@ async function unlearnedHome({ provider = true, behavior = {} }: { provider?: bo
   return { dir, fake, remote, llm, spec, paths, port: await freePort() }
 }
 
-test("with no saved path it shows the risks, asks, then learns and goes on with the open connection", async () => {
-  const { dir, fake, remote, llm, spec, paths, port } = await unlearnedHome()
+/** What a session's tools are bound to, as the no-office host binds them, in `auto` with Auto's check saying run:
+ *  each card held through `ask` is answered at once with the next of `answers`; the instruments listed are kept. */
+function binding(answers: CardAnswer[] = []) {
+  const listed: string[] = []
+  const shells: string[] = []
+  const bound: SessionBinding = {
+    sessionId: "01JDSESSION000000000000000",
+    permissions: {
+      mode: () => "auto",
+      rules: () => [],
+      where: () => ({ profile: "ssh", cwd: null, writable: [] }),
+      hold: () => "Not run: no card here",
+      check: async () => ({ verdict: "run", reason: "fine" }),
+    },
+    hold: () => "Not run: no card here",
+    ask: (_card, _callId, act) => {
+      const answer = answers.shift()
+      if (answer === undefined) throw new Error("no answer left for the card")
+      return act(answer, new AbortController().signal)
+    },
+    onShell: (id) => {
+      shells.push(id)
+      return { changed: () => {}, output: () => {} }
+    },
+    instruments: {
+      add: (instrument) => void listed.push(instrument.id),
+      updated: () => {},
+      output: () => {},
+      remove: () => {},
+    },
+  }
+  return { bound, listed, shells }
+}
+
+/** A `learnChat` that plays the session as `play` says, given its spec and tools bound by `binding`'s; it ends as
+ *  `end` says. Each spec it was given is kept. */
+function chat(
+  play: (spec: BuiltinSession<Terminal>, tools: BuiltinTools<Terminal>) => Promise<void> = async () => {},
+  { answers = [], end = { status: "ended", error: null } }: { answers?: CardAnswer[]; end?: LearnEnd } = {},
+) {
+  const specs: BuiltinSession<Terminal>[] = []
+  const b = binding(answers)
+  const learnChat: LearnChat = async (spec) => {
+    specs.push(spec)
+    const tools = await spec.tools(b.bound)
+    try {
+      await play(spec, tools)
+    } finally {
+      await tools.terminal?.close()
+    }
+    return end
+  }
+  return { learnChat, specs, ...b }
+}
+
+/** The agent's call of `tool` in the session's tools, as the model makes it. */
+function callTool(tools: BuiltinTools<Terminal>, group: string, tool: string, args: Record<string, unknown>) {
+  return Promise.resolve(tools.groups[group]![tool]!.call(args, { callId: `r/learn/${tool}/0` })) as Promise<string>
+}
+
+const SAVE_IT = { value: SAVE, typed: false }
+
+test("learning hands learnChat a spec whose terminal runs in the SSH-only shell, then holds the saved connection", async () => {
+  const { dir, fake, remote, spec, paths, port, llm } = await unlearnedHome()
   const script = scriptFor(spec)
-  llm.script(
-    call("shell", { command: "ssh login1 true", why: "log in to login1" }),
-    call("save_access", { script, notes: NOTES, risks: [] }),
-    { content: "HQ is reachable from here now." },
+  const c = chat(
+    async (_session, tools) => {
+      expect(tools.terminal!.profile).toBe(sandboxAvailable() ? "ssh" : "none")
+      const saved = await callTool(tools, "save_access", "save_access", { script, notes: NOTES, risks: [] })
+      expect(saved).toBe(`${SAVED} Reply with one line for the owner.`)
+    },
+    { answers: [SAVE_IT] },
   )
-  const v = visitDeps(dir, fake, { answers: ["1", "1", "1"] })
+  const v = visitDeps(dir, fake, { answers: ["1", ...(sandboxAvailable() ? [] : [""])], learnChat: c.learnChat })
   const done = visit({ signIn: false, port, open: false }, v.deps)
   await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 1, { what: "the visit to connect" })
   expect(v.errors).toEqual([NO_OFFICE_HERE])
   expect(v.prompter.seen.slice(0, beforeLearning(paths).length + 1)).toEqual([...beforeLearning(paths), LEARN_QUESTION])
   expect(v.prompter.offered[0]).toEqual([LEARN, STOP])
+  // The session: OpenCorp's agent on learn_hq, from the owner's choice, on hq/provider.json's model, in hq/sessions.
+  const [session] = c.specs
+  expect(session!.agent).toEqual({ handle: "opencorp", name: "OpenCorp" })
+  expect(session!.flow.name).toBe("learn_hq")
+  expect(session!.flow.text).toBe(fs.readFileSync(new URL("../../../src/features/reach/flows/learn_hq.yaml", import.meta.url), "utf8"))
+  expect(session!.inputs).toEqual({ notes: "", script: "", failure: "" })
+  expect(session!.first).toBe(LEARN_FIRST)
+  expect(session!.model).toEqual({ llm_config: LLM_CONFIG, env: llm.env() })
+  expect(path.dirname(session!.folder)).toBe(paths.sessions)
+  // Saved, and the visit holds the connection the chain test opened in OpenCorp's connection shell.
   expect(fs.readFileSync(paths.script, "utf8")).toBe(script)
+  expect(c.listed).toHaveLength(1)
   expect(v.printed).toContain(`http://127.0.0.1:${port}/pair#${remote.code}`)
   expect((await readAccess(paths))?.signed_in_at).not.toBeNull()
   // save_access's connection is the visit's: one node master, not a second login.
@@ -850,15 +918,78 @@ test("with no saved path it shows the risks, asks, then learns and goes on with 
   v.sigint()
   expect(await done).toBe(0)
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+  expect(llm.requests()).toEqual([])
+})
+
+test.skipIf(!sandboxAvailable())("learning that ends without a save lists the commands tried and exits 1", async () => {
+  const { dir, fake, paths } = await unlearnedHome()
+  const c = chat(async (_session, tools) => {
+    await callTool(tools, "terminal", "run", { command: "echo hi\necho there", why: "look" })
+    await callTool(tools, "terminal", "run", { command: "true", why: "look", shell: "shell 1" })
+    // The owner says no to the save, with what should change.
+    expect(await callTool(tools, "save_access", "save_access", { script: "exit 3\n", notes: NOTES, risks: [] })).toBe(
+      "Not saved: the owner wants a change: find the node first",
+    )
+  }, { answers: [{ value: "find the node first", typed: true }] })
+  const v = visitDeps(dir, fake, { answers: ["1"], learnChat: c.learnChat })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([
+    NO_OFFICE_HERE,
+    NOT_SAVED,
+    ASKED_FOR,
+    "  (exit 0) echo hi (and 1 more line)",
+    "  (exit 0) true",
+  ])
+  expect(fs.existsSync(paths.script)).toBe(false)
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test.skipIf(!sandboxAvailable())("leaving the chat before it ends lists the commands tried and exits 130", async () => {
+  const { dir, fake, paths } = await unlearnedHome()
+  const c = chat(async (_session, tools) => {
+    await callTool(tools, "terminal", "run", { command: "true", why: "look" })
+  }, { end: { status: "left", error: null } })
+  const v = visitDeps(dir, fake, { answers: ["1"], learnChat: c.learnChat })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(130)
+  expect(v.errors).toEqual([NO_OFFICE_HERE, NOT_SAVED, ASKED_FOR, "  (exit 0) true"])
+  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
+})
+
+test("with no learnChat, learning is refused before its question", async () => {
+  const { dir, fake, llm, paths } = await unlearnedHome({ provider: false })
+  const v = visitDeps(dir, fake, { answers: ["1"] })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(3)
+  expect(v.errors).toEqual([NO_OFFICE_HERE, LEARN_NEEDS_TERMINAL])
+  expect(LEARN_NEEDS_TERMINAL).toBe("opencorp hq: learning needs a terminal the TUI can draw on")
+  expect(v.prompter.seen).toEqual([])
+  expect(fs.existsSync(paths.dir)).toBe(false)
+  // --relearn exits 1, before anything runs.
+  const marker = path.join(dir, "ran")
+  const savedPaths = await saved(dir, NO_JOB(marker))
+  const before = fs.readFileSync(savedPaths.access, "utf8")
+  const relearn = visitDeps(dir, fake, { answers: ["1"] })
+  expect(await visit({ signIn: false, open: false, relearn: true }, relearn.deps)).toBe(1)
+  expect(relearn.errors).toEqual([LEARN_NEEDS_TERMINAL])
+  expect(relearn.prompter.seen).toEqual([])
+  expect(fs.readFileSync(savedPaths.access, "utf8")).toBe(before)
+  expect(fs.existsSync(marker)).toBe(false)
+  // So is it without a terminal at all.
+  const plain = visitDeps(dir, fake, { interactive: false, learnChat: chat().learnChat })
+  expect(await visit({ signIn: false, open: false, relearn: true }, plain.deps)).toBe(1)
+  expect(plain.errors).toEqual([LEARN_NEEDS_TERMINAL])
+  expect(llm.requests()).toEqual([])
+  expect(fake.calls()).toEqual([])
 })
 
 test("declining to learn, or a stray Enter, exits 3, calls no model and makes nothing", async () => {
   const { dir, fake, llm, paths } = await unlearnedHome({ provider: false })
   // The default is Stop: a model run needs an explicit choice.
   for (const answer of ["2", ""]) {
-    const v = visitDeps(dir, fake, { answers: [answer] })
+    const c = chat()
+    const v = visitDeps(dir, fake, { answers: [answer], learnChat: c.learnChat })
     expect(await visit({ signIn: false, open: false }, v.deps)).toBe(3)
-    expect(v.errors).toEqual([NO_OFFICE_HERE, "opencorp hq: stopped; nothing was learned."])
+    expect(v.errors).toEqual([NO_OFFICE_HERE, NOT_LEARNED])
+    expect(c.specs).toEqual([])
   }
   expect(llm.requests()).toEqual([])
   expect(fs.existsSync(paths.dir)).toBe(false)
@@ -867,7 +998,7 @@ test("declining to learn, or a stray Enter, exits 3, calls no model and makes no
 
 test("Ctrl-C at the question to learn exits 130 and makes nothing", async () => {
   const { dir, fake, paths } = await unlearnedHome({ provider: false })
-  const v = visitDeps(dir, fake)
+  const v = visitDeps(dir, fake, { learnChat: chat().learnChat })
   v.prompter.choose = async () => {
     throw new KeyboardInterrupt()
   }
@@ -875,10 +1006,10 @@ test("Ctrl-C at the question to learn exits 130 and makes nothing", async () => 
   expect(fs.existsSync(paths.dir)).toBe(false)
 })
 
-test("the first learning run asks for the model and keeps it in hq/provider.json", async () => {
+test("the model picker of a first run asks on the plain terminal", async () => {
   const { dir, fake, llm, paths } = await unlearnedHome({ provider: false })
-  llm.script({ content: "I can't tell how to reach HQ." })
   const checked: unknown[] = []
+  const c = chat()
   // vllm at the fake model's URL: no key, the stub model.
   const v = visitDeps(dir, fake, {
     answers: ["1", "vllm", llm.baseUrl + "/v1", "", "stub"],
@@ -886,70 +1017,101 @@ test("the first learning run asks for the model and keeps it in hq/provider.json
       checked.push(p.llm_config)
       return null
     },
+    learnChat: c.learnChat,
   })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
   expect(v.prompter.seen).toContain(`Learning needs a model. Its connection is kept in ${paths.provider}, readable only by you.`)
   expect(checked).toHaveLength(1)
   expect(fs.statSync(paths.provider).mode & 0o777).toBe(0o600)
   expect(fs.statSync(paths.dir).mode & 0o777).toBe(0o700)
-  expect(v.errors.at(-1)).toBe("opencorp hq: nothing was saved: I can't tell how to reach HQ.")
+  // The chat runs on the model just picked.
+  expect(c.specs[0]!.model.llm_config).toEqual(checked[0] as Record<string, unknown>)
+  expect(v.errors).toEqual([NO_OFFICE_HERE, NOT_SAVED])
   expect(fs.existsSync(paths.script)).toBe(false)
 })
 
-test("at the turn cap the visit prints the commands and saves nothing", async () => {
-  const { dir, fake, llm, paths } = await unlearnedHome()
-  // The 30th reply's call never runs, and the model's answer after the cap ends the run.
-  llm.script(
-    ...Array.from({ length: 30 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" })),
-    { content: "No working path yet." },
-  )
-  const v = visitDeps(dir, fake, { answers: ["1", ...Array(29).fill("1")] })
+test("a ChatGPT subscription's chat runs on the sign-in in hq/auth.json", async () => {
+  const { dir, fake, paths } = await unlearnedHome({ provider: false })
+  const c = chat()
+  // Learn it, openai, the subscription, its default model.
+  const v = visitDeps(dir, fake, { answers: ["1", "openai", "", ""], auth: fakeSubscription().auth, learnChat: c.learnChat })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  const at = v.errors.indexOf(CAPPED)
-  expect(at).toBe(1)
-  expect(v.errors.slice(at + 1)).toEqual(Array.from({ length: 29 }, (_, i) => `  (exit 0) echo ${i}`))
-  expect(fs.existsSync(paths.script)).toBe(false)
-  expect(fs.existsSync(paths.access)).toBe(false)
-  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
-}, 60_000)
+  expect(c.specs[0]!.model.env[AUTH_FILE_ENV]).toBe(paths.auth)
+  expect(c.specs[0]!.model.llm_config).toMatchObject({ provider: "openai" })
+})
 
-test("when the model's answer after the turn cap fails, the visit says why after the commands", async () => {
-  const { dir, fake, llm, paths } = await unlearnedHome()
-  const calls = Array.from({ length: 30 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" }))
-  llm.script(...calls, { error: 400 })
-  const v = visitDeps(dir, fake, { answers: ["1", ...Array(29).fill("1")] })
+test("a session that fails says why, and a refused ChatGPT sign-in how to sign in again here", async () => {
+  const { dir, fake, paths } = await unlearnedHome({ provider: false })
+  const yian =
+    "OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in again. Run 'yian auth openai' and start a new run"
+  const c = chat(async () => {}, { end: { status: "failed", error: yian } })
+  // Learn it, openai, the subscription, its default model.
+  const v = visitDeps(dir, fake, { answers: ["1", "openai", "", ""], auth: fakeSubscription().auth, learnChat: c.learnChat })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(v.errors.slice(0, 2)).toEqual([NO_OFFICE_HERE, CAPPED])
-  expect(v.errors.slice(2, -1)).toEqual(Array.from({ length: 29 }, (_, i) => `  (exit 0) echo ${i}`))
-  expect(v.errors.at(-1)).toStartWith(AFTER_CAP(""))
-  expect(v.errors.at(-1)).toContain("scripted error 400")
-  expect(fs.existsSync(paths.script)).toBe(false)
-  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
-}, 60_000)
+  expect(v.errors).toEqual([
+    NO_OFFICE_HERE,
+    "opencorp hq: learning failed: OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in" +
+      ` again: delete ${paths.auth} and run \`opencorp hq\` again`,
+  ])
+})
+
+test("a failure's model key is left out of what the visit says", async () => {
+  const { dir, fake, paths } = await unlearnedHome()
+  const key = "sk-test-0123456789abcdefghij"
+  await writePrivate(paths.provider, JSON.stringify({ llm_config: { ...LLM_CONFIG, api_key: key }, env: {} }))
+  const c = chat(async () => {}, { end: { status: "failed", error: `the server refused key ${key}` } })
+  const v = visitDeps(dir, fake, { answers: ["1"], learnChat: c.learnChat })
+  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors.at(-1)).toBe("opencorp hq: learning failed: the server refused key [redacted]")
+})
+
+test("a learning run's failure on a refused sign-in says how to sign in again here, not with yian auth", () => {
+  const paths = new ReachPaths("/h/we$&ird$`")
+  const provider = withSignIn(ConnectionFile.parse({ method: "subscription", llm_config: SUBSCRIBED_LLM }), paths.auth)
+  const hint = ". Run 'yian auth openai' and start a new run"
+  const yian = `OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in again${hint}`
+  expect(learnedMessage(yian, provider, paths)).toBe(
+    "OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in again: delete" +
+      " /h/we$&ird$`/hq/auth.json and run `opencorp hq` again",
+  )
+  // A failure that may pass keeps the sign-in.
+  for (const why of ["(could not connect)", "(HTTP 429)", "(HTTP 502)"]) {
+    expect(learnedMessage(`OpenAI authentication request failed ${why}${hint}`, provider, paths)).toBe(
+      `OpenAI authentication request failed ${why}: run \`opencorp hq\` again later`,
+    )
+  }
+  // On a key, or yian's own login, yian's hint is the fix.
+  const keyless = Provider.parse({ llm_config: SUBSCRIBED_LLM })
+  expect(learnedMessage(yian, keyless, paths)).toBe(yian)
+})
 
 test("--relearn gives the agent the old notes and script, and keeps the old path until the new one passes", async () => {
-  const { dir, fake, llm, spec, paths, port, remote } = await unlearnedHome()
+  const { dir, fake, spec, paths, port, remote } = await unlearnedHome()
   const old = `set -eu\n# the old way\nssh login1 true\nprintf '%s\\n' '${JSON.stringify({ ...spec, host: "node9" })}'\n`
   await saved(dir, old, { port, signed_in_at: new Date().toISOString() })
   await writePrivate(paths.notes, "The job used to run on node9.\n")
   const script = scriptFor(spec)
-  llm.script(
-    call("save_access", { script: "set -eu\nssh login1 true\nexit 1\n", notes: NOTES, risks: [] }),
-    call("shell", { command: `cat '${paths.script}' '${paths.access}'`, why: "see what's saved" }),
-    call("save_access", { script, notes: NOTES, risks: [] }),
-    { content: "HQ is on node1 now." },
+  const c = chat(
+    async (_session, tools) => {
+      const failed = await callTool(tools, "save_access", "save_access", {
+        script: "set -eu\nssh login1 true\nexit 1\n",
+        notes: NOTES,
+        risks: [],
+      })
+      expect(failed).toStartWith("Not saved: reach.sh failed the test (broken)")
+      // After the failed save, the old script and record are still the saved ones.
+      expect(fs.readFileSync(paths.script, "utf8")).toBe(old)
+      expect(fs.readFileSync(paths.access, "utf8")).toContain(sha256(old))
+      expect(await callTool(tools, "save_access", "save_access", { script, notes: NOTES, risks: [] })).toStartWith(SAVED)
+    },
+    { answers: [SAVE_IT, SAVE_IT] },
   )
-  const v = visitDeps(dir, fake, { answers: ["", "1", "1", "1"] })
+  const v = visitDeps(dir, fake, { answers: [""], learnChat: c.learnChat })
   const done = visit({ signIn: false, open: false, relearn: true }, v.deps)
   await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 0, { what: "the visit to connect" })
   expect(v.errors).toEqual([])
   expect(v.prompter.seen.slice(0, beforeLearning(paths).length + 1)).toEqual([...beforeLearning(paths), RELEARN_QUESTION])
-  const [first, , third] = llm.requests().map((r) => JSON.stringify(r))
-  expect(first).toContain("# the old way")
-  expect(first).toContain("The job used to run on node9.")
-  // After the failed save, the old script and record were still the saved ones.
-  expect(third).toContain("# the old way")
-  expect(third).toContain(sha256(old))
+  expect(c.specs[0]!.inputs).toEqual({ notes: "The job used to run on node9.\n", script: old, failure: "" })
   expect(fs.readFileSync(paths.script, "utf8")).toBe(script)
   // Another host than the old path's (node9): the browser may not have a session there, so it signs in again.
   expect(v.printed).toContain(`http://127.0.0.1:${port}/pair#${remote.code}`)
@@ -958,44 +1120,35 @@ test("--relearn gives the agent the old notes and script, and keeps the old path
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
 })
 
-test("--relearn without a terminal says learning needs one and runs nothing", async () => {
-  const { dir, fake } = fakeHome()
-  const marker = path.join(dir, "ran")
-  const paths = await saved(dir, NO_JOB(marker))
-  const before = fs.readFileSync(paths.access, "utf8")
-  const v = visitDeps(dir, fake, { interactive: false })
-  expect(await visit({ signIn: false, open: false, relearn: true }, v.deps)).toBe(1)
-  expect(v.errors).toEqual(["opencorp hq: learning needs a terminal; run `opencorp hq --relearn` in one."])
-  expect(fs.readFileSync(paths.access, "utf8")).toBe(before)
-  expect(fs.existsSync(marker)).toBe(false)
-  expect(fake.calls()).toEqual([])
-})
-
 test("a broken path asks to relearn with the failure, defaulting to stop", async () => {
-  const { dir, fake, llm, paths, port } = await unlearnedHome()
+  const { dir, fake, paths, port } = await unlearnedHome()
   await saved(dir, `set -eu\nssh login1 true\necho "squeue: no such job" >&2\nexit 1\n`, { port })
   const line = "opencorp hq: the saved way to reach HQ is broken: reach.sh exited 1: squeue: no such job"
-  let v = visitDeps(dir, fake, { answers: [""] })
+  let c = chat()
+  let v = visitDeps(dir, fake, { answers: [""], learnChat: c.learnChat })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
   expect(v.errors).toEqual([line])
   expect(v.prompter.seen.slice(0, beforeLearning(paths).length + 1)).toEqual([...beforeLearning(paths), RELEARN_QUESTION])
-  expect(llm.requests()).toEqual([])
-  llm.script({ content: "The job is gone; start it again." })
-  v = visitDeps(dir, fake, { answers: ["1"] })
+  expect(c.specs).toEqual([])
+  c = chat()
+  v = visitDeps(dir, fake, { answers: ["1"], learnChat: c.learnChat })
   expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(v.errors).toEqual([line, "opencorp hq: nothing was saved: The job is gone; start it again."])
-  expect(JSON.stringify(llm.requests()[0])).toContain("squeue: no such job")
-  // Without a terminal there's no one to ask: the failure alone.
-  v = visitDeps(dir, fake, { interactive: false })
-  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(v.errors).toEqual([line])
+  expect(v.errors).toEqual([line, NOT_SAVED])
+  expect(c.specs[0]!.inputs.failure).toBe(line)
+  // Without a terminal, or one the TUI can't draw on, there's no one to ask: the failure alone.
+  for (const more of [{ interactive: false, learnChat: chat().learnChat }, {}]) {
+    v = visitDeps(dir, fake, more)
+    expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
+    expect(v.errors).toEqual([line])
+    expect(v.prompter.seen).toEqual([])
+  }
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
 })
 
 test("--relearn while another opencorp hq holds the connection says to end it first", async () => {
   const { dir, fake, paths } = await approvedHome({}, { signed_in_at: new Date().toISOString() })
   const v = await connected(dir, fake, { signIn: false, open: false })
-  const second = visitDeps(dir, fake)
+  const second = visitDeps(dir, fake, { learnChat: chat().learnChat })
   expect(await visit({ signIn: false, open: false, relearn: true }, second.deps)).toBe(1)
   expect(second.errors).toEqual([RELEARN_BUSY])
   expect(second.opened).toEqual([])
@@ -1004,20 +1157,7 @@ test("--relearn while another opencorp hq holds the connection says to end it fi
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
 })
 
-test("learning no longer rewrites the ssh files with a longer persist", async () => {
-  const { dir, fake, llm, paths } = await unlearnedHome()
-  llm.script(call("shell", { command: 'grep ControlPersist "$OPENCORP_SSH_CONFIG"', why: "look" }), { content: "Done." })
-  const v = visitDeps(dir, fake, { answers: ["1", "1"] })
-  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  // The agent's command read the visit's own file.
-  const seen = JSON.stringify(llm.requests()[1])
-  expect(seen).toContain("ControlPersist 60")
-  expect(seen).not.toContain("ControlPersist 600")
-  expect(fs.readFileSync(paths.config, "utf8")).toContain("\nControlPersist 60\n")
-  expect(fs.readFileSync(paths.batchConfig, "utf8")).toContain("\nControlPersist 60\n")
-})
-
-test.each(["\u00a0", "\u202f", "\u3000", "\u2028", "\u2800", "\u3164"])(
+test.each([" ", " ", "　", " ", "⠀", "ㅤ"])(
   "an owner-written reach.sh with a look-alike blank is shown escaped, not refused [%p]",
   async (blank) => {
     const hex = blank.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")
@@ -1043,20 +1183,11 @@ test("the old notes and script a relearn reads are cut without splitting an emoj
   expect(lastPath(paths)).toEqual({ notes: "n".repeat(MAX_OLD_CHARS - 1), script: "exit 3\n" })
 })
 
-test("the agent's last reply is printed without the model's key or a sign-in code", async () => {
-  const { dir, fake, llm, paths } = await unlearnedHome()
-  const key = "sk-test-0123456789abcdefghij"
-  await writePrivate(paths.provider, JSON.stringify({ llm_config: { ...LLM_CONFIG, api_key: key }, env: llm.env() }))
-  llm.script({ content: `Your key is ${key}; try http://127.0.0.1:1/pair#AbCdEfGhIjKlMnOpQrStUv` })
-  const v = visitDeps(dir, fake, { answers: ["1"] })
-  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(v.errors.at(-1)).toBe("opencorp hq: nothing was saved: Your key is [redacted]; try http://127.0.0.1:1/pair#[redacted]")
-})
-
 test("Ctrl-C during the first run's model check stops the check and exits 130", async () => {
   const { dir, fake, llm, paths } = await unlearnedHome({ provider: false })
   let started = false
   let stopped = false
+  const c = chat()
   const v = visitDeps(dir, fake, {
     answers: ["1", "vllm", llm.baseUrl + "/v1", "", "stub"],
     checkModel: (_provider, signal) => {
@@ -1068,6 +1199,7 @@ test("Ctrl-C during the first run's model check stops the check and exits 130", 
         }),
       )
     },
+    learnChat: c.learnChat,
   })
   const done = visit({ signIn: false, open: false }, v.deps)
   await waitFor(() => started, { what: "the model check" })
@@ -1075,13 +1207,14 @@ test("Ctrl-C during the first run's model check stops the check and exits 130", 
   expect(await done).toBe(130)
   expect(stopped).toBe(true)
   expect(fs.existsSync(paths.provider)).toBe(false)
+  expect(c.specs).toEqual([])
 })
 
 test("Ctrl-C while the first run's ChatGPT sign-in waits exits 130 and saves nothing", async () => {
   const { dir, fake, paths } = await unlearnedHome({ provider: false })
   const subscription = fakeSubscription({ approved: new Promise(() => {}) })
   // Learn it, openai, the subscription.
-  const v = visitDeps(dir, fake, { answers: ["1", "openai", ""], auth: subscription.auth })
+  const v = visitDeps(dir, fake, { answers: ["1", "openai", ""], auth: subscription.auth, learnChat: chat().learnChat })
   const done = visit({ signIn: false, open: false }, v.deps)
   await waitFor(() => v.prompter.seen.includes(signInLine(DEVICE_URL, DEVICE_CODE)), { what: "the code" })
   v.sigint()
@@ -1091,360 +1224,33 @@ test("Ctrl-C while the first run's ChatGPT sign-in waits exits 130 and saves not
   expect(fs.existsSync(paths.provider)).toBe(false)
 })
 
-test("a learning run that saves nothing lists the commands the model asked for", async () => {
-  const { dir, fake, llm } = await unlearnedHome()
-  llm.script(
-    call("shell", { command: "echo hi\necho there", why: "look" }),
-    call("shell", { command: "touch x", why: "try" }),
-    { content: "I can't tell." },
-  )
-  const v = visitDeps(dir, fake, { answers: ["1", "1", "2", ""] })
-  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(v.errors).toEqual([
-    NO_OFFICE_HERE,
-    "opencorp hq: nothing was saved: I can't tell.",
-    ASKED_FOR,
-    "  (exit 0) echo hi (and 1 more line)",
-    "  (not run) touch x",
-  ])
-})
-
-test("Ctrl-C while learning lists the commands the model asked for", async () => {
-  const { dir, fake, llm } = await unlearnedHome()
-  llm.script(call("shell", { command: "true", why: "look" }), call("shell", { command: "echo started >&2; sleep 30", why: "wait" }))
-  const v = visitDeps(dir, fake, { answers: ["1", "1", "1"] })
-  const done = visit({ signIn: false, open: false }, v.deps)
-  await waitFor(() => v.echoed.join("").includes("started"), { what: "the second command" })
-  v.sigint()
-  expect(await done).toBe(130)
-  expect(v.errors.slice(1, 3)).toEqual([ASKED_FOR, "  (exit 0) true"])
-})
-
 test("--relearn with an access.json that isn't valid warns and relearns as if there were none", async () => {
-  const { dir, fake, llm, paths } = await unlearnedHome()
+  const { dir, fake, paths } = await unlearnedHome()
   fs.writeFileSync(paths.script, "exit 3\n", { mode: 0o600 })
   fs.writeFileSync(paths.access, "{nope", { mode: 0o600 })
-  llm.script({ content: "Nothing to learn." })
-  const v = visitDeps(dir, fake, { answers: [""] })
+  const c = chat()
+  const v = visitDeps(dir, fake, { answers: [""], learnChat: c.learnChat })
   expect(await visit({ signIn: false, open: false, relearn: true }, v.deps)).toBe(1)
-  expect(v.errors).toEqual([
-    `opencorp hq: ${paths.access} isn't JSON; relearning as if there were none.`,
-    "opencorp hq: nothing was saved: Nothing to learn.",
-  ])
-  expect(llm.requests()).toHaveLength(1)
+  expect(v.errors).toEqual([`opencorp hq: ${paths.access} isn't JSON; relearning as if there were none.`, NOT_SAVED])
+  expect(c.specs).toHaveLength(1)
 })
 
-/** The fake model, and a provider for it. */
-async function model() {
-  const llm = await fakeLlm()
-  return { llm, provider: Provider.parse({ llm_config: LLM_CONFIG, env: llm.env() }) }
-}
-
-const NO_INPUTS = { notes: "", script: "", failure: "" }
-
-test("a learning run asks, runs approved commands and saves through save_access", async () => {
-  const { llm, provider } = await model()
-  const c = await chain(["login1.example.edu", "1", "1"])
-  const script = scriptFor(c.spec)
-  llm.script(
-    call("ask_user", { question: "Which login node do you use?" }),
-    call("shell", { command: "pwd; ssh login1 true", why: "check that login1 answers" }),
-    call("save_access", { script, notes: NOTES, risks: ["Duo on the node too: two prompts."] }),
-    { content: "HQ is reachable." },
-  )
-  const got = await runLearn(provider, NO_INPUTS, c.state)
-  expect(got).toEqual({ output: "HQ is reachable.", message: null, capped: false })
-  // Marked as the agent's, with where the answer goes.
-  expect(c.prompter.seen.slice(0, 2)).toEqual([ANSWER_GOES_TO_MODEL, "The agent asks: Which login node do you use?"])
-  expect(ANSWER_GOES_TO_MODEL).toBe(
-    "Your answer goes to the model. Type passwords, passphrases and codes only at ssh's own prompts, never here.",
-  )
-  expect(fs.readFileSync(c.ctx.paths.script, "utf8")).toBe(script)
-  expect(fs.readFileSync(c.ctx.paths.notes, "utf8")).toBe(NOTES)
-  expect(c.state.connection).not.toBeNull()
-  expect(c.state.commands).toEqual([{ command: "pwd; ssh login1 true", code: 0 }])
-  // The folder commands ran in is gone once the run ends.
-  const work = /"stdout\\":\\"([^"\\]+)\\\\n/.exec(JSON.stringify(llm.requests()[2]))![1]!
-  expect(path.basename(work)).toStartWith("opencorp-learn-")
-  expect(fs.existsSync(work)).toBe(false)
-  const requests = llm.requests()
-  expect(requests).toHaveLength(4)
-  expect(JSON.stringify(requests[1])).toContain("login1.example.edu")
-  expect(JSON.stringify(requests[2])).toContain('\\"exit\\":0')
-  expect(JSON.stringify(requests[3])).toContain(`${SAVED} Reply with one line for the owner.`)
-  await exitAll(c.ctx)
-  expect(c.fake.masters()).toEqual([])
-})
-
-test("at the turn cap it lists the commands asked for and saves nothing", async () => {
-  const { llm, provider } = await model()
-  const c = await chain(Array(29).fill("1"))
-  // The 30th reply's call never runs: the model reads the cap's error result and answers once more.
-  llm.script(
-    ...Array.from({ length: 30 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" })),
-    { content: "No working path yet." },
-  )
-  const got = await runLearn(provider, NO_INPUTS, c.state)
-  expect(got).toEqual({ output: "No working path yet.", message: null, capped: true })
-  expect(c.state.commands).toEqual(Array.from({ length: 29 }, (_, i) => ({ command: `echo ${i}`, code: 0 })))
-  expect(JSON.stringify(llm.requests().at(-1))).toContain("Tool-call limit reached (30 turns)")
-  expect(fs.existsSync(c.ctx.paths.script)).toBe(false)
-  expect(c.state.connection).toBeNull()
-}, 60_000)
-
-test("a reply after the turn cap that still calls tools runs none of them, and nothing is saved", async () => {
-  const { llm, provider } = await model()
-  const c = await chain(Array(29).fill("1"))
-  llm.script(
-    ...Array.from({ length: 30 }, (_, i) => call("shell", { command: `echo ${i}`, why: "look" })),
-    call("save_access", { script: scriptFor(c.spec), notes: NOTES, risks: [] }),
-  )
-  const got = await runLearn(provider, NO_INPUTS, c.state)
-  expect(got).toEqual({ output: "", message: null, capped: true })
-  expect(c.state.commands).toHaveLength(29)
-  expect(llm.requests()).toHaveLength(31)
-  expect(fs.existsSync(c.ctx.paths.script)).toBe(false)
-  expect(c.state.connection).toBeNull()
-}, 60_000)
-
-/** A prompter whose input has ended. */
-class Closed extends Script {
-  static readonly error = new OnboardError("no answer to 'Which node?' (stdin closed)")
-  override async ask(question: string): Promise<string> {
-    this.seen.push(question)
-    throw Closed.error
-  }
-  override async choose(question: string): Promise<string> {
-    this.seen.push(question)
-    throw Closed.error
-  }
-}
-
-test("the owner's input ending stops the run with that error", async () => {
-  const { llm, provider } = await model()
-  const { dir, fake } = fakeHome()
-  const ctx = await reachCtx(dir, fake)
-  const state = new Learning(ctx, new Closed(), new PassThrough(), [], 49381)
-  llm.script(call("ask_user", { question: "Which node?" }))
-  expect(await rejection(runLearn(provider, NO_INPUTS, state))).toBe(Closed.error)
-  const shell = new Learning(ctx, new Closed(), new PassThrough(), [], 49381)
-  llm.script(call("shell", { command: "true", why: "x" }))
-  expect(await rejection(runLearn(provider, NO_INPUTS, shell))).toBe(Closed.error)
-  expect(llm.pending()).toEqual([])
-})
-
-test("the learning run reads the sign-in YIAN_AUTH_FILE names", async () => {
-  const { dir, fake } = fakeHome()
-  const ctx = await reachCtx(dir, fake)
-  const provider = await learnProvider(ctx.paths, new Script(["openai", "", ""]), subscribed().options)
-  // Damaged after it was checked, so the run stops reading it, before any request.
-  fs.writeFileSync(ctx.paths.auth, "{nope", { mode: 0o600 })
-  const state = new Learning(ctx, new Script([]), new PassThrough(), [], 49381)
-  const got = await runLearn(provider, NO_INPUTS, state)
-  expect(got.output).toBeNull()
-  expect(got.message).toContain(`Credential storage at ${ctx.paths.auth}`)
-})
-
-test("tokens yian refreshes during the run are scrubbed from command output with the old ones, and kept out of notes.md", async () => {
+test("tokens yian refreshes during the run are kept out of notes.md with the old ones", async () => {
   const { dir, fake } = fakeHome()
   const ctx = await reachCtx(dir, fake)
   const old = tokens("old", -60)
   const saved = await new AuthStore(ctx.paths.auth).save("openai", old, "gpt-5.5")
   const provider = withSignIn(ConnectionFile.parse({ method: "subscription", llm_config: SUBSCRIBED_LLM }), ctx.paths.auth)
   // As run.ts makes it.
-  const state = new Learning(ctx, new Script(["1"]), new PassThrough(), () => providerSecrets(provider, workerEnv(ctx.env)), 49381)
-  onTestFinished(() => state.close())
+  const state = new Learning(ctx, () => providerSecrets(provider, workerEnv(ctx.env)), 49381, ctx.paths.session("01JDLEARN00000000000000000"))
   // The run's first model call refreshes the expired tokens through yian's own store, which writes the new ones.
   const fresh = tokens("new", 3600)
   await new AuthStore(ctx.paths.auth).credentials("openai", saved.credentialId, { refresh: async () => fresh })
   expect(new AuthStore(ctx.paths.auth).savedSecrets("openai")[0]).toBe(fresh.accessToken)
-  const result = JSON.parse(
-    await runShell({ command: `cat '${ctx.paths.auth}'; echo ${old.accessToken}`, why: "look" }, state),
-  ) as { stdout: string }
-  expect(result.stdout).toContain("[redacted]")
-  for (const token of [fresh.accessToken, fresh.refreshToken, old.accessToken]) expect(result.stdout).not.toContain(token)
-  const error = await rejection(saveAccess({ script: "echo {}\n", notes: `${fresh.refreshToken}\n`, risks: [] }, state))
-  expect(error.message).toBe(
-    "Not saved: notes.md: it holds the model's API key or sign-in token; SSH asks for passwords and Duo itself, so leave them out.",
-  )
-})
-
-test("a learning run's failure on a refused sign-in says how to sign in again here, not with yian auth", () => {
-  const paths = new ReachPaths("/h/we$&ird$`")
-  const provider = withSignIn(ConnectionFile.parse({ method: "subscription", llm_config: SUBSCRIBED_LLM }), paths.auth)
-  const hint = ". Run 'yian auth openai' and start a new run"
-  const yian = `OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in again${hint}`
-  expect(learnedMessage(yian, provider, paths)).toBe(
-    "OpenAI authentication request failed (HTTP 401, refresh_token_reused); sign in again: delete" +
-      " /h/we$&ird$`/hq/auth.json and run `opencorp hq` again",
-  )
-  // A failure that may pass keeps the sign-in.
-  for (const why of ["(could not connect)", "(HTTP 429)", "(HTTP 502)"]) {
-    expect(learnedMessage(`OpenAI authentication request failed ${why}${hint}`, provider, paths)).toBe(
-      `OpenAI authentication request failed ${why}: run \`opencorp hq\` again later`,
+  const host = { state, binding: binding().bound, connection: () => null! }
+  for (const token of [fresh.refreshToken, old.accessToken]) {
+    expect(saveAccess({ script: "echo {}\n", notes: `${token}\n`, risks: [] }, "r/learn/1/0", host)).toBe(
+      "Not saved: notes.md: it holds the model's API key or sign-in token; SSH asks for passwords and Duo itself, so leave them out.",
     )
   }
-  expect(learnedMessage(`node learn failed: OpenAI authentication request failed (HTTP 403)${hint}`, provider, paths)).toBe(
-    "node learn failed: OpenAI authentication request failed (HTTP 403): delete /h/we$&ird$`/hq/auth.json and run" +
-      " `opencorp hq` again",
-  )
-  // On a key, or yian's own login, yian's hint is the fix.
-  const keyless = Provider.parse({ llm_config: SUBSCRIBED_LLM })
-  expect(learnedMessage(yian, keyless, paths)).toBe(yian)
-  expect(learnedMessage(null, provider, paths)).toBeNull()
-})
-
-/** A setup screen for learning, in this process, that answers each question with the next of `answers` (an option
- *  as written, or "" for the default) and each hand-over at once. `atQuestion(n)` runs at its nth question (from 1)
- *  before it answers; returning false leaves that question unanswered. */
-function fakeScreen(answers: string[], atQuestion: (n: number, interrupt: () => void) => boolean = () => true) {
-  const prompts: { type: string; [key: string]: unknown }[] = []
-  const events: string[] = []
-  const screen: LearnScreen = async (learn, interrupt) => {
-    events.push("open")
-    const stream = new PassThrough()
-    let questions = 0
-    const answer = (text: string) => stream.write(JSON.stringify({ answer: text }) + "\n")
-    const io = {
-      prompts: {
-        write(text: string) {
-          for (const line of text.split("\n").filter(Boolean)) {
-            const prompt = JSON.parse(line)
-            prompts.push(prompt)
-            if (prompt.type === "hand_over") answer("")
-            else if (["ask", "choose", "secret"].includes(prompt.type) && atQuestion(++questions, interrupt))
-              answer(answers.shift() ?? "")
-          }
-          return true
-        },
-      },
-      answers: stream,
-      echo: (text: string) => void events.push(`echo ${text}`),
-    }
-    try {
-      return await learn(io)
-    } finally {
-      events.push("closed")
-    }
-  }
-  return { screen, prompts, events }
-}
-
-test("with a screen, learning runs behind it, risks first, and the visit goes on plainly once it's gone", async () => {
-  const { dir, fake, llm, spec, paths, port } = await unlearnedHome()
-  const script = scriptFor(spec)
-  llm.script(
-    call("shell", { command: "echo hi", why: "say hi" }),
-    call("save_access", { script, notes: NOTES, risks: [] }),
-    { content: "HQ is reachable from here now." },
-  )
-  const s = fakeScreen(["Run it", "Test it, then save it"])
-  const v = visitDeps(dir, fake, { answers: ["1"], learnScreen: s.screen })
-  const print = v.deps.print
-  v.deps.print = (line) => {
-    s.events.push(`print ${line.split(" ")[0]}`)
-    print(line)
-  }
-  const done = visit({ signIn: false, port, open: false }, v.deps)
-  await waitFor(() => v.printed.some((line) => line.startsWith("Connected.")) || v.errors.length > 1, { what: "the visit to connect" })
-  // The offer and its risks stay plain; only learning is behind the screen, and it doesn't repeat the risks there.
-  expect(v.prompter.seen).toEqual([...beforeLearning(paths), LEARN_QUESTION])
-  const said = s.prompts.filter((p) => p.type === "say").map((p) => p.text)
-  for (const risk of beforeLearning(paths)) expect(said).not.toContain(risk)
-  expect(s.prompts.filter((p) => p.type !== "say").map((p) => p.type)).toEqual([
-    "command", "choose", "hand_over", "take_back", "result", "review", "choose", "hand_over", "take_back",
-  ])
-  expect(s.prompts.filter((p) => p.type === "hand_over").map((p) => p.why)).toEqual([HAND_OVER_COMMAND, HAND_OVER_TEST])
-  expect(s.prompts.find((p) => p.type === "result")).toEqual({ type: "result", title: "Exited 0", ok: true, lines: ["hi"] })
-  expect(said.at(-1)).toBe(SAVED)
-  // While the command ran, its output went to the terminal through the screen's echo; the visit's own lines come
-  // once the screen is gone.
-  expect(s.events).toContain("echo hi\n")
-  expect(v.echoed.join("")).not.toContain("hi")
-  const closed = s.events.indexOf("closed")
-  expect(s.events.slice(0, closed).some((e) => e.startsWith("print"))).toBe(false)
-  expect(s.events.slice(closed + 1)).toContain("print Connected.")
-  expect(fs.readFileSync(paths.script, "utf8")).toBe(script)
-  v.sigint()
-  expect(await done).toBe(0)
-  expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
-})
-
-test("Ctrl-C on the screen stops learning as the terminal's Ctrl-C does: 130, and the commands listed after it", async () => {
-  const { dir, fake, llm } = await unlearnedHome()
-  llm.script(call("shell", { command: "true", why: "look" }), call("shell", { command: "touch x", why: "try" }))
-  const s = fakeScreen(["Run it"], (n, interrupt) => {
-    if (n < 2) return true
-    interrupt()
-    return false
-  })
-  const v = visitDeps(dir, fake, { answers: ["1"], learnScreen: s.screen })
-  const error = v.deps.error
-  v.deps.error = (line) => {
-    s.events.push(`error ${line}`)
-    error(line)
-  }
-  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(130)
-  const closed = s.events.indexOf("closed")
-  expect(closed).toBeGreaterThan(0)
-  expect(s.events.slice(closed + 1)).toEqual([`error ${ASKED_FOR}`, "error   (exit 0) true"])
-})
-
-test("a second Ctrl-C on the screen ends the visit at once, as at the terminal", async () => {
-  const { dir, fake, llm } = await unlearnedHome()
-  llm.script(call("shell", { command: "true", why: "look" }))
-  const exits: number[] = []
-  const s = fakeScreen([], (_n, interrupt) => {
-    interrupt()
-    try {
-      interrupt()
-    } catch {}
-    return false
-  })
-  const v = visitDeps(dir, fake, { answers: ["1"], learnScreen: s.screen })
-  v.deps.exit = (code) => {
-    exits.push(code)
-    throw new Error(`exit ${code}`)
-  }
-  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(130)
-  expect(exits).toEqual([130])
-})
-
-test("when the screen can't start (a window too small, say), learning asks on the plain terminal instead", async () => {
-  const { dir, fake, llm } = await unlearnedHome()
-  llm.script(call("shell", { command: "true", why: "look" }), { content: "I can't tell." })
-  const v = visitDeps(dir, fake, {
-    // Learn it; then, on the plain prompter, run the command.
-    answers: ["1", "1"],
-    learnScreen: async () => {
-      throw new Error("can't show the learning screen: the window (30x10) is smaller than 40x14")
-    },
-  })
-  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(v.errors.slice(0, 2)).toEqual([
-    NO_OFFICE_HERE,
-    "opencorp hq: can't show the learning screen: the window (30x10) is smaller than 40x14; asking here instead.",
-  ])
-  // The command was asked about, and run, on the plain prompter.
-  expect(v.prompter.seen).toContain("Run this 1-line command?")
-  expect(llm.requests().length).toBe(2)
-  expect(v.errors).toContain("opencorp hq: nothing was saved: I can't tell.")
-})
-
-test("a screen that fails once learning is under way doesn't start it over on the plain terminal", async () => {
-  const { dir, fake, llm } = await unlearnedHome()
-  llm.script({ content: "Stopping." })
-  const answers = new PassThrough()
-  answers.end()
-  const io = { prompts: { write: () => true }, answers, echo: () => {} }
-  const v = visitDeps(dir, fake, {
-    answers: ["1"],
-    learnScreen: async (learn) => {
-      await learn(io).catch(() => {})
-      throw new Error("the renderer broke mid-way")
-    },
-  })
-  expect(await visit({ signIn: false, open: false }, v.deps)).toBe(1)
-  expect(v.errors).toEqual([NO_OFFICE_HERE, "opencorp hq: the renderer broke mid-way"])
-  expect(llm.requests()).toHaveLength(1)
 })

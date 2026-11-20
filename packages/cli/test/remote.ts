@@ -1,5 +1,6 @@
 // A client machine for `opencorp hq` from another machine, in tests: a home with an approved reach.sh that reaches a
-// real test office through the fake ssh (node1 through login1), and the CLI run through the checkout wrapper.
+// real test office through the fake ssh (node1 through login1), and the CLI run through the checkout wrapper. The fake
+// is compiled and lives outside the home, in a folder the visit's env names, so the agent's sandbox can run it.
 import { type ChildProcess, execFileSync, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
@@ -11,6 +12,29 @@ import type { TestOffice } from "@opencorp/office/testing/office"
 
 export const CHECKOUT = fs.realpathSync(fileURLToPath(new URL("../../..", import.meta.url)))
 export const WRAPPER = path.join(CHECKOUT, "packages/cli/bin/opencorp")
+/** The fake ssh's source. */
+const FAKE_SOURCE = path.join(CHECKOUT, "packages/office/src/testing/fake_ssh.ts")
+/** The variable naming the fake's folder, which the agent's sandbox binds (the office's `TEST_SSH_DIR`). */
+export const TEST_SSH_DIR = "OPENCORP_TEST_SSH_DIR"
+
+/** Compiles the fake ssh (`bun build --compile`) into `dir`, a private folder of the client's own, so the agent's
+ *  sandbox runs it with neither Bun nor the checkout; returns the program. Never at a path another user could make
+ *  first, and gone with the client. */
+export function compileFake(dir: string): string {
+  const st = fs.lstatSync(dir)
+  if (!st.isDirectory() || st.uid !== process.getuid!() || (st.mode & 0o077) !== 0) {
+    throw new Error(`the fake ssh's folder ${dir} isn't this user's own private folder`)
+  }
+  const program = path.join(dir, "fake_ssh.build")
+  // Its own folder as its home and cwd: no bunfig or .env of the checkout's, and nothing written to the real home.
+  execFileSync(process.execPath, ["build", "--compile", FAKE_SOURCE, "--outfile", program], {
+    cwd: dir,
+    env: { PATH: "/usr/bin:/bin", HOME: dir },
+    stdio: ["ignore", "ignore", "pipe"],
+    timeout: 120_000,
+  })
+  return program
+}
 
 /** A built web app in `dir` (an index page and its build.json), so the office's health names a build. */
 export function builtApp(dir: string): string {
@@ -40,11 +64,13 @@ export function reachScript(office: TestOffice): string {
   return `set -eu\nssh login1 true\nprintf '%s\\n' '${JSON.stringify(spec)}'\n`
 }
 
-/** The client: `root/c` is its OPENCORP_HOME, with reach.sh for `office` (approved unless `approved` is false, with
- *  access.json on a free port; none with `office` null, only a 0700 hq folder) and the fake ssh in `root/fake` first
- *  on PATH. */
+/** The client: `root` is its HOME and `root/c` its OPENCORP_HOME, with reach.sh for `office` (approved unless
+ *  `approved` is false, with access.json on a free port; none with `office` null, only a 0700 hq folder), and the
+ *  fake ssh in `fakeDir`, a 0700 `/tmp/oc-f-XXXX` outside the home, first on PATH and named by
+ *  `OPENCORP_TEST_SSH_DIR`: compiled there with `compiled`, for the agent's sandbox to run. */
 export interface Client {
   readonly root: string
+  readonly fakeDir: string
   readonly home: string
   readonly hq: string
   readonly cm: string
@@ -56,10 +82,19 @@ export interface Client {
 
 export async function client(
   office: TestOffice | null,
-  { behavior = {}, approved = true }: { behavior?: FakeSshBehavior; approved?: boolean } = {},
+  {
+    behavior = {},
+    approved = true,
+    compiled = false,
+  }: { behavior?: FakeSshBehavior; approved?: boolean; compiled?: boolean } = {},
 ): Promise<Client> {
   const root = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
-  const fake = installFakeSsh(path.join(root, "fake"), behavior)
+  const fakeDir = fs.realpathSync(fs.mkdtempSync("/tmp/oc-f-"))
+  fs.chmodSync(fakeDir, 0o700)
+  const program = compiled ? compileFake(fakeDir) : undefined
+  const fake = installFakeSsh(fakeDir, behavior, program === undefined ? {} : { program })
+  // Linked into bin/: the build's own name goes.
+  if (program !== undefined) fs.rmSync(program, { force: true })
   const home = path.join(root, "c")
   const hq = path.join(home, "hq")
   fs.mkdirSync(hq, { recursive: true, mode: 0o700 })
@@ -78,18 +113,26 @@ export async function client(
     }
     fs.writeFileSync(path.join(hq, "access.json"), JSON.stringify(access), { mode: 0o600 })
   }
-  const env = { PATH: `${fake.bin}:/usr/bin:/bin`, HOME: root, OPENCORP_HOME: home, OPENCORP_BUN: process.execPath }
-  return { root, home, hq, cm: path.join(hq, "cm"), port, fake, env }
+  const env = {
+    PATH: `${fake.bin}:/usr/bin:/bin`,
+    HOME: root,
+    OPENCORP_HOME: home,
+    OPENCORP_BUN: process.execPath,
+    [TEST_SSH_DIR]: fakeDir,
+  }
+  return { root, fakeDir, home, hq, cm: path.join(hq, "cm"), port, fake, env }
 }
 
-/** Kills what's left of `c` (its fake masters, then any process naming its folder) and removes it. */
+/** Kills what's left of `c`, each process whose command line names one of its folders, and removes them. Never the
+ *  fake's own record of its masters: inside the agent's sandbox it records pids of the sandbox's pid namespace. */
 export function removeClient(c: Client): void {
-  for (const pid of [...c.fake.masters(), ...pidsNaming(c.root)]) {
+  for (const pid of [...pidsNaming(c.root), ...pidsNaming(c.fakeDir)]) {
     try {
       process.kill(pid, "SIGKILL")
     } catch {}
   }
   fs.rmSync(c.root, { recursive: true, force: true })
+  fs.rmSync(c.fakeDir, { recursive: true, force: true })
 }
 
 /** The pids of this user's processes, other than this one and `ps`, whose command line holds `text`. */

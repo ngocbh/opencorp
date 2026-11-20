@@ -7,6 +7,7 @@ import { onTestFinished } from "bun:test"
 import { type Event, type LiveEvent, now } from "@opencorp/protocol"
 import { PING } from "../../../src/runtime/bus.ts"
 import type { BuiltinSession, SessionBinding } from "../../../src/runtime/sessions/builtin.ts"
+import type { OfficeTool } from "../../../src/runtime/worker/rpc.ts"
 import { spawnProcess } from "../../../src/runtime/worker/spawn.ts"
 import { LocalHost, type LocalHostOptions } from "../../../src/server/local/host.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
@@ -44,11 +45,17 @@ export interface Started {
 }
 
 /** Starts a host for the built-in agent on `fake`, its folder `<temp>/sessions/<id>`, its terminal's shells on plain
- *  PTYs in a fresh folder with their records in the session's `terminal/`. `o.sessions` gives the sessions folder. The
- *  test's end stops the host, then removes the folders. */
+ *  PTYs in a fresh folder with their records in the session's `terminal/`. `o.sessions` gives the sessions folder,
+ *  `o.flow` another flow, `o.groups` more tool groups and `o.first` the owner's first message. The test's end stops
+ *  the host, then removes the folders. */
 export async function startHost(
   fake: FakeLLM,
-  o: Partial<LocalHostOptions> & { sessions?: string } = {},
+  o: Partial<LocalHostOptions> & {
+    sessions?: string
+    flow?: string
+    groups?: (binding: SessionBinding) => Record<string, Record<string, OfficeTool>>
+    first?: string
+  } = {},
 ): Promise<Started> {
   const top = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-local-")))
   let host: LocalHost | undefined
@@ -65,8 +72,9 @@ export async function startHost(
   let made: Terminal | undefined
   const spec: BuiltinSession<Terminal> = {
     agent: { handle: "opencorp", name: "OpenCorp" },
-    flow: { name: "local_chat", text: FLOW },
+    flow: { name: "local_chat", text: o.flow ?? FLOW },
     inputs: {},
+    ...(o.first === undefined ? {} : { first: o.first }),
     model: { llm_config: { ...LLM_CONFIG }, env: fake.env() },
     folder,
     tools: (binding) => {
@@ -85,7 +93,7 @@ export async function startHost(
         },
       })
       made = terminal
-      return { groups: { terminal: terminal.tools() }, terminal }
+      return { groups: { terminal: terminal.tools(), ...o.groups?.(binding) }, terminal }
     },
   }
   host = await LocalHost.start(spec, {

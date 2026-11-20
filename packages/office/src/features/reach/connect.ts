@@ -149,14 +149,24 @@ export function portFree(port: number): Promise<boolean> {
   })
 }
 
-/** Connects to HQ's machine: (a) the node master logs in, (b) `opencorp hq --check --json` over it gives HQ's socket
- *  and health, (c) 127.0.0.1:`port` here is forwarded to that socket, and (d) HQ's health through the port must be
- *  the check's. On any failure it ends only the node master (a retry needs no new Duo for the login node) and throws
- *  `ReachFailure`, naming what the owner's ssh config sets for the spec's hosts that a visit can't work with. */
-export async function connect(spec: Spec, port: number, ctx: ReachContext): Promise<Connection> {
+/** Starts the node master for `spec`: `startMaster`'s child by default; the chain test's runs in OpenCorp's connection
+ *  shell. */
+export type StartMaster = (ctx: ReachContext, spec: Spec) => Master | Promise<Master>
+
+/** Connects to HQ's machine: (a) the node master logs in, started by `start`, (b) `opencorp hq --check --json` over
+ *  it gives HQ's socket and health, (c) 127.0.0.1:`port` here is forwarded to that socket, and (d) HQ's health through
+ *  the port must be the check's. On any failure it ends only the node master (a retry needs no new Duo for the login
+ *  node) and throws `ReachFailure`, naming what the owner's ssh config sets for the spec's hosts that a visit can't
+ *  work with. */
+export async function connect(
+  spec: Spec,
+  port: number,
+  ctx: ReachContext,
+  start: StartMaster = (c, s) => startMaster(c, s, { quiet: c.batch }),
+): Promise<Connection> {
   // Before logging in, so a port that's taken costs no Duo; checked again before the forward, minutes later.
   if (!(await portFree(port))) throw new ReachFailure("port_taken", `port ${port}`)
-  const master = startMaster(ctx, spec, { quiet: ctx.batch })
+  const master = await start(ctx, spec)
   try {
     const up = await waitForSocket(master, ctx.limits.promptMs, ctx.signal)
     if (up === "exited")

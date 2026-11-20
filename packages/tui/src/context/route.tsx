@@ -25,10 +25,13 @@ export type Route = HomeRoute | SessionRoute | ProfileRoute
 
 export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
   name: "Route",
-  init: (props: { initialRoute?: Route }) => {
+  /** With `only`, session `only` is the one route: the TUI opens there, and every other route is refused. */
+  init: (props: { initialRoute?: Route; only?: string }) => {
     const startup = useTuiStartup()
     const [store, setStore] = createStore<Route>(
-      props.initialRoute ?? initialRoute(startup.initialRoute) ?? { type: "home" },
+      props.only !== undefined
+        ? { type: "session", sessionID: props.only }
+        : (props.initialRoute ?? initialRoute(startup.initialRoute) ?? { type: "home" }),
     )
 
     return {
@@ -36,6 +39,7 @@ export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
         return store
       },
       navigate(route: Route) {
+        if (props.only !== undefined && (route.type !== "session" || route.sessionID !== props.only)) return
         setStore(reconcile(route))
       },
     }

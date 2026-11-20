@@ -52,6 +52,9 @@ export interface SshPolicyInit {
   ssh?: string
   /** More read-only paths: tests bind the fake ssh and its Bun here. */
   readOnly?: readonly string[]
+  /** Folders bound read-write whole: only a test's own folder, checked by its caller first, which holds its fake ssh
+   *  and the state it writes. */
+  readWrite?: readonly string[]
 }
 
 /** Refused: a bind would expose hq's credentials, hq itself, the home, or a file through a link. */
@@ -75,6 +78,8 @@ export class SshPolicy {
   /** Files bound read-write for their data only, never to be removed, renamed or linked, in this order:
    *  `~/.ssh/known_hosts`, the status file, and a ticket file. */
   readonly writable: readonly string[]
+  /** Folders bound read-write whole: a test's own folder, and nothing else. */
+  readonly readWrite: readonly string[]
   /** The sockets the call may connect to, and do nothing else with: the agent's and a KCM's. */
   readonly sockets: readonly string[]
   /** The folders whose sockets the call may connect to, and do nothing else with: `~/.ssh`, then the owner's
@@ -292,9 +297,12 @@ export class SshPolicy {
     }
     const extras = (init.readOnly ?? []).map((p) => realPath(p))
     for (const p of extras) denied.check(p, "the extra path")
+    const readWrite = (init.readWrite ?? []).map((p) => realPath(p))
+    for (const p of readWrite) denied.check(p, "the test folder")
     // Mounted whole, so a hard link to a credential anywhere in them would be readable.
     denied.scan(ssh)
     denied.scan(hqSsh)
+    for (const p of readWrite) denied.scan(p)
 
     // ssh makes ~/.ssh 0700 the first time it writes there.
     if (!fs.existsSync(ssh)) fs.mkdirSync(ssh, { mode: 0o700 })
@@ -314,6 +322,7 @@ export class SshPolicy {
     this.controlDir = controlDir
     this.readOnly = [ssh, ...bound, hqSsh, ...extras]
     this.writable = [knownHosts, status, ...(ticket === null ? [] : [ticket])]
+    this.readWrite = readWrite
     this.sockets = [agent, kcm].filter((p) => p !== null)
     this.socketFolders = [ssh, ...controlFolders]
     this.agentSocket = agent

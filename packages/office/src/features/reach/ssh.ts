@@ -535,12 +535,18 @@ export function masterArgv(
   ]
 }
 
-/** The node master: its process, the pipe that is its lifeline, its exit code, and its control socket. */
+/** The node master: its exit code, its control socket, and how to end it at once. */
 export interface Master {
-  readonly child: ChildProcess
-  readonly lifeline: Writable
   readonly exited: Promise<number>
   readonly socket: string
+  /** Ends it now, and what it started. */
+  kill(): void
+}
+
+/** A node master this process spawned: its process, and the pipe that is its lifeline. */
+export interface SpawnedMaster extends Master {
+  readonly child: ChildProcess
+  readonly lifeline: Writable
 }
 
 /** Starts the node master as a foreground child, after removing any leftover `cm/node`, its stdin a pipe this process
@@ -548,7 +554,7 @@ export interface Master {
  *  once no channel is open; an HQ tab's `/api/events` is one, so the visit's watcher also `-O exit`s it. Its stderr
  *  (banners, a node's login-shell output, Duo's menu; ssh's prompts go to /dev/tty) reaches `ctx.echo` cleaned, unless
  *  `quiet`. */
-export function startMaster(ctx: ReachContext, spec: Spec, { quiet = false } = {}): Master {
+export function startMaster(ctx: ReachContext, spec: Spec, { quiet = false } = {}): SpawnedMaster {
   const { paths } = ctx
   // The lock holder owns cm/node. A leftover there would read as up before login, and ssh would refuse to bind over
   // it ("already exists, disabling multiplexing").
@@ -575,7 +581,10 @@ export function startMaster(ctx: ReachContext, spec: Spec, { quiet = false } = {
     })
     child.on("exit", (code, sig) => resolve(code ?? 128 + (sig ? (os.constants.signals[sig] ?? 0) : 0)))
   })
-  return { child, lifeline: child.stdin!, exited, socket: paths.node }
+  const kill = () => {
+    if (running(child)) killTree(child.pid!)
+  }
+  return { child, lifeline: child.stdin!, exited, socket: paths.node, kill }
 }
 
 /** Until the control socket exists (ssh binds it only after login), the master exits, or `timeoutMs` pass or `signal`
@@ -596,7 +605,7 @@ export function waitForSocket(
       resolve(result)
     }
     const stop = () => {
-      if (running(master.child)) killTree(master.child.pid!)
+      master.kill()
       finish("timed_out")
     }
     const poll = setInterval(() => {
@@ -717,7 +726,7 @@ export async function endNode(ctx: ReachContext, master: Master): Promise<void> 
   const gone =
     asked.code === 0 &&
     (await Promise.race([master.exited.then(() => true), sleep(CONTROL_MS).then(() => false)]))
-  if (!gone && running(master.child)) killTree(master.child.pid!)
+  if (!gone) master.kill()
   await master.exited
   fs.rmSync(master.socket, { force: true })
 }

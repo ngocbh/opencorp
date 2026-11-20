@@ -20,7 +20,8 @@ const FLUSH_MS = 16
 
 export const { use: useOffice, provider: OfficeProvider } = createSimpleContext({
   name: "Office",
-  init: (props: { socket: string; token?: string; person?: string; cwd: string }) => {
+  /** `local`: a host with no office, serving one session; it has no connections to read. */
+  init: (props: { socket: string; token?: string; person?: string; cwd: string; local?: boolean }) => {
     const client = createOfficeClient({ socket: props.socket, token: props.token })
     const [state, setState] = createStore<OfficeState>(emptyState())
     const [status, setStatus] = createSignal<OfficeStatus>("connecting")
@@ -62,7 +63,7 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
     // say), so a failed read here is not worth an error.
     createEffect(
       on(status, (s) => {
-        if (s === "online") refreshConnections().catch(() => {})
+        if (s === "online" && !props.local) refreshConnections().catch(() => {})
       }),
     )
 
@@ -77,6 +78,8 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
       cwd: props.cwd,
       /** Who the office takes this TUI's requests as, when it said. */
       person: props.person,
+      /** Whether this is a host with no office, serving one local session: no home, no other session. */
+      local: props.local ?? false,
       state: state as Readonly<OfficeState>,
       status,
       /** Why the office's state couldn't be read, while `status()` is `"error"`. */

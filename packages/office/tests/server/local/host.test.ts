@@ -10,8 +10,9 @@ import { type Instrument, now } from "@opencorp/protocol"
 import { STOPPED } from "../../../src/runtime/permissions/classifier.ts"
 import type { ApprovalCard } from "../../../src/runtime/permissions/policy.ts"
 import { sessionOption, YES } from "../../../src/runtime/questions/approval.ts"
+import type { SessionBinding } from "../../../src/runtime/sessions/builtin.ts"
 import type { LiveInstrument } from "../../../src/runtime/sessions/instruments.ts"
-import { END_KILL_MS, OWNER } from "../../../src/server/local/host.ts"
+import { END_KILL_MS, OWNER, SessionsBusy } from "../../../src/server/local/host.ts"
 import { readRecord } from "../../../src/tools/terminal/record.ts"
 import { newId } from "../../../src/util/ids.ts"
 import { fakeLlm } from "../../features/chat/helpers.ts"
@@ -511,4 +512,168 @@ test("a card a feature holds is never answered by a re-check: a session rule can
   expect(fs.existsSync(path.join(work, "a"))).toBe(true)
   expect(host.question(own!.id)).toMatchObject({ status: "open", answer: null, answered_by: null })
   expect(ran).toEqual([])
+})
+
+test("a second host on the same sessions folder is refused while the first runs, and never marks its shells interrupted", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    { tool_calls: [terminalCall("run", { command: "sleep 30", why: "wait", wait: 1 })], match: AGENT },
+    { content: "Waiting.", match: AGENT },
+  )
+  const first = await startHost(fake)
+  await until(first.host, "idle")
+  await first.host.prompt("wait", OWNER)
+  await replied(first.host, "Waiting.")
+  const [shell] = first.host.instruments.list(first.host.id)
+  const record = path.join(first.folder, "terminal", shell!.id)
+  expect(readRecord(record)?.state).toBe("running")
+  const sessions = path.dirname(first.folder)
+  await expect(startHost(fake, { sessions })).rejects.toThrow(SessionsBusy)
+  await expect(startHost(fake, { sessions })).rejects.toThrow(`another host is running the sessions in ${sessions}`)
+  // The second spawned no worker, and the first's shell runs on, its record as it was.
+  expect(readRecord(record)?.state).toBe("running")
+  expect(first.terminal.shells()[0]!.state.status).toBe("running")
+  // Once the first has closed, the next host on the folder starts.
+  await first.host.close()
+  const next = await startHost(fake, { sessions })
+  await until(next.host, "idle")
+  expect(readRecord(record)?.state).not.toBe("running")
+})
+
+test("the owner's first message is sent from them as the session opens", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "On it.", match: AGENT })
+  const { host } = await startHost(fake, { first: "Learn how this machine reaches HQ" })
+  await replied(host, "On it.")
+  expect(await said(host)).toEqual([
+    ["user", ["Learn how this machine reaches HQ"]],
+    ["assistant", ["On it."]],
+  ])
+  expect((await host.messages())[0]!.author).toBe("owner")
+})
+
+/** The fixture flow with a feature's `card` group granted too. */
+const CARD_FLOW = FLOW.replace("tools: [terminal, ask_user]", "tools: [terminal, ask_user, card]")
+
+/** A feature's tool, a group of one, that holds its call on a question card; its act gets the answer and says what it
+ *  got. */
+function cardGroup(acts: { value: string; typed: boolean }[]) {
+  return (binding: SessionBinding) => ({
+    card: {
+      card: {
+        description: "Ask the owner to save it.",
+        parameters: { type: "object", properties: {} },
+        call: (_args: Record<string, unknown>, options?: { callId?: string }) =>
+          binding.ask(
+            { title: "OpenCorp wants to save it", question: "1  the file", options: ["Save it", "Don't"], reason: "saving always asks" },
+            options!.callId!,
+            async (answer) => {
+              acts.push(answer)
+              return `the owner said ${answer.value}`
+            },
+          ),
+      },
+    },
+  })
+}
+
+test("a feature's question card asks in every mode but dontAsk; the owner's answer, chosen or typed, goes to its act, whose output the agent gets", async () => {
+  const fake = await fakeLlm()
+  const save = { tool_calls: [{ name: "card", arguments: {} }], match: AGENT }
+  // The first turn holds the card beside a command the mode asks about.
+  const both = {
+    tool_calls: [
+      { name: "card", arguments: {}, id: "call_card" },
+      terminalCall("run", { command: "touch a", why: "a" }, "call_touch"),
+    ],
+    match: AGENT,
+  }
+  fake.script(both, { content: "Saved.", match: AGENT }, save, { content: "Changed.", match: AGENT }, save, {
+    content: "Refused.",
+    match: AGENT,
+  })
+  const acts: { value: string; typed: boolean }[] = []
+  const { host, work } = await startHost(fake, { flow: CARD_FLOW, groups: cardGroup(acts) })
+  await until(host, "idle")
+  host.setMode("default", OWNER)
+  await host.prompt("save", OWNER)
+  const held = await cards(host, 2)
+  const card = held.find((q) => q.source === "ask_user")
+  const touch = held.find((q) => q.source === "approval")
+  // A rule the owner adds while it is open decides the command's card, and never the save card.
+  host.answer(touch!.id, sessionOption(["touch *"]), "option", OWNER)
+  await waitFor(() => fs.existsSync(path.join(work, "a")), { what: "touch a to run" })
+  expect(host.rules().rules.map((rule) => rule.pattern)).toEqual(["touch *"])
+  expect(host.question(card!.id)?.status).toBe("open")
+  expect(acts).toEqual([])
+  expect(card).toMatchObject({
+    source: "ask_user",
+    asker: "opencorp",
+    title: "OpenCorp wants to save it",
+    question: "1  the file",
+    options: ["Save it", "Don't"],
+  })
+  host.answer(card!.id, "Save it", "option", OWNER)
+  await replied(host, "Saved.")
+  expect(results(fake.requests(), 1)[0]).toBe("the owner said Save it")
+  await until(host, "idle")
+  host.setMode("ask", OWNER)
+  await host.prompt("save again", OWNER)
+  const [typed] = await cards(host, 1)
+  host.answer(typed!.id, "use node2", "text", OWNER)
+  await replied(host, "Changed.")
+  expect(acts).toEqual([
+    { value: "Save it", typed: false },
+    { value: "use node2", typed: true },
+  ])
+  await until(host, "idle")
+  // dontAsk refuses it before any card, and its act never runs.
+  host.setMode("dontAsk", OWNER)
+  await host.prompt("and again", OWNER)
+  await replied(host, "Refused.")
+  expect(results(fake.requests(), 5)).toEqual(["Not run: this session doesn't ask (dontAsk mode): saving always asks."])
+  expect(acts).toHaveLength(2)
+  // The two save cards and the command's: none for the refused one.
+  expect(host.questions({})).toHaveLength(3)
+})
+
+test("switching to dontAsk refuses an open question card, and Esc answers one interrupted; neither runs its act", async () => {
+  const fake = await fakeLlm()
+  const save = { tool_calls: [{ name: "card", arguments: {} }], match: AGENT }
+  fake.script(save, { content: "Refused.", match: AGENT }, save, { content: "Stopped.", hold: 30, match: AGENT })
+  onTestFinished(() => fake.release())
+  const acts: { value: string; typed: boolean }[] = []
+  const { host } = await startHost(fake, { flow: CARD_FLOW, groups: cardGroup(acts) })
+  await until(host, "idle")
+  await host.prompt("save", OWNER)
+  const [card] = await cards(host, 1)
+  host.setMode("dontAsk", OWNER)
+  await replied(host, "Refused.")
+  expect(results(fake.requests(), 1)).toEqual(["Not run: this session doesn't ask (dontAsk mode): saving always asks."])
+  expect(host.question(card!.id)).toMatchObject({ answered_by: "owner", answer_kind: "text" })
+  await until(host, "idle")
+  host.setMode("auto", OWNER)
+  await host.prompt("save", OWNER)
+  const [second] = await cards(host, 1)
+  await host.interrupt()
+  await waitFor(() => host.question(second!.id)?.answer_kind === "interrupted", { what: "the card interrupted" })
+  expect(acts).toEqual([])
+})
+
+test("a run that fails ends the session failed, and keeps why, as the run said it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 400, match: AGENT })
+  const { host } = await startHost(fake, { first: "hi" })
+  await host.ended
+  expect(host.session()!.status).toBe("failed")
+  expect(host.failure).toContain("scripted error 400")
+})
+
+test("a session that ends as asked keeps no failure", async () => {
+  const fake = await fakeLlm()
+  const { host } = await startHost(fake)
+  await until(host, "idle")
+  await host.end()
+  await host.ended
+  expect([host.session()!.status, host.failure]).toEqual(["ended", null])
 })

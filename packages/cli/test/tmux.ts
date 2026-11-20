@@ -33,7 +33,8 @@ export function terminal(
   const name = `opencorp ${command[0] ?? ""}`.trim()
   // tmux 2.7 has no `new-session -e`: the env goes in the command.
   const env = Object.entries({ ...c.env, TERM: term }).map(([k, v]) => sq(`${k}=${v}`))
-  const line = `env -i ${env.join(" ")} ${sq(WRAPPER)} ${command.map(sq).join(" ")}; echo exit=$? > ${sq(exitFile)}`
+  // tmux 2.7 loses the first row's text once a pane dies, so the command starts on the second.
+  const line = `echo; env -i ${env.join(" ")} ${sq(WRAPPER)} ${command.map(sq).join(" ")}; echo exit=$? > ${sq(exitFile)}`
   tmux("-f", "/dev/null", "new-session", "-d", "-s", "tty", "-x", String(size[0]), "-y", String(size[1]), line)
   // The window stays once the command ends, so a test can still read it.
   tmux("set-window-option", "-t", "tty", "remain-on-exit", "on")
