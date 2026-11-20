@@ -17,24 +17,37 @@ export interface PermissionOffice {
   guards: SandboxOfficePaths
 }
 
+/** What else others may write, beside other people's writable folders in the session's own commit: the company at
+ *  other commits the office runs (its head), and the folders of live sessions. */
+export interface Others {
+  repos?: readonly Pick<CompanyRepo, "people">[]
+  workspaces?: readonly string[]
+}
+
 /** The permission of `session`'s person in `repo` for one harness thread in the session's folder: read-only and
  *  offline when they have no `harness_policy` (or aren't in `repo`), and their folders as `listedFolders` gives them.
- *  Every other person's writable folders stay off the harness PATH. */
+ *  What others may write stays off the harness PATH: every other person's writable folders in `repo`, everyone's in
+ *  `others.repos` (this person's too, since a session of theirs started there may write them), and
+ *  `others.workspaces`. */
 export function employeePermission(
   repo: Pick<CompanyRepo, "people">,
   session: { person: string; cwd: string },
   thread: HarnessThread,
   office: PermissionOffice,
   note: (line: string) => void,
+  others: Others = {},
 ): EmployeePermission {
   const policy = repo.people.get(session.person)?.harness_policy ?? null
-  const othersWritable = [...repo.people]
-    .filter(([handle]) => handle !== session.person)
+  const people = [
+    ...[...repo.people].filter(([handle]) => handle !== session.person),
+    ...(others.repos ?? []).flatMap((other) => [...other.people]),
+  ]
+  const othersWritable = people
     .flatMap(([, person]) => person.harness_policy?.folders ?? [])
     .filter((folder) => folder.access === "write")
     .map((folder) => inHome(folder.path, office.home))
     // One that isn't absolute names no folder that person's harness can write: their permission refuses it.
-    .filter((p) => path.isAbsolute(p))
+    .filter((p) => path.isAbsolute(p) && !p.includes("\0"))
   return {
     workspace: session.cwd,
     ...thread,
@@ -44,14 +57,14 @@ export function employeePermission(
     home: office.home,
     officeHome: office.officeHome,
     office: office.guards,
-    othersWritable: [...new Set(othersWritable)],
+    othersWritable: [...new Set([...othersWritable, ...(others.workspaces ?? [])])],
   }
 }
 
 /** `policy`'s folders as `handle`'s harness mounts them, in order and each with its access: `~/…` in `home`, and one
  *  that isn't a folder there (missing, a file, or one the office can't look at) left out, with a `note` saying so. A
- *  path that is neither absolute nor `~/…` is kept as written, so the permission's check refuses it, as lint reports
- *  it. None is left out for what it holds. */
+ *  path that is neither absolute nor `~/…`, or holds a null byte, is kept as written, so the permission's check
+ *  refuses it, as lint reports it. None is left out for what it holds. */
 function listedFolders(
   handle: string,
   policy: HarnessPolicy | null,
@@ -61,9 +74,10 @@ function listedFolders(
   const folders: EmployeePermission["folders"][number][] = []
   for (const folder of policy?.folders ?? []) {
     const p = inHome(folder.path, home)
-    const missing = path.isAbsolute(p) ? notAFolder(p) : null
+    const missing = path.isAbsolute(p) && !p.includes("\0") ? notAFolder(p) : null
     if (missing !== null) {
-      note(`@${handle}'s listed folder ${JSON.stringify(folder.path)} ${missing}, so their harness mounts nothing for it`)
+      const shown = JSON.stringify(folder.path)
+      note(`@${handle}'s listed folder ${shown} ${missing}, so their harness mounts nothing for it`)
       continue
     }
     folders.push({ path: p, access: folder.access })

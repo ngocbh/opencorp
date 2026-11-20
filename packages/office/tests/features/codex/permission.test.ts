@@ -4,7 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
 import { loadRepo } from "../../../src/company/loader.ts"
-import { employeePermission } from "../../../src/features/codex/permission.ts"
+import { type Others, employeePermission } from "../../../src/features/codex/permission.ts"
 import { claudeStart, codexThread, harnessPath } from "../../../src/runtime/sandbox/harness_profile.ts"
 import { UnsafeProfile } from "../../../src/runtime/sandbox/policy.ts"
 import { makeCompany, person } from "../../company/helpers.ts"
@@ -13,7 +13,7 @@ import { tempDir } from "../../helpers.ts"
 /** A temp layout, all resolved: a home with `.ssh/id_test`, `.cargo/bin`, `miniconda3/envs/ml/bin` and an office
  *  `.opencorp`; a shared `<root>/data/shared`; a workspace `<root>/ws` holding `.git`; a private temp folder, the
  *  fence and a Codex install. `permission` builds `minh`'s permission (or `handle`'s) from `people`, a company's
- *  person files by handle, and `notes` gets what it notes. */
+ *  person files by handle, with `others`, and `notes` gets what it notes. */
 function layout() {
   const root = fs.realpathSync(tempDir())
   const home = path.join(root, "home")
@@ -38,18 +38,22 @@ function layout() {
   fs.chmodSync(tmp, 0o700)
   fs.writeFileSync(fence, "")
   const notes: string[] = []
-  const permission = (people: Record<string, unknown>, handle = "minh") => {
-    const files = Object.fromEntries(Object.entries(people).map(([h, file]) => [`people/${h}/person.yaml`, file]))
-    const repo = loadRepo(makeCompany(files))
-    return employeePermission(
-      repo,
+  const permission = (people: Record<string, unknown>, handle = "minh", others: Others = {}) =>
+    employeePermission(
+      company(people),
       { person: handle, cwd: ws },
       { gitRoot: ws, tmpdir: tmp, fence },
       { home, officeHome, guards: { home } },
       (line) => notes.push(line),
+      others,
     )
-  }
   return { root, home, officeHome, ws, tmp, fence, install, cargo, ml, shared, notes, permission }
+}
+
+/** A loaded company with `people`, person files by handle. */
+function company(people: Record<string, unknown>) {
+  const files = Object.fromEntries(Object.entries(people).map(([h, file]) => [`people/${h}/person.yaml`, file]))
+  return loadRepo(makeCompany(files))
 }
 
 /** minh's person file with `harness_policy` set to `policy`. */
@@ -119,25 +123,41 @@ test("a listed folder that doesn't exist is noted and mounts nothing", () => {
   expect(notes).toEqual([
     `@minh's listed folder "~/gone" isn't there, so their harness mounts nothing for it`,
     `@minh's listed folder ${JSON.stringify(file)} isn't a folder, so their harness mounts nothing for it`,
-    `@minh's listed folder ${JSON.stringify(path.join(file, "below"))} isn't there, so their harness mounts nothing for it`,
+    `@minh's listed folder ${JSON.stringify(path.join(file, "below"))} isn't there, so their harness mounts nothing`
+      + " for it",
   ])
   const filesystem = (codexThread(p, "opencorp-s1", { install }).config.permissions as any)["opencorp-s1"].filesystem
   expect(Object.keys(filesystem).filter((entry) => entry.startsWith(root + "/a-file") || entry.endsWith("/gone")))
     .toEqual([])
 })
 
-test("another person's writable folders stay off this one's harness PATH", () => {
-  const { cargo, permission } = layout()
+test("another person's writable folders, at the session's commit or at head, and live sessions' folders stay off this one's harness PATH", () => {
+  const { cargo, ml, shared, permission } = layout()
   const ann = person("minh", {
     handle: "ann",
     name: "Ann",
     harness_policy: { folders: [{ path: "~/.cargo", access: "write" }, { path: "rel/tools", access: "write" }] },
   })
-  const p = permission({ minh: minh({ folders: [{ path: "~/.cargo", access: "read" }] }), ann })
-  expect(p.folders).toEqual([{ path: cargo, access: "read" }])
+  const listing = minh({
+    folders: [
+      { path: "~/.cargo", access: "read" },
+      { path: "~/miniconda3/envs/ml", access: "read" },
+    ],
+  })
+  const p = permission({ minh: listing, ann })
+  expect(p.folders).toEqual([
+    { path: cargo, access: "read" },
+    { path: ml, access: "read" },
+  ])
   // A path that isn't absolute names no folder anyone can write.
   expect(p.othersWritable).toEqual([cargo])
   expect(harnessPath(p).split(":")).not.toContain(path.join(cargo, "bin"))
+  expect(harnessPath(p).split(":")).toContain(path.join(ml, "bin"))
+  // At head minh's own listing may have changed too: a session of theirs started since may write it.
+  const head = company({ minh: minh({ folders: [{ path: "~/miniconda3/envs/ml", access: "write" }] }) })
+  const later = permission({ minh: listing, ann }, "minh", { repos: [head], workspaces: [shared] })
+  expect(later.othersWritable).toEqual([cargo, ml, shared])
+  expect(harnessPath(later).split(":")).not.toContain(path.join(ml, "bin"))
 })
 
 test("with no harness policy the folder is read-only and offline, and a path that isn't absolute is refused at start", () => {
@@ -147,8 +167,10 @@ test("with no harness policy the folder is read-only and offline, and a path tha
   expect(codexThread(bare, "opencorp-s1", { install }).config.projects).toEqual({
     [ws]: { trust_level: "untrusted" },
   })
-  // Lint reports it as an error; the harness won't start on it rather than mount something else.
-  const relative = permission({ minh: minh({ sandbox: "workspace-write", folders: [{ path: "envs/ml", access: "write" }] }) })
-  expect(relative.folders).toEqual([{ path: "envs/ml", access: "write" }])
-  expect(() => codexThread(relative, "opencorp-s1", { install })).toThrow(UnsafeProfile)
+  // Lint reports each as an error; the harness won't start on it rather than mount something else.
+  for (const wrong of ["envs/ml", "/data/a\0b"]) {
+    const p = permission({ minh: minh({ sandbox: "workspace-write", folders: [{ path: wrong, access: "write" }] }) })
+    expect(p.folders).toEqual([{ path: wrong, access: "write" }])
+    expect(() => codexThread(p, "opencorp-s1", { install }), wrong).toThrow(UnsafeProfile)
+  }
 })

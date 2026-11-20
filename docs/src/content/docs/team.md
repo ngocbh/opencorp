@@ -54,16 +54,27 @@ When your employee works in Codex or Claude Code, that harness's own sandbox hol
 folder, a private temp folder and the listed folders, each with exactly the access listed. The shell above doesn't
 mount the listed folders.
 
-- A path is absolute or starts with `~/`, your home. `opencorp doctor` fails on any other.
+- A path is absolute or starts with `~/`, your home. `opencorp doctor` fails on any other, and on `/`, a folder
+  listed twice, a path holding `*`, `?`, `[`, `]`, `{` or `}`, and a read-only one holding `:`.
 - A folder that doesn't exist mounts nothing.
 - The harness won't start with a folder whose path goes through a folder your employee can write (the project
-  folder, or another writable listed folder), since a link there could repoint it.
-- A read-only folder's `bin` is on the harness's `PATH`, unless another employee or another user may write it. A
-  writable folder's programs aren't on your employee's harness `PATH`: they run by full path. A program the harness runs for itself
-  (`git`, `rg`) comes only from the system and read-only folders.
+  folder, or another writable listed folder), since a link there could repoint it. The same goes for a project
+  folder reached through a link in a writable listed folder, and for a writable project folder inside a read-only
+  listed folder.
+- A project folder may lie inside a writable listed folder. `.git` stays read-only in each folder above it there, and
+  the project config at its repository's root too, so a command can't plant a repository config that git later runs
+  as you.
+- Your employee's commands can't write the harnesses' own config (`~/.codex`, `~/.claude`, `~/.claude.json`, or
+  where `CODEX_HOME` and `CLAUDE_CONFIG_DIR` point) or `~/.opencorp`, whatever you list.
+- A read-only folder's `bin` is on the harness's `PATH`, unless someone else may write it: another user, another
+  employee's writable listed folder, or the project folder of a session that is running. A writable folder's
+  programs aren't on your employee's harness `PATH`: they run by full path. A program the harness runs for itself
+  (`git`, `rg`) comes only from the system and read-only folders. Nothing checks for a program planted earlier, by
+  someone who may no longer write there, or a repository config in a folder above the project folder that another
+  employee may write.
 
-Nothing guards a listed folder: OpenCorp mounts it as listed, whatever it holds, and `opencorp doctor` counts each
-one as a lint warning.
+Beyond that, nothing guards a listed folder: OpenCorp mounts it as listed, whatever it holds, and `opencorp doctor`
+counts each one as a lint warning.
 
 - Your employee's commands can read everything in a listed folder, and change anything in a writable one, programs
   included.

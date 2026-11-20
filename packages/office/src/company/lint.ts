@@ -473,29 +473,45 @@ function* checkDevices(repo: CompanyRepo): Iterable<RepoIssue> {
   }
 }
 
-/** Each folder a person's `harness_policy` lists is absolute or starts with `~/`, the owner's home. Each one that is
- *  gets a warning that it is unguarded: the office mounts it for the person's harness commands as listed, whatever it
- *  holds. */
+/** Each folder a person's `harness_policy` lists is one their harness starts with: absolute or starting with `~/`,
+ *  the owner's home; not the whole disk, listed once, with no pattern character, and, read-only, no `:` (its `bin`
+ *  goes on PATH). Each one that is gets a warning that it is unguarded: the office mounts it for the person's harness
+ *  commands as listed, whatever it holds. */
 function* checkFolders(repo: CompanyRepo): Iterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
+    const seen = new Set<string>()
     for (const folder of person.harness_policy?.folders ?? []) {
-      const shown = JSON.stringify(folder.path)
-      if (folder.path.includes("\0")) {
-        yield repoIssue(personPath(handle), "person.folder_invalid", `folder ${shown}: embedded null byte`)
-      } else if (!path.isAbsolute(folder.path) && !folder.path.startsWith("~/")) {
-        yield repoIssue(personPath(handle), "person.folder_invalid",
-          `folder ${shown} isn't absolute; write it as /… or as ~/… in your home`)
-      } else {
-        const writes = folder.access === "write"
-          ? " and change anything in it, programs included, and a program in it that you run yourself runs their"
-            + " change as you"
-          : ""
-        yield repoIssue(personPath(handle), "person.folder_unguarded",
-          `folder ${shown} is unguarded: @${handle}'s harness commands can read everything in it${writes}; list no`
-          + " folder that holds secrets", "warning")
+      const problem = folderProblem(folder, seen)
+      if (problem !== null) {
+        yield repoIssue(personPath(handle), "person.folder_invalid", `folder ${JSON.stringify(folder.path)}${problem}`)
+        continue
       }
+      const writes = folder.access === "write"
+        ? " and change anything in it, programs included, and a program in it that you run yourself runs their"
+          + " change as you"
+        : ""
+      yield repoIssue(personPath(handle), "person.folder_unguarded",
+        `folder ${JSON.stringify(folder.path)} is unguarded: @${handle}'s harness commands can read everything in`
+        + ` it${writes}; list no folder that holds secrets`, "warning")
     }
   }
+}
+
+/** Why a harness won't start with the listed `folder` (the text after its name), or null; `seen` holds the folders
+ *  listed before it, as written less a trailing `/`. */
+function folderProblem(folder: { path: string; access: "read" | "write" }, seen: Set<string>): string | null {
+  const p = folder.path
+  if (p.includes("\0")) return ": embedded null byte"
+  if (!path.isAbsolute(p) && !p.startsWith("~/")) return " isn't absolute; write it as /… or as ~/… in your home"
+  const key = p.replace(/(?<=.)\/+$/, "")
+  if (/^\/+$/.test(key)) return " is the whole disk, which no harness starts with; list the folders in it you need"
+  if (seen.has(key)) return " is listed twice"
+  seen.add(key)
+  if (/[*?[\]{}]/.test(p)) return " holds *, ?, [, ], { or }, which the harnesses read as a pattern"
+  if (folder.access === "read" && p.includes(":")) {
+    return " holds a ':', which can't go on PATH, where a read-only folder's bin goes"
+  }
+  return null
 }
 
 /** The company's `rules.yaml` and each person's `people/<handle>/rules.yaml` load, read as the office reads them at a

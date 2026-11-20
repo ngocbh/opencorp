@@ -393,13 +393,15 @@ export class CodexSessions implements SessionHarness {
 
   /** The session's employee's permission for one harness thread in its folder, from the people at the session's
    *  pinned commit (`employeePermission`): `~/` is the owner's home, and the log notes each listed folder that mounts
-   *  nothing. */
+   *  nothing. What the people at head may write, and every live session's folder, stay off its PATH. */
   async permission(sessionId: string, thread: HarnessThread): Promise<EmployeePermission> {
     const session = this.store.getSession(sessionId)!
-    const repo = loadRepo(await this.office.git.pin(session.repo_commit))
-    const { guards, paths } = this.office
+    const { git, guards, paths } = this.office
+    const repo = loadRepo(await git.pin(session.repo_commit))
+    const head = loadRepo(await git.pin(await git.head()))
+    const workspaces = this.store.listSessions({ status: [...LIVE] }).map((live) => live.cwd)
     const office = { home: guards.home ?? os.homedir(), officeHome: paths.home, guards }
-    return employeePermission(repo, session, thread, office, this.log)
+    return employeePermission(repo, session, thread, office, this.log, { repos: [head], workspaces })
   }
 
   /** Who a message with no named sender is from: the session's opener, else the pinned company's CEO. */
