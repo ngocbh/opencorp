@@ -33,6 +33,12 @@ export class UnsafeWorkspace extends Error {
   }
 }
 
+/** Refused: a sandbox profile would expose what it must keep out (hq's credentials, the office's home, the home, a
+ *  file through a link), or it can't give a path the access set for it. */
+export class UnsafeProfile extends Error {
+  override name = "UnsafeProfile"
+}
+
 /** The office's own paths a workspace must stay clear of, and the home dir. */
 export interface OfficePaths {
   /** The user's home dir; defaults to `os.homedir()`. */
@@ -284,8 +290,8 @@ export interface PolicyInit {
 export class SandboxPolicy {
   /** The session's folder; readable, and writable if `writable`. */
   readonly workspace: string
-  /** Whether the workspace is writable (`harness_policy.sandbox` is `workspace-write`). Its `.git`,
-   *  `.git/hooks`, and `.git/config` stay read-only. */
+  /** Whether the workspace is writable (`harness_policy.sandbox` is `workspace-write`). Its `protectedPaths`
+   *  stay read-only. */
   readonly writable: boolean
   /** Whether the call may use IP networking (`harness_policy.network`). */
   readonly network: boolean
@@ -327,11 +333,35 @@ export class SandboxPolicy {
     return Object.assign(copy, { ...this, readOnly, office, helper: resolveHelper(helper, lookups()) })
   }
 
-  /** The workspace paths that stay read-only in a writable workspace. */
-  get protectedPaths(): readonly [string, string, string] {
-    const git = path.join(this.workspace, ".git")
-    return [git, path.join(git, "hooks"), path.join(git, "config")]
+  /** The workspace paths that stay read-only in a writable workspace: `.git` (its hooks and config; `.git` itself
+   *  can't be renamed), and the harnesses' project config folders and files (`PROJECT_CONFIG_FOLDERS`,
+   *  `PROJECT_CONFIG_FILES`). */
+  get protectedPaths(): ProtectedPaths {
+    const ws = this.workspace
+    const git = path.join(ws, ".git")
+    return {
+      git,
+      hooks: path.join(git, "hooks"),
+      config: path.join(git, "config"),
+      folders: PROJECT_CONFIG_FOLDERS.map((name) => path.join(ws, name)),
+      files: PROJECT_CONFIG_FILES.map((name) => path.join(ws, name)),
+    }
   }
+}
+
+/** The project config folders and files Codex and Claude Code read at a folder's top level. A harness run as the
+ *  owner (OpenCorp's, or the owner's own later `codex` or `claude`) may load them, and they can name programs it
+ *  then runs outside any sandbox, so model code must not plant them. */
+export const PROJECT_CONFIG_FOLDERS: readonly string[] = [".codex", ".agents", ".claude"]
+export const PROJECT_CONFIG_FILES: readonly string[] = [".mcp.json"]
+
+/** `SandboxPolicy.protectedPaths`: absolute paths in the workspace. */
+export interface ProtectedPaths {
+  git: string
+  hooks: string
+  config: string
+  folders: readonly string[]
+  files: readonly string[]
 }
 
 /** `p` resolved; throws if it is not an existing directory. */

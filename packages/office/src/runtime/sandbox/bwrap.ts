@@ -58,7 +58,7 @@ export function command(policy: SandboxPolicy, argv: readonly string[], { tty = 
   for (const p of policy.readOnly) args.push("--ro-bind-try", p, p)
   args.push("--bind", policy.tmpdir, policy.tmpdir)
   const ws = policy.workspace
-  if (policy.writable) args.push("--bind", ws, ws, ...gitBinds(policy))
+  if (policy.writable) args.push("--bind", ws, ws, ...protectedBinds(policy))
   else args.push("--ro-bind", ws, ws)
   if (policy.helper) {
     for (const f of helperFiles(policy.helper)) args.push("--ro-bind", f, f)
@@ -110,32 +110,97 @@ function system({ tty, network, files }: { tty: boolean; network: boolean; files
 }
 
 /**
- * Returns the mounts that keep a writable workspace's `.git` protected.
+ * Returns the mounts that keep a writable workspace's protected paths read-only: `.git`'s hooks and config, then
+ * the harnesses' project config.
  *
  * They come after the workspace bind so they cover it. `.git` is bound onto itself:
  * Linux refuses to rename a mount point, but not a directory that merely contains one,
  * so binding only `.git/hooks` and `.git/config` would leave `mv .git .git2` open.
- * A missing `.git/hooks` is created first, since a bind needs an existing source; a
- * missing `.git/config` stays missing, and is then writable.
+ * A missing `.git/hooks` is created first, since a bind needs an existing source. A missing
+ * `.git` is created empty (a call's `holdGit` makes it, and removes it after), and it and a
+ * `.git` with no config (not a repository yet) are bound read-only whole: otherwise `git init`
+ * there would write a config with, say, `core.fsmonitor`, which git run later as the owner (or a
+ * harness's own git) runs.
+ *
+ * Each project config folder (`.codex`, `.agents`, `.claude`) is bound read-only onto itself, so it can't be written,
+ * renamed or removed; a missing one is created first, as `.git/hooks` is. A project config file (`.mcp.json`) is
+ * bound only when it exists: a missing file can't be held without creating it, so the call can still create one.
  *
  * Symlinks are never bound: bwrap follows them on both sides, so model code could point
  * `.git/config` at `~/.ssh/id_ed25519` and have the next call mount the key.
  */
-function gitBinds(policy: SandboxPolicy): string[] {
-  const [git, hooks, config] = policy.protectedPaths
-  const stat = lstat(git)
-  if (stat === undefined || stat.isSymbolicLink()) return []
-  if (stat.isFile()) {
-    // A worktree's .git file names the real git dir.
-    return ["--ro-bind", git, git]
+function protectedBinds(policy: SandboxPolicy): string[] {
+  const { folders, files } = policy.protectedPaths
+  const binds = gitBinds(policy)
+  for (const p of folders) {
+    const stat = lstat(p)
+    if (stat === undefined) fs.mkdirSync(p)
+    else if (stat.isSymbolicLink()) continue
+    binds.push("--ro-bind", p, p)
   }
+  for (const p of files) {
+    const stat = lstat(p)
+    if (stat !== undefined && !stat.isSymbolicLink()) binds.push("--ro-bind", p, p)
+  }
+  return binds
+}
+
+/** The mounts of `protectedBinds` that keep `.git` protected. */
+function gitBinds(policy: SandboxPolicy): string[] {
+  const { git, hooks, config } = policy.protectedPaths
+  let stat = lstat(git)
+  if (stat === undefined) {
+    fs.mkdirSync(git)
+    stat = lstat(git)
+  }
+  if (stat === undefined || stat.isSymbolicLink()) return []
+  // A worktree's .git file names the real git dir.
+  if (stat.isFile()) return ["--ro-bind", git, git]
   if (!stat.isDirectory()) return []
+  if (lstat(config) === undefined) return ["--ro-bind", git, git]
   if (lstat(hooks) === undefined) fs.mkdirSync(hooks)
   const binds = ["--bind", git, git]
   for (const p of [hooks, config]) {
     if (!lstat(p)?.isSymbolicLink()) binds.push("--ro-bind-try", p, p)
   }
   return binds
+}
+
+/** How many calls hold each empty `.git` made for them, by path (see `holdGit`). */
+const heldGits = new Map<string, number>()
+
+/**
+ * Holds a writable workspace's empty `.git` for one call, making it where it is missing, so `command` binds it
+ * read-only; returns the release to call once the call has ended, or `undefined` when there is nothing to hold (a
+ * read-only workspace, or a `.git` that isn't an empty folder).
+ *
+ * The last release removes it, if it is still empty: an empty `.git` left in the owner's tree would make ripgrep,
+ * which both harnesses search with, take the folder for a repository of its own and drop a parent's `.gitignore`.
+ * git itself skips an empty `.git`. An empty one a crashed office left is held, and so removed, by the next call.
+ * Holds are counted in this process, so a call never removes a mount point another call still runs under.
+ */
+export function holdGit(policy: SandboxPolicy): (() => void) | undefined {
+  if (!policy.writable) return undefined
+  const { git } = policy.protectedPaths
+  const stat = lstat(git)
+  if (stat === undefined) fs.mkdirSync(git)
+  else if (!stat.isDirectory() || fs.readdirSync(git).length > 0) return undefined
+  heldGits.set(git, (heldGits.get(git) ?? 0) + 1)
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    const left = (heldGits.get(git) ?? 1) - 1
+    if (left > 0) {
+      heldGits.set(git, left)
+      return
+    }
+    heldGits.delete(git)
+    try {
+      // Only an empty folder goes: rmdir refuses one that was filled, a file and a link.
+      fs.rmdirSync(git)
+    } catch {}
+  }
 }
 
 /** `p`'s own stat (a link is not followed), or `undefined` if nothing is there. */

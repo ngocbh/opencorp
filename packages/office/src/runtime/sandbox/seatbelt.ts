@@ -90,7 +90,7 @@ export const SETUID_PROGRAMS: readonly string[] = [
  * Returns a default-deny SBPL profile that allows exactly what `policy` grants.
  *
  * Allowed: system and toolchain paths read-only, the workspace (read, or read-write
- * with `.git`, `.git/hooks`, and `.git/config` read-only), the private tmpdir, the
+ * with its `protectedPaths` read-only), the private tmpdir, the
  * policy's extra read-only paths, the helper's own files when `policy.helper` is set,
  * a few mach services, and IP networking only if `policy.network`. The install folders
  * of the office and its programs are write-denied. Everything else, including unix
@@ -118,12 +118,21 @@ export function profile(
   const lines = head(developer, options.tty ?? false)
   lines.push(...metadata([policy.workspace, policy.tmpdir, ...policy.readOnly], developer), ";; The workspace.")
   if (policy.writable) {
-    const [git, hooks, config] = policy.protectedPaths
+    const { git, hooks, config, folders, files } = policy.protectedPaths
+    // Seatbelt matches a path that doesn't exist yet too, so a missing project config is held as well.
+    const denied = [
+      `(literal ${quote(git)})`,
+      `(subpath ${quote(hooks)})`,
+      `(literal ${quote(config)})`,
+      ...folders.map((p) => `(subpath ${quote(p)})`),
+      ...files.map((p) => `(literal ${quote(p)})`),
+    ]
     lines.push(
       `(allow file-read* file-write* (subpath ${quote(ws)}))`,
       ";; Model code must not plant git hooks or config the owner later runs",
-      ";; unsandboxed, nor rename .git to swap in a planted one.",
-      `(deny file-write* (literal ${quote(git)}) (subpath ${quote(hooks)}) (literal ${quote(config)}))`,
+      ";; unsandboxed, nor rename .git to swap in a planted one, nor plant",
+      ";; a harness's project config, which a harness run as the owner loads.",
+      "(deny file-write* " + denied.join(" ") + ")",
     )
   } else {
     lines.push(`(allow file-read* (subpath ${quote(ws)}))`)

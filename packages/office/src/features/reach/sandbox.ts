@@ -2,9 +2,9 @@
  *  the wrapper and the agent's config, and nothing else of hq, `hq/cm` included. */
 import fs from "node:fs"
 import os from "node:os"
-import { realPath, within } from "../../runtime/sandbox/policy.ts"
+import { realPath, UnsafeProfile, within } from "../../runtime/sandbox/policy.ts"
 import { run, SandboxUnavailable } from "../../runtime/sandbox/run.ts"
-import { SshPolicy, sshFiles, UnsafeProfile } from "../../runtime/sandbox/ssh_policy.ts"
+import { SshPolicy, sshFiles } from "../../runtime/sandbox/ssh_policy.ts"
 import type { ReachPaths } from "./paths.ts"
 import { cleanOutput, headChars } from "./ssh.ts"
 

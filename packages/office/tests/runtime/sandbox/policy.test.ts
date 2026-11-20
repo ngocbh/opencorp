@@ -163,11 +163,18 @@ test("sensitive paths are compared resolved", () => {
   expect(path.basename(policyAt(mounts, tmp, { home: homeLink }).workspace)).toBe(".sshfs-mounts")
 })
 
-test("protected paths", () => {
+test("the workspace shell keeps .codex, .agents, .claude and .mcp.json read-only, as it keeps .git", () => {
   const { make } = makePolicy()
   const policy = make()
-  const git = path.join(policy.workspace, ".git")
-  expect(policy.protectedPaths).toEqual([git, path.join(git, "hooks"), path.join(git, "config")])
+  const ws = policy.workspace
+  const git = path.join(ws, ".git")
+  expect(policy.protectedPaths).toEqual({
+    git,
+    hooks: path.join(git, "hooks"),
+    config: path.join(git, "config"),
+    folders: [path.join(ws, ".codex"), path.join(ws, ".agents"), path.join(ws, ".claude")],
+    files: [path.join(ws, ".mcp.json")],
+  })
 })
 
 test("a workspace that contains the office install is refused", () => {

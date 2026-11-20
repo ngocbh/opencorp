@@ -17,7 +17,7 @@ import { BaseHandlers, remoteTool } from "../../../src/runtime/worker/rpc.ts"
 import { tempDir } from "../../helpers.ts"
 import { openStore } from "../store/helpers.ts"
 import { officeEnd } from "../worker/helpers.ts"
-import { makePolicy, sandboxAvailable } from "./helpers.ts"
+import { listing, makePolicy, sandboxAvailable } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -48,7 +48,7 @@ test.skipIf(!sandboxAvailable())("file tools round trip", async () => {
   expect((await t.call("edit_file", { path: "pkg/a.py", old: "x = 1", new: "x = 2" })).output).toBe(
     "replaced 1 occurrence in pkg/a.py at line 1",
   )
-  expect((await t.call("list", { path: "." })).output).toBe("pkg/")
+  expect((await t.call("list", { path: "." })).output).toBe(listing("pkg/"))
   expect((await t.call("search", { pattern: "x = 2" })).output).toBe("pkg/a.py:1:x = 2")
 })
 
@@ -194,9 +194,9 @@ test.skipIf(!sandboxAvailable())("the pipes run without the helper profile and e
     expect(cat.exit).not.toBe(0)
   }
   // A file op still runs the helper under its own profile.
-  const listing = await t.call("list", { path: "." })
-  expect(listing.output).toBe("(empty)")
-  expect(listing.audit.exit).toBe(0)
+  const listed = await t.call("list", { path: "." })
+  expect(listed.output).toBe(listing())
+  expect(listed.audit.exit).toBe(0)
 })
 
 test("building the tools walks no guard entry", () => {

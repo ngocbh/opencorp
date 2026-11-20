@@ -21,7 +21,11 @@ the second hires.
 Your employee runs their commands in a shell sandboxed to the project folder: a command reaches that folder and a
 private temp folder, and nothing else of your home or of `~/.opencorp`. Each command starts afresh in the project
 folder. A new hire may write the folder and has no network; `harness_policy` in their `people/<handle>/person.yaml`
-says so.
+says so. In a folder they may write, `.git`'s hooks and config and the project config Codex and Claude Code read
+(`.codex/`, `.agents/`, `.claude/`, `.mcp.json`) stay read-only, so a command can't plant something that later runs
+as you. In a folder with no repository, `.git` stays read-only too: your employee can't start one there, so run
+`git init` yourself. On Linux the shell first makes any of those four folders that is missing, empty (`.git` only
+while a command runs), and a missing `.mcp.json` can still be created.
 
 - **The mode.** A chat starts in `auto`: read-only commands and file operations in the project folder run at once,
   and the rest goes to Auto's check, a model call on the office's connection, or asks you. Shift+Tab switches the

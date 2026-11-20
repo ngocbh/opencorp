@@ -24,12 +24,15 @@ test("denies by default", () => {
   expect(text.split("\n").slice(0, 2)).toEqual(["(version 1)", "(deny default)"])
 })
 
-test("workspace read write with git protected", () => {
+test("the workspace shell keeps .codex, .agents, .claude and .mcp.json read-only, as it keeps .git", () => {
   const policy = setup().make()
   const text = profile(policy)
   const ws = policy.workspace
   const allow = `(allow file-read* file-write* (subpath "${ws}"))`
-  const deny = `(deny file-write* (literal "${ws}/.git") (subpath "${ws}/.git/hooks") (literal "${ws}/.git/config"))`
+  // Seatbelt matches a path that doesn't exist yet too, so a missing .mcp.json is held as well.
+  const deny =
+    `(deny file-write* (literal "${ws}/.git") (subpath "${ws}/.git/hooks") (literal "${ws}/.git/config")` +
+    ` (subpath "${ws}/.codex") (subpath "${ws}/.agents") (subpath "${ws}/.claude") (literal "${ws}/.mcp.json"))`
   expect(text).toContain(allow)
   expect(text).toContain(deny)
   // Seatbelt applies the last matching rule, so the deny must come after the allow.
@@ -156,7 +159,8 @@ const G2 = `(version 1)
 (allow mach-lookup (global-name "com.apple.dnssd.service") (global-name "com.apple.SystemConfiguration.configd") (global-name "com.apple.trustd.agent"))
 `
 
-/** Block G1 of the Python office's goldens up to the tmpdir rule: writable, offline, a developer dir. */
+/** Block G1 of the Python office's goldens up to the tmpdir rule, with the harnesses' project config write-denied:
+ *  writable, offline, a developer dir. */
 const G1_HEAD = `(version 1)
 (deny default)
 ;; Processes: children inherit this profile; no reach into other processes.
@@ -176,8 +180,9 @@ const G1_HEAD = `(version 1)
 ;; The workspace.
 (allow file-read* file-write* (subpath "/Users/me/project"))
 ;; Model code must not plant git hooks or config the owner later runs
-;; unsandboxed, nor rename .git to swap in a planted one.
-(deny file-write* (literal "/Users/me/project/.git") (subpath "/Users/me/project/.git/hooks") (literal "/Users/me/project/.git/config"))
+;; unsandboxed, nor rename .git to swap in a planted one, nor plant
+;; a harness's project config, which a harness run as the owner loads.
+(deny file-write* (literal "/Users/me/project/.git") (subpath "/Users/me/project/.git/hooks") (literal "/Users/me/project/.git/config") (subpath "/Users/me/project/.codex") (subpath "/Users/me/project/.agents") (subpath "/Users/me/project/.claude") (literal "/Users/me/project/.mcp.json"))
 ;; The private temp directory.
 (allow file-read* file-write* (subpath "/Users/me/.opencorp/office/sessions/s1/tmp"))
 `
@@ -207,8 +212,9 @@ const G5_HEAD = `(version 1)
 ;; The workspace.
 (allow file-read* file-write* (subpath "/Users/me/project"))
 ;; Model code must not plant git hooks or config the owner later runs
-;; unsandboxed, nor rename .git to swap in a planted one.
-(deny file-write* (literal "/Users/me/project/.git") (subpath "/Users/me/project/.git/hooks") (literal "/Users/me/project/.git/config"))
+;; unsandboxed, nor rename .git to swap in a planted one, nor plant
+;; a harness's project config, which a harness run as the owner loads.
+(deny file-write* (literal "/Users/me/project/.git") (subpath "/Users/me/project/.git/hooks") (literal "/Users/me/project/.git/config") (subpath "/Users/me/project/.codex") (subpath "/Users/me/project/.agents") (subpath "/Users/me/project/.claude") (literal "/Users/me/project/.mcp.json"))
 ;; The private temp directory.
 (allow file-read* file-write* (subpath "/Users/me/.opencorp/office/sessions/s1/tmp"))
 (allow file-read* (subpath "/opt/tools/python"))

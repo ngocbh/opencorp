@@ -6,7 +6,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { helperCommand } from "../../../src/platform.ts"
 import { run } from "../../../src/runtime/sandbox/run.ts"
 import { tempDir } from "../../helpers.ts"
-import { helperOp, helperTool, makePolicy, sandboxAvailable } from "./helpers.ts"
+import { helperOp, helperTool, listing, makePolicy, sandboxAvailable } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -671,7 +671,7 @@ test.skipIf(!sandboxAvailable())("the helper reads and writes inside the workspa
     ok("wrote 2 bytes to a.txt"),
   )
   expect(await helperTool(policy, { op: "read_file", path: "a.txt" })).toEqual(ok("hi"))
-  expect(await helperTool(policy, { op: "list" })).toEqual(ok("a.txt"))
+  expect(await helperTool(policy, { op: "list" })).toEqual(ok(listing("a.txt")))
   expect((await helperTool(policy, { op: "read_file", path: "../beside.txt" })).ok).toBe(false)
   expect((await helperTool(policy, { op: "write_file", path: "../new.txt", content: "x" })).ok).toBe(false)
   expect(fs.existsSync(path.join(root, "new.txt"))).toBe(false)

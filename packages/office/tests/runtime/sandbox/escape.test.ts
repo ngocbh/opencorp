@@ -190,6 +190,50 @@ test.skipIf(!sandboxAvailable())("git hooks and config are read only", async () 
   expect(fs.readFileSync(path.join(ws, ".git/HEAD"), "utf8")).toBe("ref: refs/heads/main\n")
 })
 
+test.skipIf(!sandboxAvailable())(
+  "in a writable workspace the shell can't write .codex/config.toml, .claude/settings.json or an existing .mcp.json",
+  async () => {
+    const { ws, make } = makePolicy()
+    fs.mkdirSync(path.join(ws, ".claude"))
+    fs.writeFileSync(path.join(ws, ".mcp.json"), "{}\n")
+    const policy = make()
+    for (const file of [".codex/config.toml", ".agents/skills.md", ".claude/settings.json", ".mcp.json"]) {
+      const written = await helperTool(policy, { op: "write_file", path: file, content: "planted" })
+      expect(written.ok, `${file}: ${JSON.stringify(written)}`).toBe(false)
+      const shelled = await shell(policy, `echo planted > ${file}`)
+      expect(shelled.exit, `${file}: ${shelled.output}`).not.toBe(0)
+    }
+    // Nor can it move a folder aside to plant a new one, or remove the file to write a fresh one.
+    for (const move of ["mv .codex .codex2", "mv .claude .claude2", "rm -f .mcp.json"]) {
+      const moved = await shell(policy, move)
+      expect(moved.exit, `${move}: ${moved.output}`).not.toBe(0)
+    }
+    expect(fs.readdirSync(path.join(ws, ".codex"))).toEqual([])
+    expect(fs.readdirSync(path.join(ws, ".claude"))).toEqual([])
+    expect(fs.readFileSync(path.join(ws, ".mcp.json"), "utf8")).toBe("{}\n")
+    // The rest of the workspace stays writable.
+    const plain = await helperTool(policy, { op: "write_file", path: "notes.txt", content: "ok" })
+    expect(plain, JSON.stringify(plain)).toEqual({ ok: true, output: "wrote 2 bytes to notes.txt" })
+  },
+)
+
+test.skipIf(!sandboxAvailable())(
+  "in a writable folder with no repository the shell can't start one and plant its config",
+  async () => {
+    const { ws, make } = makePolicy()
+    const policy = make()
+    const init = await shell(policy, "git init -q .")
+    expect(init.exit, init.output).not.toBe(0)
+    const planted = await shell(policy, "mkdir -p .git && printf '[core]\\n\\tfsmonitor = planted\\n' > .git/config")
+    expect(planted.exit, planted.output).not.toBe(0)
+    const moved = await shell(policy, "mv .git .git-old")
+    expect(moved.exit, moved.output).not.toBe(0)
+    // The empty .git bubblewrap is bound over goes once the call ends, so none stays in the owner's tree.
+    expect(fs.existsSync(path.join(ws, ".git"))).toBe(false)
+    expect(fs.existsSync(path.join(ws, ".git-old"))).toBe(false)
+  },
+)
+
 test.skipIf(!sandboxAvailable())("links do not escape", async () => {
   const policy = makePolicy().make()
   const secret = path.join(office(), ".ssh/id_ed25519")

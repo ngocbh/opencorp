@@ -8,8 +8,8 @@ import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import { agentPolicy, sshHome, TEST_SSH_DIR, testFolder } from "../../../src/features/reach/sandbox.ts"
 import { writeSshFiles } from "../../../src/features/reach/ssh.ts"
 import { refusal, type run, SandboxUnavailable } from "../../../src/runtime/sandbox/run.ts"
-import { type SshPolicy, UnsafeProfile } from "../../../src/runtime/sandbox/ssh_policy.ts"
-import { within } from "../../../src/runtime/sandbox/policy.ts"
+import type { SshPolicy } from "../../../src/runtime/sandbox/ssh_policy.ts"
+import { UnsafeProfile, within } from "../../../src/runtime/sandbox/policy.ts"
 
 const SSH = "/usr/bin/ssh"
 
