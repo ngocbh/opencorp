@@ -6,8 +6,14 @@ import path from "node:path"
 import readline from "node:readline"
 import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import { type FakeClaude, type FakeClaudeScript, installFakeClaude } from "../../src/testing/fake_claude.ts"
-import { tempDir } from "../helpers.ts"
+import {
+  FAKE_CLAUDE_UNMODELLED,
+  type FakeClaude,
+  type FakeClaudeScript,
+  type FakeClaudeStep,
+  installFakeClaude,
+} from "../../src/testing/fake_claude.ts"
+import { psStat, tempDir, waitFor } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -37,24 +43,36 @@ class Claude {
   readonly exited: Promise<number | null>
   #taken = 0
   #wake: (() => void) | null = null
+  #respond: (m: Msg) => Msg | undefined = () => undefined
 
   constructor(fake: FakeClaude, args: string[], cwd: string) {
     this.child = spawn(fake.claude, [...STREAM, ...args], { cwd, env: ENV, stdio: ["pipe", "pipe", "pipe"] })
     const child = this.child
+    // SIGTERM, which the fake answers by ending the commands it started.
     onTestFinished(() => {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM")
     })
+    child.stdin!.on("error", () => {})
     readline.createInterface({ input: child.stdout! }).on("line", (line) => {
-      this.out.push(JSON.parse(line))
+      const m = JSON.parse(line) as Msg
+      this.out.push(m)
+      const reply = this.#respond(m)
+      if (reply !== undefined) this.send(reply)
       this.#wake?.()
     })
     child.stderr!.on("data", (d: Buffer) => (this.stderr += d.toString("utf8")))
-    this.exited = new Promise((resolve) => child.on("exit", (code) => resolve(code)))
+    // On close, once stderr is read whole.
+    this.exited = new Promise((resolve) => child.on("close", (code) => resolve(code)))
     void this.exited.then(() => this.#wake?.())
   }
 
   send(msg: Msg): void {
     this.child.stdin!.write(JSON.stringify(msg) + "\n")
+  }
+
+  /** Answers each later line `reply` returns an answer for, such as every hook callback. */
+  respond(reply: (m: Msg) => Msg | undefined): void {
+    this.#respond = reply
   }
 
   /** The lines written after the last ones taken, up to and including the first that `match`es. */
@@ -132,6 +150,9 @@ function brief(m: Msg): string {
 
 const isToolResult = (m: Msg) => m.type === "user" && m.message.content[0]?.type === "tool_result"
 const toolResult = (lines: Msg[]) => lines.find(isToolResult)
+/** Whether each tool of the lines ran or was refused (an error result; the scripts' commands succeed). */
+const verdicts = (lines: Msg[]) =>
+  lines.filter(isToolResult).map((m) => (m.message.content[0].is_error === true ? "refused" : "ran"))
 const resultOf = (lines: Msg[]) => lines.find((m) => m.type === "result")
 
 /** Runs the fake to its end (at most 10 s). */
@@ -277,49 +298,272 @@ test("with --permission-prompt-tool stdio a tool step asks can_use_tool, and a d
   expect(await claude.close()).toBe(0)
 })
 
-test("acceptEdits with sandbox auto-allow runs Bash, and dontAsk refuses it", async () => {
-  const settings = JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true } })
-  const bash = { tool: "Bash", input: { command: "echo sandboxed" } }
-  const { fake, work } = fakeClaude({
+/** How each step of a one-turn script fared in a fake started with `args`, which must not ask the host. */
+async function outcome(args: string[], steps: FakeClaudeStep[], script: FakeClaudeScript = {}): Promise<string[]> {
+  const { fake, work } = fakeClaude({ ...script, turns: [steps] })
+  const claude = new Claude(fake, args, work)
+  claude.send(user("Go.", "u-1"))
+  const lines = await claude.turn()
+  expect(lines.some(isRequest("can_use_tool"))).toBe(false)
+  expect(await claude.close()).toBe(0)
+  return verdicts(lines)
+}
+
+test("sandbox auto-allow runs Bash in every mode but plan, unless the command leaves the sandbox", async () => {
+  const sandbox = (extra: Msg = {}) =>
+    JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, ...extra } })
+  // Neither read-only nor a file operation inside the folder: only auto-allow runs it unasked.
+  const rm = (extra: Msg = {}) => ({ tool: "Bash", input: { command: "rm -f ../absent.txt", ...extra } })
+  const { fake, work } = fakeClaude({ turns: [[rm()], [rm()], [rm()]] })
+  const modes = new Claude(fake, ["--permission-prompt-tool", "stdio", "--settings", sandbox()], work)
+  for (const [i, mode] of ["default", "dontAsk", "acceptEdits"].entries()) {
+    modes.send(request(`mode-${i}`, { subtype: "set_permission_mode", mode }))
+    await modes.until(isResponse(`mode-${i}`), "the mode's answer")
+    modes.send(user("Go.", `u-${i}`))
+    const lines = await modes.turn()
+    expect([verdicts(lines), lines.some(isRequest("can_use_tool"))]).toEqual([["ran"], false])
+  }
+  expect(await modes.close()).toBe(0)
+
+  const dontAsk = (settings: string) => ["--permission-mode", "dontAsk", "--settings", settings]
+  // Outside the sandbox the regular flow decides, and dontAsk refuses: an excluded command, one behind a variable,
+  // and a retry unsandboxed, unless the settings turn the retry off.
+  expect(await outcome(dontAsk(sandbox({ excludedCommands: ["rm *"] })), [rm()])).toEqual(["refused"])
+  expect(await outcome(dontAsk(sandbox()), [{ tool: "Bash", input: { command: "X=1 rm -f ../absent.txt" } }])).toEqual([
+    "refused",
+  ])
+  expect(await outcome(dontAsk(sandbox()), [rm({ dangerouslyDisableSandbox: true })])).toEqual(["refused"])
+  const strict = sandbox({ allowUnsandboxedCommands: false })
+  expect(await outcome(dontAsk(strict), [rm({ dangerouslyDisableSandbox: true })])).toEqual(["ran"])
+  // Unset, auto-allow is on before 2.1.324 and off from it; a sandbox that can't start runs nothing sandboxed.
+  const enabled = JSON.stringify({ sandbox: { enabled: true } })
+  expect(await outcome(dontAsk(enabled), [rm()])).toEqual(["ran"])
+  expect(await outcome(dontAsk(enabled), [rm()], { version: "2.1.324" })).toEqual(["refused"])
+  expect(await outcome(dontAsk(sandbox()), [rm()], { sandbox_unavailable: true })).toEqual(["refused"])
+})
+
+test("allow, ask and deny rules from the flags and the settings decide before the mode and can_use_tool", async () => {
+  const { fake, work } = fakeClaude()
+  const locked = path.join(path.dirname(work), "locked")
+  fs.mkdirSync(locked)
+  const settings = JSON.stringify({
+    // An absolute path rule is `//` and the path without its first slash.
+    permissions: { ask: ["Bash(git push *)"], deny: ["Bash(rm *)", `Edit(//${locked.slice(1)}/**)`] },
+  })
+  const bash = (command: string) => ({ tool: "Bash", input: { command } })
+  const write = (file: string) => ({ tool: "Write", input: { file_path: file, content: "x" }, result: "written" })
+  fake.set({
+    turns: [[bash("touch allowed"), bash("touch half && mkdir other"), bash("git push origin main"), write("w.txt")]],
+  })
+  const flags = ["--allowedTools", "Bash(touch *)", "--disallowedTools=Write", "--settings", settings]
+  const dontAsk = new Claude(fake, ["--permission-mode", "dontAsk", ...flags], work)
+  dontAsk.send(user("Go.", "u-1"))
+  // An allow rule runs its command; a compound command runs only when every part is allowed.
+  expect(verdicts(await dontAsk.turn())).toEqual(["ran", "refused", "refused", "refused"])
+  expect(await dontAsk.close()).toBe(0)
+  expect(["allowed", "half", "other", "w.txt"].map((f) => fs.existsSync(path.join(work, f)))).toEqual([
+    true,
+    false,
+    false,
+    false,
+  ])
+
+  // Deny rules hold in bypassPermissions and over a hook's allow; an ask rule asks even there.
+  fake.set({
+    turns: [[bash("rm -f absent"), bash("git push origin main"), write(path.join(locked, "f")), write("mine.txt")]],
+  })
+  const asking = ["--permission-prompt-tool", "stdio", "--settings", settings]
+  const bypass = new Claude(fake, ["--permission-mode", "bypassPermissions", ...asking], work)
+  bypass.respond((m) =>
+    isRequest("hook_callback")(m)
+      ? hookAnswer(m.request_id, "allow")
+      : isRequest("can_use_tool")(m)
+        ? answer(m.request_id, { behavior: "deny", message: "Asked, and no." })
+        : undefined,
+  )
+  bypass.send(request("init", { subtype: "initialize", hooks: { PreToolUse: [{ hookCallbackIds: ["hook_0"] }] } }))
+  bypass.send(user("Go.", "u-2"))
+  const lines = await bypass.turn()
+  expect(verdicts(lines)).toEqual(["refused", "refused", "refused", "ran"])
+  expect(lines.filter(isRequest("can_use_tool")).map((m) => m.request.input.command)).toEqual(["git push origin main"])
+  expect(lines.filter(isToolResult)[1]!.message.content[0].content).toBe("Asked, and no.")
+  expect(await bypass.close()).toBe(0)
+})
+
+test("acceptEdits approves edits and mkdir, touch, mv and cp inside the working folders, --add-dir ones too, and nothing outside", async () => {
+  const { fake, work } = fakeClaude()
+  const [extra, outside] = ["extra", "outside"].map((name) => path.join(path.dirname(work), name)) as [string, string]
+  for (const dir of [extra, outside]) fs.mkdirSync(dir)
+  const write = (file: string) => ({ tool: "Write", input: { file_path: file, content: "x" }, result: "written" })
+  fake.set({
     turns: [
       [
-        bash,
-        { tool: "Edit", input: { file_path: "notes.md", old_string: "a", new_string: "b" }, result: "edited" },
-        { tool: "Write", input: { file_path: "/elsewhere/notes.md", content: "b" }, result: "written" },
+        write(path.join(extra, "a.txt")),
+        { tool: "Bash", input: { command: `mkdir sub && touch sub/a && cp sub/a sub/b && mv sub/b ${extra}/c` } },
+        // touch with an option, outside, a protected path, a write outside, and a command that isn't a file operation
+        { tool: "Bash", input: { command: "touch -c sub/a" } },
+        { tool: "Bash", input: { command: `touch ${outside}/x` } },
+        write(".git/config"),
+        write(path.join(outside, "y")),
+        { tool: "Bash", input: { command: "chmod 600 sub/a" } },
       ],
     ],
   })
-  const accept = new Claude(fake, ["--permission-mode", "acceptEdits", "--settings", settings], work)
-  accept.send(user("Go.", "u-1"))
-  const results = (await accept.turn()).filter((m) => m.type === "user").map(brief)
-  expect(results).toEqual([
-    "tool_result:sandboxed",
-    "tool_result:edited",
-    "tool_result!:Permission to use Write has been denied.",
-  ])
-  expect(await accept.close()).toBe(0)
+  const claude = new Claude(fake, ["--permission-mode", "acceptEdits", "--add-dir", extra], work)
+  claude.send(user("Go.", "u-1"))
+  const lines = await claude.turn()
+  expect(lines.find((m) => m.subtype === "init")!.additional_directories).toEqual([extra])
+  expect(verdicts(lines)).toEqual(["ran", "ran", "refused", "refused", "refused", "refused", "refused"])
+  const made = [path.join(work, "sub", "a"), path.join(extra, "c"), path.join(outside, "x")]
+  expect(made.map((f) => fs.existsSync(f))).toEqual([true, true, false])
+  expect(await claude.close()).toBe(0)
+})
 
-  // dontAsk refuses without asking, though a prompt tool is there; a later mode change takes effect.
-  fake.set({ turns: [[bash], [bash]] })
-  const dontAsk = new Claude(
-    fake,
-    ["--permission-mode=dontAsk", "--permission-prompt-tool=stdio", `--settings=${settings}`],
-    work,
-  )
-  dontAsk.send(user("Go.", "u-2"))
-  const refused = await dontAsk.turn()
-  expect(refused.some(isRequest("can_use_tool"))).toBe(false)
-  expect(toolResult(refused)!.message.content[0].is_error).toBe(true)
-  dontAsk.send(request("mode", { subtype: "set_permission_mode", mode: "acceptEdits" }))
-  expect((await dontAsk.until(isResponse("mode"), "the mode's answer"))[0]!.response).toEqual({
-    subtype: "success",
-    request_id: "mode",
+test("reads inside the working folders and --add-dir ones run in every mode, and so do read-only commands", async () => {
+  const { fake, work } = fakeClaude()
+  const [extra, outside] = ["extra", "outside"].map((name) => path.join(path.dirname(work), name)) as [string, string]
+  for (const dir of [extra, outside]) fs.mkdirSync(dir)
+  fs.writeFileSync(path.join(work, "f.txt"), "one\ntwo\n")
+  const read = (file: string) => ({ tool: "Read", input: { file_path: file }, result: "read" })
+  fake.set({
+    turns: [
+      [
+        read(path.join(extra, "f.txt")),
+        read(path.join(outside, "f.txt")),
+        { tool: "Bash", input: { command: "cat f.txt | wc -l" } },
+        // A redirect writes, which dontAsk refuses.
+        { tool: "Bash", input: { command: "ls > listing.txt" } },
+      ],
+    ],
   })
-  dontAsk.send(user("Again.", "u-3"))
-  const ran = await dontAsk.turn()
-  expect(ran.find((m) => m.subtype === "init")!.permissionMode).toBe("acceptEdits")
-  expect(brief(toolResult(ran)!)).toBe("tool_result:sandboxed")
+  const dontAsk = new Claude(fake, ["--permission-mode", "dontAsk", "--add-dir", extra], work)
+  dontAsk.send(user("Go.", "u-1"))
+  const lines = await dontAsk.turn()
+  expect(verdicts(lines)).toEqual(["ran", "refused", "ran", "refused"])
+  expect(lines.filter(isToolResult)[2]!.message.content[0].content).toBe("2")
+  expect(fs.existsSync(path.join(work, "listing.txt"))).toBe(false)
   expect(await dontAsk.close()).toBe(0)
+
+  // blockReadsOutsideWorkingDirectories refuses a read outside in every mode.
+  const block = JSON.stringify({ permissions: { blockReadsOutsideWorkingDirectories: true } })
+  const steps = [read(path.join(outside, "f.txt")), read("f.txt")]
+  const bypass = ["--permission-mode", "bypassPermissions", "--settings", block]
+  expect(await outcome(bypass, steps)).toEqual(["refused", "ran"])
+})
+
+test("a PostToolUse hook gets a tool's response before its result, and a tool that failed gets none", async () => {
+  const { fake, work } = fakeClaude({
+    turns: [[{ tool: "Bash", input: { command: "echo post" } }, { tool: "Bash", input: { command: "exit 4" } }]],
+  })
+  const claude = new Claude(fake, ["--permission-mode", "bypassPermissions"], work)
+  claude.respond((m) => (isRequest("hook_callback")(m) ? answer(m.request_id, {}) : undefined))
+  claude.send(request("init", { subtype: "initialize", hooks: { PostToolUse: [{ hookCallbackIds: ["hook_1"] }] } }))
+  claude.send(user("Go.", "u-1"))
+  const lines = (await claude.turn()).filter((m) => ["assistant", "user", "control_request"].includes(m.type))
+  expect(lines.map(brief)).toEqual([
+    "assistant:tool_use Bash",
+    "request/hook_callback",
+    "tool_result:post",
+    "assistant:tool_use Bash",
+    "tool_result!:Exit code 4",
+  ])
+  const hook = lines[1]!.request
+  expect(hook.callback_id).toBe("hook_1")
+  expect(hook.input).toMatchObject({
+    hook_event_name: "PostToolUse",
+    tool_name: "Bash",
+    tool_input: { command: "echo post" },
+    tool_response: { stdout: "post\n", stderr: "", interrupted: false, isImage: false },
+    tool_use_id: lines[0]!.message.content[0].id,
+  })
+  expect(typeof hook.input.duration_ms).toBe("number")
+  expect(await claude.close()).toBe(0)
+})
+
+test("no command a Bash step starts outlives the step, an interrupt, the fake's exit or a SIGTERM", async () => {
+  const { fake, work } = fakeClaude()
+  const pidIn = async (file: string) =>
+    Number(
+      await waitFor(
+        () => {
+          const p = path.join(work, file)
+          return fs.existsSync(p) ? fs.readFileSync(p, "utf8").trim() || null : null
+        },
+        { timeout: 10_000, what: file },
+      ),
+    )
+  const gone = (pid: number) => {
+    const stat = psStat(pid)
+    return stat === "" || stat.startsWith("Z")
+  }
+  const bypass = ["--permission-mode", "bypassPermissions"]
+  const bash = (command: string) => [{ tool: "Bash", input: { command } }]
+  fake.set({ turns: [bash("sleep 31 & echo $! > a.pid"), bash("sleep 32 & echo $! > b.pid; sleep 33")] })
+  const claude = new Claude(fake, bypass, work)
+  // What a step leaves running in the background ends with the step, which doesn't wait for it.
+  claude.send(user("Leave one.", "u-1"))
+  await claude.turn()
+  const left = await pidIn("a.pid")
+  await waitFor(() => gone(left), { timeout: 5000, what: "the left sleep's end" })
+  claude.send(user("Wait.", "u-2"))
+  const waited = await pidIn("b.pid")
+  claude.send(request("stop", { subtype: "interrupt" }))
+  await claude.turn()
+  await waitFor(() => gone(waited), { timeout: 5000, what: "the interrupted sleep's end" })
+  expect(await claude.close()).toBe(0)
+
+  for (const [end, file, code] of [["stdin", "c.pid", 0], ["SIGTERM", "d.pid", 143]] as const) {
+    fake.set({ turns: [bash(`sleep 34 & echo $! > ${file}; sleep 35`)] })
+    const run = new Claude(fake, bypass, work)
+    run.send(user("Go.", "u-3"))
+    const pid = await pidIn(file)
+    if (end === "stdin") run.child.stdin!.end()
+    else run.child.kill("SIGTERM")
+    expect(await run.exited).toBe(code)
+    await waitFor(() => gone(pid), { timeout: 5000, what: `the sleep's end after ${end}` })
+  }
+})
+
+test("the fake exits loudly on what it doesn't model, so no test can rely on it", async () => {
+  const { fake, work } = fakeClaude({ turns: [[{ tool: "Bash", input: { command: 'touch "$(date)"' } }]] })
+  const loud = (code: number | null, stderr: string) => {
+    expect(code).toBe(FAKE_CLAUDE_UNMODELLED)
+    expect(stderr).toContain("not modelled")
+  }
+  // At the start: a rule's form, and a mode.
+  const rule = JSON.stringify({ permissions: { allow: ["WebFetch(domain:example.com)"] } })
+  for (const args of [["--settings", rule], ["--permission-mode", "plan"]]) {
+    const ran = runOnce(fake, [...STREAM, ...args], work)
+    loud(ran.status, ran.stderr)
+  }
+  // In a session: a hook event, a mode, a command it can't parse that a scoped rule would have to match.
+  const sessions: [string[], Msg[]][] = [
+    [[], [request("init", { subtype: "initialize", hooks: { Stop: [{ hookCallbackIds: ["hook_0"] }] } })]],
+    [[], [request("mode", { subtype: "set_permission_mode", mode: "auto" })]],
+    [["--allowedTools", "Bash(touch *)"], [user("Go.", "u-1")]],
+  ]
+  for (const [args, lines] of sessions) {
+    const claude = new Claude(fake, args, work)
+    for (const line of lines) claude.send(line)
+    loud(await claude.exited, claude.stderr)
+  }
+  // Answers it doesn't model: a deny that interrupts, and a PostToolUse hook's output.
+  fake.set({ turns: [[{ tool: "Bash", input: { command: "touch x" } }]] })
+  const interrupting = new Claude(fake, ["--permission-prompt-tool", "stdio"], work)
+  interrupting.respond((m) =>
+    isRequest("can_use_tool")(m)
+      ? answer(m.request_id, { behavior: "deny", message: "No.", interrupt: true })
+      : undefined,
+  )
+  interrupting.send(user("Go.", "u-1"))
+  loud(await interrupting.exited, interrupting.stderr)
+  const context = { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: "More." } }
+  const post = new Claude(fake, ["--permission-mode", "bypassPermissions"], work)
+  post.respond((m) => (isRequest("hook_callback")(m) ? answer(m.request_id, context) : undefined))
+  post.send(request("init", { subtype: "initialize", hooks: { PostToolUse: [{ hookCallbackIds: ["hook_1"] }] } }))
+  post.send(user("Go.", "u-1"))
+  loud(await post.exited, post.stderr)
+  expect(fake.log().filter((entry) => entry.dir === "unmodelled").length).toBe(7)
 })
 
 test("a Bash step's result is its command's real output and exit", async () => {
@@ -409,9 +653,10 @@ test("a message with priority next joins the running turn, and one without waits
     "queued:u-3",
     "started:u-2",
     "assistant:b",
+    // As recorded: the line that joined completes before the result, the first one after it.
+    "completed:u-2",
     "result/success/completed",
     "completed:u-1",
-    "completed:u-2",
     "system/session_state_changed=idle",
   ])
   expect(resultOf(first)!.user_message_uuids).toEqual(["u-1", "u-2"])
