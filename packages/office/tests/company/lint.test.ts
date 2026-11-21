@@ -487,8 +487,8 @@ test("an SOP or routine that drives only harnesses its person doesn't use is a l
     Array(2).fill([
       "people/minh/person.yaml",
       "warning",
-      "../../shared/flows/drive.yaml drives codex, but @minh doesn't use the codex harness, so each session it"
-        + " starts is refused; add codex to harnesses",
+      "../../shared/flows/drive.yaml drives codex, but @minh doesn't use the codex harness, so it gets no codex"
+        + " tools and can't start a session; add codex to harnesses",
     ]),
   )
   expect(await withCode(driving(sopFlow("[codex]", { steered: true }), ["composer", "codex"]), "person.harness_not_used"))
@@ -499,8 +499,8 @@ test("an SOP that drives either harness is a lint warning only for a person who 
   const sop = fs.readFileSync(new URL("../../src/company/template/shared/flows/drive_harness.yaml", import.meta.url), "utf8")
   const [issue] = await withCode(driving(sop, ["composer"]), "person.harness_not_used")
   expect(issue!.message).toBe(
-    "../../shared/flows/drive.yaml drives codex or claude, but @minh uses neither harness, so each session it starts"
-      + " is refused; add the one it should drive to harnesses",
+    "../../shared/flows/drive.yaml drives codex or claude, but @minh uses neither harness, so it gets neither's tools"
+      + " and can't start a session; add the one it should drive to harnesses",
   )
   for (const harnesses of [["composer", "codex"], ["claude"]]) {
     expect(await lint(loadRepo(driving(sop, harnesses)))).toEqual([])

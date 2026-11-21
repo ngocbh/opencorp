@@ -302,8 +302,9 @@ function instrumentAgents(flow: ComposedFlow): InstrumentAgent[] {
 }
 
 /** Why a person who uses `harnesses` can't run the SOP or routine `ref`, whose agents grant the instrument groups
- *  `granted`, or null: it drives none of them. A main flow isn't asked: a chat offers its instruments beside its other
- *  tools, while an SOP that drives a harness exists for it. */
+ *  `granted`, or null: it drives none of them, and the office binds an instrument's group, empty otherwise, only for a
+ *  harness its person uses. A main flow isn't asked: a chat offers its instruments beside its other tools, while an
+ *  SOP that drives a harness exists for it. */
 function unusedHarnesses(
   ref: string,
   handle: string,
@@ -313,11 +314,11 @@ function unusedHarnesses(
   if (granted.size === 0 || [...granted].some((group) => harnesses.includes(group))) return null
   const groups = [...granted]
   if (groups.length === 1) {
-    return `${ref} drives ${groups[0]}, but @${handle} doesn't use the ${groups[0]} harness, so each session it starts`
-      + ` is refused; add ${groups[0]} to harnesses`
+    return `${ref} drives ${groups[0]}, but @${handle} doesn't use the ${groups[0]} harness, so it gets no ${groups[0]}`
+      + ` tools and can't start a session; add ${groups[0]} to harnesses`
   }
-  return `${ref} drives ${groups.join(" or ")}, but @${handle} uses neither harness, so each session it starts is`
-    + " refused; add the one it should drive to harnesses"
+  return `${ref} drives ${groups.join(" or ")}, but @${handle} uses neither harness, so it gets neither's tools and`
+    + " can't start a session; add the one it should drive to harnesses"
 }
 
 /** Agents have a main flow; every main, SOP, and routine flow is a relative path to a file inside the repo
