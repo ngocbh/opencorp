@@ -70,8 +70,10 @@ mount the listed folders.
   employee's writable listed folder, or the project folder of a session that is running. A writable folder's
   programs aren't on your employee's harness `PATH`: they run by full path. A program the harness runs for itself
   (`git`, `rg`) comes only from the system and read-only folders. Nothing checks for a program planted earlier, by
-  someone who may no longer write there, or a repository config in a folder above the project folder that another
-  employee may write.
+  someone who may no longer write there.
+- An employee with a writable folder can change git settings in any project inside it, and those run as you the
+  next time you, Codex, Claude Code or another employee use git in that project. So don't list a folder writable if
+  it holds git projects.
 
 Beyond that, nothing guards a listed folder: OpenCorp mounts it as listed, whatever it holds, and `opencorp doctor`
 counts each one as a lint warning.
