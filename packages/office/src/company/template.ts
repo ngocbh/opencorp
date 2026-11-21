@@ -19,6 +19,7 @@ import companyYaml from "./template/company.yaml" with { type: "file" }
 import ownerYaml from "./template/people/{owner}/person.yaml" with { type: "file" }
 import chatYaml from "./template/shared/flows/chat.yaml" with { type: "file" }
 import compactHistoryYaml from "./template/shared/flows/compact_history.yaml" with { type: "file" }
+import driveHarnessYaml from "./template/shared/flows/drive_harness.yaml" with { type: "file" }
 import profileManagerYaml from "./template/shared/flows/profile_manager.yaml" with { type: "file" }
 import sideChatYaml from "./template/shared/flows/side_chat.yaml" with { type: "file" }
 
@@ -35,6 +36,7 @@ const TEMPLATE: ReadonlyMap<string, string> = new Map<string, string>([
   [".gitignore", gitignore],
   ["shared/flows/chat.yaml", chatYaml],
   ["shared/flows/compact_history.yaml", compactHistoryYaml],
+  ["shared/flows/drive_harness.yaml", driveHarnessYaml],
   ["shared/flows/profile_manager.yaml", profileManagerYaml],
   ["shared/flows/side_chat.yaml", sideChatYaml],
 ])
