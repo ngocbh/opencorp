@@ -1,5 +1,6 @@
 /** `opencorp doctor`: check the office home (there and private), company repo, provider and connections, the run and
- *  session folders (writable), service, daemon, HQ, sandbox and its terminals, worked folders, and Codex. */
+ *  session folders (writable), service, daemon, HQ, sandbox and its terminals, worked folders, Codex and Claude
+ *  Code. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -16,6 +17,17 @@ import { lint } from "../../company/lint.ts"
 import { loadRepo } from "../../company/loader.ts"
 import { companyState, missingFiles } from "../../company/template.ts"
 import { CodexMissing, codexCommand, nativeCodex } from "../../tools/codex/codex.ts"
+import {
+  CLAUDE_FLOOR,
+  ClaudeMissing,
+  ClaudeSandboxUnavailable,
+  ClaudeSignedOut,
+  ClaudeStartError,
+  claudeCommand,
+  nativeClaude,
+  olderThan,
+} from "../../tools/claude/claude.ts"
+import { probeStart } from "../../tools/claude/probe.ts"
 import { type Probed, threadProbe } from "../codex/thread.ts"
 import { SANDBOX_FIX } from "../../tools/terminal/terminal.ts"
 import { selfCommand, tuiAssetRoot } from "../../platform.ts"
@@ -67,6 +79,10 @@ const CODEX_FLOOR = [0, 167, 0] as const
 /** How to update Codex past the floor. */
 const UPDATE_CODEX =
   "update Codex: `npm install -g @openai/codex@latest` (or `brew upgrade codex`), then `opencorp doctor`"
+/** How to update Claude Code past its floor (`CLAUDE_FLOOR`). */
+const UPDATE_CLAUDE =
+  "update Claude Code: `claude update` (or `brew upgrade claude-code`, or " +
+  "`npm install -g @anthropic-ai/claude-code@latest`), then `opencorp doctor`"
 
 /** The most of a plist or unit file doctor reads: `opencorp onboard` writes about 2 KiB. */
 const SERVICE_FILE_CAP = 64 * 1024
@@ -583,8 +599,8 @@ function lines(output: string): string[] {
     .filter((line) => line)
 }
 
-/** How a Codex install or setting made in this shell reaches an office running under `mode`. */
-function codexChangeLands(mode: string | null): string {
+/** How a harness install or setting made in this shell reaches an office running under `mode`. */
+function changeLands(mode: string | null): string {
   // launchd and systemd start the office with the environment `opencorp onboard` wrote into its service file, which
   // `opencorp restart` reuses; only a stopped office's onboard writes the file again.
   if (mode === "launchd" || mode === "systemd") {
@@ -593,7 +609,8 @@ function codexChangeLands(mode: string | null): string {
   return "`opencorp restart` from that shell"
 }
 
-/** The owner's home and `<OPENCORP_HOME>`, which the Codex check's thread denies by name as an employee's does. */
+/** The owner's home and `<OPENCORP_HOME>`, which the Codex check's thread and the Claude Code check's start deny by
+ *  name as an employee's do. */
 export interface CodexOffice {
   home: string
   officeHome: string
@@ -625,9 +642,9 @@ export async function codexCheck(
     const override = environ.OPENCORP_CODEX_BIN
     const detail = override
       ? `OPENCORP_CODEX_BIN names ${override}, which isn't an executable the office can find, so Codex sessions ` +
-        `can't start (fix or unset it, then ${codexChangeLands(mode)})`
+        `can't start (fix or unset it, then ${changeLands(mode)})`
       : "not on the office's PATH, so Codex sessions can't start " +
-        `(npm install -g @openai/codex, then ${codexChangeLands(mode)})`
+        `(npm install -g @openai/codex, then ${changeLands(mode)})`
     return { name: "codex", status: "warn", detail }
   }
   const home = environ.CODEX_HOME
@@ -703,6 +720,95 @@ export async function codexCheck(
     `sessions there are refused (${shown.join(", ")}); untrust those projects in your Codex config.toml, or remove ` +
     "those files"
   return { name: "codex", status: "warn", detail }
+}
+
+/**
+ * Whether employees can drive Claude Code, in the environment the office gives it (`env`): the binary on its PATH,
+ * the version (2.1.325 or later), and, given `office`, a start under an employee's permission (`probeStart`, under
+ * `base`'s harness folder), which reads the sign-in from `initialize` and sends no message, so no model call runs.
+ * Missing or signed out is a warning, not a failure: only employees who drive Claude Code need it. A `claude` that
+ * won't run, doesn't answer within `timeoutMs`, is older than the floor or whose version can't be read fails, and so
+ * does one that can't start under an employee's permission (its sandbox can't start, or others could change it).
+ *
+ * `environ` is the office's environment: its `OPENCORP_CLAUDE_BIN` picks the binary and its `CLAUDE_CONFIG_DIR` joins
+ * `env`, as they do for a session. `mode` is the office's recorded service mode, which decides how a fix reaches it.
+ */
+export async function claudeCheck(
+  env: Record<string, string>,
+  environ: Env,
+  mode: string | null = null,
+  { timeoutMs = 30_000, office, base }: { timeoutMs?: number; office?: CodexOffice; base?: string } = {},
+): Promise<Check> {
+  let found: string
+  try {
+    found = claudeCommand(env, environ)
+  } catch (error) {
+    if (!(error instanceof ClaudeMissing)) throw error
+    const override = environ.OPENCORP_CLAUDE_BIN
+    const detail = override
+      ? `OPENCORP_CLAUDE_BIN names ${override}, which isn't an executable the office can find, so employees can't ` +
+        `drive Claude Code (fix or unset it, then ${changeLands(mode)})`
+      : "not on the office's PATH, so employees can't drive Claude Code " +
+        `(install it from https://code.claude.com/docs/en/setup, then ${changeLands(mode)})`
+    return { name: "claude", status: "warn", detail }
+  }
+  const config = environ.CLAUDE_CONFIG_DIR
+  const ran = config ? { ...env, CLAUDE_CONFIG_DIR: config } : env
+  // In its own group, so a hung Claude Code and anything it started go with the timeout.
+  const version = await runCommand([found, "--version"], { env: ran, timeoutMs, group: true })
+  if (version.code === 124 && version.stderr === `${found} timed out`) {
+    return { name: "claude", status: "fail", detail: `${found} --version didn't answer in ${timeoutMs / 1000} s` }
+  }
+  const unstarted = version.code === 127 ? version.stderr.match(SPAWN_ERROR) : null
+  if (unstarted) return { name: "claude", status: "fail", detail: `${found} can't run: ${unstarted[1]}` }
+  if (version.code !== 0) {
+    const why = lines(version.stderr)[0]?.slice(0, LINE_CAP) || `exit ${version.code}`
+    return { name: "claude", status: "fail", detail: `${found} --version failed: ${why}` }
+  }
+  const printed = (lines(version.stdout)[0] ?? "").slice(0, LINE_CAP)
+  const named = printed ? `${printed} at ${found}` : `${found} (no version printed)`
+  // `X.Y.Z (Claude Code)`.
+  const at = printed.match(/\d+\.\d+\.\d+/)
+  if (at === null) {
+    const detail =
+      `${named}: OpenCorp needs Claude Code ${CLAUDE_FLOOR} or later and can't read this one's version; ` +
+      UPDATE_CLAUDE
+    return { name: "claude", status: "fail", detail }
+  }
+  if (olderThan(at[0])) {
+    const detail = `${named} is older than ${CLAUDE_FLOOR}, which OpenCorp needs; ${UPDATE_CLAUDE}`
+    return { name: "claude", status: "fail", detail }
+  }
+  if (office === undefined) return { name: "claude", status: "ok", detail: named }
+  const cant = `${named} can't start under an employee's permission`
+  let probed: { error: Error | null; log: string }
+  try {
+    probed = await probeStart({ claude: nativeClaude(found), env, environ, ...office, base })
+  } catch (error) {
+    // Its folders under /tmp couldn't be made or removed, or the binary is gone.
+    return { name: "claude", status: "fail", detail: `${cant}: doctor can't try one: ${messageOf(error)}` }
+  }
+  const { error, log } = probed
+  if (error === null) {
+    return { name: "claude", status: "ok", detail: `${named}, signed in, and starts under an employee's permission` }
+  }
+  if (error instanceof ClaudeSignedOut) {
+    const detail = `${named} is signed out; run \`claude\` in a terminal and sign in with /login`
+    return { name: "claude", status: "warn", detail }
+  }
+  if (error instanceof ClaudeSandboxUnavailable) {
+    const detail =
+      `${cant}: its sandbox can't start here (on Linux, install bubblewrap and socat, and allow unprivileged user ` +
+      `namespaces); Claude Code's output is in ${log}`
+    return { name: "claude", status: "fail", detail }
+  }
+  if (!(error instanceof ClaudeStartError)) {
+    // The permission or the install, refused before Claude Code ran.
+    return { name: "claude", status: "fail", detail: `${cant}: ${error.message.slice(0, LINE_CAP)}` }
+  }
+  const why = error.cause instanceof Error ? error.cause.message : error.message
+  const detail = `${cant}: ${why.slice(0, LINE_CAP)}; Claude Code's output is in ${log}`
+  return { name: "claude", status: "fail", detail }
 }
 
 /** Whether version `got` comes before `floor`. */
@@ -1060,6 +1166,13 @@ export interface CheckOptions {
     mode: string | null,
     options: { office: CodexOffice },
   ) => Promise<Check>
+  /** The Claude Code check, given the same (default `claudeCheck`). */
+  claude?: (
+    env: Record<string, string>,
+    environ: Env,
+    mode: string | null,
+    options: { office: CodexOffice },
+  ) => Promise<Check>
   /** The shell's environment (default `process.env`). */
   environ?: Env
   /** `GET /hq` from the office on the socket, sent with the identity's token when there is one
@@ -1102,7 +1215,7 @@ function lockHeld(paths: OfficePaths, host: Host): boolean {
  */
 export async function checks(home: string, options: CheckOptions): Promise<Check[]> {
   const { host = defaultHost(), command = selfCommand(), repo = CHECKOUT, environ = process.env } = options
-  const { codex = codexCheck, office = service.officeInfo, probe = sandboxProblem } = options
+  const { codex = codexCheck, claude = claudeCheck, office = service.officeInfo, probe = sandboxProblem } = options
   const { terminal = terminalProblem } = options
   const { hq, hqChecks } = options
   const load = options.loadIdentity ?? loadIdentity
@@ -1226,6 +1339,7 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   // daemon's (a launchd or systemd office keeps the one `opencorp onboard` wrote into its service file).
   const homes = { home: host.userHome, officeHome: paths.home }
   found.push(await codex(workerEnv(run.env), run.env, service.recordedMode(run), { office: homes }))
+  found.push(await claude(workerEnv(run.env), run.env, service.recordedMode(run), { office: homes }))
   return found
 }
 

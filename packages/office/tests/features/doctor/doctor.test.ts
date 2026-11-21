@@ -35,6 +35,8 @@ import { fifo, isGone, ps, shortDir, tempDir, waitFor } from "../../helpers.ts"
 import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import { makeHost, Runner, standIn } from "../setup/helpers.ts"
 import { harnessTemp } from "../../../src/features/codex/thread.ts"
+import { harnessRoot } from "../../../src/runtime/sandbox/harness_temp.ts"
+import { type FakeClaudeScript, installFakeClaude } from "../../../src/testing/fake_claude.ts"
 
 // Most tests run doctor several times, and each run exports the company's last commit with git.
 setDefaultTimeout(30_000)
@@ -126,6 +128,7 @@ function runChecks(
     probe,
     terminal,
     codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
+    claude: async () => ({ name: "claude", status: "ok", detail: "stand-in" }),
     environ,
     hq: async () => "unreachable",
     hqChecks,
@@ -940,6 +943,7 @@ test("a symlink at the socket path is never asked anything even when something a
     probe: async () => null,
     terminal: async () => null,
     codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
+    claude: async () => ({ name: "claude", status: "ok", detail: "stand-in" }),
     environ: {},
     hq: async () => (asked.push("hq"), "unreachable"),
     hqChecks,
@@ -1233,6 +1237,7 @@ async function checksSeeingCodex(
     mode: string | null
     office: unknown
   }[] = []
+  const seenClaude: typeof seen = []
   const found = await doctor.checks(paths.home, {
     host: makeHost(dir, runner, { platform }),
     command: COMMAND,
@@ -1243,12 +1248,16 @@ async function checksSeeingCodex(
       seen.push({ env, environ, mode, office: options?.office })
       return { name: "codex", status: "ok", detail: "stand-in" }
     },
+    claude: async (env, environ, mode, options) => {
+      seenClaude.push({ env, environ, mode, office: options?.office })
+      return { name: "claude", status: "ok", detail: "stand-in" }
+    },
     environ,
     hq: async () => "unreachable",
     hqChecks,
     office: async () => "unreachable",
   })
-  return { found, seen }
+  return { found, seen, seenClaude }
 }
 
 test("codex on the office path and signed in is ok", async () => {
@@ -1543,7 +1552,7 @@ test("checks run the codex check they are given in the app servers environment",
   const dir = tempDir()
   const environ = { PATH: "/usr/bin:/bin", HOME: dir, OPENAI_API_KEY: "sk-secret" }
   const { found, seen } = await checksSeeingCodex(dir, environ)
-  expect(found.at(-1)).toEqual({ name: "codex", status: "ok", detail: "stand-in" })
+  expect(found.find((c) => c.name === "codex")).toEqual({ name: "codex", status: "ok", detail: "stand-in" })
   const inherited: readonly string[] = INHERITED_ENV
   expect(seen).toHaveLength(1)
   for (const key of Object.keys(seen[0]!.env)) expect(inherited.includes(key) || key.startsWith("LC_")).toBe(true)
@@ -1642,6 +1651,135 @@ test("checks give the codex check the offices recorded service mode", async () =
   const runner = new Runner([[["loginctl"], 0, "", "Linger=yes\n"]])
   const { seen } = await checksSeeingCodex(dir, {}, { paths, runner, platform: "linux" })
   expect(seen.map((s) => s.mode)).toEqual(["systemd"])
+})
+
+/** The fake Claude Code as `claude` in `<dir>/fake/bin`, only the user's to change, on `script` (2.1.325 and signed
+ *  in unless it says otherwise). Returns the env to run it with, the fake, and the binary. */
+function fakeClaudeIn(dir: string, script: FakeClaudeScript = {}) {
+  const fake = installFakeClaude(path.join(dir, "fake"), { version: "2.1.325", ...script })
+  for (const p of [path.join(dir, "fake"), fake.bin]) fs.chmodSync(p, 0o755)
+  return { env: { PATH: `${fake.bin}:/usr/bin:/bin`, HOME: dir }, fake, claude: fake.claude }
+}
+
+/** What doctor tells the owner to run to update Claude Code past the floor. */
+const UPDATE_CLAUDE =
+  "update Claude Code: `claude update` (or `brew upgrade claude-code`, or " +
+  "`npm install -g @anthropic-ai/claude-code@latest`), then `opencorp doctor`"
+
+test("claude at the floor and signed in, starting under an employee's permission, is ok, with no message sent", async () => {
+  const { dir, office, base } = probeHomes()
+  const { env, fake, claude } = fakeClaudeIn(dir)
+  expect(await doctor.claudeCheck(env, {}, null, { office, base })).toEqual({
+    name: "claude",
+    status: "ok",
+    detail: `2.1.325 (Claude Code) at ${claude}, signed in, and starts under an employee's permission`,
+  })
+  const starts = fake.log().filter((e) => e.dir === "start")
+  expect(starts.map((s) => s.argv![0])).toEqual(["--version", "--output-format"])
+  expect(starts[1]!.flags!.settings.sandbox.failIfUnavailable).toBe(true)
+  expect(fake.log().filter((e) => e.dir === "in").map((e) => e.msg!.type)).toEqual(["control_request"])
+  // Without the office, only the version is read.
+  expect(await doctor.claudeCheck(env, {})).toEqual({
+    name: "claude",
+    status: "ok",
+    detail: `2.1.325 (Claude Code) at ${claude}`,
+  })
+})
+
+test("claude missing, or an opencorp claude bin the office can't find, is a warning saying what to do", async () => {
+  const missing = await doctor.claudeCheck({ PATH: path.join(tempDir(), "nowhere") }, {})
+  expect(missing.status).toBe("warn")
+  expect(missing.detail).toContain("not on the office's PATH, so employees can't drive Claude Code")
+  expect(missing.detail).toContain("https://code.claude.com/docs/en/setup")
+  const { env } = fakeClaudeIn(tempDir())
+  const override = await doctor.claudeCheck(env, { OPENCORP_CLAUDE_BIN: "/nowhere/claude" }, "systemd")
+  expect(override.status).toBe("warn")
+  expect(override.detail).toContain("OPENCORP_CLAUDE_BIN names /nowhere/claude, which isn't an executable")
+  expect(override.detail).toContain("then `opencorp stop` and `opencorp onboard` again from that shell")
+})
+
+test("a claude older than 2.1.325, or whose version can't be read, fails with how to update it", async () => {
+  const dir = tempDir()
+  const { env, fake, claude } = fakeClaudeIn(dir)
+  for (const old of ["2.1.324", "2.0.999", "1.9.0"]) {
+    fake.set({ version: old })
+    expect(await doctor.claudeCheck(env, {})).toEqual({
+      name: "claude",
+      status: "fail",
+      detail: `${old} (Claude Code) at ${claude} is older than 2.1.325, which OpenCorp needs; ${UPDATE_CLAUDE}`,
+    })
+  }
+  fake.set({ version: "dev" })
+  expect(await doctor.claudeCheck(env, {})).toEqual({
+    name: "claude",
+    status: "fail",
+    detail:
+      `dev (Claude Code) at ${claude}: OpenCorp needs Claude Code 2.1.325 or later and can't read this one's ` +
+      `version; ${UPDATE_CLAUDE}`,
+  })
+  for (const fine of ["2.1.325", "2.1.330", "2.2.0", "3.0.0"]) {
+    fake.set({ version: fine })
+    expect((await doctor.claudeCheck(env, {})).status, fine).toBe("ok")
+  }
+})
+
+test("claude signed out is a warning saying how to sign in", async () => {
+  const { dir, office, base } = probeHomes()
+  const { env, claude } = fakeClaudeIn(dir, { signed_out: true })
+  expect(await doctor.claudeCheck(env, {}, null, { office, base })).toEqual({
+    name: "claude",
+    status: "warn",
+    detail: `2.1.325 (Claude Code) at ${claude} is signed out; run \`claude\` in a terminal and sign in with /login`,
+  })
+})
+
+test("a claude whose sandbox can't start fails, saying what to fix and where its output is", async () => {
+  const { dir, office, base } = probeHomes()
+  const { env, claude } = fakeClaudeIn(dir, { sandbox_unavailable: true })
+  const log = path.join(harnessRoot("claude", base), "doctor-claude.log")
+  expect(await doctor.claudeCheck(env, {}, null, { office, base })).toEqual({
+    name: "claude",
+    status: "fail",
+    detail:
+      `2.1.325 (Claude Code) at ${claude} can't start under an employee's permission: its sandbox can't start ` +
+      "here (on Linux, install bubblewrap and socat, and allow unprivileged user namespaces); Claude Code's output " +
+      `is in ${log}`,
+  })
+})
+
+test("a claude others could change fails before it runs under an employee's permission", async () => {
+  const { dir, office, base } = probeHomes()
+  const { env, fake, claude } = fakeClaudeIn(dir)
+  fs.chmodSync(fake.bin, 0o775)
+  const check = await doctor.claudeCheck(env, {}, null, { office, base })
+  expect(check.status).toBe("fail")
+  expect(check.detail).toStartWith(`2.1.325 (Claude Code) at ${claude} can't start under an employee's permission: `)
+  expect(check.detail).toContain("others than the user may write")
+  expect(fake.log().filter((e) => e.dir === "start")).toHaveLength(1)
+})
+
+test("the check runs claude with the office's config folder when set, and never with a claude key", async () => {
+  const dir = tempDir()
+  const { env, fake } = fakeClaudeIn(dir)
+  await doctor.claudeCheck(env, { CLAUDE_CONFIG_DIR: "/x/claude", ANTHROPIC_API_KEY: "sk-ant-secret" })
+  const ran = fake.log().find((e) => e.dir === "start")!.env!
+  expect(ran.CLAUDE_CONFIG_DIR).toBe("/x/claude")
+  expect(ran).not.toHaveProperty("ANTHROPIC_API_KEY")
+  expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR")
+})
+
+test("checks run the claude check they are given, in the worker env, with the office's environment and homes", async () => {
+  const dir = tempDir()
+  const environ = { PATH: "/usr/bin:/bin", HOME: dir, CLAUDE_CONFIG_DIR: "/x/claude", ANTHROPIC_API_KEY: "sk-ant" }
+  const { found, seenClaude } = await checksSeeingCodex(dir, environ)
+  expect(found.at(-1)).toEqual({ name: "claude", status: "ok", detail: "stand-in" })
+  expect(found.map((c) => c.name).slice(-2)).toEqual(["codex", "claude"])
+  const { env, environ: given, office } = seenClaude[0]!
+  const inherited: readonly string[] = INHERITED_ENV
+  for (const key of Object.keys(env)) expect(inherited.includes(key) || key.startsWith("LC_")).toBe(true)
+  expect(env).not.toHaveProperty("ANTHROPIC_API_KEY")
+  expect(given.CLAUDE_CONFIG_DIR).toBe("/x/claude")
+  expect(office).toEqual({ home: dir, officeHome: path.join(dir, "home") })
 })
 
 test("a codex that says nothing is still described", async () => {
@@ -1759,6 +1897,7 @@ function runningChecks(
     probe: async () => null,
     terminal: async () => null,
     codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
+    claude: async () => ({ name: "claude", status: "ok", detail: "stand-in" }),
     environ,
     hq: async () => hq,
     hqChecks,
@@ -1788,6 +1927,7 @@ test("a running office reports hq", async () => {
     "sandbox",
     "terminal",
     "codex",
+    "claude",
   ])
 })
 
@@ -2121,6 +2261,7 @@ test("a helper inside the office home fails the sandbox check", async () => {
     repo: root,
     terminal: async () => null,
     codex: async () => ({ name: "codex", status: "ok", detail: "stand-in" }),
+    claude: async () => ({ name: "claude", status: "ok", detail: "stand-in" }),
     environ: {},
     hq: async () => "unreachable",
     hqChecks,
@@ -2165,7 +2306,7 @@ test("a worked folder holding the install fails the folders check", async () => 
     status: "fail",
     detail: `workspace ${work} contains ${work}/checkout, where the office or a program it runs is installed; use a project folder`,
   })
-  expect(found.map((c) => c.name).slice(-4)).toEqual(["sandbox", "terminal", "folders", "codex"])
+  expect(found.map((c) => c.name).slice(-5)).toEqual(["sandbox", "terminal", "folders", "codex", "claude"])
   expect(doctor.exitCode(found)).toBe(1)
 })
 

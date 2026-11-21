@@ -71,6 +71,11 @@ servers, hooks, `notify`, apps and plugins are off, and so is web search when th
 `~/.codex/config.toml` is left as it is. Commands get no `/tmp`, so a tool that writes there fails unless a listed folder
 covers it.
 
+Claude Code asks you nothing either: what its permission doesn't allow is refused. It runs as you, with its own
+sign-in in `~/.claude` (or the Keychain on macOS), but none of your Claude Code settings files load, nor the project's:
+your hooks, plugins, MCP servers, skills, `CLAUDE.md`, permission rules and default model don't apply there, and auto
+memory is off. Only a `/login` sign-in reaches it: an API key in your shell or your settings doesn't.
+
 A project you've trusted in Codex (Codex asks the first time you run it there) loads its own `.codex/config.toml`,
 whose MCP servers and hooks would run as you, outside your employee's permission. So your employee's Codex session
 won't start in such a project, and says which file it is: untrust the project in `~/.codex/config.toml` (its
