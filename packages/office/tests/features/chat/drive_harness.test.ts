@@ -30,8 +30,7 @@ afterAll(async () => {
 })
 
 const SOP = "shared/flows/drive_harness.yaml"
-const TASK = "Fix the failing build."
-const FOLDER = "packages/app"
+const TASK = "Fix the failing build in packages/app."
 
 type Kind = "codex" | "claude"
 
@@ -142,7 +141,7 @@ function conversation(r: Awaited<ReturnType<typeof rig>>, kind: Kind): string {
 test("the SOP routes to one driver per harness, each granting only its instrument and steering from messages", async () => {
   const flow = readFlow(fs.readFileSync(path.join(ROOT, SOP), "utf8")) as Record<string, any>
   expect(flow.description).toBeTruthy()
-  expect(Object.keys(flow.input)).toEqual(["task", "harness", "folder", "messages"])
+  expect(Object.keys(flow.input)).toEqual(["task", "harness", "messages"])
   expect(flow.input.messages).toBe("!Inbox(Message)")
   expect(flow.typedefs.Harness).toBe("Literal(codex, claude)")
   expect(flow.nodes.route).toMatchObject({ kind: "case", on: "${input.harness}" })
@@ -169,21 +168,20 @@ test.each(["codex", "claude"] as const)(
     const fake = await fakeLlm()
     const r = await rig(kind)
     fake.script(
-      calls(kind, "start", { message: `${TASK} Work in ${FOLDER}.`, wait: 120 }, "c1"),
+      calls(kind, "start", { message: TASK, wait: 120 }, "c1"),
       calls(kind, "stop", { [kind]: `${kind} 1` }, "c2"),
       { content: "The build is fixed; nothing is left." },
     )
     const rec = handlers(kind, r.instrument)
-    const job = makeJob(where(), SOP, { inputs: { task: TASK, harness: kind, folder: FOLDER } }, rec)
+    const job = makeJob(where(), SOP, { inputs: { task: TASK, harness: kind } }, rec)
     await run(job, rec, { env: fake.env() })
     expect(rec.outcome).toMatchObject({ status: "succeeded", output: "The build is fixed; nothing is left." })
-    // The driver is told the task, where to work, and how to drive the harness by its own tools.
+    // The driver is told the task, and how to drive the harness by its own tools.
     const [system, prompt] = request(fake, 0)
     const title = kind === "codex" ? "Codex" : "Claude Code"
     expect(String(system!.content)).toContain(`You hand a task to ${title}`)
     expect(String(system!.content)).toContain(`${kind}_start`)
     expect(String(prompt!.content)).toContain(TASK)
-    expect(String(prompt!.content)).toContain(FOLDER)
     expect(JSON.parse(toolResult(fake, 1, "c1"))).toMatchObject({ [kind]: `${kind} 1`, status: "idle" })
     expect([r.sessions(), r.messages()]).toEqual([1, 1])
     const [listed] = r.h.office.instruments.list(r.chat.id)
@@ -199,13 +197,15 @@ test.each(["codex", "claude"] as const)(
     const r = await rig(kind)
     fake.script(calls(kind, "start", { message: TASK, wait: 120 }, "c1"), { content: "Done." })
     const rec = handlers(kind, r.instrument)
-    const job = makeJob(where(), SOP, { inputs: { task: TASK, harness: kind, folder: "." } }, rec)
+    const job = makeJob(where(), SOP, { inputs: { task: TASK, harness: kind } }, rec)
     await run(job, rec, { env: fake.env() })
     expect(rec.outcome?.status).toBe("succeeded")
     // The run stopped after the start's result was recorded, before the next model call's.
     const started = [...iterRunRecords(job.log, { payloads: true })].find(resultOf("c1"))!.seq
     const log = cutBefore(job.log, (entry) => entry.seq > started, tempDir())
     fake.script(calls(kind, "stop", { [kind]: `${kind} 1` }, "c2"), { content: "Fixed." })
+    // The office ends the dead worker's calls before it resumes the run, as when a run's worker dies.
+    r.instrument.cutCalls()
     const resumed = handlers(kind, r.instrument)
     await run(advanceJob(job, { log }), resumed, { env: fake.env() })
     expect(resumed.outcome).toMatchObject({ status: "succeeded", output: "Fixed." })
@@ -223,12 +223,14 @@ test.each(["codex", "claude"] as const)(
     const r = await rig(kind)
     fake.script(calls(kind, "start", { message: TASK, wait: 120 }, "c1"), { content: "Done." })
     const rec = handlers(kind, r.instrument)
-    const job = makeJob(where(), SOP, { inputs: { task: TASK, harness: kind, folder: "." } }, rec)
+    const job = makeJob(where(), SOP, { inputs: { task: TASK, harness: kind } }, rec)
     await run(job, rec, { env: fake.env() })
     expect([r.sessions(), r.messages()]).toEqual([1, 1])
     // A crash while the start waited: its model call is recorded, its result isn't.
     const log = cutBefore(job.log, resultOf("c1"), tempDir())
     fake.script(calls(kind, "history", { [kind]: `${kind} 1`, from: 0 }, "c2"), { content: "It was already fixed." })
+    // The office ends the dead worker's calls before it resumes the run, as when a run's worker dies.
+    r.instrument.cutCalls()
     const resumed = handlers(kind, r.instrument)
     await run(advanceJob(job, { log }), resumed, { env: fake.env() })
     expect(resumed.outcome).toMatchObject({ status: "succeeded", output: "It was already fixed." })
