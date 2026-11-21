@@ -10,6 +10,7 @@ import { type CompanyGit, PIN_GRACE_MS } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
 import { CompanySnapshots } from "../company/snapshot.ts"
 import type { CodexSessions } from "../features/codex/sessions.ts"
+import type { ClaudeSessions } from "../features/claude/sessions.ts"
 import type { Tools } from "../runtime/service/programs.ts"
 import { GitProfileStore } from "../company/profile.ts"
 import type { Cards } from "../features/questions/cards.ts"
@@ -102,6 +103,8 @@ export class Office {
   readonly instruments: Instruments
   /** The office's live Codex sessions; set by buildOffice. */
   codex: CodexSessions | undefined
+  /** The office's live Claude Code sessions, each an employee chat's instrument; set by buildOffice. */
+  claude: ClaudeSessions | undefined
   /** The office's one transcript of the run logs, set by `buildOffice`; the session actors' context takes it. */
   transcript: Transcript | undefined
   /** The office's one live relay, set by `buildOffice`; the session actors' context takes it. */

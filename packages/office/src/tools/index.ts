@@ -16,6 +16,7 @@ const GROUPS: Record<string, (ctx: ToolContext) => Record<string, OfficeTool>> =
   workspace: workspace.tools,
   terminal,
   codex,
+  claude,
   // The company group is its topics' tools; only work's are in it (draft's are in no group).
   company: work.tools,
   work_items: workItems.tools,
@@ -31,6 +32,12 @@ function terminal(ctx: ToolContext): Record<string, TerminalTool> {
  *  calls `codex_start` and so on), as its host bound it; none without one. */
 function codex(ctx: ToolContext): Record<string, OfficeTool> {
   return ctx.codex ? ctx.codex.tools() : {}
+}
+
+/** The `claude` group: the session's Claude Code instrument (`start`, `send`, `interrupt`, `stop`, `history`, which a
+ *  model calls `claude_start` and so on), as its host bound it; none without one. */
+function claude(ctx: ToolContext): Record<string, OfficeTool> {
+  return ctx.claude ? ctx.claude.tools() : {}
 }
 
 /**

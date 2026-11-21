@@ -30,4 +30,6 @@ export interface ToolContext {
   readonly terminal?: Pick<Terminal, "tools">
   /** What the `codex` group offers: the tools of the session's Codex instrument. */
   readonly codex?: { tools(): Record<string, OfficeTool> }
+  /** What the `claude` group offers: the tools of the session's Claude Code instrument. */
+  readonly claude?: { tools(): Record<string, OfficeTool> }
 }

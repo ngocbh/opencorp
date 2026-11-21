@@ -14,6 +14,7 @@ import { CompanyGit } from "../../company/git.ts"
 import { HeadWatcher } from "../../company/watch.ts"
 import { EXTENSIONS, type Extension, ExtensionError, loadExtensions } from "./extensions.ts"
 import { CodexSessions } from "../../features/codex/sessions.ts"
+import { ClaudeSessions } from "../../features/claude/sessions.ts"
 import { attach } from "../hq/core.ts"
 import { daemonArgs, daemonEnv, requireCompany, resolveHome, wantedHome } from "../../runtime/service/launch.ts"
 import { args, isDaemonLine, startTime } from "../../util/proc.ts"
@@ -381,6 +382,7 @@ export function buildOffice(
     office.onStop.push(() => office.live?.close())
     const hooks = new Hooks({ log: log("ERROR", "opencorp.chat.hooks") })
     office.codex = new CodexSessions(office, hooks, { log: log("WARNING", "opencorp.harness.session") })
+    office.claude = new ClaudeSessions(office, { log: log("WARNING", "opencorp.harness.claude") })
     const monitor = new Monitor(paths.company, store, office.secrets, undefined, {
       log: log("WARNING", "opencorp.perm.monitor"),
     })

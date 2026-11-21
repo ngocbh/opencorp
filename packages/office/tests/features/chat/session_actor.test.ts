@@ -266,8 +266,8 @@ const LOOKUP_CHAT = CHAT_FLOW
     "",
   ].join("\n"))
   .replace(
-    "tools: [toolbox, workspace, terminal, codex, company, ask_user]",
-    "tools: [toolbox, workspace, terminal, codex, company, ask_user, lookup]",
+    "tools: [toolbox, workspace, terminal, codex, claude, company, ask_user]",
+    "tools: [toolbox, workspace, terminal, codex, claude, company, ask_user, lookup]",
   )
 
 test("a message sent while a real reply's flow call runs steers the reply, on the events yian sends", async () => {
