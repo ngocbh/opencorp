@@ -721,9 +721,14 @@ test("a decision after its turn ended writes nothing", () => {
 
 // --- approvals, declined ------------------------------------------------------------------
 
+/** Why OpenCorp declines an approval. */
+const TEXT = "OpenCorp declines every approval: Codex runs under its employee's permission and asks nothing"
+
 test("every approval codex can ask is declined with a reply its schema takes, and never a grant", () => {
+  const legacy = (request: string, id: number) => ({ request, id, params: { conversationId: "thr_1", callId: "x" } })
   const steps = [commandApproval(1, "c1", "touch a"), fileChangeApproval(2, "f1"), permissionsApproval(3, "p1"),
-    networkApproval(7, "c2", "example.com"), mcpApproval(5, "docs", "search")]
+    networkApproval(7, "c2", "example.com"), mcpApproval(5, "docs", "search"), legacy("execCommandApproval", 8),
+    legacy("applyPatchApproval", 9)]
   const replies = steps.map((step) => {
     const reply = declined(step.request, fill(step.params, "turn_1", "/w", "thr_1"))
     if (reply === null || !("result" in reply)) throw new Error(`${step.request} isn't declined with a reply`)
@@ -731,12 +736,10 @@ test("every approval codex can ask is declined with a reply its schema takes, an
     return reply.result
   })
   expect(replies).toEqual([{ decision: "decline" }, { decision: "decline" }, { permissions: {}, scope: "turn" },
-    { decision: "decline" }, { action: "decline" }])
+    { decision: "decline" }, { action: "decline" }, ...[0, 1].map(() => ({ decision: { denied: { rejection: TEXT } } }))])
   // An MCP tool approval asked as a question has no decline to pick: it gets an error, which Codex takes as one.
   const asked = mcpApprovalQuestion(6, "u2", "docs", "search")
-  expect(declined(asked.request, fill(asked.params, "turn_1", "/w", "thr_1"))).toEqual({
-    error: "OpenCorp declines every approval: Codex runs under its employee's permission and asks nothing",
-  })
+  expect(declined(asked.request, fill(asked.params, "turn_1", "/w", "thr_1"))).toEqual({ error: TEXT })
 })
 
 test("questions and elicitations that aren't approvals are not declined", () => {

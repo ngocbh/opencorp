@@ -528,13 +528,15 @@ export const REFUSED: ReadonlySet<string> = new Set([
   "item/tool/call", "account/chatgptAuthTokens/refresh", "attestation/generate", "currentTime/read",
   "applyPatchApproval", "execCommandApproval",
 ])
-/** The pinned response schema each served request's reply must match. */
+/** The pinned response schema each served or declined request's reply must match. */
 export const REPLY_SCHEMAS: Readonly<Record<string, string>> = {
   "item/commandExecution/requestApproval": "CommandExecutionRequestApprovalResponse",
   "item/fileChange/requestApproval": "FileChangeRequestApprovalResponse",
   "item/permissions/requestApproval": "PermissionsRequestApprovalResponse",
   "item/tool/requestUserInput": "ToolRequestUserInputResponse",
   "mcpServer/elicitation/request": "McpServerElicitationRequestResponse",
+  execCommandApproval: "ExecCommandApprovalResponse",
+  applyPatchApproval: "ApplyPatchApprovalResponse",
 }
 /** The question id prefix Codex gives an MCP tool-call approval. */
 const MCP_APPROVAL_PREFIX = "mcp_tool_call_approval"
@@ -549,6 +551,10 @@ export function declined(method: string, params: Obj): { result: Record<string, 
     return { result: { decision: "decline" } }
   }
   if (method === "item/permissions/requestApproval") return { result: { permissions: {}, scope: "turn" } }
+  // The v1 forms Codex may still send.
+  if (method === "execCommandApproval" || method === "applyPatchApproval") {
+    return { result: { decision: { denied: { rejection: DECLINED_TEXT } } } }
+  }
   if (method === "mcpServer/elicitation/request" && truthy(params._meta?.codex_approval_kind)) {
     return { result: { action: "decline" } }
   }
