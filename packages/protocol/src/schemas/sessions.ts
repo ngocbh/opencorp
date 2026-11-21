@@ -30,7 +30,9 @@ export const Session = z.strictObject({
   status: z.enum([
     "starting", "idle", "busy", "waiting", "ending", "debriefing", "ended", "failed", "interrupted",
   ]),
-  kind: z.enum(["main", "side", "profile_manager"]),
+  /** `instrument`: a harness session an employee's chat drives as its instrument, a child session of that chat
+   *  (`instrument_of`): an employee's Codex thread. */
+  kind: z.enum(["main", "side", "profile_manager", "instrument"]),
   /**
    * While status is waiting: who must act (answer an open question, or raise the cost cap), in the order
    * those opened. Empty otherwise.
@@ -84,6 +86,11 @@ export const Session = z.strictObject({
    * earlier stretches. Null for a first stretch.
    */
   parent_session_id: Ulid.nullable().default(null),
+  /**
+   * The chat whose employee drives this session as an instrument: it is that chat's child session, and the
+   * instrument's id in the chat's list is this session's id. Null for every session a person opened.
+   */
+  instrument_of: Ulid.nullable().default(null),
   /** Finished replies: the next fresh run's `turns` input; `0` means no reply has finished yet. */
   turns: z.int().min(0).default(0),
   /** What the agent may do without its approver; new and older sessions are in auto. Only the approver (the

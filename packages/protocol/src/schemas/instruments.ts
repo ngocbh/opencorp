@@ -1,8 +1,10 @@
 import { z } from "zod"
 import { Handle, Timestamp, Ulid } from "./common"
 
-/** A tool an agent works that the owner can watch and step into: a shell, or (later) a Codex or Claude Code session. */
+/** A tool an agent works that the owner can watch and step into: a shell, or a Codex or Claude Code session. */
 export const Instrument = z.strictObject({
+  /** A shell's own id. A Codex or Claude Code instrument's is its own session's, a child session of `session_id`
+   *  (`Session.instrument_of`), which a client opens as a chat. */
   id: Ulid,
   session_id: Ulid,
   kind: z.enum(["terminal", "codex", "claude"]),

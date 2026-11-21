@@ -154,6 +154,17 @@ test("harness session fields exist", () => {
   expect(Object.keys(Schemas.QuestionPage.shape)).toContain("secret")
 })
 
+test("an instrument session is the child of the chat that drives it, and no other session is one", () => {
+  const base = {
+    id: "01JA1H0000000000000000000A", person: "minh", harness: "codex", office: "mac", cwd: "/w",
+    repo_commit: "c0ffee".repeat(7).slice(0, 40), status: "idle", created_at: "2026-11-20T00:00:00.000Z",
+    updated_at: "2026-11-20T00:00:00.000Z",
+  }
+  expect(Schemas.Session.parse({ ...base, kind: "main" }).instrument_of).toBeNull()
+  const child = Schemas.Session.parse({ ...base, kind: "instrument", instrument_of: "01JA1H0000000000000000000B" })
+  expect([child.kind, child.instrument_of]).toEqual(["instrument", "01JA1H0000000000000000000B"])
+})
+
 test("a person's harness policy lists extra folders, each read-only or writable, and none by default", () => {
   expect(Schemas.HarnessPolicy.parse({})).toEqual({ sandbox: "read-only", network: false, folders: [] })
   const folders: { path: string; access: "read" | "write" }[] = [
