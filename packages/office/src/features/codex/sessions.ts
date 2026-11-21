@@ -42,7 +42,11 @@ import {
 } from "../../tools/codex/codex.ts"
 import { nameOf } from "../../tools/codex/rpc.ts"
 import { type HarnessThread, employeePermission } from "./permission.ts"
-import { CodexSession, END_WAIT_MS, REPLY_WAIT_MS, STOP_WAIT_MS } from "./session.ts"
+import { CodexSession, END_WAIT_MS, type InstrumentOf, REPLY_WAIT_MS, STOP_WAIT_MS } from "./session.ts"
+import { instructions } from "./instrument.ts"
+import type { ThreadEvents } from "../../tools/codex/instrument.ts"
+import { markInterrupted } from "../../tools/codex/record.ts"
+import { authoredText } from "@ngocbh/yian"
 import {
   fenceIn,
   freshFolder,
@@ -186,6 +190,13 @@ export class CodexSessions implements SessionHarness {
     const old = this.store.getSession(sessionId)
     if (old === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
     if (old.harness !== "codex") throw new HarnessError(422, "not_continuable", "only a Codex session can be continued")
+    if (old.instrument_of !== null) {
+      throw new HarnessError(
+        422,
+        "not_continuable",
+        "this Codex session was an employee's instrument: only its employee starts another, from their chat",
+      )
+    }
     // Its first load failed.
     if (!old.harness_session_id)
       throw new HarnessError(
@@ -222,13 +233,80 @@ export class CodexSessions implements SessionHarness {
   }
 
   /** Loads `session`'s thread in a new app-server, as a job of the session's queue; a failure there fails the
-   *  session. Rejects only if the session can't be set up at all, before anything is live. */
-  async start(session: SessionRecord, { resume = false }: { resume?: boolean } = {}): Promise<void> {
+   *  session. Rejects only if the session can't be set up at all, before anything is live. `instrument` makes it an
+   *  employee's instrument. */
+  async start(
+    session: SessionRecord,
+    { resume = false, instrument = null }: { resume?: boolean; instrument?: InstrumentOf | null } = {},
+  ): Promise<void> {
     const author = await this.opener(session)
     if (this.#closed) return // the office is stopping: the session stays as it is, for restore
-    const live = new CodexSession(this, session, { author })
+    const live = new CodexSession(this, session, { author, instrument })
     this.#live.set(session.id, live)
     live.start({ resume })
+  }
+
+  /**
+   * Starts Codex session `id` as the instrument of `chat`, a live chat whose employee drives it: its child session
+   * (`kind: "instrument"`, `instrument_of`), with no work item of its own, in the chat's folder and at its commit, on
+   * a new thread under the employee's permission. Codex reads each message inside its author's `label`, and is told
+   * when the thread loads that `owner`'s word wins; `observer` hears its events and states.
+   *
+   * Refused (`HarnessError`) for a person who doesn't use the codex harness at the chat's commit, a folder the
+   * session-folder checks refuse, or an office that is stopping; a load that fails later fails the session, and the
+   * observer hears so.
+   */
+  async startInstrument(
+    chat: SessionRecord,
+    id: string,
+    { observer, label, owner }: { observer: ThreadEvents; label: (author: string | null) => string; owner: string | null },
+  ): Promise<SessionRecord> {
+    if (this.#closed) throw new HarnessError(503, "stopping", "the office is stopping")
+    const repo = loadRepo(await this.office.git.pin(chat.repo_commit))
+    const person = repo.people.get(chat.person)
+    if (person === undefined) throw new HarnessError(404, "not_found", missingPerson(repo, chat.person))
+    if (!person.harnesses.includes("codex")) {
+      throw new HarnessError(
+        422,
+        "unsupported_harness",
+        `@${chat.person} doesn't use the codex harness: the owner adds codex to their person's harnesses`,
+      )
+    }
+    const real = checkFolder(this.office, chat.cwd, this.log)
+    const t = now()
+    const session = this.store.createSession(
+      Session.parse({
+        id,
+        person: chat.person,
+        harness: "codex",
+        office: os.hostname(),
+        cwd: real,
+        repo_commit: chat.repo_commit,
+        status: "starting",
+        kind: "instrument",
+        work_item_id: null,
+        opened_by: chat.opened_by,
+        connection: chat.connection,
+        model: null,
+        model_note: null,
+        harness_session_id: null,
+        parent_session_id: null,
+        instrument_of: chat.id,
+        created_at: t,
+        updated_at: t,
+      }),
+    )
+    const instrument: InstrumentOf = {
+      observer,
+      wire: (text, author) => authoredText(label(author), text),
+      instructions: instructions(label, chat.person, owner),
+    }
+    try {
+      await this.start(session, { instrument })
+    } catch (error) {
+      await this.#failed(session.id, error, `can't start the Codex instrument ${session.id}`)
+    }
+    return this.store.getSession(session.id)!
   }
 
   /** A message: `turn`, `steer` (a turn was running), or `queued` (until the thread is loaded). */
@@ -373,6 +451,10 @@ export class CodexSessions implements SessionHarness {
 
   async #restore(session: SessionRecord): Promise<void> {
     const cards = this.store.listQuestions({ sessionId: session.id, status: "open" })
+    if (session.instrument_of !== null) {
+      await this.#endInstrument(session, cards)
+      return
+    }
     // Inside a turn (waiting on a turnless card can be either): Codex reports that turn interrupted. The stored id
     // alone counts too: a crash between writing it and writing busy leaves the row idle.
     const inTurn = session.status === "busy" || session.harness_turn_id !== null
@@ -405,8 +487,30 @@ export class CodexSessions implements SessionHarness {
     }
   }
 
+  /** Ends an instrument session an office restart found live: its chat's instrument went with the office, so nothing
+   *  drives it. Its cards go stale, and its record is marked interrupted. */
+  async #endInstrument(session: SessionRecord, cards: readonly QuestionRecord[]): Promise<void> {
+    for (const q of cards) {
+      try {
+        this.store.setQuestionStatus(q.id, "stale")
+      } catch (error) {
+        if (!(error instanceof InvalidTransition)) throw error
+      }
+    }
+    try {
+      markInterrupted(path.join(this.office.paths.sessionDir(session.instrument_of!), "codex", session.id))
+    } catch (error) {
+      this.log(`codex session ${session.id}: its record wasn't marked interrupted (${nameOf(error)})`)
+    }
+    const live = new CodexSession(this, session, { author: await this.opener(session) })
+    live.release()
+    if (this.#closed) return
+    live.translator.error("The office restarted, so this Codex session ended; its employee starts a new one.")
+    await this.finished(live, "ended")
+  }
+
   /** Drops `live` and ends its session: `ended` (or the first `endStatus`, such as `debriefing`) or `failed`.
-   *  `sessionEnded` fires once. */
+   *  `sessionEnded` fires once. An instrument's observer hears it ended or failed. */
   async finished(live: CodexSession, status: "ended" | "failed"): Promise<void> {
     if (this.#live.get(live.sessionId) === live) this.#live.delete(live.sessionId)
     const session = this.store.getSession(live.sessionId)!
@@ -419,6 +523,7 @@ export class CodexSessions implements SessionHarness {
     // An end wait that timed out mid turn leaves the turn id: an ended session runs no turn.
     const updated = this.store.updateSession(live.sessionId, { ...notWaiting(final), harness_turn_id: null })
     this.#dropTemp(live.sessionId)
+    live.tell(status)
     await this.hooks.notify("sessionEnded", updated)
   }
 
@@ -500,6 +605,13 @@ export class CodexSessions implements SessionHarness {
   event(live: CodexSession, e: HarnessEvent): void {
     const session_id = live.sessionId
     remember(live, e)
+    if (live.instrument !== null && (e.type === "message" || e.type === "part" || e.type === "delta")) {
+      try {
+        live.instrument.observer.event(e)
+      } catch (error) {
+        this.log(`codex session ${session_id}: its instrument didn't take an event (${nameOf(error)})`)
+      }
+    }
     if (e.type === "message") this.office.bus.publishLive({ type: "message.updated", session_id, data: e.message })
     else if (e.type === "part")
       this.office.bus.publishLive({ type: "part.updated", session_id, data: { message_id: e.messageId, part: e.part } })

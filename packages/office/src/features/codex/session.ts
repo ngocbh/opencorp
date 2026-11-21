@@ -6,6 +6,7 @@ import { type SessionRecord, type Store, newId } from "../../runtime/store/store
 import { UnsafeProfile, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
 import { type CodexProcess, CodexStartError } from "../../tools/codex/codex.ts"
 import { RpcClosed, RpcError, nameOf } from "../../tools/codex/rpc.ts"
+import type { ThreadEvents } from "../../tools/codex/instrument.ts"
 import { type Issued, NOT_AN_OPTION, NOT_A_NUMBER, TURNLESS, Translator, Unserved, Unshowable, declined } from "../../tools/codex/translate.ts"
 import type { CodexSessions } from "./sessions.ts"
 import { ProjectConfigLoads, checkLoaded, employeeLoad } from "./thread.ts"
@@ -90,6 +91,14 @@ type Waiter = {
 /** What `thread/start` and `thread/resume` answer, as far as a load reads it. */
 type Loaded = { thread: { id: string }; model?: string | null }
 
+/** What makes a session an employee's instrument: what hears its events and states, how each message reads to Codex
+ *  (its author's label around it), and what Codex is told of its speakers when the thread loads. */
+export interface InstrumentOf {
+  readonly observer: ThreadEvents
+  wire(text: string, author: string | null): string
+  readonly instructions: string
+}
+
 /** One Codex session's app-server, thread, transcript and turns.
  *
  *  Callers (`prompt`, `interrupt`, `end`, `reply`, `shutdown`) change its fields synchronously and await Codex outside
@@ -104,6 +113,8 @@ export class CodexSession {
   threadId: string | null
   /** Who a message with no named sender is from. */
   readonly author: string | null
+  /** Set for an employee's instrument: its observer, labels and instructions. */
+  readonly instrument: InstrumentOf | null
   /** The thread's token counts before this stretch. */
   readonly base: Usage
   /** The session's codex.log, where its app-servers' stderr goes. */
@@ -150,7 +161,11 @@ export class CodexSession {
    *  `mark` when that Esc also dropped queued messages, which get the interrupt marker if no turn starts to carry it. */
   #interruptWanted: { mark: boolean } | null = null
 
-  constructor(owner: CodexSessions, session: SessionRecord, { author }: { author: string | null }) {
+  constructor(
+    owner: CodexSessions,
+    session: SessionRecord,
+    { author, instrument = null }: { author: string | null; instrument?: InstrumentOf | null },
+  ) {
     this.owner = owner
     this.store = owner.store
     this.sessionId = session.id
@@ -159,6 +174,7 @@ export class CodexSession {
     this.#storedTurn = session.harness_turn_id
     this.#loaded = session.status !== "starting"
     this.author = author
+    this.instrument = instrument
     this.base = usageBase(this.store, session)
     this.log = path.join(owner.office.paths.runDir(session.id), "codex.log")
     this.translator = new Translator(session.id, session.cwd, (e) => owner.event(this, e), owner.log)
@@ -182,7 +198,10 @@ export class CodexSession {
       // Office stop, or a failed load not dropped yet.
       throw new HarnessError(409, "not_live", `session ${this.sessionId} has no live Codex app-server`)
     if (this.ending) throw new HarnessError(409, "ending", `session ${this.sessionId} is ending`)
-    this.translator.user(text, by || this.author)
+    const author = by || this.author
+    this.translator.user(text, author)
+    // An instrument's two speakers: Codex reads each message inside its author's label.
+    text = this.instrument === null ? text : this.instrument.wire(text, author)
     if (this.loading || this.process === null) {
       this.pending.push(text)
       // A restarted office, a dead app-server, or an unloaded thread.
@@ -436,7 +455,9 @@ export class CodexSession {
       const prepared = await this.owner.prepare(this)
       proc = await this.owner.launch(this, prepared)
       const id = `opencorp-${this.sessionId}`
-      const params = await employeeLoad(proc.rpc!, prepared.permission, id, prepared.install)
+      const loaded = await employeeLoad(proc.rpc!, prepared.permission, id, prepared.install)
+      const params =
+        this.instrument === null ? loaded : { ...loaded, developerInstructions: this.instrument.instructions }
       // The office never reads past turns, so a resume needn't send them.
       result = (await (resume
         ? proc.rpc!.request("thread/resume", { threadId: this.threadId, excludeTurns: true, ...params })
@@ -859,13 +880,20 @@ export class CodexSession {
     if (!this.#loaded || this.stopped || this.ending || this.closed) return
     const waiting = this.requests.size > 0
     const running = this.turnId !== null || this.pending.length > 0 || this.#startPending
-    writeState(
-      this.store,
-      this.sessionId,
-      runState({ waiting, running }),
-      waiting ? [this.author] : [],
-      { fromStarting: ["idle", "busy", "waiting"] },
-    )
+    const state = runState({ waiting, running })
+    writeState(this.store, this.sessionId, state, waiting ? [this.author] : [], {
+      fromStarting: ["idle", "busy", "waiting"],
+    })
+    this.tell(state)
+  }
+
+  /** Tells an instrument's observer the session's state; an observer that throws never reaches the session. */
+  tell(state: Parameters<ThreadEvents["state"]>[0]): void {
+    try {
+      this.instrument?.observer.state(state)
+    } catch (error) {
+      this.owner.log(`codex session ${this.sessionId}: its instrument didn't take its state (${nameOf(error)})`)
+    }
   }
 
   /** Every answer whose reply isn't being written yet gives up at once: office stop or the close skips its job. */

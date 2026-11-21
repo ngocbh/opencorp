@@ -40,6 +40,8 @@ import { defaultsOf, type RunSpec, mainSpec, managerSpec, sideSpec } from "./run
 import { type ActorContext, KEEP_MS, SessionActor, named, ownModel } from "./session_actor.ts"
 import { HarnessError, notAnAgent } from "../../runtime/sessions/state.ts"
 import { EmployeeTerminal } from "./terminal.ts"
+import { EmployeeCodex } from "./codex.ts"
+import { speakers } from "../codex/instrument.ts"
 import type { Transcript } from "./transcript.ts"
 
 /** How long, in milliseconds, the stop waits for worker requests, office tool bodies and actor jobs still running. */
@@ -357,7 +359,8 @@ export class ChatHarness implements SessionHarness {
    * under a sandbox over the session's folder, checked again (422 when it is gone or unsafe), with a private tmp dir
    * under the session's folder: a main chat's as the person's `harness_policy` says, a side chat's read-only and
    * offline whatever it says. A main chat's commands run in its terminal, the pipes shell in that same sandbox
-   * (`EmployeeTerminal`); a side chat has none. A side chat's runs see its question, if it has one. A profile manager
+   * (`EmployeeTerminal`), and an employee who uses the codex harness drives Codex sessions as its instrument
+   * (`EmployeeCodex`); a side chat has neither. A side chat's runs see its question, if it has one. A profile manager
    * has only its profile tools, over the person's profile, and no workspace.
    */
   async spec(session: SessionRecord): Promise<RunSpec> {
@@ -390,7 +393,18 @@ export class ChatHarness implements SessionHarness {
       store,
       mode: () => store.getSession(session.id)?.mode ?? session.mode,
     })
-    return mainSpec({ store, git, repo, session, workspace, terminal, monitor, carried })
+    const sessions = this.office.codex
+    const codex =
+      sessions !== undefined && repo.people.get(session.person)?.harnesses.includes("codex")
+        ? new EmployeeCodex({
+            chat: session,
+            sessions,
+            folder: this.office.paths.sessionDir(session.id),
+            instruments: this.office.instruments,
+            speakers: speakers(repo, session),
+          })
+        : undefined
+    return mainSpec({ store, git, repo, session, workspace, terminal, codex, monitor, carried })
   }
 
   /** The workspace tools of `session`'s folder, checked again (422 when it is gone or unsafe), under a sandbox

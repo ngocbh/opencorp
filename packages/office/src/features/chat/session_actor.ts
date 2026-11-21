@@ -2567,8 +2567,9 @@ export class SessionActor implements LiveCalls {
     this.#run = null
     const session = this.#ctx.store.getSession(this.sessionId)
     if (session !== undefined) void this.#ctx.hooks.notify("callEnded", session)
-    // Nobody is left to read what these calls return, finished or not.
+    // Nobody is left to read what these calls return, finished or not; Codex goes on with its turn.
     this.#interruptShells()
+    this.#spec?.codex?.interruptWaits()
     this.#answerCalls()
     if (this.#finished) {
       // Its hard stop spawns under the session's id, so a parked worker goes first.
@@ -3273,13 +3274,17 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** Closes the terminal: every command ends, its records end and its listings go. Never rejects. */
+  /** Closes the terminal and the Codex instrument: every command and Codex session ends, and their listings go. Never
+   *  rejects. */
   #closeShells(): Promise<void> {
-    const terminal = this.#spec?.terminal
-    if (terminal === undefined) return Promise.resolve()
-    return terminal.close().catch((error: unknown) => {
+    const { terminal, codex } = this.#spec ?? {}
+    const shells = terminal?.close().catch((error: unknown) => {
       this.#log(`session ${this.sessionId}: its terminal didn't close cleanly (${errorName(error)})`)
     })
+    const threads = codex?.close().catch((error: unknown) => {
+      this.#log(`session ${this.sessionId}: its Codex sessions didn't close cleanly (${errorName(error)})`)
+    })
+    return Promise.all([shells, threads]).then(() => {})
   }
 
   /** Where a new shell of the session's terminal runs, as its sandbox says: what the approvals decide a card again

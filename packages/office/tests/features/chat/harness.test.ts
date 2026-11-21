@@ -651,6 +651,13 @@ test("a main run offers toolbox workspace terminal codex and company in that ord
   ])
 })
 
+test("a main run of an employee who uses the codex harness offers the codex group's five tools", async () => {
+  const h = await makeHarness(await fakeLlm(), { codex: true })
+  const s = await stored(h)
+  const groups = (await h.harness.spec(s)).groups({ session: s, runId: "run-1" })
+  expect(Object.keys(groups.codex!)).toEqual(["start", "send", "interrupt", "stop", "history"])
+})
+
 test("the run spec keeps its tmp dir private under the session folder", async () => {
   const h = await makeHarness(await fakeLlm())
   const s = await stored(h)
