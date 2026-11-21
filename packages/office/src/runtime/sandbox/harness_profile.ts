@@ -46,7 +46,8 @@ export interface EmployeePermission {
   /** The harnesses' own config folders where they are set apart from the home (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`):
    *  denied by name, as the home's are, and never the session's folder. */
   harnessHomes?: readonly string[]
-  /** Folders other people's permissions list as writable: none of them goes on this one's PATH. */
+  /** Folders others may write (other people's writable listings, and live sessions' folders): none of them goes on
+   *  this one's PATH. */
   othersWritable?: readonly string[]
 }
 
@@ -61,6 +62,13 @@ const SYSTEM_PATH: readonly string[] = [
 ]
 /** Characters Codex (`*?[]`) or Claude Code's sandbox (also `{}`) read as a pattern in a path. */
 const PATTERN = /[*?[\]{}]/
+/** The harnesses' own config under the home, and whether each is a folder: Codex's `~/.codex`, and Claude Code's
+ *  `~/.claude` and `~/.claude.json`. */
+const HARNESS_CONFIG: readonly [string, boolean][] = [
+  [".codex", true],
+  [".claude", true],
+  [".claude.json", false],
+]
 
 /** A listed folder, resolved. */
 interface Listed {
@@ -84,13 +92,16 @@ interface Checked {
   /** The folders the harness's commands can write: the session's folder if writable, the temp folder, and each
    *  writable listed folder. */
   writableRoots: string[]
-  /** The workspace's paths both harnesses keep read-only (`keptPaths`). */
+  /** The project paths both harnesses keep read-only (`keptPaths`). */
   kept: Kept[]
+  /** The office's home and the harnesses' own config where a writable listing covers them, and each writable listed
+   *  folder inside one: read-only whatever is listed. */
+  held: Kept[]
   /** The harness PATH. */
   path: string
 }
 
-/** A workspace path kept read-only, and whether it is a folder (Claude Code's edit deny then covers what is in it). */
+/** A path kept read-only, and whether it is a folder (Claude Code's edit deny then covers what is in it). */
 interface Kept {
   path: string
   folder: boolean
@@ -119,12 +130,13 @@ export function codexThread(
     [installFolder(install, c.writableRoots)]: "read",
     [c.workspace]: c.writable ? "write" : "read",
   }
-  // Codex keeps a writable root's top-level .git and .codex read-only by itself, and .agents only when it exists;
-  // listing all of them holds a missing one too (so no `git init` starts a repository), and the rest (.claude,
-  // .mcp.json) Codex wouldn't hold at all.
-  for (const kept of c.kept) filesystem[kept.path] = "read"
   filesystem[c.tmpdir] = "write"
   for (const folder of c.folders) filesystem[folder.path] = folder.access
+  // After the listed folders, so no listing lifts them. Codex keeps a writable root's top-level .git and .codex
+  // read-only by itself, and .agents only when it exists; listing all of them holds a missing one too (so no
+  // `git init` starts a repository), and the rest (.claude, .mcp.json, a .git above the folder, the harnesses' own
+  // config) Codex wouldn't hold at all.
+  for (const kept of [...c.kept, ...c.held]) filesystem[kept.path] = "read"
   for (const denied of c.denied) filesystem[denied] = "deny"
   // Always: an exec-policy `allow` rule runs its command outside the sandbox unless the profile denies some read.
   filesystem[c.fence] = "deny"
@@ -184,7 +196,12 @@ export function claudeStart(p: EmployeePermission): {
         denyRead: [...(covered(c.home) ? [] : [c.home]), ...c.denied],
         allowRead: [c.workspace, c.tmpdir, ...c.folders.map((folder) => folder.path)],
         allowWrite: [...(c.writable ? [c.workspace] : []), c.tmpdir, ...writable],
-        denyWrite: [...(c.writable ? [] : [c.workspace]), ...readOnly, ...c.kept.flatMap(denyWrites)],
+        denyWrite: [
+          ...(c.writable ? [] : [c.workspace]),
+          ...readOnly,
+          ...c.kept.flatMap(denyWrites),
+          ...c.held.map((held) => held.path),
+        ],
       },
       network: { allowedDomains: [], strictAllowlist: true },
     },
@@ -193,7 +210,7 @@ export function claudeStart(p: EmployeePermission): {
       deny: [
         ...(c.writable ? [] : ["Edit", "Write", "NotebookEdit"]),
         ...readOnly.flatMap((folder) => rules("Edit", folder, true)),
-        ...c.kept.flatMap((kept) => rules("Edit", kept.path, kept.folder)),
+        ...[...c.kept, ...c.held].flatMap((kept) => rules("Edit", kept.path, kept.folder)),
         ...mirrored.flatMap((denied) => rules("Read", denied, true)),
         // Both reach the web from Claude Code itself, outside its sandbox.
         "WebFetch",
@@ -233,11 +250,12 @@ export function harnessPath(p: EmployeePermission): string {
   return checked(p).path
 }
 
-/** Throws `UnsafeWorkspace` (the session's folder) or `UnsafeProfile` (the temp folder or the fence; or a listed
- *  folder whose path walks through a folder the harness can write, which a link could repoint) before anything is
- *  built. Also `UnsafeProfile` for a path that isn't absolute or holds a pattern character, a listed folder that is
- *  the session's folder or listed twice, a folder the harness can write inside a read-only one (Claude Code's write
- *  deny would win there), or a PATH with nothing left on it. */
+/** Throws `UnsafeWorkspace` (the session's folder, or one reached through a link in a folder the harness can write)
+ *  or `UnsafeProfile` (the temp folder or the fence; or a listed folder whose path walks through a folder the harness
+ *  can write, which a link could repoint) before anything is built. Also `UnsafeProfile` for a path that isn't
+ *  absolute or holds a null byte or a pattern character, a listed folder that is the session's folder or listed
+ *  twice, a folder the harness can write inside a read-only one (Claude Code's write deny would win there), or a PATH
+ *  with nothing left on it. */
 export function checkPermission(p: EmployeePermission): void {
   checked(p)
 }
@@ -258,6 +276,9 @@ function checked(p: EmployeePermission): Checked {
     ...(p.othersWritable ?? []).map((dir): [string, string] => ["other person's writable folder", dir]),
   ]
   for (const [what, given] of named) {
+    if (given.includes("\0")) {
+      throw new UnsafeProfile(`the harness's ${what} ${JSON.stringify(given)} holds a null byte`)
+    }
     if (!path.isAbsolute(given)) {
       throw new UnsafeProfile(`the harness's ${what} ${JSON.stringify(given)} isn't absolute`)
     }
@@ -273,6 +294,7 @@ function checked(p: EmployeePermission): Checked {
   const fence = fenceFile(p.fence, officeHome)
   const folders = listedFolders(p, workspace, tmpdir)
   const writable = [...(p.writable ? [workspace] : []), tmpdir, ...writableOf(folders)]
+  checkReached(p.workspace, [tmpdir, ...writableOf(folders)])
   const readOnly = [...(p.writable ? [] : [workspace]), ...readOnlyOf(folders)]
   for (const root of readOnly) {
     if (within(tmpdir, root)) {
@@ -287,7 +309,13 @@ function checked(p: EmployeePermission): Checked {
   const sensitive = SENSITIVE_HOME_PATHS.map((rel) => realPath(path.join(home, rel)))
   const byName = [...new Set([officeHome, ...sensitive, ...harnessHomes])]
   const denied = byName.filter((d) => !folders.some((f) => within(d, f.path)))
-  for (const resolved of [workspace, tmpdir, fence, home, ...folders.map((f) => f.path), ...denied]) {
+  const held = heldPaths(folders, writable, [
+    { path: officeHome, folder: true },
+    ...HARNESS_CONFIG.map(([rel, folder]) => ({ path: realPath(path.join(home, rel)), folder })),
+    ...harnessHomes.map((dir) => ({ path: dir, folder: true })),
+  ])
+  const all = [workspace, tmpdir, fence, home, ...folders.map((f) => f.path), ...denied, ...held.map((h) => h.path)]
+  for (const resolved of all) {
     if (PATTERN.test(resolved)) throw new UnsafeProfile(`the harness would read ${resolved} as a pattern`)
   }
   return {
@@ -301,7 +329,8 @@ function checked(p: EmployeePermission): Checked {
     home,
     denied,
     writableRoots: writable,
-    kept: keptPaths(workspace),
+    kept: keptPaths(workspace, gitRoot, writable),
+    held,
     path: pathOf(folders, [...writable, ...(p.othersWritable ?? []).map((dir) => realPath(dir))]),
   }
 }
@@ -375,19 +404,63 @@ function listedFolders(p: EmployeePermission, workspace: string, tmpdir: string)
   return walks.map((walk) => ({ path: walk.path, access: walk.access }))
 }
 
-/** The workspace's paths both harnesses keep read-only: `.git` whole (a folder, a worktree's `.git` file, or missing,
- *  which both harnesses' sandboxes hold too, so no `git init` starts a repository whose config git later runs as the
- *  owner), then the project config folders and files. Only its parts would leave `mv .git` open, and Codex can't
- *  mount a missing part inside a read-only `.git`. A link is left out, unprotected: both harnesses' Linux sandboxes
- *  bind a read-only path onto itself, which follows a link and would mount its target. */
-function keptPaths(workspace: string): Kept[] {
-  const git = path.join(workspace, ".git")
-  const kept: Kept[] = [
-    { path: git, folder: !fs.lstatSync(git, { throwIfNoEntry: false })?.isFile() },
-    ...PROJECT_CONFIG_FOLDERS.map((name) => ({ path: path.join(workspace, name), folder: true })),
-    ...PROJECT_CONFIG_FILES.map((name) => ({ path: path.join(workspace, name), folder: false })),
-  ]
+/** The project paths both harnesses keep read-only, whatever listed folder covers them, in the session's folder and
+ *  at its git root, and `.git` alone in each other folder above the session's folder that `writable` (the folders the
+ *  harness can write) holds: git finds a repository in any folder above, and runs its config as the owner. Above the
+ *  writable folders nothing is kept, since the harness can't write there and a `read` entry would open it.
+ *
+ *  `.git` is kept whole (a folder, a worktree's `.git` file, or missing, which both harnesses' sandboxes hold too, so
+ *  no `git init` starts a repository), then the project config folders and files. Only its parts would leave
+ *  `mv .git` open, and Codex can't mount a missing part inside a read-only `.git`. A link is left out, unprotected:
+ *  both harnesses' Linux sandboxes bind a read-only path onto itself, which follows a link and would mount its
+ *  target. */
+function keptPaths(workspace: string, gitRoot: string | null, writable: readonly string[]): Kept[] {
+  const others = writable.filter((root) => root !== workspace)
+  const dirs: [dir: string, whole: boolean][] = [[workspace, true]]
+  // Folders above one outside every writable folder are outside them too.
+  for (let dir = path.dirname(workspace); others.some((root) => within(dir, root)); dir = path.dirname(dir)) {
+    dirs.push([dir, dir === gitRoot])
+    if (dir === "/") break
+  }
+  const kept = dirs.flatMap(([dir, whole]): Kept[] => {
+    const git = path.join(dir, ".git")
+    return [
+      { path: git, folder: !fs.lstatSync(git, { throwIfNoEntry: false })?.isFile() },
+      ...(whole ? PROJECT_CONFIG_FOLDERS.map((name) => ({ path: path.join(dir, name), folder: true })) : []),
+      ...(whole ? PROJECT_CONFIG_FILES.map((name) => ({ path: path.join(dir, name), folder: false })) : []),
+    ]
+  })
   return kept.filter((k) => !fs.lstatSync(k.path, { throwIfNoEntry: false })?.isSymbolicLink())
+}
+
+/** What of `config` (the office's home and the harnesses' own config, resolved) is held read-only whatever is listed:
+ *  each one a folder in `writable` holds, and each writable listed folder inside one. A command that wrote Codex's
+ *  `config.toml` would widen the next thread's own profile, which is deep-merged with it; one that wrote the office's
+ *  files, its grants. One no writable folder covers stays as it is, denied by name or read-only, so no `read` entry
+ *  opens it. While a command runs, Claude Code's Linux sandbox holds a missing one with an empty file on the host. */
+function heldPaths(folders: readonly Listed[], writable: readonly string[], config: readonly Kept[]): Kept[] {
+  const covered = config.filter((c) => writable.some((root) => within(c.path, root)))
+  const inside = writableOf(folders)
+    .filter((w) => config.some((c) => c.path !== w && within(w, c.path)))
+    .map((w) => ({ path: w, folder: true }))
+  const held = new Map([...covered, ...inside].map((k) => [k.path, k]))
+  return [...held.values()]
+}
+
+/** Throws `UnsafeWorkspace` if the walk to `workspace` passes a link inside one of `writable` (the temp folder and the
+ *  writable listed folders): the harness could repoint it before the next start. The session's folder may lie in a
+ *  writable listed folder; only a link on the way is refused, as for a listed folder. */
+function checkReached(workspace: string, writable: readonly string[]): void {
+  const walked: string[] = []
+  realPath(workspace, walked)
+  for (const step of walked) {
+    const root = writable.find((r) => step !== r && within(step, r))
+    if (root === undefined || !fs.lstatSync(step, { throwIfNoEntry: false })?.isSymbolicLink()) continue
+    throw new UnsafeWorkspace(
+      `workspace ${workspace} is reached through ${step}, a link in ${root}, which the harness can write`,
+      "it is reached through a link the employee can change",
+    )
+  }
 }
 
 /** `install` resolved, if the employee can't write it: neither it nor a folder its path walks through lies in a folder

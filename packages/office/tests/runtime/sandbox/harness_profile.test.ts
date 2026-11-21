@@ -663,6 +663,7 @@ test("a listed folder whose path walks through the writable session folder or an
     ],
     ["relative", { folders: [{ path: "envs", access: "read" }] }, /isn't absolute/],
     ["a pattern", { folders: [{ path: path.join(root, "env*"), access: "read" }] }, /as a pattern/],
+    ["a null byte", { folders: [{ path: path.join(root, "env\0s"), access: "read" }] }, /holds a null byte/],
   ]
   for (const [what, fields, reason] of refused) {
     expect(() => checkPermission(permission(fields)), what).toThrow(UnsafeProfile)
@@ -679,6 +680,131 @@ test("a listed folder whose path walks through the writable session folder or an
     ],
   })
   expect(() => checkPermission(both)).not.toThrow()
+})
+
+/** The paths at `dir` both harnesses keep read-only, as Codex's `read` entries; only `.git` when `gitOnly`. */
+function keptAt(dir: string, gitOnly = false): Record<string, string> {
+  return gitOnly ? { [path.join(dir, ".git")]: "read" } : codexKept(dir)
+}
+
+test("a session folder in a writable listed folder keeps .git read-only in each folder above it there, and the project config at its git root", () => {
+  const { root, permission, folder, filesystem } = layout()
+  const shared = folder("shared")
+  // A session in a subfolder of a repo rooted in the listed folder: git finds a repository in any folder above the
+  // session's, and runs its config as the owner.
+  const repo = path.join(shared, "repo")
+  const proj = path.join(repo, "sub/proj")
+  fs.mkdirSync(path.join(repo, ".git"), { recursive: true })
+  fs.writeFileSync(path.join(repo, ".git/config"), "[core]\n")
+  fs.mkdirSync(proj, { recursive: true })
+  const listed = [{ path: shared, access: "write" as const }]
+  const p = permission({ workspace: proj, gitRoot: repo, folders: listed })
+  const kept = {
+    ...keptAt(proj),
+    ...keptAt(path.join(repo, "sub"), true),
+    ...keptAt(repo),
+    ...keptAt(shared, true),
+  }
+  const entries = filesystem(p)
+  expect(entries).toEqual(expect.objectContaining({ [proj]: "write", [shared]: "write", ...kept }))
+  // Nothing above the listed folder: the harness can't write there.
+  const gitsOf = (e: Record<string, string>) => Object.keys(e).filter((p) => p.endsWith("/.git")).sort()
+  expect(gitsOf(entries)).toEqual(gitsOf(kept))
+  const { settings } = claudeStart(p)
+  const sandbox = settings.sandbox as { filesystem: Record<string, string[]> }
+  expect(sandbox.filesystem.allowWrite).toEqual(expect.arrayContaining([proj, shared]))
+  // A .git folder's config first, so the sandbox holds a missing one as a folder.
+  const gits = [proj, path.join(repo, "sub"), repo, shared].flatMap((dir) => [
+    path.join(dir, ".git/config"),
+    path.join(dir, ".git"),
+  ])
+  expect(sandbox.filesystem.denyWrite).toEqual(expect.arrayContaining([...gits, ...Object.keys(keptAt(repo))]))
+  const deny = (settings.permissions as { deny: string[] }).deny
+  expect(deny).toEqual(
+    expect.arrayContaining([...rules("Edit", path.join(shared, ".git")), ...rules("Edit", path.join(repo, ".claude"))]),
+  )
+  // The reviewer's case: a session with no repository of its own, straight in the listed folder.
+  const bare = path.join(shared, "bare")
+  fs.mkdirSync(bare)
+  const alone = filesystem(permission({ workspace: bare, gitRoot: null, folders: listed }))
+  expect(alone).toEqual(expect.objectContaining({ ...keptAt(bare), ...keptAt(shared, true) }))
+  // A read-only session folder there is read-only, its folders above kept as well.
+  const readOnly = filesystem(permission({ workspace: bare, gitRoot: null, writable: false, folders: listed }))
+  expect(readOnly).toEqual(expect.objectContaining({ [bare]: "read", [shared]: "write", ...keptAt(shared, true) }))
+  // A git root no writable folder holds gets no entries: the harness can't write it, and they would open it to reads.
+  const outside = path.join(root, "outside")
+  const inner = path.join(outside, "inner")
+  fs.mkdirSync(path.join(outside, ".git"), { recursive: true })
+  fs.mkdirSync(inner)
+  expect(filesystem(permission({ workspace: inner, gitRoot: outside }))[path.join(outside, ".git")]).toBeUndefined()
+})
+
+test("a session folder reached through a link in a writable listed folder is refused", () => {
+  const { root, permission, folder } = layout()
+  const shared = folder("shared")
+  const elsewhere = folder("elsewhere")
+  fs.symlinkSync(elsewhere, path.join(shared, "proj"))
+  const through = { workspace: path.join(shared, "proj"), gitRoot: null }
+  const refused = permission({ ...through, folders: [{ path: shared, access: "write" }] })
+  expect(() => checkPermission(refused)).toThrow(UnsafeWorkspace)
+  expect(() => checkPermission(refused)).toThrow(/reached through .* which the harness can write/)
+  // A link the harness can't change is followed.
+  const readOnly = permission({ ...through, writable: false, folders: [{ path: shared, access: "read" }] })
+  expect(() => checkPermission(readOnly)).not.toThrow()
+  fs.symlinkSync(shared, path.join(root, "alias"))
+  fs.mkdirSync(path.join(shared, "real"))
+  const aliased = { workspace: path.join(root, "alias/real"), gitRoot: null }
+  expect(() => checkPermission(permission({ ...aliased, folders: [{ path: shared, access: "write" }] }))).not.toThrow()
+})
+
+test("the harnesses' own config and the office's home stay read-only where a writable listing covers them, and stay closed where none does", () => {
+  const { home, officeHome, fence, permission, folder, filesystem } = layout()
+  fs.writeFileSync(path.join(home, ".claude.json"), "{}")
+  const held: [string, boolean][] = [
+    [officeHome, true],
+    [path.join(home, ".codex"), true],
+    [path.join(home, ".claude"), true],
+    [path.join(home, ".claude.json"), false],
+  ]
+  const wide = permission({ folders: [{ path: home, access: "write" }] })
+  const entries = filesystem(wide)
+  expect(entries[home]).toBe("write")
+  for (const [p] of held) expect(entries[p], p).toBe("read")
+  expect(entries[fence]).toBe("deny")
+  const { settings } = claudeStart(wide)
+  const sandbox = settings.sandbox as { filesystem: Record<string, string[]> }
+  expect(sandbox.filesystem.allowWrite).toContain(home)
+  expect(sandbox.filesystem.denyWrite).toEqual(expect.arrayContaining(held.map(([p]) => p)))
+  expect((settings.permissions as { deny: string[] }).deny).toEqual(
+    expect.arrayContaining(held.flatMap(([p, isFolder]) => rules("Edit", p, isFolder))),
+  )
+  // CODEX_HOME set apart, in a writable listed folder, and a writable folder listed inside a harness's config.
+  const apart = folder("apart")
+  const codexHome = path.join(apart, "codex")
+  const inside = path.join(home, ".codex/rules")
+  fs.mkdirSync(codexHome)
+  fs.mkdirSync(inside)
+  const both = permission({
+    harnessHomes: [codexHome],
+    folders: [
+      { path: apart, access: "write" },
+      { path: inside, access: "write" },
+    ],
+  })
+  const bothEntries = filesystem(both)
+  expect([bothEntries[apart], bothEntries[codexHome], bothEntries[inside]]).toEqual(["write", "read", "read"])
+  // Not covered, ~/.codex stays denied.
+  expect(bothEntries[path.join(home, ".codex")]).toBe("deny")
+  const bothSandbox = claudeStart(both).settings.sandbox as { filesystem: Record<string, string[]> }
+  const denyWrite = bothSandbox.filesystem.denyWrite
+  expect(denyWrite).toEqual(expect.arrayContaining([codexHome, inside]))
+  // With nothing covering them they stay denied, never opened by a read entry.
+  const plain = filesystem(permission())
+  expect(plain[path.join(home, ".claude.json")]).toBeUndefined()
+  expect([plain[officeHome], plain[path.join(home, ".codex")]]).toEqual(["deny", "deny"])
+  // A read-only listing covering them is read-only already.
+  const read = filesystem(permission({ folders: [{ path: home, access: "read" }] }))
+  expect(read[path.join(home, ".claude.json")]).toBeUndefined()
 })
 
 /** The `codex` a test runs, named by `OPENCORP_TEST_CODEX`. Unset, the real-Codex tests skip, so no run finds the
@@ -826,3 +952,52 @@ test.skipIf(NO_CODEX)("in a folder with no .git, Codex's sandbox can't start a r
   expect(fs.existsSync(path.join(ws, ".git/config"))).toBe(false)
   expect(fs.existsSync(path.join(ws, ".git/HEAD"))).toBe(false)
 })
+
+test.skipIf(NO_CODEX)(
+  "in a session inside a writable listed folder, Codex's sandbox can't start a repository above it, or change the harness's config or the office's home a writable listing covers",
+  () => {
+    const { root, home, officeHome, permission } = layout()
+    const shared = path.join(root, "shared")
+    // Codex itself keeps a writable folder's top-level .git read-only; the one between isn't.
+    const proj = path.join(shared, "a/proj")
+    const codexHome = path.join(shared, "codex")
+    fs.mkdirSync(proj, { recursive: true })
+    fs.mkdirSync(codexHome)
+    const ownerConfig = '# the owner\'s config\nmodel_reasoning_effort = "low"\n'
+    fs.writeFileSync(path.join(codexHome, "config.toml"), ownerConfig)
+    fs.writeFileSync(path.join(home, ".claude.json"), "{}")
+    const p = permission({
+      workspace: proj,
+      gitRoot: null,
+      harnessHomes: [codexHome],
+      folders: [
+        { path: shared, access: "write" },
+        { path: home, access: "write" },
+      ],
+    })
+    const script = [
+      "for d in .. ../..; do git init -q $d; mkdir -p $d/.git",
+      "  printf '[core]\\n\\tfsmonitor = planted\\n' > $d/.git/config; done",
+      `echo planted >> ${codexHome}/config.toml`,
+      `mkdir -p ${codexHome}/rules && echo planted > ${codexHome}/rules/x.rules`,
+      `echo planted > ${home}/.codex/config.toml; echo planted > ${home}/.claude.json; echo planted > ${officeHome}/x`,
+      `echo ok > ../ok.txt; echo ok > ${home}/ok.txt`,
+      "echo done",
+    ].join("\n")
+    const result = codexSandbox(p, codexHome, script)
+    const output = result.stdout + result.stderr
+    expect(result.stdout, output).toContain("done")
+    for (const dir of [path.join(shared, "a"), shared]) {
+      expect(fs.existsSync(path.join(dir, ".git/config")), output).toBe(false)
+      expect(fs.existsSync(path.join(dir, ".git/HEAD")), output).toBe(false)
+    }
+    expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).toBe(ownerConfig)
+    expect(fs.existsSync(path.join(codexHome, "rules/x.rules"))).toBe(false)
+    expect(fs.existsSync(path.join(home, ".codex/config.toml"))).toBe(false)
+    expect(fs.readFileSync(path.join(home, ".claude.json"), "utf8")).toBe("{}")
+    expect(fs.existsSync(path.join(officeHome, "x"))).toBe(false)
+    // The listings hold everywhere else.
+    expect(fs.readFileSync(path.join(shared, "a/ok.txt"), "utf8")).toBe("ok\n")
+    expect(fs.readFileSync(path.join(home, "ok.txt"), "utf8")).toBe("ok\n")
+  },
+)

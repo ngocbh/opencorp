@@ -310,3 +310,65 @@ test("esc on a session on another harness that is not live is 409 and a missing 
   const missing = await rejection(h.sessions.interrupt(ULID))
   expect([missing.status, missing.code]).toEqual([404, "not_found"])
 })
+
+test("a session's employee permission comes from their person at the session's pinned commit, ~/ in the owner's home", async () => {
+  const folders = [
+    { path: "~/tools", access: "read" },
+    { path: "~/gone", access: "write" },
+  ]
+  const policy = { sandbox: "workspace-write", network: true, folders }
+  const h = makeCodex({
+    files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"], harness_policy: policy }) },
+  })
+  const home = fs.realpathSync(tempDir())
+  fs.mkdirSync(path.join(home, "tools"))
+  h.office.guards.home = home
+  const cwd = fs.realpathSync(h.workspace)
+  const row = h.store.createSession(
+    session({ person: "minh", harness: "codex", cwd, repo_commit: await h.office.git.head(), status: "ended" }),
+  )
+  const thread = { gitRoot: null, tmpdir: "/tmp/opencorp-t/thread", fence: "/tmp/opencorp-t/fence" }
+  expect(await h.sessions.permission(row.id, thread)).toEqual({
+    workspace: cwd,
+    ...thread,
+    writable: true,
+    network: true,
+    folders: [{ path: path.join(home, "tools"), access: "read" }],
+    home,
+    officeHome: h.office.paths.home,
+    office: h.office.guards,
+    // At head, minh's own writable listing too: a session of theirs started there may write it.
+    othersWritable: [path.join(home, "gone")],
+  })
+  expect(h.lines).toContain(`@minh's listed folder "~/gone" isn't there, so their harness mounts nothing for it`)
+})
+
+test("a session's employee permission keeps what others may write since, and live sessions' folders, off its PATH", async () => {
+  const tools = { harness_policy: { folders: [{ path: "~/tools", access: "read" }] } }
+  const h = makeCodex({
+    files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"], ...tools }) },
+  })
+  const home = fs.realpathSync(tempDir())
+  fs.mkdirSync(path.join(home, "tools/bin"), { recursive: true })
+  for (const dir of [home, path.join(home, "tools"), path.join(home, "tools/bin")]) fs.chmodSync(dir, 0o755)
+  h.office.guards.home = home
+  const cwd = fs.realpathSync(h.workspace)
+  const pinned = await h.office.git.head()
+  const row = h.store.createSession(
+    session({ person: "minh", harness: "codex", cwd, repo_commit: pinned, status: "ended" }),
+  )
+  // Since the session's commit, ann may write ~/tools; and another session is live in a folder of its own.
+  const writes = { harness_policy: { folders: [{ path: "~/tools", access: "write" }] } }
+  const ann = person("minh", { handle: "ann", name: "Ann", ...writes })
+  fs.mkdirSync(path.join(h.office.paths.company, "people/ann"), { recursive: true })
+  fs.writeFileSync(path.join(h.office.paths.company, "people/ann/person.yaml"), JSON.stringify(ann))
+  await h.office.git.commit(["people/ann/person.yaml"], "ann")
+  const live = fs.realpathSync(tempDir())
+  const ended = fs.realpathSync(tempDir())
+  h.store.createSession(session({ person: "ngocbh", harness: "composer", cwd: live, status: "idle" }))
+  h.store.createSession(session({ person: "ngocbh", harness: "composer", cwd: ended, status: "ended" }))
+  const thread = { gitRoot: null, tmpdir: "/tmp/opencorp-t/t", fence: "/tmp/opencorp-t/f" }
+  const p = await h.sessions.permission(row.id, thread)
+  expect(p.folders).toEqual([{ path: path.join(home, "tools"), access: "read" }])
+  expect(p.othersWritable).toEqual([path.join(home, "tools"), live])
+})

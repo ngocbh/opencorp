@@ -154,6 +154,19 @@ test("harness session fields exist", () => {
   expect(Object.keys(Schemas.QuestionPage.shape)).toContain("secret")
 })
 
+test("a person's harness policy lists extra folders, each read-only or writable, and none by default", () => {
+  expect(Schemas.HarnessPolicy.parse({})).toEqual({ sandbox: "read-only", network: false, folders: [] })
+  const folders: { path: string; access: "read" | "write" }[] = [
+    { path: "~/.cargo", access: "read" },
+    { path: "/data/shared", access: "write" },
+  ]
+  expect(Schemas.HarnessPolicy.parse({ folders }).folders).toEqual(folders)
+  // The office's lint checks the path, so a person whose path is wrong still loads.
+  expect(Schemas.HarnessPolicy.parse({ folders: [{ path: "envs/ml", access: "write" }] }).folders).toHaveLength(1)
+  for (const folder of [{ path: "/x" }, { path: "/x", access: "exec" }, { path: "/x", access: "read", mode: 1 }])
+    expect(Schemas.HarnessPolicy.safeParse({ folders: [folder] }).success).toBe(false)
+})
+
 test("a session has a mode, auto by default, and a mode request takes only auto, default, ask or dontAsk", () => {
   expect(Schemas.Session.shape.mode.parse(undefined)).toBe("auto")
   for (const mode of ["auto", "default", "ask", "dontAsk"])
