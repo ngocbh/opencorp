@@ -14,8 +14,10 @@ import { type ChildProcess, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
+import { type EmployeePermission, claudeStart } from "../../runtime/sandbox/harness_profile.ts"
 import { which } from "../../util/env.ts"
 import { killGroup } from "../../util/proc.ts"
+import { claudeInstructions, writeInstructions } from "./instructions.ts"
 import { type Msg, StreamJson, isObj, nameOf } from "./stream.ts"
 
 /** The oldest Claude Code the office runs. 2.1.323 stops a start whose sandbox settings don't validate, rather than
@@ -146,6 +148,27 @@ export function claudeArgs(
   ]
 }
 
+/** What a session under employee permission `p` runs: `claude`, with `claudeArgs` of `claudeStart(p)` and, when
+ *  there are any, the owner's and the project's instructions (`claudeInstructions`, from `configDir`, Claude Code's
+ *  config folder), written to `opencorp.instructions.md` in the session's own temp folder (fresh, private and the
+ *  user's, as `claudeStart` checked it; the file 0600) for `--append-system-prompt-file`; and its environment. The
+ *  file goes when the temp folder does, and the process removes it once Claude Code exits (`instructions`). Throws
+ *  as `claudeStart` does. */
+export function claudeSession(
+  p: EmployeePermission,
+  {
+    claude,
+    configDir,
+    ...rest
+  }: { claude: string; configDir: string; sessionId?: string; resume?: string; model?: string },
+): { command: string[]; env: Record<string, string>; instructions: string | null } {
+  const start = claudeStart(p)
+  const text = claudeInstructions({ configDir, workspace: p.workspace, gitRoot: p.gitRoot })
+  const instructions = text === null ? null : writeInstructions(start.env.TMPDIR!, "opencorp", text)
+  const args = claudeArgs(start, { ...rest, ...(instructions === null ? {} : { instructions }) })
+  return { command: [claude, ...args], env: start.env, instructions }
+}
+
 /** Whether `initialize`'s `account` (Claude Code's `AccountInfo`) has a sign-in: a token from a login, or an API
  *  key. Signed out, Claude Code reports `tokenSource: "none"` and no key source. */
 export function signedIn(account: unknown): boolean {
@@ -192,6 +215,8 @@ export type ClaudeProcessOptions = {
    *  id); the cleanup it returns runs once its exit is seen, or 5 s passed. A `track` that throws has the group
    *  killed, and `start` rejects with its error. */
   track?: (pid: number) => () => void
+  /** The instructions file its start wrote (`claudeSession`), removed once it exits, or when it never starts. */
+  instructions?: string | null
 }
 
 /** One Claude Code in its own process group, recorded for the start-up reaper through `track`.
@@ -251,6 +276,7 @@ export class ClaudeProcess {
       this.#logStart = fs.fstatSync(fd).size
       proc = spawn(command[0]!, command.slice(1), { cwd, env: this.env, detached: true, stdio: ["pipe", "pipe", fd] })
     } catch (error) {
+      this.#forget()
       throw this.#cantStart(error)
     } finally {
       if (fd !== undefined) fs.closeSync(fd)
@@ -258,7 +284,10 @@ export class ClaudeProcess {
     // Attached in the spawn's tick: a failed spawn reports itself only through this event.
     const failed = new Promise<unknown>((resolve) => proc.once("error", resolve))
     const pid = proc.pid
-    if (pid === undefined) throw this.#cantStart(await failed)
+    if (pid === undefined) {
+      this.#forget()
+      throw this.#cantStart(await failed)
+    }
     this.proc = proc
     this.#exited = new Promise((resolve) => proc.once("exit", () => resolve()))
     try {
@@ -426,6 +455,7 @@ export class ClaudeProcess {
     }
     this.#signal()
     if (!(await this.#waitExit(EXIT_WAIT_MS))) this.#log(`claude: Claude Code ${pid} outlived SIGKILL`)
+    this.#forget()
     if (untrack === null) return
     try {
       untrack()
@@ -445,9 +475,21 @@ export class ClaudeProcess {
     }
   }
 
+  /** Removes the instructions file, if this start had one. */
+  #forget(): void {
+    const file = this.#options.instructions
+    if (file === null || file === undefined) return
+    try {
+      fs.rmSync(file, { force: true })
+    } catch (error) {
+      this.#log(`claude: the instructions file wasn't removed (${nameOf(error)})`)
+    }
+  }
+
   async #closed(): Promise<void> {
     this.proc?.stdout?.destroy() // the reader has finished with it
     await this.#waitExit(EXIT_WAIT_MS)
+    this.#forget()
     try {
       this.#options.onExit(this)
     } catch (error) {

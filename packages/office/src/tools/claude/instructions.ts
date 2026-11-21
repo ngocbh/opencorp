@@ -30,18 +30,20 @@ export function claudeInstructions({ configDir, workspace, gitRoot }: Instructio
   const dirs = gitRoot !== null && gitRoot !== workspace ? [gitRoot, workspace] : [workspace]
   const project = (name: string) => dirs.map((dir) => path.join(dir, name))
   const claudeMd = project("CLAUDE.md").filter((file) => projectFile(file) !== null)
-  const files: [string, string | null][] = [
-    [path.join(configDir, "CLAUDE.md"), ownerFile(path.join(configDir, "CLAUDE.md"))],
+  const owner = path.join(configDir, "CLAUDE.md")
+  // Only the owner's own file speaks for the owner: anyone who may write the project may have written its files.
+  const files: [label: string, text: string | null][] = [
+    [`The owner's instructions (from ${owner}):`, ownerFile(owner)],
     ...(claudeMd.length > 0 ? claudeMd : project("AGENTS.md")).map((file): [string, string | null] => [
-      file,
+      `The project's instructions (from ${file}), as anyone who may write the project left them:`,
       projectFile(file),
     ]),
   ]
-  const shown = files.flatMap(([file, text]) => (text === null ? [] : [`# ${file}\n\n${cut(text)}`]))
+  const shown = files.flatMap(([label, text]) => (text === null ? [] : [`${label}\n\n${cut(text)}`]))
   if (shown.length === 0) return null
   return (
-    "The owner's and the project's instructions, from the files Claude Code reads for them (an @ import in them " +
-    `isn't followed):\n\n${shown.join("\n\n")}\n`
+    "Instructions from the files Claude Code reads for them (an @ import in them isn't followed).\n\n" +
+    `${shown.join("\n\n")}\n`
   )
 }
 

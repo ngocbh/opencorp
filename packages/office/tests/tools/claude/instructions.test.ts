@@ -24,6 +24,13 @@ test("the owner's CLAUDE.md, then the repository root's and the project folder's
   const text = claudeInstructions({ configDir: config, workspace: ws, gitRoot: repo })!
   const at = (s: string) => text.indexOf(s)
   expect(text).toContain("an @ import in them isn't followed")
+  // Only the owner's own file speaks for the owner: anyone who may write the project may have written its files.
+  expect(text).toContain(`The owner's instructions (from ${path.join(config, "CLAUDE.md")}):`)
+  for (const file of [path.join(repo, "CLAUDE.md"), path.join(ws, "CLAUDE.md")]) {
+    const label = text.split("\n").find((line) => line.includes(file))!
+    expect(label).toStartWith(`The project's instructions (from ${file})`)
+    expect(label).not.toContain("owner")
+  }
   expect(at(path.join(config, "CLAUDE.md"))).toBeLessThan(at("Use British spelling."))
   expect(at("Use British spelling.")).toBeLessThan(at(path.join(repo, "CLAUDE.md")))
   expect(at("See @docs/rules.md")).toBeGreaterThan(at(path.join(repo, "CLAUDE.md")))

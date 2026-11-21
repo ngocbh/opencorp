@@ -18,6 +18,7 @@ import {
   STREAM_ARGS,
   claudeArgs,
   claudeCommand,
+  claudeSession,
   nativeClaude,
   refusal,
   signedIn,
@@ -178,6 +179,51 @@ test("a start's environment is the worker's with the fixed PATH, its own temp fo
   expect(second.CLAUDE_CONFIG_DIR).toBe("/owner/.claude-work")
   expect(Object.keys(second)).not.toContain("CODEX_HOME")
   await elsewhere.claude.close(2000)
+})
+
+test("a session's start passes the owner's and the project's CLAUDE.md from a file in its own temp folder, removed when Claude Code exits", async () => {
+  const { root, home, ws, tmp, fake, permission } = layout()
+  const config = path.join(home, ".claude")
+  fs.writeFileSync(path.join(config, "CLAUDE.md"), "Owner says: be brief.\n")
+  fs.writeFileSync(path.join(ws, "CLAUDE.md"), "Project says: use tabs.\n")
+  const p = permission()
+  const session = claudeSession(p, { claude: fake.claude, configDir: config, sessionId: "550e8400-e29b-41d4-a716-446655440000" })
+  const file = path.join(tmp, "opencorp.instructions.md")
+  expect(session.command).toContain(`--append-system-prompt-file=${file}`)
+  expect(session.command[0]).toBe(fake.claude)
+  expect(session.instructions).toBe(file)
+  expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+  expect(fs.statSync(file).uid).toBe(process.getuid!())
+  const text = fs.readFileSync(file, "utf8")
+  expect(text).toContain("Owner says: be brief.")
+  expect(text).toContain("Project says: use tabs.")
+  const logged: string[] = []
+  const claude = new ClaudeProcess({
+    command: session.command,
+    cwd: p.workspace,
+    env: { ...BASE, ...session.env },
+    log: path.join(root, "claude.log"),
+    instructions: session.instructions,
+    onMessage() {},
+    onExit() {},
+    logLine: (line) => logged.push(line),
+  })
+  await claude.start()
+  expect(started(fake).appended).toBe(text)
+  await claude.close(2000)
+  expect(fs.existsSync(file)).toBe(false)
+  expect(logged).toEqual([])
+
+  // With no CLAUDE.md anywhere, no file and no flag.
+  fs.rmSync(path.join(config, "CLAUDE.md"))
+  fs.rmSync(path.join(ws, "CLAUDE.md"))
+  const bare = claudeSession(p, { claude: fake.claude, configDir: config })
+  expect(bare.instructions).toBeNull()
+  expect(bare.command.some((arg) => arg.startsWith("--append-system-prompt"))).toBe(false)
+  expect(fs.readdirSync(tmp)).toEqual([])
+  // The rest is the permission's start, as claudeArgs builds it.
+  expect(bare.command.slice(1)).toEqual(claudeArgs(claudeStart(p)))
+  expect(bare.env).toEqual(claudeStart(p).env)
 })
 
 test("a session resumed or new, and its model, go on the command line", () => {
