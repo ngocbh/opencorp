@@ -186,3 +186,16 @@ test("a long tool output is cut with a marker, and an office stop interrupts wha
     [expect.objectContaining({ type: "error", message: "Claude Code stopped" })],
   ])
 })
+
+test("messages Esc dropped before any turn took them end with the marker, in a message of their own", () => {
+  const { t, events } = translator()
+  t.user("Fix the build.", "minh")
+  t.dropped()
+  expect(t.turn).toBeNull()
+  expect(brief(events)).toEqual(["message/user", "message/assistant", `text:${INTERRUPTED_TEXT.trimStart()}`])
+  // The next turn's words open a message of their own.
+  t.line({ type: "system", subtype: "init", model: "claude-opus-5-5" })
+  t.line({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Again." }] } })
+  const opened = events.filter((e) => e.type === "message" && e.message.role === "assistant")
+  expect(opened).toHaveLength(2)
+})

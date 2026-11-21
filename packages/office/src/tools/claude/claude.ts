@@ -353,9 +353,12 @@ export class ClaudeProcess {
     return uuid
   }
 
-  /** Stops the running turn; resolves with Claude Code's answer (`still_queued`, the messages that wait). */
-  interrupt(): Promise<Msg> {
-    return this.#stream().request("interrupt", {}, { timeout: CONTROL_TIMEOUT_MS })
+  /** Stops the running turn; resolves with Claude Code's answer (`still_queued`, the messages that wait). With
+   *  `cancelQueued` (Claude Code 2.1.219 and later, `interrupt_cancel_queued_v1`), the messages sent that no turn has
+   *  started are cancelled too, none of them runs, and the answer lists them under `cancelled`. */
+  interrupt({ cancelQueued = false }: { cancelQueued?: boolean } = {}): Promise<Msg> {
+    const body = cancelQueued ? { cancel_queued: true } : {}
+    return this.#stream().request("interrupt", body, { timeout: CONTROL_TIMEOUT_MS })
   }
 
   /** Closes stdin, gives it `graceMs`, then stops it (`kill`). */

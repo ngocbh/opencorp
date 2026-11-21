@@ -383,6 +383,25 @@ test("an interrupt ends the running turn as Claude Code does", async () => {
   await claude.close(2000)
 })
 
+test("an interrupt that cancels what waits takes the messages sent mid-turn out too, and none of them runs", async () => {
+  const { root, fake, permission } = layout({ turns: [[{ say: "working" }, { sleep: 20 }], [{ say: "never" }]] })
+  const { claude, lines } = proc(root, fake, permission())
+  await claude.start()
+  await claude.send("go")
+  await waitFor(() => lines.some((m) => m.type === "assistant"), { what: "the turn to start" })
+  const waiting = await claude.send("and this", { priority: "next" })
+  await waitFor(() => lines.some((m) => m.type === "command_lifecycle" && m.command_uuid === waiting), {
+    what: "the second message queued",
+  })
+  expect(await claude.interrupt({ cancelQueued: true })).toEqual({ still_queued: [], cancelled: [waiting] })
+  const sent = fake.log().find((e) => e.dir === "in" && e.msg?.request?.subtype === "interrupt")!
+  expect(sent.msg!.request).toEqual({ subtype: "interrupt", cancel_queued: true })
+  await waitFor(() => lines.some((m) => m.type === "result"), { what: "the interrupted result" })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  expect(lines.some((m) => m.type === "assistant" && m.message?.content?.[0]?.text === "never")).toBe(false)
+  await claude.close(2000)
+})
+
 test("a request Claude Code sends is refused at once: a tool's permission is denied, and nothing else is served", () => {
   const tool = refusal({ subtype: "can_use_tool", tool_name: "Bash", input: { command: "ls" } })
   expect(tool).toMatchObject({ response: { behavior: "deny" } })

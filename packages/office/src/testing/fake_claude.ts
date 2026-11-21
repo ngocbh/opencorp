@@ -25,7 +25,7 @@
  *    script's `sandbox_unavailable`, settings that enable the sandbox with `failIfUnavailable` stop the start: exit 1
  *    and a stderr line (its wording unrecorded); without `failIfUnavailable` it goes on unsandboxed, as Claude Code
  *    does.
- *  - **`initialize`** is answered with the version, models, `commands: []`, the permission mode, the pid and the
+ *  - **`initialize`** is answered, after the script's `slow_start` seconds if it has them, with the version, models, `commands: []`, the permission mode, the pid and the
  *    account, `{tokenSource: "none", apiProvider: "firstParty"}` when the script is `signed_out`; `hooks_applied`
  *    when the request registers hooks, which may be `PreToolUse` and `PostToolUse` only.
  *  - **A turn.** A `user` line, when no turn runs, starts one: `session_state_changed` running, the line's
@@ -43,7 +43,9 @@
  *      starts outlives it; its result is the output, stdout then stderr, with "Exit code N" first when it fails (the
  *      text and `tool_use_result`'s fields unrecorded). Another tool with no `result` returns "";
  *    - `{"sleep": seconds}`; `{"fail": text, "status"?}` ends the turn with an API error as recorded;
- *      `{"exit": code}` exits at once.
+ *      `{"exit": code}` exits at once, as a crash would, leaving what `spawn` started;
+ *    - `{"spawn": seconds}` starts `sleep <seconds>` in the fake's own process group, as a command Claude Code runs
+ *      may be, logs its pid as `{"dir": "spawn", "pid": n}`, and leaves it running: only the group's kill ends it.
  *  - **How it asks before a tool,** in the order Claude Code's docs give (all unrecorded, from the docs; O5
  *    re-records it):
  *    1. each `PreToolUse` hook whose `matcher` takes the tool gets a `hook_callback`; a `deny` refuses, and an
@@ -77,13 +79,15 @@
  *    `error_during_execution` result; while a tool waits on the host or runs, that tool's `tool_result` is rejected
  *    and `[Request interrupted by user for tool use]` follows. The turn's lines are `cancelled`. `still_queued` lists
  *    the uuids of the lines still waiting, which run next (unrecorded: the recordings had none), as the docs give
- *    `SDKControlInterruptResponse`; an interrupt's `cancel_queued` isn't modelled. With no turn the answer comes at
- *    once. `set_permission_mode` gets a plain success (unrecorded; shaped as `apply_flag_settings`'
+ *    `SDKControlInterruptResponse`. With `cancel_queued: true` (`interrupt_cancel_queued_v1`, which `system`/`init`
+ *    lists) none of them run: each is `cancelled` once the answer is written, the answer lists them under
+ *    `cancelled`, and `still_queued` is empty (the order unrecorded). With no turn the answer comes at once. `set_permission_mode` gets a plain success (unrecorded; shaped as `apply_flag_settings`'
  *    recorded answer); any other control request gets an error (unrecorded).
  *  - **Sessions.** Each session's lines are kept in `<state>/sessions/<id>.jsonl`. `--resume <id>` goes on with the
  *    script's turn after the session's last; an unknown id exits 1 (its wording unrecorded).
  *  - **The log.** `<state>/log.jsonl` holds each run's start (argv, cwd, env, the flags read, settings whole) and
- *    every line in and out. Stdin's end exits 0 at once, and SIGTERM 143, each ending the running command's group.
+ *    every line in and out. Stdin's end exits 0 at once (after the script's `background` seconds if it has them, as
+ *    background work keeps Claude Code open), and SIGTERM 143, each ending the running command's group.
  *    A SIGKILL can't be caught, so a fake killed that way leaves its running Bash group behind: stop it by closing
  *    stdin or with SIGTERM, never with SIGKILL first.
  *
@@ -106,6 +110,7 @@ export type FakeClaudeStep =
   | { sleep: number }
   | { fail: string; status?: number }
   | { exit: number }
+  | { spawn: number }
 
 export interface FakeClaudeScript {
   /** Each turn takes the next list of steps; a turn past the end writes only its result. */
@@ -117,6 +122,10 @@ export interface FakeClaudeScript {
   models?: Obj[]
   /** The sandbox can't start here: settings that enable it with `failIfUnavailable` stop the start. */
   sandbox_unavailable?: boolean
+  /** Seconds `initialize` waits before its answer, as a Claude Code slow to start. */
+  slow_start?: number
+  /** Seconds the run stays open after stdin ends, as background work keeps Claude Code open. */
+  background?: number
 }
 
 /** How the fake exits on what it doesn't model, having said what on stderr and in the log. */
@@ -124,7 +133,7 @@ export const FAKE_CLAUDE_UNMODELLED = 3
 
 export interface FakeClaudeLogEntry {
   pid: number
-  dir: "start" | "in" | "out" | "unmodelled"
+  dir: "start" | "in" | "out" | "unmodelled" | "spawn"
   /** What it doesn't model, when it exits on it. */
   what?: string
   /** A start's argv, folder, environment, and the flags it read by name (`settings` parsed). */
@@ -277,7 +286,7 @@ const TOOLS = ["Bash", "Edit", "Glob", "Grep", "Read", "Write"]
 const READS = new Set(["Read", "Glob", "Grep", "LS"])
 const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"])
 const HOOK_EVENTS = new Set(["PreToolUse", "PostToolUse"])
-const INIT_CAPABILITIES = ["interrupt_receipt_v1", "msg_lifecycle_v1", "ui_surface_v1"]
+const INIT_CAPABILITIES = ["interrupt_receipt_v1", "interrupt_cancel_queued_v1", "msg_lifecycle_v1", "ui_surface_v1"]
 const MESSAGE_USAGE = {
   input_tokens: 0,
   cache_creation_input_tokens: 0,
@@ -798,8 +807,9 @@ interface Turn {
   text: string
   /** The tool use that waits on the host or runs, which an interrupt rejects. */
   tool: string | null
-  /** The interrupt's request id, once one came. */
+  /** The interrupt's request id, once one came, and whether it cancels the lines waiting. */
   interrupt: string | null
+  cancelQueued: boolean
   /** Resolves when an interrupt comes. */
   readonly interrupted: Promise<null>
   readonly stop: () => void
@@ -898,7 +908,12 @@ class Fake {
       this.log({ dir: "in", msg })
       this.handle(msg)
     })
-    lines.on("close", () => this.end(0))
+    // Background work keeps Claude Code open after stdin ends, as its headless docs say.
+    lines.on("close", () => {
+      const background = this.script.background ?? 0
+      if (background <= 0) return this.end(0)
+      setTimeout(() => this.end(0), background * 1000)
+    })
     for (const [signal, code] of [["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 129]] as const)
       process.on(signal, () => this.end(code))
   }
@@ -938,17 +953,21 @@ class Fake {
     if (subtype === "initialize") {
       this.hooks = isObj(msg.request.hooks) ? msg.request.hooks : {}
       for (const event of Object.keys(this.hooks)) if (!HOOK_EVENTS.has(event)) unmodelled(`a ${event} hook`)
-      return this.write(this.initializeAnswer(id))
+      const slow = this.script.slow_start ?? 0
+      if (slow <= 0) return this.write(this.initializeAnswer(id))
+      setTimeout(() => this.write(this.initializeAnswer(id)), slow * 1000)
+      return
     }
     if (subtype === "interrupt") {
-      // The docs' cancel_queued (interrupt_cancel_queued_v1) drops what waits; not modelled.
-      if (msg.request.cancel_queued !== undefined) unmodelled("an interrupt's cancel_queued")
+      const cancel = msg.request.cancel_queued
+      if (cancel !== undefined && typeof cancel !== "boolean") unmodelled(`an interrupt's cancel_queued ${cancel}`)
       const turn = this.turn
       if (turn !== null && turn.interrupt === null) {
         turn.interrupt = id
+        turn.cancelQueued = cancel === true
         return turn.stop()
       }
-      return this.write(answer(id, { still_queued: this.stillQueued() }))
+      return this.answerInterrupt(id, cancel === true, this.queue)
     }
     if (subtype === "set_permission_mode") {
       this.mode = permissionMode(msg.request.mode)
@@ -959,7 +978,22 @@ class Fake {
   }
 
   stillQueued(): string[] {
-    return this.queue.map((m) => m.uuid).filter((uuid): uuid is string => typeof uuid === "string")
+    return uuidsOf(this.queue)
+  }
+
+  /** Answers interrupt `id`: the lines in `waiting` stay queued, or with `cancel` are taken out, each `cancelled`. */
+  answerInterrupt(id: unknown, cancel: boolean, waiting: Obj[]): void {
+    if (!cancel) return this.write(answer(id, { still_queued: this.stillQueued() }))
+    const cancelled = uuidsOf(waiting)
+    for (const msg of waiting) {
+      const at = this.queue.indexOf(msg)
+      if (at !== -1) this.queue.splice(at, 1)
+    }
+    this.write(answer(id, { still_queued: [], cancelled }))
+    for (const uuid of cancelled) {
+      this.announced.delete(uuid)
+      this.write(this.lifecycle(uuid, "cancelled"))
+    }
   }
 
   start(msg: Obj): void {
@@ -983,6 +1017,7 @@ class Fake {
       text: "",
       tool: null,
       interrupt: null,
+      cancelQueued: false,
       interrupted,
       stop,
     }
@@ -1004,6 +1039,7 @@ class Fake {
         this.write(this.result(turn, { text: step.fail, status: step.status ?? null }))
         return this.settle(turn, "cancelled")
       } else if ("exit" in step) return this.end(step.exit)
+      else if ("spawn" in step) this.spawnChild(step.spawn)
       if (turn.interrupt !== null) break
     }
     if (turn.interrupt !== null) return this.abort(turn, turn.interrupt)
@@ -1036,10 +1072,11 @@ class Fake {
     if (next !== undefined && !this.ending) this.start(next)
   }
 
-  /** Ends an interrupted turn as Claude Code does; lines that would have joined it wait first in line. */
+  /** Ends an interrupted turn as Claude Code does; lines that would have joined it wait first in line, unless the
+   *  interrupt cancels them. */
   abort(turn: Turn, id: string): void {
     this.queue.unshift(...turn.joined.splice(0))
-    this.write(answer(id, { still_queued: this.stillQueued() }))
+    this.answerInterrupt(id, turn.cancelQueued, [...this.queue])
     if (turn.tool !== null) {
       const meta = { non_execution_kind: "user-rejected" }
       this.write(this.toolResult(turn.tool, REJECTED, true, "User rejected tool use", meta))
@@ -1050,6 +1087,15 @@ class Fake {
       this.write(this.result(turn, "aborted_streaming"))
     }
     this.settle(turn, "cancelled")
+  }
+
+  /** Starts `sleep <seconds>` in the fake's own process group, and logs its pid; nothing here ends it. */
+  spawnChild(seconds: number): void {
+    const child = spawn("sleep", [String(seconds)], { stdio: "ignore" })
+    // Without a listener a failed spawn would crash the whole fake.
+    child.on("error", () => {})
+    child.unref()
+    this.log({ dir: "spawn", pid: child.pid })
   }
 
   async pause(turn: Turn, seconds: number): Promise<void> {
@@ -1473,6 +1519,11 @@ class Fake {
       errors: [`[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=${stop}`],
     }
   }
+}
+
+/** The uuids of `lines`, those that have one. */
+function uuidsOf(lines: readonly Obj[]): string[] {
+  return lines.map((m) => m.uuid).filter((uuid): uuid is string => typeof uuid === "string")
 }
 
 function answer(id: unknown, response: Obj): Obj {

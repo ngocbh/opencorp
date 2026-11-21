@@ -58,6 +58,16 @@ export class Translator {
       parts: [part], created_at: now() } })
   }
 
+  /** Esc dropped the messages sent before any turn took them: an assistant message of its own with the marker. */
+  dropped(): void {
+    if (this.#turn !== null) return
+    this.#message = null
+    this.#steered = false
+    this.#put({ id: newId(), type: "text", text: INTERRUPTED_TEXT.trimStart() })
+    this.#message = null
+    this.#tail = null
+  }
+
   /** Office stop: the running turn's running tools become interrupted, and its message gets the marker. */
   abort(): void {
     if (this.#turn === null) return
