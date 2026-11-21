@@ -115,7 +115,7 @@ export class TestOffice {
   readonly #pidfile: string
   #stopped: Promise<void> | undefined
 
-  constructor(root: string, llm: FakeLLM, ps: string) {
+  constructor(root: string, llm: FakeLLM, ps: string, extra: Record<string, string> = {}) {
     this.root = root
     this.home = path.join(root, "h")
     const paths = new OfficePaths(this.home)
@@ -136,6 +136,7 @@ export class TestOffice {
       OPENCORP_HOME: this.home,
       // In a checkout, the Bun running this process.
       OPENCORP_BUN: selfCommand()[0],
+      ...extra,
     })
   }
 
@@ -170,11 +171,13 @@ export class TestOffice {
 }
 
 /** Starts a real office on a fresh temp home through `opencorp init`, with `hq` as its `office/hq.json` and, unless
- *  `device`, no device listed for the CEO (Ngoc, @ngocbh, of Acme). Stops it and rethrows when init fails. */
+ *  `device`, no device listed for the CEO (Ngoc, @ngocbh, of Acme); `env` joins the environment it and `opencorp()`
+ *  run with, such as `OPENCORP_CLAUDE_BIN` naming a fake. Stops it and rethrows when init fails. */
 export async function startOffice({
   hq = { tcp: false },
   device = false,
-}: { hq?: unknown; device?: boolean } = {}): Promise<TestOffice> {
+  env = {},
+}: { hq?: unknown; device?: boolean; env?: Record<string, string> } = {}): Promise<TestOffice> {
   const ps = psBinary()
   // Short, for the socket paths: macOS caps a unix socket's path at 104 bytes.
   const root = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
@@ -185,7 +188,7 @@ export async function startOffice({
     fs.rmSync(root, { recursive: true, force: true })
     throw error
   }
-  const office = new TestOffice(root, llm, ps)
+  const office = new TestOffice(root, llm, ps, env)
   try {
     fs.mkdirSync(path.join(office.home, "office"), { recursive: true, mode: 0o700 })
     fs.writeFileSync(path.join(office.home, "office", "hq.json"), JSON.stringify(hq))
