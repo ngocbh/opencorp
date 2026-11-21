@@ -76,8 +76,9 @@
  *  - **Interrupts.** Mid-turn, `interrupt` is answered `{still_queued}`, then `[Request interrupted by user]` and an
  *    `error_during_execution` result; while a tool waits on the host or runs, that tool's `tool_result` is rejected
  *    and `[Request interrupted by user for tool use]` follows. The turn's lines are `cancelled`. `still_queued` lists
- *    the uuids of the lines still waiting, which run next (unrecorded: the recordings had none). With no turn the
- *    answer comes at once. `set_permission_mode` gets a plain success (unrecorded; shaped as `apply_flag_settings`'
+ *    the uuids of the lines still waiting, which run next (unrecorded: the recordings had none), as the docs give
+ *    `SDKControlInterruptResponse`; an interrupt's `cancel_queued` isn't modelled. With no turn the answer comes at
+ *    once. `set_permission_mode` gets a plain success (unrecorded; shaped as `apply_flag_settings`'
  *    recorded answer); any other control request gets an error (unrecorded).
  *  - **Sessions.** Each session's lines are kept in `<state>/sessions/<id>.jsonl`. `--resume <id>` goes on with the
  *    script's turn after the session's last; an unknown id exits 1 (its wording unrecorded).
@@ -940,6 +941,8 @@ class Fake {
       return this.write(this.initializeAnswer(id))
     }
     if (subtype === "interrupt") {
+      // The docs' cancel_queued (interrupt_cancel_queued_v1) drops what waits; not modelled.
+      if (msg.request.cancel_queued !== undefined) unmodelled("an interrupt's cancel_queued")
       const turn = this.turn
       if (turn !== null && turn.interrupt === null) {
         turn.interrupt = id

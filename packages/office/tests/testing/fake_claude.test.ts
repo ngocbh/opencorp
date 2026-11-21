@@ -553,6 +553,7 @@ test("the fake exits loudly on what it doesn't model, so no test can rely on it"
     [["--allowedTools", "Bash(touch *)"], [user("Go.", "u-1")]],
     [[], [user("Now.", "u-1", "now")]],
     [[], [user("Soon.", "u-1", "soon")]],
+    [[], [request("stop", { subtype: "interrupt", cancel_queued: true })]],
   ]
   for (const [args, lines] of sessions) {
     const claude = new Claude(fake, args, work)
@@ -590,7 +591,7 @@ test("the fake exits loudly on what it doesn't model, so no test can rely on it"
   }
   const touch = [{ tool: "Bash", input: { command: "LANG=C touch t" } }]
   expect(await outcome(["--permission-mode", "acceptEdits"], touch)).toEqual(["refused"])
-  expect(fake.log().filter((entry) => entry.dir === "unmodelled").length).toBe(17)
+  expect(fake.log().filter((entry) => entry.dir === "unmodelled").length).toBe(18)
 })
 
 test("a Bash step's result is its command's real output and exit", async () => {
