@@ -1,5 +1,7 @@
 /** A Codex session the owner drives: load, turns, steers, interrupts, end, office stop. */
 import fs from "node:fs"
+import http from "node:http"
+import type { AddressInfo } from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -7,17 +9,18 @@ import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from
 import type { Part } from "@opencorp/protocol"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
 import type { HarnessEvent } from "../../../src/tools/harness/adapter.ts"
-import { type CodexProcess, CodexStartError } from "../../../src/tools/codex/codex.ts"
+import { APP_SERVER_ARGS, type CodexProcess, CodexStartError, nativeCodex } from "../../../src/tools/codex/codex.ts"
 import { JsonRpc, RpcClosed, RpcError } from "../../../src/tools/codex/rpc.ts"
 import type { CodexSession } from "../../../src/features/codex/session.ts"
 import { harnessTemp } from "../../../src/features/codex/thread.ts"
 import { harnessPath } from "../../../src/runtime/sandbox/harness_profile.ts"
-import { killGroup, startTime } from "../../../src/util/proc.ts"
+import { killGroup, sameProcess, startTime } from "../../../src/util/proc.ts"
 import { realPath } from "../../../src/runtime/sandbox/policy.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
 import { fakeLlm, makeHarness } from "../chat/helpers.ts"
 import { person } from "../../company/helpers.ts"
-import { envEntries, waitFor } from "../../helpers.ts"
+import { envEntries, isGone, tempDir, waitFor } from "../../helpers.ts"
+import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import {
   type Codex,
   YES,
@@ -592,6 +595,45 @@ test("esc interrupts the turn and marks it", async () => {
   expect(last.type === "text" && last.text.endsWith("[interrupted]")).toBe(true)
 })
 
+test("esc also ends the commands the interrupted turn left running, after codex stops the turn", async () => {
+  const h = makeCodex()
+  h.fake.script([[fc.commandStarted("c1", "sleep 300"), { spawn: 300 }, { sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "sleep")
+  const [child] = await waitFor(() => (h.fake.spawned().length > 0 ? h.fake.spawned() : undefined), {
+    what: "the running command",
+  })
+  const started = startTime(child!)
+  await h.sessions.interrupt(sid)
+  await waitFor(() => status(h, sid) === "idle", { what: "the interrupted turn's end" })
+  // Codex's interrupt stops the turn and leaves its command running; the clean after it ends the command.
+  const sent = h.fake.messages().filter((m) => "method" in m && "id" in m).map((m) => m.method)
+  expect(sent.slice(sent.indexOf("turn/interrupt"))).toEqual(["turn/interrupt", "thread/backgroundTerminals/clean"])
+  expect(h.fake.calls("thread/backgroundTerminals/clean")).toEqual([{ threadId: "thr_1" }])
+  await waitFor(() => isGone(child!, started), { what: "the command to stop" })
+  requestsValid(h.fake)
+})
+
+test("an esc codex refuses still ends the thread's commands", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ spawn: 300 }, { sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "sleep")
+  const [child] = await waitFor(() => (h.fake.spawned().length > 0 ? h.fake.spawned() : undefined), {
+    what: "the running command",
+  })
+  const started = startTime(child!)
+  const rpc = h.sessions.get(sid)!.process!.rpc!
+  const real = rpc.request.bind(rpc)
+  spyOn(rpc, "request").mockImplementation(async (method, params, options) => {
+    if (method === "turn/interrupt") throw new RpcError(-32600, "no active turn to interrupt")
+    return real(method, params, options)
+  })
+  await h.sessions.interrupt(sid)
+  expect(h.fake.calls("thread/backgroundTerminals/clean")).toEqual([{ threadId: "thr_1" }])
+  await waitFor(() => isGone(child!, started), { what: "the command to stop" })
+})
+
 test("esc with no turn running asks codex nothing", async () => {
   const h = makeCodex()
   const sid = await start(h, h.workspace)
@@ -1098,3 +1140,118 @@ test("office stop makes a reply not yet written give up at once", async () => {
   await closing
   expect(7 in h.fake.replies()).toBe(false)
 })
+
+/** The real Codex the opt-in test runs, named by `OPENCORP_TEST_CODEX` (a wrapper, npm's launcher or the native
+ *  binary). Unset, it skips; under `OPENCORP_TEST_SANDBOX` it runs, and fails without it. Codex's sandbox needs what
+ *  the office's does, so it also skips where that can't start. */
+const CODEX = process.env.OPENCORP_TEST_CODEX
+const NO_CODEX = CODEX === undefined ? !process.env.OPENCORP_TEST_SANDBOX : !sandboxAvailable()
+
+/** A stand-in for the model on 127.0.0.1, which Codex's Responses API calls reach: the first call runs `command` with
+ *  Codex's `exec_command` and waits on it, every later one says "done". No model, network or sign-in is used. */
+async function standInModel(command: string): Promise<{ url: string; calls: () => number }> {
+  let calls = 0
+  const server = http.createServer((req, res) => {
+    req.resume()
+    req.on("end", () => {
+      if (req.method !== "POST" || !req.url?.endsWith("/responses")) return void res.writeHead(404).end()
+      calls += 1
+      const id = `resp-${calls}`
+      const item =
+        calls === 1
+          ? { type: "function_call", call_id: "call-1", name: "exec_command", arguments: JSON.stringify({ cmd: command, yield_time_ms: 30_000 }) }
+          : { type: "message", role: "assistant", id: `msg-${calls}`, content: [{ type: "output_text", text: "done" }] }
+      const usage = { input_tokens: 0, input_tokens_details: null, output_tokens: 0, output_tokens_details: null, total_tokens: 0 }
+      const events = [
+        { type: "response.created", response: { id } },
+        { type: "response.output_item.done", item },
+        { type: "response.completed", response: { id, usage } },
+      ]
+      res.writeHead(200, { "content-type": "text/event-stream" })
+      res.end(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  onTestFinished(() => void server.close())
+  const { port } = server.address() as AddressInfo
+  return { url: `http://127.0.0.1:${port}/v1`, calls: () => calls }
+}
+
+/** This user's processes whose command line is exactly `args`. */
+function processesOf(args: string): number[] {
+  return fs
+    .readdirSync("/proc")
+    .filter((d) => /^\d+$/.test(d) && fs.statSync(`/proc/${d}`, { throwIfNoEntry: false })?.uid === process.getuid!())
+    .filter((d) => {
+      try {
+        return fs.readFileSync(`/proc/${d}/cmdline`, "utf8").split("\0").join(" ").trim() === args
+      } catch {
+        return false // gone meanwhile
+      }
+    })
+    .map(Number)
+}
+
+/** A session on the real Codex, under minh's permission with a temp home and `CODEX_HOME`, whose turn runs a command
+ *  the stand-in model asks for; resolves once Codex holds the command among the thread's terminals (an Esc before
+ *  that drops it with the tool call). */
+async function realCommand() {
+  if (CODEX === undefined) throw new Error("OPENCORP_TEST_SANDBOX is set: set OPENCORP_TEST_CODEX to a Codex 0.167.0+")
+  // A length no other process sleeps, so the command is found by its arguments alone.
+  const args = `sleep 30.${process.pid}${Date.now() % 1000}`
+  const model = await standInModel(args)
+  const codexHome = fs.realpathSync(tempDir())
+  fs.writeFileSync(
+    path.join(codexHome, "config.toml"),
+    `model = "stand-in"\nmodel_provider = "stand_in"\n\n[model_providers.stand_in]\nname = "stand-in"\n` +
+      `base_url = "${model.url}"\nwire_api = "responses"\n`,
+  )
+  const real = nativeCodex(CODEX)
+  const h = makeCodex({ command: () => [real.run, ...APP_SERVER_ARGS], environ: { CODEX_HOME: codexHome } })
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "Run the command.")
+  const [pid] = await waitFor(() => (processesOf(args).length > 0 ? processesOf(args) : undefined), {
+    timeout: 20_000,
+    what: "Codex to run the command",
+  })
+  const started = startTime(pid!)
+  onTestFinished(() => {
+    if (started !== null && sameProcess(pid!, started)) process.kill(pid!, "SIGKILL")
+  })
+  const live = h.sessions.get(sid)!
+  const listed = async () => {
+    const list = (await live.process!.rpc!.request("thread/backgroundTerminals/list", { threadId: live.threadId })) as {
+      data: { command: string }[]
+    }
+    return list.data.some((t) => t.command.includes(args))
+  }
+  for (const deadline = Date.now() + 10_000; !(await listed()); await sleep(100)) {
+    if (Date.now() > deadline) throw new Error("Codex never listed the command among the thread's terminals")
+  }
+  // The tool call still waits on the command: the model was called once.
+  expect(model.calls()).toBe(1)
+  return { h, sid, gone: () => isGone(pid!, started) }
+}
+
+test.skipIf(NO_CODEX)(
+  "on a real codex, esc stops the command its turn waits on, not only the turn",
+  async () => {
+    const { h, sid, gone } = await realCommand()
+    await h.sessions.interrupt(sid)
+    await waitFor(() => status(h, sid) === "idle", { what: "the interrupted turn's end" })
+    expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
+    await waitFor(gone, { timeout: 5_000, what: "the command to stop" })
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
+  "on a real codex, ending the session stops the command its turn waits on",
+  async () => {
+    const { h, sid, gone } = await realCommand()
+    await h.sessions.end(sid)
+    await waitFor(() => status(h, sid) === "ended", { what: "the end" })
+    await waitFor(gone, { timeout: 5_000, what: "the command to stop" })
+  },
+  120_000,
+)

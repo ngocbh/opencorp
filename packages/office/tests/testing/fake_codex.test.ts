@@ -3,11 +3,13 @@ import { spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import readline from "node:readline"
+import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { Ajv, type ValidateFunction } from "ajv"
 import { expect, onTestFinished, test } from "bun:test"
 import * as fc from "../../src/testing/fake_codex.ts"
-import { tempDir } from "../helpers.ts"
+import { sameProcess, startTime } from "../../src/util/proc.ts"
+import { isGone, tempDir, waitFor } from "../helpers.ts"
 
 const TIMEOUT = 30_000
 const FAKE = fileURLToPath(new URL("../../src/testing/fake_codex.ts", import.meta.url))
@@ -330,6 +332,31 @@ test(
 )
 
 const INTERRUPT = { id: 4, method: "turn/interrupt", params: { threadId: "thr_fake", turnId: "turn_1" } }
+
+test(
+  "a spawned command outlives its interrupted turn, as Codex's do, until the thread's clean kills it",
+  async () => {
+    const dir = tempDir()
+    const live = new Live(dir, { turns: [[{ spawn: 300 }, { sleep: 30 }]] })
+    live.send(...START)
+    await live.until(method("turn/started"))
+    const spawn = await waitFor(() => log(dir).find((e) => e.dir === "spawn"), { what: "the command" })
+    const pid: number = spawn.pid
+    const started = startTime(pid)
+    onTestFinished(() => {
+      if (started !== null && sameProcess(pid, started)) process.kill(pid, "SIGKILL")
+    })
+    live.send(INTERRUPT)
+    await live.until(method("turn/completed"))
+    await sleep(200)
+    expect(isGone(pid, started)).toBe(false)
+    live.send({ id: 5, method: "thread/backgroundTerminals/clean", params: { threadId: "thr_fake" } })
+    expect(await live.until((m) => m.id === 5)).toEqual({ id: 5, result: {} })
+    await waitFor(() => isGone(pid, started), { what: "the command killed" })
+    await live.close()
+  },
+  TIMEOUT,
+)
 
 test(
   "an interrupt completes the turn before it resolves the waiting requests",

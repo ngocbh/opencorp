@@ -239,13 +239,23 @@ export class CodexSession {
     if (turn !== null && proc !== null) await this.#interruptTurn(proc, turn)
   }
 
-  /** Asks `proc` to interrupt `turn`. */
+  /** Asks `proc` to interrupt `turn`, then to end every command the thread still runs. Codex's interrupt stops the
+   *  turn but leaves the commands it started running, as the thread's background terminals; the clean ends them (the
+   *  turn's own too) once the interrupt is answered, so no new one starts after it. */
   async #interruptTurn(proc: CodexProcess, turn: string): Promise<void> {
-    try {
-      await proc.rpc!.request("turn/interrupt", { threadId: this.threadId, turnId: turn })
-    } catch (error) {
-      // The turn ended meanwhile, the app-server is gone, or it hangs (its end or office stop kills it).
-      if (!(error instanceof RpcError || error instanceof RpcClosed || isTimeout(error))) throw error
+    const steps: [string, unknown][] = [
+      ["turn/interrupt", { threadId: this.threadId, turnId: turn }],
+      ["thread/backgroundTerminals/clean", { threadId: this.threadId }],
+    ]
+    for (const [method, params] of steps) {
+      try {
+        await proc.rpc!.request(method, params)
+      } catch (error) {
+        // The app-server is gone, and its commands with it.
+        if (error instanceof RpcClosed) return
+        // The turn ended meanwhile (its commands may still run), or Codex hangs (its end or office stop kills it).
+        if (!(error instanceof RpcError || isTimeout(error))) throw error
+      }
     }
   }
 
