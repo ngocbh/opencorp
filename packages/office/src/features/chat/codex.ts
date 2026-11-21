@@ -62,9 +62,10 @@ export class EmployeeCodex {
     return this.#codex.tools()
   }
 
-  /** Ends every call's wait now (nobody is left to read the replies); Codex goes on. */
-  interruptWaits(): void {
-    this.#codex.interruptWaits()
+  /** The chat's run stopped (its worker died, or the cost cap stopped it): ends every call's wait, and interrupts each
+   *  Codex turn a call waited on that the employee started. */
+  cutCalls(): void {
+    this.#codex.cutCalls()
   }
 
   /** Ends every Codex session of the chat and takes its listing out. */

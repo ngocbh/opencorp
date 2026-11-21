@@ -12,7 +12,7 @@ import * as fc from "../../../src/testing/fake_codex.ts"
 import { person } from "../../company/helpers.ts"
 import { session as sessionRow } from "../../runtime/store/helpers.ts"
 import { waitFor } from "../../helpers.ts"
-import { fakeLlm, makeHarness } from "./helpers.ts"
+import { fakeLlm, makeHarness, PRICES } from "./helpers.ts"
 import { type Codex, allGone, makeCodex, status } from "../codex/helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -44,8 +44,10 @@ test("the employee starts Codex as the chat's instrument, a child session, and r
   const { chat, call } = await employee(h)
   const reply = await call("start", { message: "Fix the build." })
   expect(reply).toMatchObject({ codex: "codex 1", status: "idle" })
-  expect(reply.output).toContain('<authored_message author="@minh">\nFix the build.')
-  expect(reply.output).toContain('<authored_message author="Codex">\nThe build is fixed.')
+  expect(reply.output).toEqual([
+    { author: "@minh", text: "Fix the build." },
+    { author: "codex", text: "The build is fixed." },
+  ])
   const [listed] = h.office.instruments.list(chat.id)
   expect(listed).toMatchObject({ kind: "codex", profile: "harness", name: "codex 1", driver: "minh", status: "idle" })
   // The instrument's id is its child session's.
@@ -71,9 +73,12 @@ test("what the owner tells Codex reaches the employee's next reply, and the owne
   expect((await call("stop", { codex: "codex 1" })).refused).toContain("owner")
   await waitFor(() => status(h, listed!.id) === "idle", { what: "the owner's turn to end" })
   const reply = await call("send", { codex: "codex 1", message: "Run the migrations." })
-  expect(reply.output).toContain('author="Hong Ngoc Bui (owner)">\nUse the staging database.')
-  expect(reply.output).toContain("Using staging.")
-  expect(reply.output).toContain("Migrated.")
+  expect(reply.output).toEqual([
+    { author: "Hong Ngoc Bui (owner)", text: "Use the staging database." },
+    { author: "codex", text: "Using staging." },
+    { author: "@minh", text: "Run the migrations." },
+    { author: "codex", text: "Migrated." },
+  ])
 })
 
 test("close ends every Codex session of the chat and takes its listing out; the record says it ended", async () => {
@@ -121,4 +126,44 @@ test("Esc in the chat reaches a running Codex turn through the call's interrupt,
   expect(h.office.instruments.list(s.id).find((i) => i.id === listed.id)?.status).toBe("idle")
   // The agent ended interrupted: no model call came after the tool's reply.
   expect(fake.requests()).toHaveLength(1)
+})
+
+/** minh's chat, its reply calling codex_start (`usage` its model call's), and Codex's turn running until stopped. */
+async function codexTurn(o: { usage?: { prompt_tokens: number; completion_tokens: number } } = {}) {
+  const fake = await fakeLlm()
+  const call = { name: "codex_start", arguments: { message: "Fix the build.", wait: 120 } }
+  fake.script({ tool_calls: [call], ...(o.usage ? { usage: o.usage } : {}) }, { content: "spare" })
+  const h = await makeHarness(fake, { codex: true, ...(o.usage ? { prices: PRICES } : {}) })
+  h.codex!.fake.script([[...fc.agentMessage("a1", "Reading the build files."), { sleep: 30 }]])
+  const s = await h.harness.startSession("minh", h.folder, { openedBy: "ngocbh" })
+  await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's first turn" })
+  await h.harness.prompt(s.id, "Hand the build to Codex.", { by: "ngocbh" })
+  return { fake, h, s }
+}
+
+/** Whether the chat's Codex session runs no turn: interrupted, or never sent its message. */
+function noTurnRuns(h: Awaited<ReturnType<typeof codexTurn>>["h"], chat: string): boolean {
+  const [listed] = h.office.instruments.list(chat)
+  return listed !== undefined && listed.status !== "running" && listed.status !== "starting"
+}
+
+test("a worker that dies while the employee waits on Codex stops the Codex turn it started", async () => {
+  const { h, s } = await codexTurn()
+  await waitFor(() => h.office.instruments.list(s.id).find((i) => i.status === "running"), { what: "Codex's turn" })
+  h.registry.get(s.id)!.kill()
+  await waitFor(() => h.codex!.fake.calls("turn/interrupt").length === 1, { what: "Codex's interrupt" })
+  await waitFor(() => noTurnRuns(h, s.id), { what: "the turn's end" })
+})
+
+test("a cost-cap stop while the employee waits on Codex stops the Codex turn, so it spends nothing more", async () => {
+  // The reply that calls codex_start costs $6, over the company's $5 cap: the cap stops the run as the call runs.
+  const { h, s } = await codexTurn({ usage: { prompt_tokens: 6, completion_tokens: 1 } })
+  await waitFor(() => h.office.instruments.list(s.id).length === 1, { what: "Codex's session" })
+  await waitFor(() => h.store.getSession(s.id)?.capped === true, { what: "the cap" })
+  await waitFor(() => noTurnRuns(h, s.id), { timeout: 20_000, what: "no Codex turn to run on" })
+  // Either the turn was interrupted, or the session stopped before its message went.
+  const [listed] = h.office.instruments.list(s.id)
+  const sent = h.codex!.fake.calls("turn/start").length
+  expect(sent === 0 || h.codex!.fake.calls("turn/interrupt").length === 1).toBe(true)
+  expect(listed!.status).not.toBe("running")
 })

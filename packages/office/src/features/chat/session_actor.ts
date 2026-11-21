@@ -2567,9 +2567,10 @@ export class SessionActor implements LiveCalls {
     this.#run = null
     const session = this.#ctx.store.getSession(this.sessionId)
     if (session !== undefined) void this.#ctx.hooks.notify("callEnded", session)
-    // Nobody is left to read what these calls return, finished or not; Codex goes on with its turn.
+    // Nobody is left to read what these calls return, finished or not: a Codex turn the employee waited on stops, as
+    // a cut-off command does.
     this.#interruptShells()
-    this.#spec?.codex?.interruptWaits()
+    this.#spec?.codex?.cutCalls()
     this.#answerCalls()
     if (this.#finished) {
       // Its hard stop spawns under the session's id, so a parked worker goes first.
