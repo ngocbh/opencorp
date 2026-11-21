@@ -13,9 +13,16 @@ import { OfficePaths } from "../util/home.ts"
 import { FakeLLM, LLM_CONFIG } from "./fake_llm.ts"
 
 const OPENCORP = path.join(CHECKOUT, "packages/cli/bin/opencorp")
-// The caller's own session (a Codex override, an SSH login) would change what init sets up; `selfSpawnEnv` drops
-// what would change how the office runs.
-const DROPPED = new Set(["OPENCORP_CODEX_BIN", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"])
+// The caller's own session (a harness override or config folder, an SSH login) would change what init sets up;
+// `selfSpawnEnv` drops what would change how the office runs.
+const DROPPED = new Set([
+  "OPENCORP_CODEX_BIN",
+  "OPENCORP_CLAUDE_BIN",
+  "CLAUDE_CONFIG_DIR",
+  "SSH_CONNECTION",
+  "SSH_CLIENT",
+  "SSH_TTY",
+])
 
 /** A command's exit code (null when a signal ended it) and output. */
 export interface Ran {
