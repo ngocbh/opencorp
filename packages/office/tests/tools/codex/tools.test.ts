@@ -13,13 +13,14 @@ test("the group has start, send, interrupt, stop and history, each taking only i
 
 test("arguments are read, a null is left out, and a wait is capped at two minutes", () => {
   expect(parseArgs("start", { message: "Fix it.", wait: null })).toEqual({ tool: "start", message: "Fix it.", waitMs: 60_000 })
+  // The model names the session `codex`; the instrument reads it as the session's name.
   expect(parseArgs("send", { codex: "codex 1", message: "More.", wait: 999 })).toEqual({
-    tool: "send", codex: "codex 1", message: "More.", waitMs: 120_000,
+    tool: "send", session: "codex 1", message: "More.", waitMs: 120_000,
   })
   expect(parseArgs("history", { codex: "codex 1", from: 5, trace: true })).toEqual({
-    tool: "history", codex: "codex 1", from: 5, query: undefined, trace: true, waitMs: 60_000,
+    tool: "history", session: "codex 1", from: 5, query: undefined, trace: true, waitMs: 60_000,
   })
-  expect(parseArgs("stop", { codex: "codex 2" })).toEqual({ tool: "stop", codex: "codex 2" })
+  expect(parseArgs("stop", { codex: "codex 2" })).toEqual({ tool: "stop", session: "codex 2" })
 })
 
 test("an argument a tool doesn't take, or one of the wrong kind, says why", () => {
@@ -31,11 +32,12 @@ test("an argument a tool doesn't take, or one of the wrong kind, says why", () =
   expect(parseArgs("send", { codex: "codex 1", message: "Hi.", wait: "soon" })).toContain("wait is a number")
 })
 
-test("a reply is one JSON object, with error only when the session failed", () => {
-  const base = { codex: "codex 1", output: [{ author: "codex", text: "Done." }], next: 5, more: false }
-  expect(JSON.parse(replyText({ ...base, status: "idle", error: "old" }))).toEqual({ ...base, status: "idle" })
-  expect(JSON.parse(replyText({ ...base, status: "failed", error: "no codex" }))).toEqual({
-    ...base, status: "failed", error: "no codex",
+test("a reply is one JSON object naming its session codex, with error only when the session failed", () => {
+  const base = { output: [{ author: "codex", text: "Done." }], next: 5, more: false }
+  const reply = { ...base, session: "codex 1" }
+  expect(JSON.parse(replyText({ ...reply, status: "idle", error: "old" }))).toEqual({ codex: "codex 1", ...base, status: "idle" })
+  expect(JSON.parse(replyText({ ...reply, status: "failed", error: "no codex" }))).toEqual({
+    codex: "codex 1", ...base, status: "failed", error: "no codex",
   })
   expect(JSON.parse(refusalText("closed"))).toEqual({ refused: "closed" })
 })
