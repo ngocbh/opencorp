@@ -16,7 +16,7 @@ import { lint } from "../../company/lint.ts"
 import { loadRepo } from "../../company/loader.ts"
 import { companyState, missingFiles } from "../../company/template.ts"
 import { CodexMissing, codexCommand, nativeCodex } from "../../tools/codex/codex.ts"
-import { threadProbe } from "../codex/thread.ts"
+import { type Probed, threadProbe } from "../codex/thread.ts"
 import { SANDBOX_FIX } from "../../tools/terminal/terminal.ts"
 import { selfCommand, tuiAssetRoot } from "../../platform.ts"
 import {
@@ -602,7 +602,8 @@ export interface CodexOffice {
 /**
  * Whether the office can start Codex sessions, in the environment it gives an app-server (`env`): the binary on its
  * PATH, the version (0.167.0 or later), the sign-in, and, given `office`, a thread under an employee's permission that
- * can be used (`threadProbe`: a thread that starts but whose config no turn could load fails, with no model turn run).
+ * can be used (`threadProbe`, under `base`'s harness temp folder: a thread that starts but whose config no turn could
+ * load fails, with no model turn run), and a warning for each trusted project whose own config Codex would load.
  * Missing, signed out, or a `login status` that fails otherwise (shown by the first line it printed) is a warning, not
  * a failure: only people with `codex` in `harnesses` need it. A `codex` that won't run, doesn't answer within
  * `timeoutMs`, is older than the floor or whose version can't be read fails.
@@ -614,7 +615,7 @@ export async function codexCheck(
   env: Record<string, string>,
   environ: Env,
   mode: string | null = null,
-  { timeoutMs = 30_000, office }: { timeoutMs?: number; office?: CodexOffice } = {},
+  { timeoutMs = 30_000, office, base }: { timeoutMs?: number; office?: CodexOffice; base?: string } = {},
 ): Promise<Check> {
   let found: string
   try {
@@ -678,21 +679,30 @@ export async function codexCheck(
     return { name: "codex", status: "warn", detail: `${named}: \`${found} login status\` failed: ${why}` }
   }
   if (office === undefined) return { name: "codex", status: "ok", detail: `${named}, signed in` }
-  let failed: { why: string; log: string } | null
+  let probed: Probed
   try {
-    failed = await threadProbe({ codex: nativeCodex(found), env, environ, ...office, timeoutMs })
+    probed = await threadProbe({ codex: nativeCodex(found), env, environ, ...office, base, timeoutMs })
   } catch (error) {
     // Its folders under /tmp couldn't be made or removed, or the binary is gone.
     const detail = `${named} is signed in, but doctor can't try a thread under an employee's permission: ${messageOf(error)}`
     return { name: "codex", status: "fail", detail }
   }
+  const { failed, projectConfigs } = probed
   if (failed !== null) {
     const detail =
       `${named} is signed in, but a thread under an employee's permission can't be used: ` +
       `${failed.why.slice(0, LINE_CAP)}; Codex's output is in ${failed.log}`
     return { name: "codex", status: "fail", detail }
   }
-  return { name: "codex", status: "ok", detail: `${named}, signed in, and a thread under an employee's permission runs` }
+  const runs = `${named}, signed in, and a thread under an employee's permission runs`
+  if (projectConfigs.length === 0) return { name: "codex", status: "ok", detail: runs }
+  const files = projectConfigs.map((dir) => path.join(dir, "config.toml"))
+  const shown = files.length > 3 ? [...files.slice(0, 3), `${files.length - 3} more`] : files
+  const detail =
+    `${runs}, but your Codex config trusts projects whose own config it would load, as you, so employees' Codex ` +
+    `sessions there are refused (${shown.join(", ")}); untrust those projects in your Codex config.toml, or remove ` +
+    "those files"
+  return { name: "codex", status: "warn", detail }
 }
 
 /** Whether version `got` comes before `floor`. */

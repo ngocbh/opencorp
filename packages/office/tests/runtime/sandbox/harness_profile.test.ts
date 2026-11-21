@@ -5,6 +5,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import {
+  checkCodexInstall,
   checkPermission,
   claudeStart,
   codexThread,
@@ -45,6 +46,8 @@ function layout() {
   const install = path.join(root, "codex-install")
   fs.mkdirSync(path.join(install, "bin"), { recursive: true })
   fs.writeFileSync(path.join(install, "bin/codex"), "")
+  // Only the user may change Codex's install, whatever the umask.
+  for (const p of [install, path.join(install, "bin"), path.join(install, "bin/codex")]) fs.chmodSync(p, 0o755)
   fs.mkdirSync(path.join(ws, ".git"), { recursive: true })
   fs.writeFileSync(path.join(ws, ".git/config"), "[core]\n")
   fs.mkdirSync(tmp, { mode: 0o700 })
@@ -280,6 +283,35 @@ test("Codex reads its own install folder, which the employee can't write", () =>
   >
   expect(read["opencorp-s1"]!.filesystem[install]).toBe("read")
   expect(thread(permission({ writable: false })).config.permissions).toBeDefined()
+})
+
+test("codex as the office runs it is refused before it runs where anyone but the user could change it", () => {
+  const { root, ws, install, permission, folder } = layout()
+  const binary = path.join(install, "bin/codex")
+  expect(() => checkCodexInstall(permission(), { run: binary, install })).not.toThrow()
+  // A wrapper the office spawns, in or reached through a folder the employee can write, though its install isn't.
+  const wrapper = path.join(ws, "codex.sh")
+  fs.writeFileSync(wrapper, "#!/bin/sh\n", { mode: 0o755 })
+  expect(() => checkCodexInstall(permission(), { run: wrapper, install })).toThrow(/the Codex the office runs/)
+  expect(() => checkCodexInstall(permission({ writable: false }), { run: wrapper, install })).not.toThrow()
+  // Another person's writable folder, or a live session's folder.
+  const shared = folder("shared")
+  fs.mkdirSync(path.join(shared, "codex/bin"), { recursive: true })
+  fs.writeFileSync(path.join(shared, "codex/bin/codex"), "", { mode: 0o755 })
+  const elsewhere = { run: path.join(shared, "codex/bin/codex"), install: path.join(shared, "codex") }
+  expect(() => checkCodexInstall(permission({ othersWritable: [shared] }), elsewhere)).toThrow(UnsafeProfile)
+  expect(() => checkCodexInstall(permission(), elsewhere)).not.toThrow()
+  // codexThread holds its install to the same.
+  expect(() => codexThread(permission({ othersWritable: [shared] }), "opencorp-s1", { install: elsewhere.install }))
+    .toThrow(/Codex's install folder/)
+  // Open to the group or others: the binary, its folder, the install folder.
+  for (const open of [elsewhere.run, path.dirname(elsewhere.run), elsewhere.install]) {
+    fs.chmodSync(open, 0o775)
+    expect(() => checkCodexInstall(permission(), elsewhere), open).toThrow(/others than the user may write/)
+    fs.chmodSync(open, 0o755)
+  }
+  fs.chmodSync(path.join(root, "codex-install"), 0o757)
+  expect(() => codexThread(permission(), "opencorp-s1", { install })).toThrow(/others than the user may write/)
 })
 
 test("the office's home, the home's credential folders and the harnesses' own config folders are denied by name", () => {

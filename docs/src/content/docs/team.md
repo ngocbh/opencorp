@@ -57,9 +57,14 @@ mount the listed folders.
 Codex asks you nothing there: every command and file edit runs at once inside that permission, and one it refuses
 goes back to Codex. The session's mode doesn't apply. Codex runs as you, with its own sign-in and `~/.codex`, where it
 keeps its sessions, logs and caches; your employee's commands can't read it. In your employee's Codex threads your MCP
-servers, hooks, `notify`, apps and plugins are off, and so is web search when the network is off; the project's own
-`.codex/config.toml` isn't loaded, and your `~/.codex/config.toml` is left as it is. Commands get no `/tmp`, so a tool
-that writes there fails unless a listed folder covers it.
+servers, hooks, `notify`, apps and plugins are off, and so is web search when the network is off, and your
+`~/.codex/config.toml` is left as it is. Commands get no `/tmp`, so a tool that writes there fails unless a listed folder
+covers it.
+
+A project you've trusted in Codex (Codex asks the first time you run it there) loads its own `.codex/config.toml`,
+whose MCP servers and hooks would run as you, outside your employee's permission. So your employee's Codex session
+won't start in such a project, and says which file it is: untrust the project in `~/.codex/config.toml` (its
+`[projects]` entry), or remove that file. `opencorp doctor` lists the trusted projects this applies to.
 
 - A path is absolute or starts with `~/`, your home. `opencorp doctor` fails on any other, and on `/`, a folder
   listed twice, a path holding `*`, `?`, `[`, `]`, `{` or `}`, and a read-only one holding `:`.

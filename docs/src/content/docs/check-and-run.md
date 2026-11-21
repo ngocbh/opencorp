@@ -10,4 +10,5 @@ app, and says how to fix what it finds. `opencorp start` starts the office if it
 OpenCorp needs Codex 0.167.0 or later. For an older one doctor fails and says to update Codex:
 `npm install -g @openai/codex@latest` (or `brew upgrade codex`), then `opencorp doctor`. With Codex
 signed in, doctor also starts a thread under an employee's permission and checks that Codex can
-use it, without running a model turn.
+use it, without running a model turn. It warns about each project you trust in Codex whose own
+`.codex/config.toml` Codex would load: your employees' Codex sessions won't start there.

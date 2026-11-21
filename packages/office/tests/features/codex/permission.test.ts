@@ -33,6 +33,8 @@ function layout() {
   fs.writeFileSync(path.join(home, ".ssh/id_test"), "decoy-ssh-key")
   fs.mkdirSync(path.join(install, "bin"), { recursive: true })
   fs.writeFileSync(path.join(install, "bin/codex"), "")
+  // Only the user may change Codex's install, whatever the umask.
+  for (const p of [install, path.join(install, "bin"), path.join(install, "bin/codex")]) fs.chmodSync(p, 0o755)
   fs.mkdirSync(path.join(ws, ".git"), { recursive: true })
   fs.mkdirSync(tmp, { mode: 0o700 })
   fs.chmodSync(tmp, 0o700)

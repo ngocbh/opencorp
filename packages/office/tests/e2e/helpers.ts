@@ -220,6 +220,8 @@ export async function openOffice({
       `exec /usr/bin/env -i PATH=/usr/bin:/bin HOME=${q(codexDir)} ${q(process.execPath)} --no-install ` +
       `--no-env-file --config=/dev/null ${q(FAKE_CODEX)}${scripted} "$@"\n`,
   )
+  // Only the user may change the Codex the office runs, whatever the umask: it refuses one others could.
+  for (const p of [path.dirname(tools), tools, path.join(tools, "codex")]) fs.chmodSync(p, 0o755)
 
   llm = await FakeLLM.start()
   const env = gitEnv(process.env)

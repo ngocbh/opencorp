@@ -22,6 +22,7 @@ import {
   type Codex,
   YES,
   allGone,
+  reopened,
   codexLog,
   deltas,
   errors,
@@ -137,7 +138,7 @@ test("a codex session's thread starts under its employee's permission and asks n
   expect(inits).toHaveLength(1)
   expect(inits[0]!.capabilities).toEqual({ experimentalApi: true })
   // The owner's MCP servers are read, and nothing written.
-  expect(h.fake.calls("config/read")).toEqual([{}])
+  expect(h.fake.calls("config/read")).toEqual([{ cwd: s.cwd, includeLayers: true }])
   const [load, ...more] = h.fake.calls("thread/start") as Record<string, any>[]
   expect(more).toEqual([])
   const id = `opencorp-${row.id}`
@@ -148,8 +149,8 @@ test("a codex session's thread starts under its employee's permission and asks n
   const filesystem = config.permissions[id].filesystem
   // minh may write the folder, has no network, and the fence is denied.
   expect(filesystem[s.cwd]).toBe("write")
-  expect(filesystem[path.join(harnessTemp(), "fence")]).toBe("deny")
-  expect(filesystem[path.join(harnessTemp(), row.id)]).toBe("write")
+  expect(filesystem[path.join(harnessTemp(h.tmpBase), "fence")]).toBe("deny")
+  expect(filesystem[path.join(harnessTemp(h.tmpBase), row.id)]).toBe("write")
   expect(config.permissions[id].network).toEqual({ enabled: false })
   expect(config.projects).toEqual({ [s.cwd]: { trust_level: "untrusted" } })
   expect([config.features, config.notify, config.web_search]).toEqual([OFF, [], "disabled"])
@@ -172,9 +173,9 @@ test("a codex session's thread starts under its employee's permission and asks n
 test("a codex app server runs with the harness PATH and its own fresh temp folder, removed when the session ends", async () => {
   const h = makeCodex()
   const sid = await start(h, h.workspace)
-  const tmp = path.join(harnessTemp(), sid)
+  const tmp = path.join(harnessTemp(h.tmpBase), sid)
   const env = Object.fromEntries(envEntries(h.store.listWorkers()[0]!.pid))
-  const permission = await h.sessions.permission(sid, { gitRoot: null, tmpdir: tmp, fence: path.join(harnessTemp(), "fence") })
+  const permission = await h.sessions.permission(sid, { gitRoot: null, tmpdir: tmp, fence: path.join(harnessTemp(h.tmpBase), "fence") })
   expect([env.TMPDIR, env.PATH]).toEqual([tmp, harnessPath(permission)])
   expect(env.PATH!.split(":")).toContain("/usr/bin")
   // The rest is the environment the sessions give an app-server.
@@ -190,6 +191,60 @@ test("a codex app server runs with the harness PATH and its own fresh temp folde
   await h.sessions.end(sid)
   await waitFor(() => status(h, sid) === "ended", { what: "the end" })
   expect(fs.existsSync(tmp)).toBe(false)
+})
+
+test("a codex the employee could change is refused before it runs as the owner", async () => {
+  const h = makeCodex()
+  const marker = path.join(h.home, "ran")
+  // minh may write the session's folder, and the office would run codex from it.
+  const planted = path.join(h.workspace, "codex")
+  fs.writeFileSync(planted, `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 })
+  const r = reopened(h, { command: () => [planted, "app-server", "--listen", "stdio://"] })
+  const { id: sid } = await r.sessions.startSession("minh", h.workspace, { openedBy: "ngocbh" })
+  await waitFor(() => status(h, sid) === "failed", { what: "failed" })
+  expect(fs.existsSync(marker)).toBe(false)
+  expect(errors(h, sid)).toEqual(["Codex can't run under this employee's permission here; the office log says why."])
+  // Its install folder holds the session's folder, which minh may write.
+  const refusal = `codex session ${sid} can't load its thread: Codex's install folder ${JSON.stringify(path.dirname(path.dirname(planted)))}`
+  expect(h.lines.some((l) => l.startsWith(refusal) && l.includes("is writable by the employee or others"))).toBe(true)
+  expect(h.store.listWorkers()).toEqual([])
+})
+
+test("a load codex answers with another approval policy or profile fails the session, and codex is stopped", async () => {
+  const h = makeCodex()
+  h.fake.script([], { load_answer: { activePermissionProfile: { id: ":workspace", extends: null } } })
+  const { id: sid } = await h.sessions.startSession("minh", h.workspace, { openedBy: "ngocbh" })
+  await waitFor(() => status(h, sid) === "failed", { what: "failed" })
+  expect(errors(h, sid)).toEqual(["Codex can't run under this employee's permission here; the office log says why."])
+  expect(h.lines.some((l) => l.includes('profile ":workspace", not "never"'))).toBe(true)
+  expect(h.store.listWorkers()).toEqual([])
+})
+
+test("a project config codex would load, as the owner trusts the project, refuses the session with what to do", async () => {
+  const h = makeCodex()
+  const cwd = fs.realpathSync(h.workspace)
+  h.fake.script([], { project_layers: { [cwd]: [{ dotCodexFolder: path.join(cwd, ".codex") }] } })
+  const { id: sid } = await h.sessions.startSession("minh", h.workspace, { openedBy: "ngocbh" })
+  await waitFor(() => status(h, sid) === "failed", { what: "failed" })
+  const [shown, ...more] = errors(h, sid)
+  expect(more).toEqual([])
+  expect(shown).toContain(`Codex would load this project's own config (${path.join(cwd, ".codex/config.toml")})`)
+  expect(shown).toContain("Untrust the project in your Codex config.toml")
+  expect(h.fake.calls("thread/start")).toEqual([])
+})
+
+test("an office start sweeps the temp folders a crash left for its own sessions, and no other's", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  const root = harnessTemp(h.tmpBase)
+  fs.writeFileSync(path.join(root, sid, "left"), "x")
+  fs.mkdirSync(path.join(root, "01OTHEROFFICESESSION000000"), { mode: 0o700 })
+  // A crash: the app-server dies with the office, and its folder stays.
+  killGroup(h.store.listWorkers()[0]!.pid)
+  await waitFor(() => errors(h, sid).length > 0, { what: "the app-server's death" })
+  const r = reopened(h)
+  await r.sessions.restore()
+  expect(fs.readdirSync(root).sort()).toEqual(["01OTHEROFFICESESSION000000", "fence"])
 })
 
 test("a session whose employee's permission can't be built fails with why, before codex starts", async () => {
@@ -208,7 +263,7 @@ test("a session whose employee's permission can't be built fails with why, befor
   expect(h.lines.some((l) => l.includes(`codex session ${sid} can't load its thread: the harness's listed folder`))).toBe(
     true,
   )
-  expect(fs.existsSync(path.join(harnessTemp(), sid))).toBe(false)
+  expect(fs.existsSync(path.join(harnessTemp(h.tmpBase), sid))).toBe(false)
 })
 
 test("a codex session that cant be set up fails at once", async () => {

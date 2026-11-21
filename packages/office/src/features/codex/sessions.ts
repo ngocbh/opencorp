@@ -12,7 +12,7 @@ import { loadRepo, missingPerson } from "../../company/loader.ts"
 import type { Bus } from "../../runtime/bus.ts"
 import type { Tools } from "../../runtime/service/programs.ts"
 import type { AnswerKind, SessionHarness } from "../../runtime/sessions/harness.ts"
-import type { EmployeePermission } from "../../runtime/sandbox/harness_profile.ts"
+import { type EmployeePermission, checkCodexInstall } from "../../runtime/sandbox/harness_profile.ts"
 import {
   type OfficePaths as SandboxOfficePaths,
   UnsafeWorkspace,
@@ -43,7 +43,16 @@ import {
 import { nameOf } from "../../tools/codex/rpc.ts"
 import { type HarnessThread, employeePermission } from "./permission.ts"
 import { CodexSession, END_WAIT_MS, REPLY_WAIT_MS, STOP_WAIT_MS } from "./session.ts"
-import { fenceIn, freshFolder, gitRootOf, harnessHomes, harnessTemp, removeFolder, threadEnv } from "./thread.ts"
+import {
+  fenceIn,
+  freshFolder,
+  gitRootOf,
+  harnessHomes,
+  harnessTemp,
+  removeFolder,
+  sweepTemp,
+  threadEnv,
+} from "./thread.ts"
 
 /** What a yian chat's session calls answer, until the chat harness serves them. */
 const NOT_SERVED = "yian chats are not served yet"
@@ -82,6 +91,8 @@ export type CodexSessionsOptions = {
   command?: () => string[]
   /** An app-server's environment (default the worker environment). */
   env?: () => Record<string, string>
+  /** Where the harness temp folder is (`harnessTemp`; default `/tmp`); tests pass their own. */
+  tmpBase?: string
   closeGraceMs?: number
   stopWaitMs?: number
   endWaitMs?: number
@@ -108,6 +119,7 @@ export class CodexSessions implements SessionHarness {
   readonly log: (line: string) => void
   readonly #command: (() => string[]) | undefined
   readonly #env: () => Record<string, string>
+  readonly #tmpBase: string | undefined
   readonly #live = new Map<string, CodexSession>()
   /** Set by `closeAll`: no session starts after office stop. */
   #closed = false
@@ -120,6 +132,7 @@ export class CodexSessions implements SessionHarness {
     this.hooks = hooks
     this.#command = options.command
     this.#env = options.env ?? (() => workerEnv(process.env))
+    this.#tmpBase = options.tmpBase
     this.closeGraceMs = options.closeGraceMs ?? CLOSE_GRACE_MS
     this.stopWaitMs = options.stopWaitMs ?? STOP_WAIT_MS
     this.endWaitMs = options.endWaitMs ?? END_WAIT_MS
@@ -346,6 +359,7 @@ export class CodexSessions implements SessionHarness {
    *  reports that turn interrupted on resume and never reruns it. Waiting with no turn open becomes idle without it.
    *  Starting fails. Ending finishes ending. Open cards go stale. */
   async restore(): Promise<void> {
+    this.#sweep()
     for (const session of this.store.listSessions({ status: [...LIVE] })) {
       if (this.#closed) return // the office is stopping: what is left stays as it is, for the next restore
       if (session.harness !== "codex" || this.#live.has(session.id)) continue
@@ -408,10 +422,21 @@ export class CodexSessions implements SessionHarness {
     await this.hooks.notify("sessionEnded", updated)
   }
 
+  /** Removes what a crashed office left in the harness temp folder: the temp folder of each of this office's sessions
+   *  with no live app-server here (the next load makes a fresh one), and a doctor probe's whose process is gone. */
+  #sweep(): void {
+    try {
+      const ours = (name: string) => !this.#live.has(name) && this.store.getSession(name) !== undefined
+      sweepTemp(harnessTemp(this.#tmpBase), ours, this.log)
+    } catch (error) {
+      this.log(`codex: the harness temp folder wasn't swept (${nameOf(error)})`)
+    }
+  }
+
   /** Removes session `sessionId`'s temp folder, once no app-server of it runs; a failure is logged, not thrown. */
   #dropTemp(sessionId: string): void {
     try {
-      removeFolder(harnessTemp(), sessionId)
+      removeFolder(harnessTemp(this.#tmpBase), sessionId)
     } catch (error) {
       this.log(`codex session ${sessionId}: its temp folder wasn't removed (${nameOf(error)})`)
     }
@@ -421,20 +446,23 @@ export class CodexSessions implements SessionHarness {
    *  test's command; the worker environment with the harness PATH and a fresh, private temp folder as TMPDIR
    *  (`/tmp/opencorp-<uid>/codex/<session>`); and the employee's permission over that folder, the fence beside it,
    *  the folder's git root, and the harnesses' own config folders where the office's environment sets them apart.
-   *  Throws `CodexMissing` with no Codex, and as the permission's check does. */
+   *  Codex as it will run is checked first (`checkCodexInstall`), since it runs as the owner. Throws `CodexMissing`
+   *  with no Codex, and as the checks do. */
   async prepare(live: Pick<Launchable, "sessionId" | "cwd">): Promise<Prepared> {
     const pinned = this.office.tools.codex
     const command = this.#command
       ? this.#command()
       : appServerCommand(pinned === undefined ? undefined : nativeCodex(pinned).run, process.env.OPENCORP_CODEX_BIN)
-    const root = harnessTemp()
+    const root = harnessTemp(this.#tmpBase)
     const permission = await this.permission(live.sessionId, {
       gitRoot: gitRootOf(live.cwd),
       tmpdir: freshFolder(root, live.sessionId),
       fence: fenceIn(root),
       harnessHomes: harnessHomes(process.env),
     })
-    return { command, env: threadEnv(this.#env(), permission), permission, install: nativeCodex(command[0]!).install }
+    const { install } = nativeCodex(command[0]!)
+    checkCodexInstall(permission, { run: command[0]!, install })
+    return { command, env: threadEnv(this.#env(), permission), permission, install }
   }
 
   /** The session's employee's permission for one harness thread in its folder, from the people at the session's

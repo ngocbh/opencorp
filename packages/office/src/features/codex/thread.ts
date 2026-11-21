@@ -3,7 +3,12 @@
  *  that turns the owner's MCP servers off. Also doctor's probe of a thread that starts but can't be used. */
 import fs from "node:fs"
 import path from "node:path"
-import { type EmployeePermission, codexThread, harnessPath } from "../../runtime/sandbox/harness_profile.ts"
+import {
+  type EmployeePermission,
+  checkCodexInstall,
+  codexThread,
+  harnessPath,
+} from "../../runtime/sandbox/harness_profile.ts"
 import { UnsafeProfile, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
 import { APP_SERVER_ARGS, CodexProcess, CodexStartError, threadLoad } from "../../tools/codex/codex.ts"
 import { type JsonRpc, RpcClosed, RpcError, nameOf } from "../../tools/codex/rpc.ts"
@@ -106,22 +111,85 @@ export function threadEnv(base: Record<string, string>, p: EmployeePermission): 
   return { ...base, PATH: harnessPath(p), TMPDIR: p.tmpdir }
 }
 
-/** The MCP servers the owner's Codex config defines, as the app-server reads it (`config/read`, the user's and the
- *  system's layers, no project's); nothing is written. Rejects as the request does. */
-export async function mcpServerNames(rpc: JsonRpc): Promise<string[]> {
-  const read = (await rpc.request("config/read", {}, { timeout: CONFIG_READ_MS })) as {
+/** A project's own Codex config (`.codex/config.toml` in the folder or one above it) that Codex would load for a
+ *  thread there, because the owner's Codex config trusts the project. Its MCP servers and hooks would run as the owner,
+ *  outside the employee's permission, and the thread's override can't stop them, so the load is refused. */
+export class ProjectConfigLoads extends Error {
+  override name = "ProjectConfigLoads"
+
+  constructor(readonly folders: readonly string[]) {
+    super(
+      `Codex would load this project's own config (${folders.map((f) => path.join(f, "config.toml")).join(", ")}), ` +
+        "since your Codex config trusts the project, and its MCP servers and hooks would run as you, outside your " +
+        "employee's permission. Untrust the project in your Codex config.toml (its [projects] entry), or remove that " +
+        "file, then send your message again.",
+    )
+  }
+}
+
+/** The owner's Codex config as the app-server reads it for a thread in `cwd` (`config/read` with its layers; nothing
+ *  is written): the MCP servers it defines. Throws `ProjectConfigLoads` when a project layer would load, and rejects as
+ *  the request does. */
+export async function ownerConfig(rpc: JsonRpc, cwd: string): Promise<{ mcpServers: string[] }> {
+  const read = (await rpc.request("config/read", { cwd, includeLayers: true }, { timeout: CONFIG_READ_MS })) as {
     config?: { mcp_servers?: unknown }
+    layers?: { name?: { type?: unknown; dotCodexFolder?: unknown }; disabledReason?: unknown }[] | null
   } | null
+  // Codex lists a project layer it won't load (the project isn't trusted) with the reason it doesn't.
+  const loaded = (read?.layers ?? []).filter((layer) => layer.name?.type === "project" && !layer.disabledReason)
+  if (loaded.length > 0) throw new ProjectConfigLoads(loaded.map((layer) => String(layer.name?.dotCodexFolder)))
   const servers = read?.config?.mcp_servers
-  return servers !== null && typeof servers === "object" && !Array.isArray(servers) ? Object.keys(servers) : []
+  const mcpServers = isRecord(servers) ? Object.keys(servers) : []
+  return { mcpServers }
 }
 
 /** The `thread/start` (or `thread/resume`) params of a thread in `p.workspace` under `p`, with profile `id`: every MCP
- *  server the owner's config defines turned off (`mcpServerNames`), and `install` read (`codexThread`). Rejects when the
- *  config can't be read, since a server left on would run as the owner, and throws as `codexThread` does. */
+ *  server the owner's config defines turned off (`ownerConfig`), and `install` read (`codexThread`). Rejects when the
+ *  config can't be read, since a server left on would run as the owner; throws `ProjectConfigLoads`, and as
+ *  `codexThread` does. */
 export async function employeeLoad(rpc: JsonRpc, p: EmployeePermission, id: string, install: string) {
-  const mcpServers = await mcpServerNames(rpc)
+  const { mcpServers } = await ownerConfig(rpc, p.workspace)
   return threadLoad(p.workspace, codexThread(p, id, { install, mcpServers }))
+}
+
+/** Throws `UnsafeProfile` unless Codex's answer to a load (`thread/start`, `thread/resume`) says the thread runs as
+ *  the office asked: no approval asked, and profile `id` active. */
+export function checkLoaded(answer: unknown, id: string): void {
+  const loaded = (isRecord(answer) ? answer : {}) as { approvalPolicy?: unknown; activePermissionProfile?: unknown }
+  const profile = isRecord(loaded.activePermissionProfile) ? loaded.activePermissionProfile.id : null
+  if (loaded.approvalPolicy === "never" && profile === id) return
+  throw new UnsafeProfile(
+    `Codex loaded the thread with approval policy ${JSON.stringify(loaded.approvalPolicy ?? null)} and profile ` +
+      `${JSON.stringify(profile ?? null)}, not "never" and ${JSON.stringify(id)}`,
+  )
+}
+
+/** Removes each folder in `root` (`harnessTemp`'s) that is the user's and no link, and that `stale` names or that is a
+ *  doctor probe's (`doctor-<pid>`) whose process is gone; a failure is passed to `log`. What another office keeps
+ *  there is left alone, unless `stale` names it. */
+export function sweepTemp(root: string, stale: (name: string) => boolean, log: (line: string) => void): void {
+  const uid = process.getuid!()
+  for (const name of fs.readdirSync(root)) {
+    const probe = /^doctor-(\d+)$/.exec(name)
+    if (!(probe !== null ? gone(Number(probe[1])) : stale(name))) continue
+    const stat = fs.lstatSync(path.join(root, name), { throwIfNoEntry: false })
+    if (stat === undefined || stat.isSymbolicLink() || !stat.isDirectory() || stat.uid !== uid) continue
+    try {
+      removeFolder(root, name)
+    } catch (error) {
+      log(`codex: the temp folder ${name} an earlier run left wasn't removed (${nameOf(error)})`)
+    }
+  }
+}
+
+/** Whether no process `pid` runs. */
+function gone(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH"
+  }
 }
 
 /** What `threadProbe` runs. */
@@ -141,12 +209,20 @@ export type ProbeOptions = {
   timeoutMs: number
 }
 
-/** Null if a Codex thread under an employee's permission can be used; else what failed, and the log holding Codex's
- *  output (`doctor-codex.log` beside the fence). It starts Codex as a session does, loads an ephemeral thread in a
- *  fresh read-only folder with no network, then lists the thread's MCP servers, which reloads its config as each turn
- *  does: a thread can start under a config no turn could load. No model turn runs, and the probe's folders are
- *  removed. */
-export async function threadProbe(options: ProbeOptions): Promise<{ why: string; log: string } | null> {
+/** What `threadProbe` found: what failed and the log holding Codex's output, or null; and the projects the owner's
+ *  Codex config trusts whose own config would load, where employees' Codex sessions are refused. */
+export type Probed = { failed: { why: string; log: string } | null; projectConfigs: string[] }
+
+/** The most trusted projects the probe looks at. */
+const PROJECTS_MAX = 50
+
+/** Whether a Codex thread under an employee's permission can be used. It checks Codex as the office would run it
+ *  (`checkCodexInstall`), starts it as a session does, loads an ephemeral thread in a fresh read-only folder with no
+ *  network, then lists the thread's MCP servers, which reloads its config as each turn does: a thread can start under
+ *  a config no turn could load. Then, for each project the owner's Codex config trusts (up to 50), whether its own
+ *  config would load. No model turn runs; the probe's folders are removed, and Codex's output stays in
+ *  `doctor-codex.log` beside the fence. */
+export async function threadProbe(options: ProbeOptions): Promise<Probed> {
   const root = harnessTemp(options.base)
   const name = `doctor-${process.pid}`
   const dir = freshFolder(root, name)
@@ -171,6 +247,7 @@ export async function threadProbe(options: ProbeOptions): Promise<{ why: string;
       officeHome: options.officeHome,
       harnessHomes: harnessHomes(options.environ),
     }
+    checkCodexInstall(p, options.codex)
     const started: CodexProcess = (proc = new CodexProcess({
       command: [options.codex.run, ...APP_SERVER_ARGS],
       cwd: ws,
@@ -183,24 +260,47 @@ export async function threadProbe(options: ProbeOptions): Promise<{ why: string;
       environ: options.environ,
       logLine() {},
     }))
+    step = "the start"
     await started.start()
     const rpc = started.rpc!
     const timeout = options.timeoutMs
     step = "config/read"
     const params = await employeeLoad(rpc, p, "opencorp-doctor", options.codex.install)
     step = "thread/start"
-    const thread = (await rpc.request("thread/start", { ...params, ephemeral: true }, { timeout })) as {
-      thread: { id: string }
-    }
+    const loaded = await rpc.request("thread/start", { ...params, ephemeral: true }, { timeout })
+    checkLoaded(loaded, "opencorp-doctor")
     step = "mcpServerStatus/list"
-    await rpc.request("mcpServerStatus/list", { threadId: thread.thread.id, detail: "toolsAndAuthOnly" }, { timeout })
-    return null
+    const threadId = (loaded as { thread: { id: string } }).thread.id
+    await rpc.request("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly" }, { timeout })
+    step = "config/read"
+    return { failed: null, projectConfigs: await projectConfigs(rpc) }
   } catch (error) {
-    return { why: probeFailure(error, step), log }
+    return { failed: { why: probeFailure(error, step), log }, projectConfigs: [] }
   } finally {
     await proc?.close(PROBE_GRACE_MS)
     removeFolder(root, name)
   }
+}
+
+/** The `.codex` folders whose config Codex would load in the projects the owner's Codex config trusts (the first 50
+ *  that are folders), as `ownerConfig` finds them; a project Codex can't read is skipped. */
+async function projectConfigs(rpc: JsonRpc): Promise<string[]> {
+  const read = (await rpc.request("config/read", {}, { timeout: CONFIG_READ_MS })) as { config?: { projects?: unknown } }
+  const projects = read?.config?.projects
+  const trusted = Object.entries(isRecord(projects) ? projects : {})
+    .filter(([dir, project]) => isRecord(project) && project.trust_level === "trusted" && path.isAbsolute(dir))
+    .map(([dir]) => dir)
+    .filter((dir) => fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory())
+    .slice(0, PROJECTS_MAX)
+  const found: string[] = []
+  for (const dir of trusted) {
+    try {
+      await ownerConfig(rpc, dir)
+    } catch (error) {
+      if (error instanceof ProjectConfigLoads) found.push(...error.folders)
+    }
+  }
+  return [...new Set(found)]
 }
 
 /** The harnesses' own config folders the office's environment sets apart from the home (`CODEX_HOME`,
@@ -209,12 +309,15 @@ export function harnessHomes(environ: Record<string, string | undefined>): strin
   return [environ.CODEX_HOME, environ.CLAUDE_CONFIG_DIR].filter((dir): dir is string => Boolean(dir))
 }
 
-/** Why the probe failed at `step` (empty before Codex started). */
+/** Why the probe failed at `step` (empty before Codex runs). */
 function probeFailure(error: unknown, step: string): string {
   if (error instanceof UnsafeProfile || error instanceof UnsafeWorkspace) {
     return `an employee's permission can't be built here: ${error.message}`
   }
-  if (step === "") return `Codex didn't start: ${failure(error instanceof CodexStartError ? error.cause : error)}`
+  if (step === "the start") {
+    return `Codex didn't start: ${failure(error instanceof CodexStartError ? error.cause : error)}`
+  }
+  if (error instanceof ProjectConfigLoads) return error.message
   return `${step} failed: ${failure(error)}`
 }
 
@@ -223,4 +326,9 @@ function failure(error: unknown): string {
   if (error instanceof RpcError) return error.rpcMessage
   if (error instanceof RpcClosed || error instanceof Error) return error.message
   return nameOf(error)
+}
+
+/** A plain JSON object. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
 }

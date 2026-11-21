@@ -119,6 +119,8 @@ function tracked(store: Store): void {
  *  running is killed. */
 export function makeCodex({ files = {}, ...options }: { files?: Record<string, unknown> } & CodexSessionsOptions = {}) {
   const home = tempDir()
+  // The harness temp folder of these sessions alone.
+  const tmpBase = tempDir()
   // The owner's home is a temp one, so an employee's permission denies its folders, never the real home's.
   const office = makeOffice({ files: { ...CODEX_PERSON, ...files }, guards: { home } })
   const store = office.store
@@ -138,12 +140,13 @@ export function makeCodex({ files = {}, ...options }: { files?: Record<string, u
   const sessions = new CodexSessions(office, hooks, {
     command: () => fake.command(),
     env: () => ({ PATH: "/usr/bin:/bin", HOME: home }),
+    tmpBase,
     closeGraceMs: 500,
     log,
     ...options,
   })
   office.onStop.push(() => sessions.closeAll())
-  return { office, store, hooks, sessions, fake, workspace: tempDir(), lines, events, storeEvents, home }
+  return { office, store, hooks, sessions, fake, workspace: tempDir(), lines, events, storeEvents, home, tmpBase }
 }
 
 /** What `makeCodex` returns. */
@@ -157,6 +160,7 @@ export function reopened(h: Codex, options: CodexSessionsOptions = {}): Codex {
   const sessions = new CodexSessions(h.office, hooks, {
     command: () => h.fake.command(),
     env: () => ({ PATH: "/usr/bin:/bin", HOME: h.home }),
+    tmpBase: h.tmpBase,
     closeGraceMs: 500,
     log,
     ...options,

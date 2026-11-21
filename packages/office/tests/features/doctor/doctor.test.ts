@@ -1415,20 +1415,25 @@ function fakeAppServer(dir: string, script: object): { env: Record<string, strin
   const log = path.join(dir, "rpc.jsonl")
   fs.writeFileSync(file, JSON.stringify(script))
   const bun = `${process.execPath} --no-install --no-env-file --config=/dev/null`
-  fs.writeFileSync(path.join(bin, "codex"), `#!/bin/sh\nexec ${bun} ${FAKE_CODEX} --script ${file} --log ${log} "$@"\n`, {
-    mode: 0o755,
-  })
+  fs.writeFileSync(path.join(bin, "codex"), `#!/bin/sh\nexec ${bun} ${FAKE_CODEX} --script ${file} --log ${log} "$@"\n`)
+  // Only the user may change the Codex doctor runs, whatever the umask.
+  for (const p of [bin, path.join(bin, "codex")]) fs.chmodSync(p, 0o755)
   return { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir }, log }
 }
 
-test("given the office, the check loads a thread under an employee's permission, with no model turn", async () => {
+/** A temp owner's home with an office home in it, and a harness temp folder's base of its own. */
+function probeHomes() {
   const dir = fs.realpathSync(tempDir())
   const home = path.join(dir, "home")
   fs.mkdirSync(path.join(home, ".opencorp"), { recursive: true })
-  const office = { home, officeHome: path.join(home, ".opencorp") }
+  return { dir, office: { home, officeHome: path.join(home, ".opencorp") }, base: fs.realpathSync(tempDir()) }
+}
+
+test("given the office, the check loads a thread under an employee's permission, with no model turn", async () => {
+  const { dir, office, base } = probeHomes()
   const { env, log } = fakeAppServer(dir, { mcp_servers: { docs: {} } })
   const codex = path.join(dir, "bin", "codex")
-  expect(await doctor.codexCheck(env, {}, null, { office })).toEqual({
+  expect(await doctor.codexCheck(env, {}, null, { office, base })).toEqual({
     name: "codex",
     status: "ok",
     detail: `codex-cli 0.167.0-fake at ${codex}, signed in, and a thread under an employee's permission runs`,
@@ -1440,20 +1445,31 @@ test("given the office, the check loads a thread under an employee's permission,
 })
 
 test("a thread that starts but can't be used fails the check, saying why", async () => {
-  const dir = fs.realpathSync(tempDir())
-  const home = path.join(dir, "home")
-  fs.mkdirSync(path.join(home, ".opencorp"), { recursive: true })
-  const office = { home, officeHome: path.join(home, ".opencorp") }
+  const { dir, office, base } = probeHomes()
   const message = "failed to load workspace requirements: invalid input parameter"
   const { env } = fakeAppServer(dir, { mcp_status_error: { code: -32603, message } })
-  expect(await doctor.codexCheck(env, {}, null, { office })).toEqual({
+  expect(await doctor.codexCheck(env, {}, null, { office, base })).toEqual({
     name: "codex",
     status: "fail",
     detail:
       `codex-cli 0.167.0-fake at ${path.join(dir, "bin", "codex")} is signed in, but a thread under an employee's ` +
       `permission can't be used: mcpServerStatus/list failed: ${message}; Codex's output is in ` +
-      path.join(harnessTemp(), "doctor-codex.log"),
+      path.join(harnessTemp(base), "doctor-codex.log"),
   })
+})
+
+test("a project codex trusts whose own config it would load is a warning naming it", async () => {
+  const { dir, office, base } = probeHomes()
+  const project = path.join(dir, "project")
+  fs.mkdirSync(path.join(project, ".codex"), { recursive: true })
+  const { env } = fakeAppServer(dir, {
+    projects: { [project]: { trust_level: "trusted" } },
+    project_layers: { [project]: [{ dotCodexFolder: path.join(project, ".codex") }] },
+  })
+  const check = await doctor.codexCheck(env, {}, null, { office, base })
+  expect(check.status).toBe("warn")
+  expect(check.detail).toContain("a thread under an employee's permission runs, but your Codex config trusts projects")
+  expect(check.detail).toContain(`sessions there are refused (${path.join(project, ".codex/config.toml")})`)
 })
 
 test("a failed codex login status falls back to stdout then the exit code", async () => {

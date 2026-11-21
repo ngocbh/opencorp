@@ -3,8 +3,8 @@
  *
  *  OpenCorp puts no sandbox of its own around a harness. The harness runs as the owner, with its own login and
  *  config; its sandbox holds its commands (and Codex's file edits) to the employee's permission. What a harness would
- *  otherwise run as the owner outside that sandbox is turned off: hooks, `notify`, apps, plugins and MCP servers, and
- *  the folder's own project config, which stays untrusted. */
+ *  otherwise run as the owner outside that sandbox is turned off: hooks, `notify`, apps, plugins and MCP servers; the
+ *  folder's own project config stays untrusted, unless the owner's config already trusts it (the load then refuses). */
 import fs from "node:fs"
 import path from "node:path"
 import {
@@ -92,6 +92,8 @@ interface Checked {
   /** The folders the harness's commands can write: the session's folder if writable, the temp folder, and each
    *  writable listed folder. */
   writableRoots: string[]
+  /** `othersWritable`, resolved. */
+  others: string[]
   /** The project paths both harnesses keep read-only (`keptPaths`). */
   kept: Kept[]
   /** The office's home and the harnesses' own config where a writable listing covers them, and each writable listed
@@ -127,7 +129,7 @@ export function codexThread(
   // read, and a more specific entry beats a broader one.
   const filesystem: Record<string, string> = {
     ":minimal": "read",
-    [installFolder(install, c.writableRoots)]: "read",
+    [installFolder(install, [...c.writableRoots, ...c.others])]: "read",
     [c.workspace]: c.writable ? "write" : "read",
   }
   filesystem[c.tmpdir] = "write"
@@ -140,8 +142,9 @@ export function codexThread(
   for (const denied of c.denied) filesystem[denied] = "deny"
   // Always: an exec-policy `allow` rule runs its command outside the sandbox unless the profile denies some read.
   filesystem[c.fence] = "deny"
-  // The folder and its git root untrusted: so Codex never writes trust into the owner's config.toml, and never loads
-  // the folder's own .codex/config.toml, whose MCP servers and hooks would run as the owner.
+  // The folder and its git root untrusted, so Codex never writes trust into the owner's config.toml. This doesn't stop
+  // Codex loading the folder's own .codex/config.toml where the owner's config already trusts the project: the load
+  // refuses that case (its MCP servers and hooks would run as the owner).
   const untrusted = { trust_level: "untrusted" }
   const projects: Record<string, unknown> = { [c.workspace]: untrusted }
   if (c.gitRoot !== null) projects[c.gitRoot] = untrusted
@@ -317,6 +320,7 @@ function checked(p: EmployeePermission): Checked {
     ...HARNESS_CONFIG.map(([rel, folder]) => ({ path: realPath(path.join(home, rel)), folder })),
     ...harnessHomes.map((dir) => ({ path: dir, folder: true })),
   ])
+  const others = (p.othersWritable ?? []).map((dir) => realPath(dir))
   const all = [workspace, tmpdir, fence, home, ...folders.map((f) => f.path), ...denied, ...held.map((h) => h.path)]
   for (const resolved of all) {
     if (PATTERN.test(resolved)) throw new UnsafeProfile(`the harness would read ${resolved} as a pattern`)
@@ -332,9 +336,10 @@ function checked(p: EmployeePermission): Checked {
     home,
     denied,
     writableRoots: writable,
+    others,
     kept: keptPaths(workspace, gitRoot, writable),
     held,
-    path: pathOf(folders, [...writable, ...(p.othersWritable ?? []).map((dir) => realPath(dir))]),
+    path: pathOf(folders, [...writable, ...others]),
   }
 }
 
@@ -466,8 +471,29 @@ function checkReached(workspace: string, writable: readonly string[]): void {
   }
 }
 
-/** `install` resolved, if the employee can't write it: neither it nor a folder its path walks through lies in a folder
- *  the harness can write, and it holds none. */
+/** Throws `UnsafeProfile` unless Codex as the office runs it can't be changed by anyone but the user: `run`, the file
+ *  the office spawns, and `install`, the folder Codex's sandboxed commands run it from (`nativeCodex`). Neither, nor a
+ *  folder either's path walks through, may lie in a folder the employee's harness can write, another person's
+ *  writable folder or a live session's folder (`othersWritable`); the install folder may hold none of them; and
+ *  neither file's folder, the file itself, the install folder nor its `bin` may be open to the group or others. Codex
+ *  runs as the owner, outside any sandbox, so this comes before it runs. Throws as `checkPermission` does too. */
+export function checkCodexInstall(p: EmployeePermission, { run, install }: { run: string; install: string }): void {
+  const c = checked(p)
+  const roots = [...c.writableRoots, ...c.others]
+  installFolder(install, roots)
+  const what = `the Codex the office runs, ${JSON.stringify(run)},`
+  if (!path.isAbsolute(run)) throw new UnsafeProfile(`${what} isn't absolute`)
+  const visited: string[] = []
+  const real = realPath(run, visited)
+  const through = [real, ...visited].find((p) => roots.some((root) => within(p, root)))
+  if (through !== undefined) throw new UnsafeProfile(`${what} is writable by the employee or others: ${through}`)
+  const open = [real, path.dirname(real)].find(openToOthers)
+  if (open !== undefined) throw new UnsafeProfile(`${what} can be changed: others than the user may write ${open}`)
+}
+
+/** `install` resolved, if no one but the user can write it: neither it nor a folder its path walks through lies in
+ *  one of `writable` (the folders the harness can write, and others' writable folders), it holds none, and neither it
+ *  nor its `bin` is open to the group or others. */
 function installFolder(install: string, writable: readonly string[]): string {
   const what = `Codex's install folder ${JSON.stringify(install)}`
   if (!path.isAbsolute(install)) throw new UnsafeProfile(`${what} isn't absolute`)
@@ -476,9 +502,11 @@ function installFolder(install: string, writable: readonly string[]): string {
   for (const root of writable) {
     const through = [real, ...visited].find((p) => within(p, root)) ?? (within(root, real) ? root : undefined)
     if (through !== undefined) {
-      throw new UnsafeProfile(`${what} is writable by the employee: ${through} is in or holds ${root}`)
+      throw new UnsafeProfile(`${what} is writable by the employee or others: ${through} is in or holds ${root}`)
     }
   }
+  const open = [real, path.join(real, "bin")].find(openToOthers)
+  if (open !== undefined) throw new UnsafeProfile(`${what} can be changed: others than the user may write ${open}`)
   if (PATTERN.test(real)) throw new UnsafeProfile(`the harness would read ${real} as a pattern`)
   return real
 }

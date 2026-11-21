@@ -3,10 +3,13 @@
  *      bun fake_codex.ts (--script s.json | --scenario e2e) [--log rpc.jsonl] [ignored args]
  *
  *  A script is `{"thread": {"id", "model"}, "account": {...} | null, "initialize_error": {...}, "initialize_delay":
- *  seconds, "interrupt_hangs": bool, "load_exit": code, "resume_error": {...}, "mcp_servers": {name: {...}},
+ *  seconds, "interrupt_hangs": bool, "load_exit": code, "resume_error": {...}, "load_answer": {...}, "mcp_servers":
+ *  {name: {...}}, "projects": {path: {...}}, "project_layers": {cwd: [{"dotCodexFolder", "disabledReason"?}]},
  *  "config_read_error": {...}, "mcp_status_error": {...}, "stderr": "...", "turns": [[step, ...], ...]}`; `load_exit`
- *  dies with `code` on `thread/start` or `thread/resume`, before answering. `config/read` answers the owner's config
- *  with `mcp_servers` (none by default). `mcpServerStatus/list` lists them, each disabled when the thread's config
+ *  dies with `code` on `thread/start` or `thread/resume`, before answering, and `load_answer`'s keys replace its
+ *  answer's. `config/read` answers the owner's config with `mcp_servers` and `projects` (none by default) and, asked
+ *  for a `cwd`'s layers, the project layers `project_layers` gives that cwd. `mcpServerStatus/list` lists the
+ *  servers, each disabled when the thread's config
  *  turned it off, and fails as Codex does when the thread's config defines a permission profile but no
  *  `default_permissions`. Each `turn/start` that starts a turn takes the next list of steps (an unscripted turn just
  *  completes). The count is kept next to `--log`, so a restarted fake goes on with the next turn. A step is one of:
@@ -173,11 +176,23 @@ export class Fake {
         approvalPolicy: params.approvalPolicy ?? null,
         approvalsReviewer: "approvalsReviewer" in params ? params.approvalsReviewer : "user",
         sandbox: { type: "readOnly" },
+        activePermissionProfile: params.permissions ? { id: params.permissions, extends: null } : null,
+        ...this.script.load_answer,
       })
     }
     if (method === "config/read") {
       if (truthy(this.script.config_read_error)) return this.reply(requestId, undefined, this.script.config_read_error)
-      return this.reply(requestId, { config: { mcp_servers: this.script.mcp_servers ?? {} }, origins: {} })
+      const config = { mcp_servers: this.script.mcp_servers ?? {}, projects: this.script.projects ?? {} }
+      if (!params.includeLayers) return this.reply(requestId, { config, origins: {} })
+      const projects: Obj[] = (params.cwd && this.script.project_layers?.[params.cwd]) || []
+      const layers: Obj[] = projects.map((layer) => ({
+        name: { type: "project", dotCodexFolder: layer.dotCodexFolder },
+        version: "sha256:fake",
+        config: {},
+        ...(layer.disabledReason ? { disabledReason: layer.disabledReason } : {}),
+      }))
+      layers.push({ name: { type: "user", file: "/fake/config.toml" }, version: "sha256:fake", config })
+      return this.reply(requestId, { config, origins: {}, layers })
     }
     if (method === "mcpServerStatus/list") return this.mcpStatus(requestId)
     if (method === "turn/start") return this.turnStart(requestId)
