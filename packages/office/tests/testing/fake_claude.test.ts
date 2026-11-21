@@ -545,11 +545,14 @@ test("the fake exits loudly on what it doesn't model, so no test can rely on it"
     const ran = runOnce(fake, [...STREAM, ...args], work)
     loud(ran.status, ran.stderr)
   }
-  // In a session: a hook event, a mode, a command it can't parse that a scoped rule would have to match.
+  // In a session: a hook event, a mode, a command it can't parse that a scoped rule would have to match, and a
+  // message's priority now or one the docs don't name.
   const sessions: [string[], Msg[]][] = [
     [[], [request("init", { subtype: "initialize", hooks: { Stop: [{ hookCallbackIds: ["hook_0"] }] } })]],
     [[], [request("mode", { subtype: "set_permission_mode", mode: "auto" })]],
     [["--allowedTools", "Bash(touch *)"], [user("Go.", "u-1")]],
+    [[], [user("Now.", "u-1", "now")]],
+    [[], [user("Soon.", "u-1", "soon")]],
   ]
   for (const [args, lines] of sessions) {
     const claude = new Claude(fake, args, work)
@@ -587,7 +590,7 @@ test("the fake exits loudly on what it doesn't model, so no test can rely on it"
   }
   const touch = [{ tool: "Bash", input: { command: "LANG=C touch t" } }]
   expect(await outcome(["--permission-mode", "acceptEdits"], touch)).toEqual(["refused"])
-  expect(fake.log().filter((entry) => entry.dir === "unmodelled").length).toBe(15)
+  expect(fake.log().filter((entry) => entry.dir === "unmodelled").length).toBe(17)
 })
 
 test("a Bash step's result is its command's real output and exit", async () => {
@@ -664,26 +667,30 @@ test("an interrupt while a tool waits on the host rejects that tool's result", a
   expect(await claude.close()).toBe(0)
 })
 
-test("a message with priority next joins the running turn, and one without waits", async () => {
+test("a message with priority next, or with none, joins the running turn, and one with priority later waits", async () => {
   const { fake, work } = fakeClaude({ turns: [[{ say: "a" }, { sleep: 1 }, { say: "b" }], [{ say: "second" }]] })
   const claude = new Claude(fake, [], work)
   claude.send(user("First.", "u-1"))
   await claude.until(isText("a"), "the first text")
   claude.send(user("Join.", "u-2", "next"))
-  claude.send(user("Wait.", "u-3"))
+  claude.send(user("Wait.", "u-3", "later"))
+  claude.send(user("Join too.", "u-4"))
   const first = await claude.turn("the first turn's end")
   expect(first.map(brief)).toEqual([
     "queued:u-2",
     "queued:u-3",
+    "queued:u-4",
     "started:u-2",
+    "started:u-4",
     "assistant:b",
-    // As recorded: the line that joined completes before the result, the first one after it.
+    // As recorded: the lines that joined complete before the result, the first one after it.
     "completed:u-2",
+    "completed:u-4",
     "result/success/completed",
     "completed:u-1",
     "system/session_state_changed=idle",
   ])
-  expect(resultOf(first)!.user_message_uuids).toEqual(["u-1", "u-2"])
+  expect(resultOf(first)!.user_message_uuids).toEqual(["u-1", "u-2", "u-4"])
   expect(resultOf(first)!.queued_turn_count).toBe(1)
   const second = await claude.turn("the second turn's end")
   expect(second.map(brief)).toEqual([

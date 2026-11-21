@@ -31,8 +31,10 @@
  *  - **A turn.** A `user` line, when no turn runs, starts one: `session_state_changed` running, the line's
  *    `command_lifecycle` queued and started (a line with no `uuid` gets none), `system`/`init`, the script's next turn
  *    of steps, then `completed` for the lines that joined, the `result`, `completed` for the first line, and idle. A
- *    line with `priority: "next"` during a turn joins it at the next step (`started` then); any other waits for the
- *    turn to end (unrecorded), each `queued` at once. Steps:
+ *    line sent during a turn is `queued` at once; with `priority: "next"`, or with none, it joins the turn at the next
+ *    step (`started` then), and with `priority: "later"` it waits for the turn to end, as the Agent SDK's docs give
+ *    them (`SDKUserMessage.priority`; unrecorded). `priority: "now"`, which interrupts or backgrounds the turn, isn't
+ *    modelled, nor is any other value. Steps:
  *    - `{"say": text}` writes an assistant text; the last is the result's `result`;
  *    - `{"tool": name, "input", "result"?, "is_error"?}` writes the `tool_use`, asks as below, runs it, gives each
  *      `PostToolUse` hook the host registered a `hook_callback` unless it failed (an answer other than `{}` isn't
@@ -785,7 +787,7 @@ type End = "completed" | "aborted_streaming" | "aborted_tools" | { text: string;
 /** One turn: the lines in it, and what an interrupt needs. */
 interface Turn {
   readonly uuids: string[]
-  /** Lines with `priority: "next"`, joining at the next step. */
+  /** Lines sent during the turn with `priority: "next"` or none, joining at the next step. */
   readonly joined: Obj[]
   readonly denials: Obj[]
   readonly promptId: string
@@ -916,13 +918,17 @@ class Fake {
       return wake?.(msg.response)
     }
     if (msg.type !== "user") return
+    if (msg.priority !== undefined && msg.priority !== "next" && msg.priority !== "later") {
+      return this.loud(new Unmodelled(`a message with priority ${JSON.stringify(msg.priority)}`))
+    }
     if (this.turn === null) return this.start(msg)
     if (typeof msg.uuid === "string") {
       this.announced.add(msg.uuid)
       this.write(this.lifecycle(msg.uuid, "queued"))
     }
-    if (msg.priority === "next") this.turn.joined.push(msg)
-    else this.queue.push(msg)
+    // The docs: "'next', or no priority field", joins the turn; "later" waits for it to end.
+    if (msg.priority === "later") this.queue.push(msg)
+    else this.turn.joined.push(msg)
   }
 
   control(msg: Obj): void {
