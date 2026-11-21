@@ -3,7 +3,7 @@
 import fs from "node:fs"
 import { fileURLToPath } from "node:url"
 import { expect, test } from "bun:test"
-import type { HarnessEvent } from "../../../src/tools/codex/adapter.ts"
+import type { HarnessEvent } from "../../../src/tools/harness/adapter.ts"
 import {
   INTERRUPTED_TEXT,
   OUTPUT_CUT,

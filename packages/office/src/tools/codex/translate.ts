@@ -11,7 +11,7 @@ import { type AnswerField, type ErrorPart, type Message, now, Question, type Que
   type ToolPart } from "@opencorp/protocol"
 import { pyJson, splitLines } from "../../util/redact.ts"
 import { newId } from "../../util/ids.ts"
-import type { Card, HarnessEvent } from "./adapter.ts"
+import type { Card, HarnessEvent } from "../harness/adapter.ts"
 
 /** The longest command output a part keeps, in code points. */
 export const OUTPUT_MAX_CHARS = 20_000

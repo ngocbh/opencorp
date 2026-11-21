@@ -8,7 +8,7 @@
  *  `[interrupted]`. */
 import { type ErrorPart, type HarnessUsage, type Message, now, type TextPart, type ToolPart } from "@opencorp/protocol"
 import { newId } from "../../util/ids.ts"
-import type { HarnessEvent } from "../codex/adapter.ts"
+import type { HarnessEvent } from "../harness/adapter.ts"
 import { type Msg, isObj } from "./stream.ts"
 
 /** The longest tool output a part keeps, in UTF-16 code units. */

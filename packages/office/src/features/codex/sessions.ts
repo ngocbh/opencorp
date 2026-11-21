@@ -32,7 +32,7 @@ import {
 import type { OfficePaths } from "../../util/home.ts"
 import { startTime } from "../../util/proc.ts"
 import { workerEnv } from "../../runtime/worker/spawn.ts"
-import type { HarnessEvent } from "../../tools/codex/adapter.ts"
+import type { HarnessEvent } from "../../tools/harness/adapter.ts"
 import {
   CLOSE_GRACE_MS,
   CodexProcess,
