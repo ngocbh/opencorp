@@ -39,6 +39,11 @@ const TERM_WAIT_MS = 3_000
 const EXIT_WAIT_MS = 5_000
 /** The most of a start's own output read to tell why it failed. */
 const REASON_BYTES = 64 * 1024
+/** What Claude Code writes when its sandbox can't run, as its docs give the messages: required but failed to
+ *  initialize, or stopped being available; Ubuntu's AppArmor stopping bubblewrap; and bubblewrap's own failures. The
+ *  message for a start that `failIfUnavailable` stops isn't documented, and is taken to name the setting (O5 records
+ *  it). */
+const SANDBOX_FAILED = /failIfUnavailable|Sandbox is required|stops bubblewrap|^bwrap: /m
 const STOPPED = "Claude Code was stopped before it started."
 const UPDATE =
   "update it with `claude update` (or `brew upgrade claude-code`, or " +
@@ -108,10 +113,18 @@ export function nativeClaude(claude: string): { run: string; install: string } {
 /** Claude Code's arguments for one session under an employee's permission (`claudeStart`'s `settings` and
  *  `addDirs`): no settings file, no MCP server but none, edits accepted with nothing asked, and the settings inline
  *  (a settings file would sit where its commands could change it, and Claude Code applies a changed file at once).
- *  `sessionId` starts a session with that id, `resume` goes on with one; `model` overrides Claude Code's default. */
+ *  `sessionId` starts a session with that id, `resume` goes on with one; `model` overrides Claude Code's default;
+ *  `persist: false` keeps no session on disk; `instructions` is a file of system prompt text to append
+ *  (`writeInstructions`), the CLAUDE.md files no settings source loads. */
 export function claudeArgs(
   start: { settings: Record<string, unknown>; addDirs: readonly string[] },
-  { sessionId, resume, model }: { sessionId?: string; resume?: string; model?: string } = {},
+  {
+    sessionId,
+    resume,
+    model,
+    persist = true,
+    instructions,
+  }: { sessionId?: string; resume?: string; model?: string; persist?: boolean; instructions?: string } = {},
 ): string[] {
   if (sessionId !== undefined && resume !== undefined) {
     throw new Error("a Claude Code session is either new or resumed")
@@ -128,6 +141,8 @@ export function claudeArgs(
     ...(sessionId === undefined ? [] : [`--session-id=${sessionId}`]),
     ...(resume === undefined ? [] : [`--resume=${resume}`]),
     ...(model === undefined ? [] : [`--model=${model}`]),
+    ...(persist ? [] : ["--no-session-persistence"]),
+    ...(instructions === undefined ? [] : [`--append-system-prompt-file=${instructions}`]),
   ]
 }
 
@@ -344,7 +359,7 @@ export class ClaudeProcess {
    *  says so, or else what went wrong, to run `opencorp doctor`, and where its output is. */
   #startError(error: Error): ClaudeStartError {
     const { log } = this.#options
-    if (/sandbox/i.test(this.#startOutput())) {
+    if (SANDBOX_FAILED.test(this.#startOutput())) {
       return new ClaudeSandboxUnavailable(
         "Claude Code's sandbox can't start on this machine, and Claude Code runs here only inside it, since it holds " +
           "your employee's commands to their permission. On Linux, install bubblewrap and socat (for example " +

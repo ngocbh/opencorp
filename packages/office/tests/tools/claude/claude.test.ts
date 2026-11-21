@@ -186,6 +186,14 @@ test("a session resumed or new, and its model, go on the command line", () => {
   expect(tail.slice(-3)).toEqual(["--add-dir=/a b", "--session-id=550e8400-e29b-41d4-a716-446655440000", "--model=sonnet"])
   expect(claudeArgs(start, { resume: "s-1" }).slice(-1)).toEqual(["--resume=s-1"])
   expect(() => claudeArgs(start, { resume: "s-1", sessionId: "x" })).toThrow()
+  // A start that keeps no session (doctor's), and the owner's and the project's instructions from a file.
+  expect(claudeArgs(start, { persist: false, instructions: "/private/p.md" }).slice(-2)).toEqual([
+    "--no-session-persistence",
+    "--append-system-prompt-file=/private/p.md",
+  ])
+  expect(claudeArgs(start).some((arg) => arg.startsWith("--no-session") || arg.startsWith("--append-system"))).toBe(
+    false,
+  )
 })
 
 test("the sign-in check reads initialize's account with no model call: signed out refuses the start and leaves nothing running", async () => {
@@ -237,11 +245,24 @@ test("a start that its sandbox stops says what to fix and where Claude Code's ou
   expect(fs.readFileSync(log, "utf8")).toContain("failIfUnavailable")
   expect(claude.alive).toBe(false)
 
-  // A start that dies for another reason isn't the sandbox's.
-  fs.writeFileSync(log, "the sandbox was fine last time\n", { mode: 0o600 })
+  // Each failure Claude Code's docs name for a sandbox that can't run is the sandbox's.
   const dies = layout({ turns: [] })
   const broken = path.join(dies.root, "broken")
-  fs.writeFileSync(broken, "#!/bin/sh\necho 'no luck' >&2\nexit 1\n", { mode: 0o700 })
+  for (const said of [
+    "Sandbox is required but failed to initialize: bwrap missing. Restart to retry.",
+    "Sandbox is required (sandbox.failIfUnavailable) and stopped being available in this session: socat",
+    "Ubuntu's AppArmor restriction on user namespaces stops bubblewrap here",
+    "bwrap: setting up uid map: Permission denied",
+  ]) {
+    fs.writeFileSync(broken, `#!/bin/sh\necho '${said.replaceAll("'", "")}' >&2\nexit 1\n`, { mode: 0o700 })
+    const stopped = proc(root, dies.fake, dies.permission(), { command: [broken] })
+    expect(await rejection(stopped.claude.start()), said).toBeInstanceOf(ClaudeSandboxUnavailable)
+  }
+  // A start that dies for another reason isn't the sandbox's, though its output says "sandbox".
+  fs.writeFileSync(log, "the sandbox was fine last time\n", { mode: 0o600 })
+  fs.writeFileSync(broken, "#!/bin/sh\necho 'no luck: invalid sandbox.network setting' >&2\nexit 1\n", {
+    mode: 0o700,
+  })
   const other = proc(root, dies.fake, dies.permission(), { command: [broken] })
   const died = await rejection(other.claude.start())
   expect(died).toBeInstanceOf(ClaudeStartError)
@@ -249,6 +270,7 @@ test("a start that its sandbox stops says what to fix and where Claude Code's ou
   expect(died.message).toContain("opencorp doctor")
   expect(died.message).toContain(log)
   expect(died.message).not.toContain("no luck")
+  expect(died.message).not.toContain("bubblewrap")
 })
 
 test("a command that cant be run says to run opencorp doctor and leaves nothing", async () => {

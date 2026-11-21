@@ -37,23 +37,33 @@ function setup(script: FakeClaudeScript = {}) {
   return { root, fake, options, harness }
 }
 
-test("doctor's probe starts claude as a session does, in a fresh read-only folder, sends no message, and removes its folders", async () => {
+test("doctor's probe starts claude as a session does, in a fixed read-only folder, sends no message, keeps no session, and removes its temp folder", async () => {
   const { fake, options, harness } = setup()
   const probed = await probeStart(options)
   expect(probed).toEqual({ error: null, log: path.join(harness, "doctor-claude.log") })
   const start = fake.log().find((e) => e.dir === "start")!
   const folder = path.join(harness, `doctor-${process.pid}`)
-  expect(start.cwd).toBe(path.join(folder, "ws"))
-  expect(start.flags).toMatchObject({ "setting-sources": "", "strict-mcp-config": true, "permission-mode": "acceptEdits" })
+  // The same folder every run, so Claude Code's own record of the folders it ran in doesn't grow with each.
+  expect(start.cwd).toBe(path.join(harness, "doctor-ws"))
+  expect(start.flags).toMatchObject({
+    "setting-sources": "",
+    "strict-mcp-config": true,
+    "permission-mode": "acceptEdits",
+    "no-session-persistence": true,
+  })
   const sandbox = start.flags!.settings.sandbox
   expect([sandbox.enabled, sandbox.failIfUnavailable]).toEqual([true, true])
   // Read-only: its folder is a write deny, and no edit tool may run.
-  expect(sandbox.filesystem.denyWrite).toContain(path.join(folder, "ws"))
+  expect(sandbox.filesystem.denyWrite).toContain(path.join(harness, "doctor-ws"))
   expect(start.flags!.settings.permissions.deny).toContain("Edit")
   expect(start.env).toMatchObject({ TMPDIR: path.join(folder, "tmp"), CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" })
   const sent = fake.log().filter((e) => e.dir === "in").map((e) => e.msg!.type)
   expect(sent).toEqual(["control_request"])
-  expect(fs.readdirSync(harness).sort()).toEqual(["doctor-claude.log", "fence"])
+  expect(fs.readdirSync(harness).sort()).toEqual(["doctor-claude.log", "doctor-ws", "fence"])
+  expect(fs.readdirSync(path.join(harness, "doctor-ws"))).toEqual([])
+  // Again, the same folder.
+  expect((await probeStart(options)).error).toBeNull()
+  expect(fake.log().filter((e) => e.dir === "start").map((e) => e.cwd)).toEqual([start.cwd, start.cwd])
 })
 
 test("a probe signed out, too old, or whose sandbox can't start says why, with the log", async () => {
@@ -66,7 +76,7 @@ test("a probe signed out, too old, or whose sandbox can't start says why, with t
     const probed = await probeStart(options)
     expect(probed.error, JSON.stringify(script)).toBeInstanceOf(kind)
     expect(probed.log).toBe(path.join(harness, "doctor-claude.log"))
-    expect(fs.readdirSync(harness).sort()).toEqual(["doctor-claude.log", "fence"])
+    expect(fs.readdirSync(harness).sort()).toEqual(["doctor-claude.log", "doctor-ws", "fence"])
   }
 })
 
@@ -79,5 +89,13 @@ test("a probe of a claude others could change refuses before running it, and a d
   expect(probed.error).toBeInstanceOf(UnsafeProfile)
   expect(probed.error!.message).toContain("others than the user may write")
   expect(fake.log().filter((e) => e.dir === "start")).toEqual([])
-  expect(fs.readdirSync(harness).sort()).toEqual(["fence"])
+  expect(fs.readdirSync(harness).sort()).toEqual(["doctor-ws", "fence"])
+  // So is one in a folder another person may write, or reached through a link there.
+  fs.chmodSync(fake.bin, 0o755)
+  const shared = path.dirname(fake.bin)
+  expect((await probeStart({ ...options, othersWritable: [shared] })).error).toBeInstanceOf(UnsafeProfile)
+  const link = path.join(path.dirname(shared), "claude-link")
+  fs.symlinkSync(fake.claude, link)
+  expect((await probeStart({ ...options, claude: { ...options.claude, found: link }, othersWritable: [path.dirname(link)] })).error).toBeInstanceOf(UnsafeProfile)
+  expect(fake.log().filter((e) => e.dir === "start")).toEqual([])
 })
