@@ -34,7 +34,14 @@ while a command runs), and a missing `.mcp.json` can still be created.
 - **The shell.** The line under the prompt counts your employee's shells. Press ctrl+x o to open one and watch it;
   Ctrl-C there stops its command. Esc stops your employee and the command they were waiting on. A command they were
   told is still running goes on, and they read its output later.
-- **The end.** Ending the session ends its shells and their commands.
+- **Codex.** An employee who uses the codex harness (`harnesses: [composer, codex]` in their `person.yaml`) can hand
+  work to Codex. The line under the prompt counts their Codex sessions. "Open an instrument…" in the command list
+  (ctrl+p), or ctrl+x down, opens one as a chat of its own, where you watch Codex work and write to it too; ctrl+x up
+  goes back. Codex reads each message with its author and is told your word wins: your employee reads what you told
+  Codex with Codex's next answer, and can't interrupt or stop a turn you started. Esc in your employee's chat stops
+  your employee and the Codex turn they were waiting on; Esc in the Codex session stops Codex's turn.
+- **The end.** Ending the session ends its shells and their commands, and its Codex sessions. Restarting the office
+  ends the Codex sessions too, and your employee starts new ones.
 
 ## What an employee may touch
 
