@@ -17,7 +17,7 @@ test.skipIf(!sandboxAvailable())(
     // 1. `opencorp` in a fresh folder: the office is healthy, the picker offers Minh, and he edits a file.
     const doctor = await office.opencorp(["doctor"], { cwd: workspace })
     expect(doctor.stdout.split("\n").filter((line) => line.startsWith("fail"))).toEqual([])
-    expect(doctor.stdout).toContain("ok    codex        codex-cli 0.0.0-fake")
+    expect(doctor.stdout).toContain("ok    codex        codex-cli 0.167.0-fake")
     const minh = await office.person("minh")
     expect(await office.folderPeople(workspace)).toEqual([])
     fake.script(

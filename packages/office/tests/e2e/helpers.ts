@@ -166,7 +166,7 @@ async function stopAll(root: string): Promise<void> {
  *  fake LLM when the current test finishes. `hq` is written as `office/hq.json` (HQ's TCP listener stays off by
  *  default: it is on by default on macOS, where the owner's own office holds its port). `PATH` starts with refusing
  *  stand-ins for the service tools, so no test registers a real service, and the fake Codex as `codex`, run with
- *  `codexScript` when given. Call inside a test. */
+ *  `codexScript` (an empty one by default). Call inside a test. */
 export async function openOffice({
   hq = { tcp: false },
   device = false,
@@ -209,12 +209,10 @@ export async function openOffice({
   for (const name of SERVICE_TOOLS) script(path.join(tools, name), `echo "${name} $*" >> ${q(calls)}\nexit 1\n`)
   const codexDir = path.join(root, "codex")
   fs.mkdirSync(codexDir)
-  let scripted = ""
-  if (codexScript !== undefined) {
-    const file = path.join(codexDir, "script.json")
-    fs.writeFileSync(file, JSON.stringify(codexScript))
-    scripted = ` --script ${q(file)} --log ${q(path.join(codexDir, "rpc.jsonl"))}`
-  }
+  // Always a script, so doctor's Codex check can start a thread on the fake.
+  const file = path.join(codexDir, "script.json")
+  fs.writeFileSync(file, JSON.stringify(codexScript ?? {}))
+  const scripted = ` --script ${q(file)} --log ${q(path.join(codexDir, "rpc.jsonl"))}`
   // Bun in a fixed cwd and env, reading no .env or bunfig.toml there.
   script(
     path.join(tools, "codex"),

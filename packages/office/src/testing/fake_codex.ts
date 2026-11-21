@@ -599,8 +599,8 @@ const USAGE = "usage: fake_codex (--script SCRIPT | --scenario e2e) [--log LOG]"
 /** Runs the fake on `argv` (the real command's `app-server --listen stdio://` is ignored); returns its exit code. */
 export async function main(argv: string[]): Promise<number> {
   if (argv.includes("--version")) {
-    // what `opencorp doctor` asks a codex on the office's PATH
-    process.stdout.write("codex-cli 0.0.0-fake\n")
+    // what `opencorp doctor` asks a codex on the office's PATH: the oldest version it takes
+    process.stdout.write("codex-cli 0.167.0-fake\n")
     return 0
   }
   if (argv.includes("login")) return 0 // `codex login status`: the fake is always signed in

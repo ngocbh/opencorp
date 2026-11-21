@@ -28,8 +28,8 @@ checkout's code. `--switch` moves the office over: it runs `opencorp stop` befor
 at the new checkout, and you then run `opencorp onboard` from the new install, which sets the
 office's service up again.
 
-Codex is optional: to use Codex sessions, install it (`npm install -g @openai/codex`) and run
-`codex login` before `opencorp init`.
+Codex is optional: to use Codex sessions, install Codex 0.167.0 or later
+(`npm install -g @openai/codex`) and run `codex login` before `opencorp init`.
 
 ## Install by hand
 

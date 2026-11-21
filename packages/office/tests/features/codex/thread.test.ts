@@ -250,18 +250,23 @@ test("doctor's probe says why a thread that starts can't be used", async () => {
   const { root, home } = layout()
   const message = "failed to reload config: config defines `[permissions]` profiles but does not set `default_permissions`"
   const options = probeOptions(path.join(root, "probe"), home, { mcp_status_error: { code: -32603, message } })
-  expect(await threadProbe(options)).toBe(`mcpServerStatus/list failed: ${message}`)
+  expect(await threadProbe(options)).toEqual({
+    why: `mcpServerStatus/list failed: ${message}`,
+    log: path.join(harnessTemp(options.base), "doctor-codex.log"),
+  })
   expect(calls(path.join(root, "probe/rpc.jsonl"), "thread/start")).toHaveLength(1)
   const refused = probeOptions(path.join(root, "refused"), home, {
     resume_error: {},
     load_exit: 3,
   })
-  expect(await threadProbe(refused)).toStartWith("thread/start failed: ")
+  expect((await threadProbe(refused))?.why).toStartWith("thread/start failed: ")
   // A permission that can't be built says so, before Codex starts.
   const unsafe = probeOptions(path.join(root, "unsafe"), home, {})
   // Codex's install holds the probe's temp folder, which the employee can write.
   unsafe.codex.install = path.join(root, "unsafe")
-  expect(await threadProbe(unsafe)).toStartWith("an employee's permission can't be built here: Codex's install folder")
+  expect((await threadProbe(unsafe))?.why).toStartWith(
+    "an employee's permission can't be built here: Codex's install folder",
+  )
 })
 
 /** The real Codex the opt-in tests run, named by `OPENCORP_TEST_CODEX` (a wrapper, npm's launcher or the native

@@ -141,11 +141,12 @@ export type ProbeOptions = {
   timeoutMs: number
 }
 
-/** Null if a Codex thread under an employee's permission can be used; else what failed. It starts Codex as a session
- *  does, loads an ephemeral thread in a fresh read-only folder with no network, then lists the thread's MCP servers,
- *  which reloads its config as each turn does: a thread can start under a config that no turn could load. No model
- *  turn runs, and the probe's folders are removed; Codex's output stays in `doctor-codex.log` beside the fence. */
-export async function threadProbe(options: ProbeOptions): Promise<string | null> {
+/** Null if a Codex thread under an employee's permission can be used; else what failed, and the log holding Codex's
+ *  output (`doctor-codex.log` beside the fence). It starts Codex as a session does, loads an ephemeral thread in a
+ *  fresh read-only folder with no network, then lists the thread's MCP servers, which reloads its config as each turn
+ *  does: a thread can start under a config no turn could load. No model turn runs, and the probe's folders are
+ *  removed. */
+export async function threadProbe(options: ProbeOptions): Promise<{ why: string; log: string } | null> {
   const root = harnessTemp(options.base)
   const name = `doctor-${process.pid}`
   const dir = freshFolder(root, name)
@@ -195,11 +196,7 @@ export async function threadProbe(options: ProbeOptions): Promise<string | null>
     await rpc.request("mcpServerStatus/list", { threadId: thread.thread.id, detail: "toolsAndAuthOnly" }, { timeout })
     return null
   } catch (error) {
-    if (error instanceof UnsafeProfile || error instanceof UnsafeWorkspace) {
-      return `an employee's permission can't be built here: ${error.message}`
-    }
-    if (step === "") return `Codex didn't start: ${failure(error instanceof CodexStartError ? error.cause : error)}`
-    return `${step} failed: ${failure(error)}`
+    return { why: probeFailure(error, step), log }
   } finally {
     await proc?.close(PROBE_GRACE_MS)
     removeFolder(root, name)
@@ -210,6 +207,15 @@ export async function threadProbe(options: ProbeOptions): Promise<string | null>
  *  `CLAUDE_CONFIG_DIR`), denied by name; a relative one is kept, so the permission's check refuses it. */
 export function harnessHomes(environ: Record<string, string | undefined>): string[] {
   return [environ.CODEX_HOME, environ.CLAUDE_CONFIG_DIR].filter((dir): dir is string => Boolean(dir))
+}
+
+/** Why the probe failed at `step` (empty before Codex started). */
+function probeFailure(error: unknown, step: string): string {
+  if (error instanceof UnsafeProfile || error instanceof UnsafeWorkspace) {
+    return `an employee's permission can't be built here: ${error.message}`
+  }
+  if (step === "") return `Codex didn't start: ${failure(error instanceof CodexStartError ? error.cause : error)}`
+  return `${step} failed: ${failure(error)}`
 }
 
 /** What went wrong, in words: Codex's own message, or the error's. */

@@ -34,6 +34,7 @@ import { CEO, giveDevice, makeOffice, served } from "../../server/helpers.ts"
 import { fifo, isGone, ps, shortDir, tempDir, waitFor } from "../../helpers.ts"
 import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import { makeHost, Runner, standIn } from "../setup/helpers.ts"
+import { harnessTemp } from "../../../src/features/codex/thread.ts"
 
 // Most tests run doctor several times, and each run exports the company's last commit with git.
 setDefaultTimeout(30_000)
@@ -1209,7 +1210,7 @@ function fakeCodex(dir: string, loginExit: number, loginErr?: string, loginOut =
   fs.writeFileSync(path.join(dir, "login.out"), loginOut)
   fs.writeFileSync(
     path.join(bin, "codex"),
-    `#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.130.0";;\n` +
+    `#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.167.0";;\n` +
       `login) cat "${dir}/login.out"; cat "${dir}/login.err" >&2; exit ${loginExit};; esac\n`,
     { mode: 0o755 },
   )
@@ -1226,15 +1227,20 @@ async function checksSeeingCodex(
     platform = "darwin" as NodeJS.Platform,
   } = {},
 ) {
-  const seen: { env: Record<string, string>; environ: Record<string, string | undefined>; mode: string | null }[] = []
+  const seen: {
+    env: Record<string, string>
+    environ: Record<string, string | undefined>
+    mode: string | null
+    office: unknown
+  }[] = []
   const found = await doctor.checks(paths.home, {
     host: makeHost(dir, runner, { platform }),
     command: COMMAND,
     repo: path.join(dir, "repo"),
     probe: async () => null,
     terminal: async () => null,
-    codex: async (env, environ, mode) => {
-      seen.push({ env, environ, mode })
+    codex: async (env, environ, mode, options) => {
+      seen.push({ env, environ, mode, office: options?.office })
       return { name: "codex", status: "ok", detail: "stand-in" }
     },
     environ,
@@ -1248,7 +1254,7 @@ async function checksSeeingCodex(
 test("codex on the office path and signed in is ok", async () => {
   const check = await doctor.codexCheck(fakeCodex(tempDir(), 0), {})
   expect(check.status).toBe("ok")
-  expect(check.detail).toContain("codex-cli 0.130.0")
+  expect(check.detail).toContain("codex-cli 0.167.0")
 })
 
 test("codex signed out or missing is a warning", async () => {
@@ -1257,7 +1263,7 @@ test("codex signed out or missing is a warning", async () => {
   expect(await doctor.codexCheck(fakeCodex(dir, 1), {})).toEqual({
     name: "codex",
     status: "warn",
-    detail: `codex-cli 0.130.0 at ${codex} is signed out; run \`${codex} login\``,
+    detail: `codex-cli 0.167.0 at ${codex} is signed out; run \`${codex} login\``,
   })
   const missing = await doctor.codexCheck({ PATH: path.join(dir, "nowhere") }, {})
   expect(missing.status).toBe("warn")
@@ -1272,7 +1278,7 @@ test("a codex login status that fails otherwise shows its first line", async () 
     name: "codex",
     status: "warn",
     detail:
-      `codex-cli 0.130.0 at ${codex}: \`${codex} login status\`` +
+      `codex-cli 0.167.0 at ${codex}: \`${codex} login status\`` +
       " failed: Error loading configuration: unknown field `modle` in config.toml",
   })
 })
@@ -1284,7 +1290,7 @@ test("codex is signed out when any line says so", async () => {
   expect(await doctor.codexCheck(env, {})).toEqual({
     name: "codex",
     status: "warn",
-    detail: `codex-cli 0.130.0 at ${codex} is signed out; run \`${codex} login\``,
+    detail: `codex-cli 0.167.0 at ${codex} is signed out; run \`${codex} login\``,
   })
 })
 
@@ -1363,9 +1369,91 @@ test("a codex version is shown uncolored and cut short", async () => {
   expect((await doctor.codexCheck(env, {})).detail).toBe(`codex-cli 1.2.3 at ${codex}, signed in`)
   fs.writeFileSync(
     codex,
-    '#!/bin/sh\ncase "$1" in --version) printf "v%s\\n" "$(printf "9%.0s" $(seq 1 300))";; login) exit 0;; esac\n',
+    '#!/bin/sh\ncase "$1" in --version) printf "v%s.1.2\\n" "$(printf "9%.0s" $(seq 1 300))";; login) exit 0;; esac\n',
   )
   expect((await doctor.codexCheck(env, {})).detail).toBe(`v${"9".repeat(199)} at ${codex}, signed in`)
+})
+
+const FAKE_CODEX = fileURLToPath(new URL("../../../src/testing/fake_codex.ts", import.meta.url))
+
+/** How doctor says to update Codex. */
+const UPDATE = "update Codex: `npm install -g @openai/codex@latest` (or `brew upgrade codex`), then `opencorp doctor`"
+
+test("a codex older than 0.167.0, or whose version can't be read, fails with how to update it", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 0)
+  const codex = path.join(dir, "bin", "codex")
+  for (const old of ["0.162.1", "0.150.0", "0.9.999"]) {
+    fs.writeFileSync(codex, `#!/bin/sh\ncase "$1" in --version) echo "codex-cli ${old}";; login) exit 0;; esac\n`)
+    expect(await doctor.codexCheck(env, {})).toEqual({
+      name: "codex",
+      status: "fail",
+      detail: `codex-cli ${old} at ${codex} is older than 0.167.0, which OpenCorp needs; ${UPDATE}`,
+    })
+  }
+  for (const odd of ["codex-cli dev", ""]) {
+    fs.writeFileSync(codex, `#!/bin/sh\ncase "$1" in --version) echo "${odd}";; login) exit 0;; esac\n`)
+    const named = odd ? `${odd} at ${codex}` : `${codex} (no version printed)`
+    expect(await doctor.codexCheck(env, {})).toEqual({
+      name: "codex",
+      status: "fail",
+      detail: `${named}: OpenCorp needs Codex 0.167.0 or later and can't read this one's version; ${UPDATE}`,
+    })
+  }
+  for (const fine of ["0.167.0", "0.167.0-alpha.2", "0.171.0", "1.0.0"]) {
+    fs.writeFileSync(codex, `#!/bin/sh\ncase "$1" in --version) echo "codex-cli ${fine}";; login) exit 0;; esac\n`)
+    expect((await doctor.codexCheck(env, {})).status).toBe("ok")
+  }
+})
+
+/** The fake app-server as `codex` in `<dir>/bin`, on `script`: it answers `--version` with 0.167.0, `login status` as
+ *  signed in, and `app-server` as Codex does. Returns the env to run it with and its log. */
+function fakeAppServer(dir: string, script: object): { env: Record<string, string>; log: string } {
+  const bin = path.join(dir, "bin")
+  fs.mkdirSync(bin, { recursive: true })
+  const file = path.join(dir, "s.json")
+  const log = path.join(dir, "rpc.jsonl")
+  fs.writeFileSync(file, JSON.stringify(script))
+  const bun = `${process.execPath} --no-install --no-env-file --config=/dev/null`
+  fs.writeFileSync(path.join(bin, "codex"), `#!/bin/sh\nexec ${bun} ${FAKE_CODEX} --script ${file} --log ${log} "$@"\n`, {
+    mode: 0o755,
+  })
+  return { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir }, log }
+}
+
+test("given the office, the check loads a thread under an employee's permission, with no model turn", async () => {
+  const dir = fs.realpathSync(tempDir())
+  const home = path.join(dir, "home")
+  fs.mkdirSync(path.join(home, ".opencorp"), { recursive: true })
+  const office = { home, officeHome: path.join(home, ".opencorp") }
+  const { env, log } = fakeAppServer(dir, { mcp_servers: { docs: {} } })
+  const codex = path.join(dir, "bin", "codex")
+  expect(await doctor.codexCheck(env, {}, null, { office })).toEqual({
+    name: "codex",
+    status: "ok",
+    detail: `codex-cli 0.167.0-fake at ${codex}, signed in, and a thread under an employee's permission runs`,
+  })
+  const sent = fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
+  const methods = sent.filter((e) => e.dir === "in" && "method" in e.msg).map((e) => e.msg.method)
+  expect(methods).toContain("mcpServerStatus/list")
+  expect(methods).not.toContain("turn/start")
+})
+
+test("a thread that starts but can't be used fails the check, saying why", async () => {
+  const dir = fs.realpathSync(tempDir())
+  const home = path.join(dir, "home")
+  fs.mkdirSync(path.join(home, ".opencorp"), { recursive: true })
+  const office = { home, officeHome: path.join(home, ".opencorp") }
+  const message = "failed to load workspace requirements: invalid input parameter"
+  const { env } = fakeAppServer(dir, { mcp_status_error: { code: -32603, message } })
+  expect(await doctor.codexCheck(env, {}, null, { office })).toEqual({
+    name: "codex",
+    status: "fail",
+    detail:
+      `codex-cli 0.167.0-fake at ${path.join(dir, "bin", "codex")} is signed in, but a thread under an employee's ` +
+      `permission can't be used: mcpServerStatus/list failed: ${message}; Codex's output is in ` +
+      path.join(harnessTemp(), "doctor-codex.log"),
+  })
 })
 
 test("a failed codex login status falls back to stdout then the exit code", async () => {
@@ -1388,7 +1476,7 @@ test("a codex that hangs or cant run fails the check", async () => {
   const env = fakeCodex(dir, 0)
   const codex = path.join(dir, "bin", "codex")
   fs.writeFileSync(codex, "#!/bin/sh\nsleep 5\n")
-  expect(await doctor.codexCheck(env, {}, null, 500)).toEqual({
+  expect(await doctor.codexCheck(env, {}, null, { timeoutMs: 500 })).toEqual({
     name: "codex",
     status: "fail",
     detail: `${codex} --version didn't answer in 0.5 s`,
@@ -1407,10 +1495,10 @@ test("a codex whose login status hangs fails the check and leaves nothing runnin
   // A login status that starts a background sleep and waits on it, as a hung Codex holding a child does.
   fs.writeFileSync(
     codex,
-    `#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.130.0";;\n` +
+    `#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.167.0";;\n` +
       `login) /bin/sleep 97 & echo $! > "${pidFile}"; wait;; esac\n`,
   )
-  const check = await doctor.codexCheck(env, {}, null, 500)
+  const check = await doctor.codexCheck(env, {}, null, { timeoutMs: 500 })
   const text = fs.readFileSync(pidFile, "utf8")
   expect(text).toMatch(/^\d+\n$/)
   const grandchild = Number(text)
@@ -1480,7 +1568,7 @@ test("the check runs codex with the offices codex home when set", async () => {
   const env = fakeCodex(dir, 0)
   fs.writeFileSync(
     path.join(dir, "bin", "codex"),
-    '#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.130.0";; login) [ "$CODEX_HOME" = /x/home ];; esac\n',
+    '#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.167.0";; login) [ "$CODEX_HOME" = /x/home ];; esac\n',
   )
   expect((await doctor.codexCheck(env, { CODEX_HOME: "/x/home" })).status).toBe("ok")
   expect((await doctor.codexCheck(env, {})).status).toBe("warn")
@@ -1495,7 +1583,9 @@ test("checks give the codex check the offices environment to find codex", async 
     CODEX_HOME: "/x/home",
     OPENCORP_CODEX_BIN: "/x/codex",
   })
-  const { env, environ } = seen[0]!
+  const { env, environ, office } = seen[0]!
+  // The probe's thread denies the owner's home and the office's by name.
+  expect(office).toEqual({ home: dir, officeHome: path.join(dir, "home") })
   expect(environ.CODEX_HOME).toBe("/x/home")
   expect(environ.OPENCORP_CODEX_BIN).toBe("/x/codex")
   expect(env).not.toHaveProperty("CODEX_HOME")
@@ -1551,8 +1641,8 @@ test("a codex that says nothing is still described", async () => {
   fs.writeFileSync(codex, "#!/bin/sh\nexit 0\n")
   expect(await doctor.codexCheck(env, {})).toEqual({
     name: "codex",
-    status: "ok",
-    detail: `${codex} (no version printed), signed in`,
+    status: "fail",
+    detail: `${codex} (no version printed): OpenCorp needs Codex 0.167.0 or later and can't read this one's version; ${UPDATE}`,
   })
 })
 
