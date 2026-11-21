@@ -266,8 +266,8 @@ const LOOKUP_CHAT = CHAT_FLOW
     "",
   ].join("\n"))
   .replace(
-    "tools: [toolbox, workspace, terminal, company, ask_user]",
-    "tools: [toolbox, workspace, terminal, company, ask_user, lookup]",
+    "tools: [toolbox, workspace, terminal, codex, company, ask_user]",
+    "tools: [toolbox, workspace, terminal, codex, company, ask_user, lookup]",
   )
 
 test("a message sent while a real reply's flow call runs steers the reply, on the events yian sends", async () => {
@@ -1057,6 +1057,37 @@ test("Esc doesn't answer a terminal call early: it stops itself", async () => {
   fake.release()
   await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "the second turn's end" })
   expect(o.pipes.commands).toEqual(["make all"])
+})
+
+test("Esc doesn't answer a Codex call early: the call hears the interrupt and its own reply is the result", async () => {
+  const fake = await fakeLlm()
+  fake.script({ tool_calls: [{ name: "codex_send", arguments: {} }] }, { content: "spare" })
+  let entered!: () => void
+  const called = new Promise<void>((resolve) => (entered = resolve))
+  const send: OfficeTool = {
+    description: "Waits for the interrupt, then replies with the partial turn.",
+    parameters: EMPTY,
+    call: (_args, options) => {
+      entered()
+      const interrupted = options?.interrupted
+      if (interrupted === undefined) return "no interrupt"
+      return new Promise((resolve) =>
+        interrupted.addEventListener("abort", () => resolve("Codex stopped: half done [interrupted]"), { once: true }),
+      )
+    },
+  }
+  const o = await chatOffice(fake, { groups: { codex: { send } } })
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("hand it to Codex")
+  await called
+  await actor.interrupt()
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "the turn's end" })
+  // The run recorded the tool's own reply, never the actor's early answer, and the agent ended interrupted: the spare
+  // reply was never asked for.
+  const log = fs.readFileSync(path.join(o.office.paths.runs, actor.runId!, "log.jsonl"), "utf8")
+  expect(log).toContain("Codex stopped: half done [interrupted]")
+  expect(log).not.toContain(INTERRUPTED_CALL)
+  expect(fake.requests()).toHaveLength(1)
 })
 
 test("end answers an office call in flight and interrupts the workspace", async () => {

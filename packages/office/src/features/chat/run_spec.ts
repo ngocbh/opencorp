@@ -141,7 +141,7 @@ export function mainSpec({
     groups: ({ session, runId, onQuestion, permissions }) => {
       if (permissions !== undefined) terminal.bind(runId, permissions)
       const ctx = { store, repo, session, runId, onQuestion, carried, monitor, workspace, terminal }
-      return build(["toolbox", "workspace", "terminal", "company"], ctx)
+      return build(["toolbox", "workspace", "terminal", "codex", "company"], ctx)
     },
     memories: profileMemory(git, person.handle),
     skills: [...person.skills],

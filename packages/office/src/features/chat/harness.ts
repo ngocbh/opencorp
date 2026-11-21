@@ -732,8 +732,8 @@ export class ChatHarness implements SessionHarness {
         if (!this.#stopping) handlers.exited(worker, returncode)
       },
       askUser: (worker, request, callId) => this.#inCall(() => handlers.askUser(worker, request, callId)),
-      toolCall: (worker, group, name, args, callId) =>
-        this.#inCall(() => handlers.toolCall(worker, group, name, args, callId)),
+      toolCall: (worker, group, name, args, callId, options) =>
+        this.#inCall(() => handlers.toolCall(worker, group, name, args, callId, options)),
       memory: (worker, request) => this.#inCall(() => handlers.memory(worker, request)),
     }
   }

@@ -12,7 +12,7 @@ import { type Env, INHERITED_ENV } from "../../util/env.ts"
 import { type Channel, ChannelClosed, type Frame, socketChannel } from "./channel.ts"
 import { Delivery, type Job } from "./job.ts"
 import { reap } from "./reaper.ts"
-import { errorName, isRequest, type JobWorker, replyTo, type WorkerHandlers } from "./rpc.ts"
+import { errorName, type JobWorker, OfficeRequests, type WorkerHandlers } from "./rpc.ts"
 
 /** The environment a worker starts with: `INHERITED_ENV` and `LC_*` from the office's (`environ`), set values
  *  only. */
@@ -109,6 +109,8 @@ export class Worker implements JobWorker {
   readonly #child: ChildProcess
   readonly #onExit: (worker: Worker) => void
   readonly #log: SpawnLog
+  /** The worker's requests in flight, and their tool interrupts. */
+  readonly #requests: OfficeRequests
   readonly #exit: Promise<number | null>
   readonly #done: Promise<number | null>
   #settle!: (returncode: number | null) => void
@@ -141,6 +143,7 @@ export class Worker implements JobWorker {
     this.#child = child
     this.#onExit = onExit
     this.#log = neverThrows(log)
+    this.#requests = new OfficeRequests(channel, { log: this.#log })
     if (child.exitCode !== null || child.signalCode !== null) {
       this.#exit = Promise.resolve(returncodeOf(child.exitCode, child.signalCode))
       this.#leaderExited()
@@ -299,10 +302,9 @@ export class Worker implements JobWorker {
 
   #dispatch(frame: Frame): void {
     const kind = frame.type
-    if (isRequest(kind)) {
-      // Requests may wait for a person, so the loop never awaits them.
-      void replyTo(this.channel, frame, this.handlers, this, { log: this.#log })
-    } else if (kind === "deliver_reply") {
+    // Requests may wait for a person, so the loop never awaits them; a tool interrupt reaches the call it names.
+    if (this.#requests.take(frame, this.handlers, this)) return
+    if (kind === "deliver_reply") {
       if (!isDeliverReply(frame)) throw new TypeError("a deliver_reply frame is malformed")
       this.#notify("deliverReply", () => this.handlers.deliverReply(this, frame))
     } else if (kind === "event" || kind === "stream" || kind === "result" || kind === "error") {

@@ -20,6 +20,7 @@ import {
   BaseHandlers,
   isRequest,
   type JobWorker,
+  OfficeRequests,
   REPLY_TYPES,
   replyTo,
   Rpc,
@@ -206,12 +207,12 @@ export async function officeEnd(
   const { office, worker: workerSide } = await channelPair()
   const rpc = new Rpc(workerSide)
   // Each loop ends at the first frame that can't be read, as Python's helper did, never as an unhandled rejection.
+  const requests = new OfficeRequests(office, { log })
   const serveOffice = async () => {
     for (;;) {
       const frame = await office.recv()
-      if (!isRequest(frame.type)) continue
-      const replied = replyTo(office, frame, handlers, worker, { log })
-      if (!concurrent) await replied
+      if (concurrent) requests.take(frame, handlers, worker)
+      else if (isRequest(frame.type)) await replyTo(office, frame, handlers, worker, { log })
     }
   }
   const serveWorker = async () => {

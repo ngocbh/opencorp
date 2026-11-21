@@ -139,7 +139,7 @@ test("the main spec runs the persons main flow with their tools memory and skill
   const spec = main(o)
   expect(spec.flow).toBe(personFlow("minh", "../../shared/flows/chat.yaml"))
   expect(spec.chat).toBe(MAIN_CHAT)
-  expect(Object.keys(spec.groups({ session: o.session, runId: "r1" }))).toEqual(["toolbox", "workspace", "terminal", "company"])
+  expect(Object.keys(spec.groups({ session: o.session, runId: "r1" }))).toEqual(["toolbox", "workspace", "terminal", "codex", "company"])
   expect(Object.keys(spec.memories)).toEqual(["profile"])
   // minh's memory folder, with the same settings in every company.
   expect(await opened(spec.memories.profile!)).toEqual([FileMemory.contract, "people/minh", 1_000_000n])
@@ -373,10 +373,10 @@ test("a chat flow that grants a tool group the office doesn't serve, such as an 
   // The office passes yian only its own groups, so a group it doesn't serve, as an MCP server's, is missing.
   const o = await office()
   const file = path.join(o.root, "shared/flows/chat.yaml") // the job's pin is the company folder
-  const granted = "tools: [toolbox, workspace, terminal, company, ask_user]"
+  const granted = "tools: [toolbox, workspace, terminal, codex, company, ask_user]"
   const text = fs.readFileSync(file, "utf8")
   expect(text.split(granted)).toHaveLength(2)
-  fs.writeFileSync(file, text.replace(granted, "tools: [toolbox, workspace, terminal, company, ask_user, github]"))
+  fs.writeFileSync(file, text.replace(granted, "tools: [toolbox, workspace, terminal, codex, company, ask_user, github]"))
   const fake = await fakeLlm()
   const spec = main(o)
   const tools = spec.groups({ session: o.session, runId: "r1" })

@@ -134,6 +134,10 @@ export interface ActorContext {
   log(line: string): void
 }
 
+/** The tool groups whose calls Esc never answers early: the workspace and the terminal stop their own, and the
+ *  harnesses' (`codex`, `claude`) hear Esc through their call's interrupt and reply with what the harness did. */
+const SELF_STOPPING: ReadonlySet<string> = new Set(["workspace", "terminal", "codex", "claude"])
+
 /** The note of a chat that continues on a fresh run after its worker died, as its model or connection changed. */
 export const FRESH_NOTE =
   "This chat continues on a fresh run because its model or connection changed. " +
@@ -2157,12 +2161,14 @@ export class SessionActor implements LiveCalls {
         name: string,
         args: Record<string, unknown>,
         callId?: string,
+        options: { interrupted?: AbortSignal } = {},
       ): Promise<unknown> {
         if (actor.#closed) return Promise.reject(new Error("the office is stopping"))
-        const call = () => super.toolCall(worker, group, name, args, callId)
+        const call = () => super.toolCall(worker, group, name, args, callId, options)
         // The workspace kills its own calls when interrupted, and the terminal's stop themselves: a call whose check
-        // still runs is never answered early.
-        return group === "workspace" || group === "terminal" ? call() : actor.#cancellable(call)
+        // still runs is never answered early. A harness's call hears Esc through its interrupt and replies with what
+        // the harness did so far, which an early answer would lose.
+        return SELF_STOPPING.has(group) ? call() : actor.#cancellable(call)
       }
     })({ tools, memories })
   }

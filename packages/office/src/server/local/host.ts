@@ -772,6 +772,7 @@ export class LocalHost {
         name: string,
         args: Record<string, unknown>,
         callId?: string,
+        { interrupted }: { interrupted?: AbortSignal } = {},
       ): Promise<unknown> {
         if (host.#finished) throw new Error("the session has ended")
         const named = Object.hasOwn(host.#tools.groups, group) ? host.#tools.groups[group]! : {}
@@ -779,7 +780,8 @@ export class LocalHost {
         const stop = new AbortController()
         host.#calls.add(stop)
         try {
-          return await named[name]!.call(args, { callId, signal: stop.signal })
+          const options = interrupted === undefined ? {} : { interrupted }
+          return await named[name]!.call(args, { callId, signal: stop.signal, ...options })
         } finally {
           host.#calls.delete(stop)
         }

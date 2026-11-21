@@ -637,7 +637,7 @@ test("turn text takes only a str and skips the exit command", async () => {
   expect(seen).toEqual(["hi"])
 })
 
-test("a main run offers toolbox workspace terminal and company in that order", async () => {
+test("a main run offers toolbox workspace terminal codex and company in that order", async () => {
   const h = await makeHarness(await fakeLlm())
   const s = await stored(h)
   const groups = (await h.harness.spec(s)).groups({ session: s, runId: "run-1" })
@@ -645,6 +645,8 @@ test("a main run offers toolbox workspace terminal and company in that order", a
     ["toolbox", ["fake__echo"]],
     ["workspace", ["read_file", "write_file", "edit_file", "list", "search"]],
     ["terminal", ["run", "type", "read", "interrupt", "close"]],
+    // Empty: minh doesn't use the codex harness.
+    ["codex", []],
     ["company", ["ask_manager", "create_work_item", "comment"]],
   ])
 })

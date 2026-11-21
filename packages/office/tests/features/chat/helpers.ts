@@ -172,7 +172,7 @@ export const PERSON = { name: "Minh", handle: "minh", title: "Engineer", company
 
 /** The groups each template flow names; `ask_user` is the worker's own tool. */
 export const GROUPS: Record<string, string[]> = {
-  chat: ["toolbox", "workspace", "terminal", "company"],
+  chat: ["toolbox", "workspace", "terminal", "codex", "company"],
   side_chat: ["workspace", "work_items"],
   profile_manager: ["profile"],
 }

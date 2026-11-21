@@ -4,6 +4,7 @@ import type { CompanyRepo } from "../company/loader.ts"
 import type { AuditedTools, Monitor } from "../runtime/permissions/monitor.ts"
 import type { Carried, OnQuestion } from "../runtime/questions/ask.ts"
 import type { QuestionRecord, SessionRecord, Store } from "../runtime/store/store.ts"
+import type { OfficeTool } from "../runtime/worker/rpc.ts"
 import type { Terminal } from "./terminal/terminal.ts"
 
 /**
@@ -27,4 +28,6 @@ export interface ToolContext {
   readonly question?: QuestionRecord
   /** What the `terminal` group offers: the tools of the session's terminal. */
   readonly terminal?: Pick<Terminal, "tools">
+  /** What the `codex` group offers: the tools of the session's Codex instrument. */
+  readonly codex?: { tools(): Record<string, OfficeTool> }
 }
