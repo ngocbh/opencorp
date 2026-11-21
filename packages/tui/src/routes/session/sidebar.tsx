@@ -3,7 +3,7 @@ import { createMemo, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { useTuiConfig } from "../../config"
 import { useOffice } from "../../context/office"
-import { sessionModel, statusLabel } from "@opencorp/client"
+import { HARNESS_NAMES, sessionModel, statusLabel } from "@opencorp/client"
 import { useTuiPaths } from "../../context/runtime"
 import { abbreviateHome } from "../../runtime"
 import { personLabel } from "../../util/transcript"
@@ -17,17 +17,19 @@ const tokens = (n: number) =>
 
 /**
  * The session's cost against its cap, as `$0.12` or `$0.12 of $5.00`. On a subscription connection in `list` it adds
- * `(subscription, unpriced)`: the office records that connection's tokens at $0. A Codex session runs on the
- * owner's Codex login, so it gives its token counts, unpriced.
+ * `(subscription, unpriced)`: the office records that connection's tokens at $0. A Codex or Claude Code session runs
+ * on the owner's own login for it, so it gives its token counts, unpriced.
  */
 export function costLabel(
   session: Pick<Session, "cost" | "cost_cap_usd" | "connection" | "model"> &
     Partial<Pick<Session, "harness" | "harness_usage">>,
   list?: ConnectionList,
 ) {
-  if (session.harness === "codex") {
+  const harness = HARNESS_NAMES[session.harness ?? ""]
+  if (harness !== undefined) {
     const u = session.harness_usage
-    return u ? `${tokens(u.input_tokens)} in · ${tokens(u.output_tokens)} out (Codex login, unpriced)` : "Codex login, unpriced"
+    const login = `${harness} login, unpriced`
+    return u ? `${tokens(u.input_tokens)} in · ${tokens(u.output_tokens)} out (${login})` : login
   }
   const { connection } = sessionModel(session, list)
   const subscription = list?.connections.find((c) => c.name === connection)?.method === "subscription"

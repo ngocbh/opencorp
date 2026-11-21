@@ -21,7 +21,7 @@ import { useClipboard } from "../../context/clipboard"
 import { useRoute } from "../../context/route"
 import { useOffice } from "../../context/office"
 import { usePermission } from "../../context/permission"
-import { sessionModel } from "@opencorp/client"
+import { HARNESS_NAMES, sessionModel } from "@opencorp/client"
 import { MessageText } from "@opencorp/protocol"
 import { usePromptRef } from "../../context/prompt"
 import { normalizePromptContent, openEditor } from "../../editor"
@@ -143,7 +143,8 @@ export function Prompt(props: PromptProps) {
   const peopleShortcut = useCommandShortcut("person.list")
   const modeShortcut = useCommandShortcut("session.mode.cycle")
   const permission = usePermission()
-  // Null on home, for a Codex session and once the run has ended: no label or hint where Shift+Tab can't switch.
+  // Null on home, for a Codex or Claude Code session and once the run has ended: no label or hint where Shift+Tab
+  // can't switch.
   const mode = createMemo(() => (props.sessionID ? permission.mode(props.sessionID) : null))
   const paletteShortcut = useCommandShortcut("command.palette.show")
   const renderer = useRenderer()
@@ -931,8 +932,9 @@ export function Prompt(props: PromptProps) {
   // The open session's model, or Codex for a new chat that will run on it.
   const footerModel = createMemo(() => {
     const s = session()
-    // A Codex session runs on Codex's own model, never the office connection's.
-    if (s?.harness === "codex") return display(s.harness_model ?? "Codex")
+    // A Codex or Claude Code session runs on its harness's own model, never the office connection's.
+    const harness = HARNESS_NAMES[s?.harness ?? ""]
+    if (s && harness !== undefined) return display(s.harness_model ?? harness)
     if (s) return sessionModel(s, office.connections()).model
     return local.harness.current() === "codex" ? "Codex" : undefined
   })

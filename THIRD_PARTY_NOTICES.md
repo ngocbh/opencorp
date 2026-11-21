@@ -140,11 +140,11 @@ license, the upstream paths and commit, and our paths.
   `collapseShellCommand`, `collapseTail`), read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/tui/src/routes/session/index.tsx` (`toolView`, `Shell`, `TypedLine`, `ShellCall`),
   `packages/tui/src/util/collapse-tool-output.ts`, `packages/tui/test/util/collapse-tool-output.test.ts`.
-- **What:** a Codex session an employee's chat drives opens as the chat's child session, as the fork opens a
-  subagent's: its subagent footer above the child's prompt (its label, which child of how many, and Parent, Prev and
-  Next, each a button showing its key), and its commands to go to the first child, back to the parent, and to the
-  next and previous child round the list. Codex's tokens take the model context's place, the prompt stays so the
-  owner can write to Codex, and the keys are the leader's.
+- **What:** a Codex or Claude Code session an employee's chat drives opens as the chat's child session, as the fork
+  opens a subagent's: its subagent footer above the child's prompt (its label, which child of how many, and Parent,
+  Prev and Next, each a button showing its key), and its commands to go to the first child, back to the parent, and
+  to the next and previous child round the list. The harness's tokens take the model context's place, the prompt
+  stays so the owner can write to the harness, and the keys are the leader's.
 - **Upstream:** `packages/tui/src/routes/session/subagent-footer.tsx`, and the `session.child.first`,
   `session.child.next`, `session.child.previous` and `session.parent` commands (`moveFirstChild`, `moveChild`) of
   `packages/tui/src/routes/session/index.tsx` with their keybinds in `packages/tui/src/config/keybind.ts`, at commit
