@@ -8,23 +8,26 @@
  *  host labels for Codex and the record alike (`label`), and the owner's word wins: the driver can't interrupt or stop a
  *  turn the owner started, and every reply carries what the owner said since the driver last read.
  *
- *  **Replies.** A reply is the conversation from where the driver last read: each message once its turn has ended,
- *  labelled with its author and escaped, so neither Codex nor a command's output can pose as a speaker. It comes when
- *  the turn that took the driver's message ends, when Codex waits for the owner, or after the call's wait (at most two
+ *  **Replies.** A reply is the conversation from where the driver last read: each message once its turn has ended, as
+ *  `{author, text}`, its author the one the office knows (the driver, the owner by the approver's identity, or
+ *  `codex`), never one read from a text, so neither Codex nor a file it reads can pose as the owner. It comes when the
+ *  turn that took the driver's message ends, when Codex waits for the owner, or after the call's wait (at most two
  *  minutes), with Codex still working; `history` then follows it. A long one comes in pages.
  *
- *  **Esc.** A call's `interrupted` signal (the owner's Esc in the chat) interrupts the turn the call waits on, and the
- *  call replies once that turn has stopped, with what Codex did so far. `interruptWaits` (nobody is left to read a
- *  reply) ends every wait at once and leaves Codex working.
+ *  **Esc and cut-off calls.** A call's `interrupted` signal (the owner's Esc in the chat) interrupts the turn the call
+ *  waits on, and the call replies once that turn has stopped, with what Codex did so far. `cutCalls` (the chat's run
+ *  stopped: its worker died, or the cost cap stopped it) ends every wait at once, and interrupts each turn a `start` or
+ *  `send` waited on that the driver started, as Esc does; a turn the owner started, and one a reply already said is
+ *  running, go on. `close` ends every wait and stops every session.
  *
  *  **Records.** Each session's record (`CodexRecord`) is in the host's folder for it: the conversation, the whole
  *  trace, and its state. Calls on one session queue; calls on different sessions run together. */
 import { type Instrument, type Message, now } from "@opencorp/protocol"
 import { newId } from "../../util/ids.ts"
 import type { HarnessEvent } from "./adapter.ts"
-import { CodexRecord } from "./record.ts"
-import { type Parsed, parseArgs, refusalText, type Reply, type ReplyStatus, replyText, type ToolName, TOOLS,
-  toolSpecs } from "./tools.ts"
+import { CodexRecord, type Said } from "./record.ts"
+import { type Entry as Shown, type Parsed, parseArgs, refusalText, type Reply, type ReplyStatus, replyText,
+  type ToolName, TOOLS, toolSpecs } from "./tools.ts"
 
 /** A Codex session's state, as its host reports it: starting until its thread first loads; idle, busy or waiting
  *  while live; ended or failed once it finished. */
@@ -90,6 +93,8 @@ export interface CodexTool {
 
 /** The most of a record one reply carries, in UTF-16 code units. */
 export const PAGE_CHARS = 20_000
+/** The most Codex sessions of one chat live at once: each runs its own app-server. */
+export const MAX_LIVE = 4
 /** How long an interrupt or a stop waits for Codex's turn to end before it replies anyway. */
 const STOP_WAIT_MS = 15_000
 const CLOSED = "this chat's Codex instrument has closed"
@@ -97,11 +102,18 @@ const NOTES = {
   running: "Codex is still working: follow its reply with history, with a long wait; do other work meanwhile.",
   waiting: "Codex asked the owner a question and waits for their answer: follow it with history, with a long wait.",
   interrupted: "The owner interrupted you (Esc), so Codex's turn stopped: what Codex did so far is above.",
-  cut: "Stopped waiting, as this chat's run stopped; Codex goes on, and history reads its reply.",
+  runStopped: "This chat's run stopped, so the Codex turn you started was interrupted; history reads what it did.",
+  ownersGoesOn: "This chat's run stopped; the owner's turn goes on, and history reads its reply.",
+  readGoesOn: "This chat's run stopped; a turn Codex runs goes on, and history reads its reply.",
+  closed: "This chat ended, so its Codex sessions stop; history can't read them any more.",
   ended: "This Codex session has ended; history still reads its record, and start begins a new one.",
 } as const
 const OWNERS_TURN = "the owner started this turn, and the owner's word wins: only they can interrupt or stop it"
 const NOT_SENT = "not sent: the owner interrupted you (Esc)"
+const NOT_SENT_CUT = "not sent: this chat's run stopped"
+
+/** Why a call's wait was cut: the chat's run stopped (`cutCalls`), or the instrument closed (`close`). */
+type CutWhy = "run" | "close"
 
 /** One of the chat's Codex sessions. */
 interface Entry {
@@ -134,7 +146,7 @@ type Ended = "done" | "timeout" | "interrupted" | "cut"
 /** One chat's Codex sessions, as its host binds them, and the tools the agent works them with. */
 export class CodexInstrument {
   private readonly entries: Entry[] = []
-  /** The waits of the calls running now: `interruptWaits` ends them. */
+  /** The waits of the calls running now: `cutCalls` and `close` end them, saying why as the abort's reason. */
   private readonly cuts = new Set<AbortController>()
   private made = 0
   private closed = false
@@ -148,16 +160,22 @@ export class CodexInstrument {
     return Object.fromEntries(TOOLS.map((name) => [name, tool(name)])) as Record<ToolName, CodexTool>
   }
 
-  /** Ends every call's wait now: each replies with what has settled, and Codex goes on. */
-  interruptWaits(): void {
-    for (const cut of [...this.cuts]) cut.abort()
+  /** The chat's run stopped, so nobody reads these calls' replies: ends every wait now, and interrupts each turn a
+   *  `start` or `send` waited on that the driver started. A `start` still opening its session stops it. */
+  cutCalls(): void {
+    this.cut("run")
   }
 
-  /** Ends every wait, asks every live session to stop and takes each listing out; later calls are refused. Never
-   *  waits on Codex, which closes after: an office stop must not wait on a Codex that hangs. */
+  private cut(why: CutWhy): void {
+    for (const cut of [...this.cuts]) cut.abort(why)
+  }
+
+  /** Ends every wait, asks every live session to stop and takes each listing out; later calls are refused, and a
+   *  session still opening stops once it opens. Never waits on Codex, which closes after: an office stop must not wait
+   *  on a Codex that hangs. */
   async close(): Promise<void> {
     this.closed = true
-    this.interruptWaits()
+    this.cut("close")
     for (const entry of this.entries) {
       // Already ending, or gone: nothing is left to stop.
       if (entry.thread !== null && !finished(entry)) void entry.thread.stop().catch(() => {})
@@ -197,8 +215,16 @@ export class CodexInstrument {
     }
   }
 
-  /** Opens the next session, lists it, and sends it the first message. */
+  /** Opens the next session, lists it, and sends it the first message; refused past `MAX_LIVE` live sessions. */
   private async start(parsed: Parsed & { tool: "start" }, signals: Signals): Promise<string> {
+    const live = this.entries.filter((e) => !finished(e))
+    if (live.length >= MAX_LIVE) {
+      const names = live.map((e) => e.name).join(", ")
+      return refusalText(
+        `this chat has ${MAX_LIVE} live Codex sessions (${names}), the most it may: send one of them the work, or ` +
+          "stop one, before starting another",
+      )
+    }
     const id = newId()
     const name = `codex ${++this.made}`
     let record: CodexRecord
@@ -227,6 +253,11 @@ export class CodexInstrument {
         this.state(entry, "failed")
         return this.reply(entry)
       }
+      // Closed or cut off while it opened: nobody would read it, so it stops before any message.
+      if (this.closed || signals.cut.aborted) {
+        void entry.thread.stop().catch(() => {})
+        return this.reply(entry, { refused: this.closed ? CLOSED : NOT_SENT_CUT })
+      }
       return await this.send(entry, parsed.message, parsed.waitMs, signals)
     })
   }
@@ -236,6 +267,7 @@ export class CodexInstrument {
   private async send(entry: Entry, message: string, waitMs: number, signals: Signals): Promise<string> {
     if (entry.thread === null || finished(entry)) return this.reply(entry, { refused: `${entry.name} has ${entry.state}` })
     if (signals.interrupted?.aborted) return this.reply(entry, { refused: NOT_SENT })
+    if (signals.cut.aborted) return this.reply(entry, { refused: NOT_SENT_CUT })
     const before = entry.sent.length
     try {
       await entry.thread.send(message)
@@ -248,15 +280,26 @@ export class CodexInstrument {
     return await this.waitTurn(entry, taken, waitMs, signals)
   }
 
-  /** Waits until `taken`, the wait or a signal; on the owner's Esc, interrupts the turn and waits for it to stop. */
+  /** Waits until `taken`, the wait or a signal. On the owner's Esc, and when the chat's run stopped, interrupts the
+   *  turn (on a cut, only one the driver started) and waits for it to stop. */
   private async waitTurn(entry: Entry, taken: () => boolean, waitMs: number, signals: Signals): Promise<string> {
     const ended = await this.waitFor(entry, taken, waitMs, signals)
     if (ended === "interrupted") {
-      await entry.thread?.interrupt().catch(() => {})
-      await this.waitFor(entry, () => !running(entry), STOP_WAIT_MS, { cut: signals.cut })
+      await this.stopTurn(entry, { cut: signals.cut })
       return this.reply(entry, { note: NOTES.interrupted })
     }
-    return this.reply(entry, ended === "cut" ? { note: NOTES.cut } : {})
+    if (ended !== "cut") return this.reply(entry)
+    if (signals.cut.reason === "close") return this.reply(entry, { note: NOTES.closed })
+    if (!running(entry)) return this.reply(entry)
+    if (this.ownersTurn(entry)) return this.reply(entry, { note: NOTES.ownersGoesOn })
+    await this.stopTurn(entry, {})
+    return this.reply(entry, { note: NOTES.runStopped })
+  }
+
+  /** Interrupts the running turn, and waits for it to stop (at most `STOP_WAIT_MS`, or until `signals` cut it). */
+  private async stopTurn(entry: Entry, signals: Partial<Signals>): Promise<void> {
+    await entry.thread?.interrupt().catch(() => {})
+    await this.waitFor(entry, () => !running(entry), STOP_WAIT_MS, signals)
   }
 
   /** The driver's interrupt of its own running turn. */
@@ -286,40 +329,30 @@ export class CodexInstrument {
   }
 
   /** Reads the record: the conversation (waiting for a running turn), the trace, or the trace's entries holding a
-   *  text. */
+   *  text, each a page from `from`. */
   private async history(entry: Entry, parsed: Parsed & { tool: "history" }, signals: Signals): Promise<string> {
-    const { record } = entry
+    const { trace, conversation } = entry.record
     if (parsed.query !== undefined) {
       const query = parsed.query.toLowerCase()
-      const found = record.entries.filter((e) => e.at >= (parsed.from ?? 0) && e.text.toLowerCase().includes(query))
-      let output = ""
-      let next = record.trace.length
-      for (const [i, e] of found.entries()) {
-        if (i > 0 && output.length + e.text.length > PAGE_CHARS) {
-          next = e.at
-          break
-        }
-        output += e.text
-      }
-      return this.reply(entry, { page: { output, next, more: next < record.trace.length } })
+      const found = trace.entries.filter((e) => e.text.toLowerCase().includes(query))
+      return this.reply(entry, { page: pageOf(found, parsed.from ?? 0, trace.end, trace.start) })
     }
-    if (parsed.trace) return this.reply(entry, { page: page(record.trace, parsed.from ?? 0) })
-    const from = Math.min(parsed.from ?? entry.read, record.conversation.length)
-    const fresh = () => record.conversation.length > from || !running(entry)
+    if (parsed.trace) return this.reply(entry, { page: pageOf(trace.entries, parsed.from ?? 0, trace.end, trace.start) })
+    const from = Math.min(parsed.from ?? entry.read, conversation.end)
+    const fresh = () => conversation.end > from || !running(entry)
     const ended = await this.waitFor(entry, fresh, parsed.waitMs, signals)
     if (ended === "interrupted") return this.reply(entry, { from, note: NOTES.interrupted })
-    return this.reply(entry, { from, ...(ended === "cut" ? { note: NOTES.cut } : {}) })
+    if (ended !== "cut") return this.reply(entry, { from })
+    return this.reply(entry, { from, note: signals.cut.reason === "close" ? NOTES.closed : NOTES.readGoesOn })
   }
 
   /** The reply for `entry`: the conversation from `from` (where the driver last read, which moves past what it now
    *  reads), or the given page of the trace; a note on what to do next, unless one is given. */
-  private reply(
-    entry: Entry,
-    o: { from?: number; note?: string; refused?: string; page?: { output: string; next: number; more: boolean } } = {},
-  ): string {
+  private reply(entry: Entry, o: { from?: number; note?: string; refused?: string; page?: Page } = {}): string {
     let shown = o.page
     if (shown === undefined) {
-      shown = page(entry.record.conversation, o.from ?? entry.read)
+      const { conversation } = entry.record
+      shown = pageOf(conversation.entries, o.from ?? entry.read, conversation.end, conversation.start)
       entry.read = shown.next
     }
     const status = statusOf(entry.state)
@@ -424,7 +457,7 @@ export class CodexInstrument {
   }
 
   /** Resolves once `done()` holds, after `ms`, or when a signal aborts, saying which. */
-  private waitFor(entry: Entry, done: () => boolean, ms: number, signals: Signals): Promise<Ended> {
+  private waitFor(entry: Entry, done: () => boolean, ms: number, signals: Partial<Signals>): Promise<Ended> {
     if (done()) return Promise.resolve("done")
     if (signals.cut?.aborted) return Promise.resolve("cut")
     if (signals.interrupted?.aborted) return Promise.resolve("interrupted")
@@ -466,8 +499,8 @@ export class CodexInstrument {
   }
 }
 
-/** What ends a call's wait: the owner's Esc in the chat, and the instrument's cut. */
-type Signals = { readonly interrupted?: AbortSignal; readonly cut?: AbortSignal }
+/** What ends a call's wait: the owner's Esc in the chat, and the instrument's cut, whose reason is a `CutWhy`. */
+type Signals = { readonly interrupted?: AbortSignal; readonly cut: AbortSignal }
 
 /** Whether a turn runs, or a message waits for the thread to load. */
 function running(entry: Entry): boolean {
@@ -491,17 +524,39 @@ function defaultNote(status: ReplyStatus): string | undefined {
   return undefined
 }
 
-/** `text` from `from`, one page of it: cut at the last blank line or line end in the page's second half when it has
- *  one. */
-function page(text: string, from: number): { output: string; next: number; more: boolean } {
-  const start = Math.max(0, Math.min(from, text.length))
-  if (text.length - start <= PAGE_CHARS) return { output: text.slice(start), next: text.length, more: false }
-  const window = text.slice(start, start + PAGE_CHARS)
-  const half = PAGE_CHARS / 2
-  const blank = window.lastIndexOf("\n\n")
-  const line = window.lastIndexOf("\n")
-  const cut = blank >= half ? blank + 2 : line >= half ? line + 1 : PAGE_CHARS
-  return { output: window.slice(0, cut), next: start + cut, more: true }
+/** A page of a log's entries. */
+type Page = { output: Shown[]; next: number; more: boolean; skipped?: true }
+
+/** One page of `entries` (each starting at its `at`; a log's, or the ones a search found) from `from`, at most
+ *  `PAGE_CHARS` of their text: an entry that won't fit fills the page, cut at the last line end in the second half of
+ *  the room left when it has one, and goes on in the next page; with less than a quarter page left, it starts the next
+ *  page. `end` is where the log ends, and `start` where the part
+ *  of it kept in memory starts: a `from` before that is `skipped`. */
+function pageOf(entries: readonly Said[], from: number, end: number, start: number): Page {
+  const skipped = from < start ? ({ skipped: true } as const) : {}
+  const at = Math.max(from, start)
+  const output: Shown[] = []
+  let used = 0
+  for (const e of entries) {
+    const stop = e.at + e.text.length
+    if (stop <= at || e.text === "") continue
+    const offset = Math.max(0, at - e.at)
+    const rest = e.text.slice(offset)
+    if (rest.length <= PAGE_CHARS - used) {
+      output.push({ author: e.author, text: rest })
+      used += rest.length
+      continue
+    }
+    // Little room left: it starts the next page rather than leave a scrap here.
+    const room = PAGE_CHARS - used
+    if (used > 0 && room < PAGE_CHARS / 4) return { output, next: e.at + offset, more: true, ...skipped }
+    const window = rest.slice(0, room)
+    const line = window.lastIndexOf("\n")
+    const cut = line >= room / 2 ? line + 1 : room
+    output.push({ author: e.author, text: window.slice(0, cut) })
+    return { output, next: e.at + offset + cut, more: true, ...skipped }
+  }
+  return { output, next: end, more: false, ...skipped }
 }
 
 /** A message's text. */

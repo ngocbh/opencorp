@@ -32,7 +32,7 @@ test("an argument a tool doesn't take, or one of the wrong kind, says why", () =
 })
 
 test("a reply is one JSON object, with error only when the session failed", () => {
-  const base = { codex: "codex 1", output: "", next: 0, more: false }
+  const base = { codex: "codex 1", output: [{ author: "codex", text: "Done." }], next: 5, more: false }
   expect(JSON.parse(replyText({ ...base, status: "idle", error: "old" }))).toEqual({ ...base, status: "idle" })
   expect(JSON.parse(replyText({ ...base, status: "failed", error: "no codex" }))).toEqual({
     ...base, status: "failed", error: "no codex",

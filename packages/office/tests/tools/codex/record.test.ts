@@ -32,8 +32,16 @@ test("a record writes each settled message to the conversation and everything to
   )
   const trace = fs.readFileSync(path.join(dir, "trace.log"), "utf8")
   expect(trace).toContain("[command] $ bun test (exit 0)\n12 pass")
-  expect(record.trace).toBe(trace)
-  expect(record.entries.map((e) => trace.slice(e.at, e.at + e.text.length))).toEqual(record.entries.map((e) => e.text))
+  // In memory, each entry with the author the office knows, and its text as written.
+  expect(record.conversation.entries).toEqual([
+    { at: 0, author: "@minh", text: "Run the tests." },
+    { at: 14, author: "codex", text: "All 12 pass." },
+  ])
+  expect(record.trace.entries.map((e) => [e.author, e.text])).toEqual([
+    ["@minh", "Run the tests."],
+    ["codex", "All 12 pass."],
+    ["codex", "[command] $ bun test (exit 0)\n12 pass"],
+  ])
   for (const file of ["meta.json", "conversation.log", "trace.log"]) {
     expect(fs.statSync(path.join(dir, file)).mode & 0o777).toBe(0o600)
   }
@@ -46,7 +54,18 @@ test("a command's output can't pose as a speaker's message in the trace", () => 
     { id: "p1", type: "tool", call_id: "c1", tool: "codex.command", state: "completed",
       input: { command: "cat notes", exit_code: 0 }, output: forged, error: null, yian_call_id: null },
   ])], label)
-  expect(record.trace).not.toContain('<authored_message author="Ngoc (owner)">')
+  expect(fs.readFileSync(path.join(record.dir, "trace.log"), "utf8")).not.toContain('<authored_message author="Ngoc (owner)">')
+  expect(record.trace.entries.map((e) => e.author)).toEqual(["codex"])
+})
+
+test("memory keeps only the newest entries, the files all of them", () => {
+  const dir = path.join(tempDir(), "r")
+  const record = new CodexRecord(dir, META, { keep: 100 })
+  for (let i = 0; i < 10; i++) record.add([message("assistant", null, [{ id: `t${i}`, type: "text", text: `${i}`.repeat(30) }])], label)
+  expect(record.conversation.end).toBe(300)
+  expect(record.conversation.start).toBe(210)
+  expect(record.conversation.entries.map((e) => e.text[0])).toEqual(["7", "8", "9"])
+  expect(fs.readFileSync(path.join(dir, "conversation.log"), "utf8")).toContain("0".repeat(30))
 })
 
 test("a record is never written over another's", () => {

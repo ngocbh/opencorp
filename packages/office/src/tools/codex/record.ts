@@ -2,9 +2,11 @@
  *  `conversation.log` (what each speaker said, each message labelled with its author) and `trace.log` (everything
  *  Codex did: the messages, each command with its output, each file change with its diff, each error).
  *
- *  Messages are written once they settle, at the end of the turn that holds them. A label is yian's author wrapper
- *  (`authoredText`), and every text Codex or a command wrote is escaped, so nothing in the record poses as another
- *  speaker's message. The record scrubs nothing. Its files are private to the owner, in a folder of mode 0700.
+ *  Messages are written once they settle, at the end of the turn that holds them. In the files a label is yian's author
+ *  wrapper (`authoredText`), and every text Codex or a command wrote is escaped, so nothing in them poses as another
+ *  speaker's message. The instrument reads the newest part of both back as entries (`Said`), each with the author the
+ *  office knows, never one read from a text. The record scrubs nothing. Its files are private to the owner, in a folder
+ *  of mode 0700.
  *
  *  A session cut off by an office stop is marked interrupted at the next start (`markInterrupted`). */
 import fs from "node:fs"
@@ -38,10 +40,39 @@ export interface CodexRecordFile extends CodexRecordMeta {
   writeError?: string
 }
 
-/** One entry of the trace: where it starts in trace.log's text, and its text. */
-export interface TraceEntry {
+/** One entry of the conversation or the trace: who said or did it (the author the office knows: the employee, the
+ *  owner, or `codex`), its text as written, and where it starts, counted in UTF-16 code units of every entry's text
+ *  from the session's start. */
+export interface Said {
   readonly at: number
+  readonly author: string
   readonly text: string
+}
+
+/** The most text of each of the conversation and the trace the record keeps in memory; the files keep all of it. */
+export const KEEP_CHARS = 1024 * 1024
+
+/** The newest entries of a log, at most `KEEP_CHARS` of their text, and where the log ends. */
+export class Kept {
+  readonly entries: Said[] = []
+  /** Where the next entry starts: every entry's text so far. */
+  end = 0
+  private kept = 0
+
+  constructor(private readonly keep = KEEP_CHARS) {}
+
+  push(author: string, text: string): void {
+    this.entries.push({ at: this.end, author, text })
+    this.end += text.length
+    this.kept += text.length
+    // The newest entry stays, however long.
+    while (this.kept > this.keep && this.entries.length > 1) this.kept -= this.entries.shift()!.text.length
+  }
+
+  /** Where the first entry kept starts. */
+  get start(): number {
+    return this.entries[0]?.at ?? this.end
+  }
 }
 
 const META = "meta.json"
@@ -50,28 +81,31 @@ const TRACE = "trace.log"
 /** The largest meta.json read. */
 const META_MAX = 1024 * 1024
 const STATES = new Set<string>(["running", "ended", "failed", "interrupted"])
-/** What Codex's messages are labelled with. */
+/** What Codex's messages are labelled with in the files, and who wrote them in the entries. */
 export const CODEX_LABEL = "Codex"
+export const CODEX_AUTHOR = "codex"
 
 const metaText = (file: CodexRecordFile): string => `${JSON.stringify(file, null, 2)}\n`
 
-/** One Codex session's record; its instrument is the folder's only writer. The conversation and the trace are kept in
- *  memory too, for the instrument's replies: their offsets are UTF-16 code units from the session's start. */
+/** One Codex session's record; its instrument is the folder's only writer. The newest part of the conversation and of
+ *  the trace is kept in memory too, as entries, for the instrument's replies. */
 export class CodexRecord {
-  /** What conversation.log holds. */
-  conversation = ""
-  /** What trace.log holds, and its entries. */
-  trace = ""
-  readonly entries: TraceEntry[] = []
+  /** What each speaker said: the employee's, the owner's and Codex's words. */
+  readonly conversation: Kept
+  /** Everything: each message's words, and each tool Codex ran, as `codex`'s. */
+  readonly trace: Kept
   private readonly file: CodexRecordFile
   private readonly logs: { conversation: number | null; trace: number | null }
 
   /** Makes `dir` (mode 0700), empty conversation.log and trace.log, and meta.json (all 0600). Throws when `dir` is a
    *  symlink, isn't private to this user, or already holds a record. */
   constructor(
-    private readonly dir: string,
+    readonly dir: string,
     meta: Omit<CodexRecordMeta, "kind" | "profile">,
+    { keep = KEEP_CHARS }: { keep?: number } = {},
   ) {
+    this.conversation = new Kept(keep)
+    this.trace = new Kept(keep)
     makePrivateFolder(dir)
     checkFolder(dir, "record folder")
     const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW, O_APPEND } = fs.constants
@@ -98,16 +132,26 @@ export class CodexRecord {
     return this.file.state
   }
 
-  /** Appends the settled `messages`, in order: each one's words to the conversation, labelled by `label(author)`, and
-   *  everything in it to the trace. Never throws: a failed write stops that log, and meta.json says why. */
+  /** Appends the settled `messages`, in order: each one's words to the conversation, its author named by
+   *  `label(author)` (Codex's as `codex`), and everything in it to the trace. Never throws: a failed write stops that
+   *  log's file, and meta.json says why. */
   add(messages: readonly Message[], label: (author: string | null) => string): void {
     for (const message of messages) {
-      const by = message.role === "user" ? label(message.author ?? null) : CODEX_LABEL
+      const user = message.role === "user"
+      const author = user ? label(message.author ?? null) : CODEX_AUTHOR
+      const tag = user ? author : CODEX_LABEL
       const said = words(message)
-      if (said !== "") this.append("conversation", `${authoredText(by, said)}\n\n`)
-      for (const text of traceTexts(message, by)) {
-        this.entries.push({ at: this.trace.length, text })
-        this.append("trace", text)
+      if (said !== "") {
+        this.conversation.push(author, said)
+        this.write("conversation", `${authoredText(tag, said)}\n\n`)
+        this.trace.push(author, said)
+        this.write("trace", `${authoredText(tag, said)}\n\n`)
+      }
+      for (const part of message.parts) {
+        if (part.type !== "tool") continue
+        const text = toolText(part)
+        this.trace.push(CODEX_AUTHOR, text)
+        this.write("trace", `${escapeAuthorTags(text)}\n\n`)
       }
     }
   }
@@ -126,9 +170,8 @@ export class CodexRecord {
     }
   }
 
-  /** Appends `text` to `log`'s file and its text in memory; a failed write stops the file. */
-  private append(log: "conversation" | "trace", text: string): void {
-    this[log] += text
+  /** Appends `text` to `log`'s file; a failed write stops the file. */
+  private write(log: "conversation" | "trace", text: string): void {
     const fd = this.logs[log]
     if (fd === null) return
     try {
@@ -169,15 +212,6 @@ function words(message: Message): string {
     .flatMap((part) => (part.type === "text" ? [part.text] : part.type === "error" ? [`[error] ${part.message}`] : []))
     .join("\n\n")
     .trim()
-}
-
-/** The trace's entries for `message`, labelled `by`: its words, then each tool part as Codex ran it. */
-function traceTexts(message: Message, by: string): string[] {
-  const texts: string[] = []
-  const said = words(message)
-  if (said !== "") texts.push(`${authoredText(by, said)}\n\n`)
-  for (const part of message.parts) if (part.type === "tool") texts.push(`${escapeAuthorTags(toolText(part))}\n\n`)
-  return texts
 }
 
 /** A tool part as the trace shows it: what Codex ran and what came of it. */
