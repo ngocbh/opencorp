@@ -292,7 +292,7 @@ export class Translator {
         return `${changeName(c)} (${pyStr(changeType(c))}, +${added}/-${removed})`
       }).join("\n")
       if (truthy(params.grantRoot)) text += `\nand write access under ${params.grantRoot} for this session`
-      // Codex 0.162.1 sends no list here, so all four show; the filter applies once it does.
+      // Codex 0.167.0 sends no list here, so all four show; the filter applies once it does.
       return approval("file_change", params, asked, "Codex wants to change files",
         truthy(text) ? text : "(no diff yet)", offered(params.availableDecisions, APPROVE))
     }
