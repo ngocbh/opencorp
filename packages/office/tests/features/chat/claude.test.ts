@@ -111,6 +111,28 @@ test("close ends every Claude Code session of the chat and takes its listing out
   await waitFor(() => readClaudeRecord(dir)?.state === "ended", { what: "the record's end" })
 })
 
+test("a run that stops while Claude Code resumes for the employee's message stops that message's turn", async () => {
+  const script: FakeClaudeScript = {
+    slow_start: 0.5,
+    turns: [[{ say: "Started." }], [{ sleep: 1 }, { say: "Ran anyway." }]],
+  }
+  const h = makeClaude({ idleMs: 200, script })
+  const { chat, claude, call } = await employee(h)
+  await call("start", { message: "Look around." })
+  const [listed] = h.office.instruments.list(chat.id)
+  await waitFor(() => h.sessions.get(listed!.id)?.proc === null, { what: "the idle stop" })
+  const sending = call("send", { claude: "claude 1", message: "Now the build.", wait: 30 })
+  await waitFor(() => h.fake.log().filter((e) => e.dir === "start").length === 2, { what: "the resume" })
+  claude.cutCalls()
+  const reply = await sending
+  expect(reply.note).toContain("run stopped")
+  const interrupts = h.fake.log().filter((e) => e.dir === "in" && e.msg?.request?.subtype === "interrupt")
+  expect(interrupts.map((e) => e.msg!.request)).toEqual([{ subtype: "interrupt", cancel_queued: true }])
+  await Bun.sleep(1500)
+  const said = h.fake.log().filter((e) => e.dir === "out" && e.msg?.type === "assistant")
+  expect(said.map((e) => e.msg!.message.content[0].text)).toEqual(["Started."])
+})
+
 /** minh's chat, its reply calling claude_start, and Claude Code's turn running until stopped. */
 async function claudeTurn() {
   const fake = await fakeLlm()

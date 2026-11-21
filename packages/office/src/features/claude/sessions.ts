@@ -2,12 +2,15 @@
  *  process each, under the employee's permission (`claudeSession`), its lines the session's live transcript. The
  *  employee writes through the chat's instrument, and the owner through the session's routes; both as `next`, so a
  *  message sent while Claude Code works is read in the same turn once its running tool calls finish, and one sent as
- *  that turn ends starts the next.
+ *  that turn ends starts the next. Esc interrupts the running turn and cancels every message no turn has started
+ *  (`cancel_queued`), and drops one still waiting for Claude Code to start, unsent.
  *
  *  **Its process comes and goes.** A session idle for `idleMs` (five minutes, as the upstream TUI's) stops its Claude
  *  Code, and the next message resumes the same conversation (`--resume`); so does the next message after Claude Code
- *  exits on its own (a crash), whose turn is marked interrupted. Only a resume that can't start fails the session. An
- *  office stop ends every session, and a start ends what a crash left live, marking its record interrupted. */
+ *  exits on its own (a crash), whose turn is marked interrupted and whose process group is killed, so nothing it
+ *  started outlives it. Only a resume that can't start fails the session. Its end and an office stop take every
+ *  Claude Code of the session with it: the running one, one starting, and one the idle stop is closing. An office
+ *  stop ends every session, and a start ends what a crash left live, marking its record interrupted. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -86,6 +89,7 @@ export const IDLE_MS = 5 * 60_000
 export const STOP_WAIT_MS = 15_000
 /** What a session is told it may not do. */
 const NOT_SUPPORTED = "a Claude Code session runs on Claude Code's own login and model, held to its employee's permission"
+const ENDED = "This Claude Code session has ended."
 const MISSING =
   "Claude Code isn't installed where the office can find it (on its PATH when it started). Install it " +
   "(https://code.claude.com/docs/en/setup), sign in by running `claude`, restart the office, then run `opencorp doctor`."
@@ -200,6 +204,8 @@ export class ClaudeSessions {
     try {
       await live.launch()
     } catch (error) {
+      // Ended while it started: the end has ended it.
+      if (live.over) throw new HarnessError(409, "not_live", `Claude Code session ${id} has ended`)
       const why = live.failure(error)
       await live.finish("failed", { tell: false })
       throw new HarnessError(422, "start_failed", why)
@@ -328,12 +334,12 @@ export class ClaudeSessions {
     return { ...started, env: { ...this.#env(), ...started.env } }
   }
 
-  /** A started Claude Code for `live` running `command` in its folder, recorded for the start-up reaper; its lines go
-   *  to `live`. */
-  async spawn(
+  /** A Claude Code for `live`, not started yet, running `command` in its folder, recorded for the start-up reaper once
+   *  it spawns; its lines go to `live`. */
+  process(
     live: ClaudeSession,
     prepared: { command: string[]; env: Record<string, string>; instructions: string | null },
-  ): Promise<ClaudeProcess> {
+  ): ClaudeProcess {
     const runDir = this.office.paths.runDir(live.sessionId)
     const key = `harness:${live.sessionId}`
     const proc: ClaudeProcess = new ClaudeProcess({
@@ -355,7 +361,6 @@ export class ClaudeSessions {
     // Made 0o700 here: the umask may narrow ours, and a folder an earlier start left keeps its old mode.
     fs.mkdirSync(runDir, { recursive: true, mode: 0o700 })
     fs.chmodSync(runDir, 0o700)
-    await proc.start()
     return proc
   }
 
@@ -432,10 +437,18 @@ export class ClaudeSession {
   readonly #pending = new Set<string>()
   /** Whether Claude Code says how each message fares (`command_lifecycle`). */
   #lifecycle = false
+  /** The uuids of the messages that wait for Claude Code to start before they are written, and of those Esc dropped
+   *  meanwhile, which are never written. */
+  readonly #unsent = new Set<string>()
+  readonly #dropped = new Set<string>()
   #state: ThreadState = "starting"
   #starting: Promise<ClaudeProcess> | null = null
-  /** A Claude Code the idle stop is closing, which a resume waits for. */
-  #closing: Promise<void> | null = null
+  /** The Claude Code being started, which an end or an office stop kills. */
+  #launching: ClaudeProcess | null = null
+  /** A Claude Code going away (the idle stop closing it, or a crash's group being killed), and when it has: a start
+   *  waits for it, and an end or an office stop kills it. */
+  #retiring: ClaudeProcess | null = null
+  #retired: Promise<void> | null = null
   /** Whether a Claude Code of this session has started, so the next start resumes it. */
   #started = false
   #idle: ReturnType<typeof setTimeout> | null = null
@@ -461,6 +474,11 @@ export class ClaudeSession {
     return this.translator.turn !== null || this.#pending.size > 0
   }
 
+  /** Whether the session is ending or has ended. */
+  get over(): boolean {
+    return this.#finished || this.#ending !== null
+  }
+
   /** Starts Claude Code, or resumes its conversation after the first start, once; a start already under way is
    *  waited on. Rejects as `ClaudeProcess.start` does, and as the checks do. */
   launch(): Promise<ClaudeProcess> {
@@ -469,13 +487,21 @@ export class ClaudeSession {
   }
 
   async #launch(): Promise<ClaudeProcess> {
-    await this.#closing
+    // The one going away goes first: two of one session never run at once, nor share its temp folder.
+    await this.#retired
     const prepared = await this.#owner.prepare(this, { resume: this.#started })
-    if (this.#finished || this.#ending !== null) throw new ClaudeStartError("This Claude Code session has ended.")
-    const proc = await this.#owner.spawn(this, prepared)
-    if (this.#finished || this.#ending !== null) {
-      await proc.close(this.#owner.closeGraceMs)
-      throw new ClaudeStartError("This Claude Code session has ended.")
+    if (this.over) throw new ClaudeStartError(ENDED)
+    const proc = this.#owner.process(this, prepared)
+    this.#launching = proc
+    try {
+      // An end or an office stop meanwhile kills it, and its start rejects.
+      await proc.start()
+    } finally {
+      this.#launching = null
+    }
+    if (this.over) {
+      await proc.kill()
+      throw new ClaudeStartError(ENDED)
     }
     this.#started = true
     this.proc = proc
@@ -487,25 +513,33 @@ export class ClaudeSession {
    *  one once its tool calls finish. Its user message is written before Claude Code reads it. Starts Claude Code
    *  again when it isn't running. 409 for a session that ended; a message Claude Code can't take rejects with why. */
   async prompt(text: string, by: string | null): Promise<string> {
-    if (this.#finished || this.#ending !== null) {
-      throw new HarnessError(409, "not_live", `Claude Code session ${this.sessionId} has ended`)
-    }
+    if (this.over) throw this.#ended()
     const author = by ?? this.instrument.owner
     const steer = this.running
     this.translator.user(text, author)
     const uuid = randomUUID()
     this.#pending.add(uuid)
     this.#update()
-    let proc: ClaudeProcess
-    try {
-      proc = this.proc ?? (await this.launch())
-    } catch (error) {
-      this.#pending.delete(uuid)
-      const why = this.failure(error)
-      // Nothing can take a message now.
-      this.translator.error(`Claude Code couldn't resume this session: ${why}`)
-      await this.finish("failed")
-      throw new HarnessError(409, "not_live", why)
+    let proc = this.proc
+    if (proc === null) {
+      this.#unsent.add(uuid)
+      try {
+        proc = await this.launch()
+      } catch (error) {
+        this.#unsent.delete(uuid)
+        this.#dropped.delete(uuid)
+        this.#pending.delete(uuid)
+        // Ended while it started: the end has ended it.
+        if (this.over) throw this.#ended()
+        const why = this.failure(error)
+        // Nothing can take a message now.
+        this.translator.error(`Claude Code couldn't resume this session: ${why}`)
+        await this.finish("failed")
+        throw new HarnessError(409, "not_live", why)
+      }
+      this.#unsent.delete(uuid)
+      // Esc came while Claude Code started: the message is never written.
+      if (this.#dropped.delete(uuid)) return steer ? "steer" : "turn"
     }
     try {
       await proc.send(this.instrument.wire(text, author), { priority: "next", uuid })
@@ -517,12 +551,32 @@ export class ClaudeSession {
     return steer ? "steer" : "turn"
   }
 
-  /** Interrupts the running turn; nothing when none runs. */
+  /** Esc: the messages waiting for Claude Code to start are dropped, unsent, and the transcript marks them; then,
+   *  while a turn runs or a message sent waits for one, Claude Code is interrupted and cancels every message no turn
+   *  has started (`cancel_queued`), so none of them runs after. A message sent but not yet taken up is cancelled, or
+   *  its turn is stopped as it starts, as Claude Code's docs give the interrupt. */
   async interrupt(): Promise<void> {
+    if (this.over) return
+    if (this.#unsent.size > 0) {
+      for (const uuid of this.#unsent) {
+        this.#dropped.add(uuid)
+        this.#pending.delete(uuid)
+      }
+      this.#unsent.clear()
+      this.translator.dropped()
+      this.#update()
+    }
     const proc = this.proc
-    if (proc === null || this.translator.turn === null) return
+    if (proc !== null && this.running) await this.#interrupt(proc)
+  }
+
+  /** Asks `proc` to interrupt its turn and cancel what waits; what it cancelled is done with. */
+  async #interrupt(proc: ClaudeProcess): Promise<void> {
     try {
-      await proc.interrupt()
+      const answer = await proc.interrupt({ cancelQueued: true })
+      // What it cancelled never runs, whether or not a line says so.
+      for (const uuid of Array.isArray(answer.cancelled) ? answer.cancelled : []) this.#pending.delete(String(uuid))
+      this.#update()
     } catch (error) {
       this.#owner.log(`claude session ${this.sessionId}: the interrupt wasn't answered (${nameOf(error)})`)
     }
@@ -541,25 +595,52 @@ export class ClaudeSession {
     const proc = this.proc
     if (proc !== null && this.translator.turn !== null) {
       const stopped = new Promise<void>((resolve) => (this.#stopped = resolve))
-      void this.interrupt()
+      void this.#interrupt(proc)
       await Promise.race([stopped, sleep(this.#owner.stopWaitMs)])
     }
     this.proc = null
-    await proc?.close(this.#owner.closeGraceMs)
+    // One starting, and one going away, go with it.
+    await Promise.all([proc?.close(this.#owner.closeGraceMs), ...this.#others()])
     await this.#starting?.catch(() => {})
     this.translator.abort()
     await this.finish("ended")
   }
 
-  /** Office stop: Claude Code is killed and the session ends. */
+  /** Office stop: every Claude Code of the session is killed (the running one, one starting, one going away) and the
+   *  session ends. */
   async shutdown(): Promise<void> {
     this.#clearIdle()
     const proc = this.proc
     this.proc = null
     this.#ending ??= Promise.resolve()
-    await proc?.kill()
+    await Promise.all([proc?.kill(), ...this.#others()])
+    await this.#starting?.catch(() => {})
     this.translator.abort()
     await this.finish("ended")
+  }
+
+  /** Kills the Claude Code being started and the one going away; resolves once they have gone. */
+  #others(): Promise<void>[] {
+    return [this.#launching?.kill(), this.#retiring?.kill(), this.#retired].filter(
+      (p): p is Promise<void> => p !== undefined && p !== null,
+    )
+  }
+
+  /** Closes or kills `proc`, which is no longer the session's, as the one going away. */
+  #retire(proc: ClaudeProcess, how: "close" | "kill"): void {
+    this.#retiring = proc
+    const going = how === "close" ? proc.close(this.#owner.closeGraceMs) : proc.kill()
+    const retired: Promise<void> = going.finally(() => {
+      if (this.#retired !== retired) return
+      this.#retiring = null
+      this.#retired = null
+    })
+    this.#retired = retired
+  }
+
+  /** The 409 for a message to a session that has ended. */
+  #ended(): HarnessError {
+    return new HarnessError(409, "not_live", `Claude Code session ${this.sessionId} has ended`)
   }
 
   /** Each line `proc` writes: how each message fares, then the line as transcript events. */
@@ -582,11 +663,13 @@ export class ClaudeSession {
     this.#update()
   }
 
-  /** `proc` exited. Its own exit (a crash) marks the turn interrupted and says the next message resumes it; an idle
-   *  stop's, an end's and an earlier start's change nothing. */
+  /** `proc` exited. Its own exit (a crash) has its group killed, marks the turn interrupted and says the next
+   *  message resumes it; an idle stop's, an end's and an earlier start's change nothing. */
   exited(proc: ClaudeProcess): void {
-    if (proc !== this.proc || this.#finished || this.#ending !== null) return
+    if (proc !== this.proc || this.over) return
     this.proc = null
+    // A dead leader leaves its group to what it started: killed now, and its record with it, before any resume.
+    this.#retire(proc, "kill")
     const exit = proc.proc?.exitCode ?? proc.proc?.signalCode ?? null
     this.#owner.log(`claude session ${this.sessionId}: Claude Code exited on its own (${exit ?? "unknown"})`)
     const lost = this.#pending.size > 0
@@ -619,8 +702,9 @@ export class ClaudeSession {
     this.#clearIdle()
     const proc = this.proc
     this.proc = null
-    await proc?.kill()
+    await Promise.all([proc?.kill(), ...this.#others()])
     this.#pending.clear()
+    this.#unsent.clear()
     try {
       this.#store.updateSession(this.sessionId, { ...notWaiting(status), harness_turn_id: null })
     } catch (failure) {
@@ -657,7 +741,7 @@ export class ClaudeSession {
       const proc = this.proc
       if (proc === null || this.running || this.#finished || this.#ending !== null) return
       this.proc = null
-      this.#closing = proc.close(this.#owner.closeGraceMs).finally(() => (this.#closing = null))
+      this.#retire(proc, "close")
     }, this.#owner.idleMs)
     this.#idle.unref?.()
   }
