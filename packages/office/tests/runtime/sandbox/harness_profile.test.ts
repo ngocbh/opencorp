@@ -12,6 +12,8 @@ import {
   claudeStart,
   codexThread,
   type EmployeePermission,
+  gitRootOf,
+  harnessHomes,
   harnessPath,
   mcpServersOff,
 } from "../../../src/runtime/sandbox/harness_profile.ts"
@@ -1134,3 +1136,20 @@ test.skipIf(NO_CODEX)(
     expect(fs.readFileSync(path.join(home, "ok.txt"), "utf8")).toBe("ok\n")
   },
 )
+
+test("the git root is the nearest folder holding .git, a worktree's .git file too", () => {
+  const root = fs.realpathSync(tempDir())
+  const deep = path.join(root, "repo/a/b")
+  fs.mkdirSync(deep, { recursive: true })
+  expect(gitRootOf(deep)).toBeNull()
+  fs.mkdirSync(path.join(root, "repo/.git"))
+  expect(gitRootOf(deep)).toBe(path.join(root, "repo"))
+  expect(gitRootOf(path.join(root, "repo"))).toBe(path.join(root, "repo"))
+  fs.writeFileSync(path.join(root, "repo/a/.git"), "gitdir: ../.git/worktrees/a\n")
+  expect(gitRootOf(deep)).toBe(path.join(root, "repo/a"))
+})
+
+test("the harnesses' own config folders are those the office's environment sets", () => {
+  expect(harnessHomes({ CODEX_HOME: "/c", CLAUDE_CONFIG_DIR: "/d", HOME: "/h" })).toEqual(["/c", "/d"])
+  expect(harnessHomes({ CODEX_HOME: "" })).toEqual([])
+})

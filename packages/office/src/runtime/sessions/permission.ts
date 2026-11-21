@@ -4,8 +4,8 @@ import fs from "node:fs"
 import path from "node:path"
 import type { HarnessPolicy } from "@opencorp/protocol"
 import type { CompanyRepo } from "../../company/loader.ts"
-import type { EmployeePermission } from "../../runtime/sandbox/harness_profile.ts"
-import type { OfficePaths as SandboxOfficePaths } from "../../runtime/sandbox/policy.ts"
+import type { EmployeePermission } from "../sandbox/harness_profile.ts"
+import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 
 /** What a harness's start makes for one thread, beside the session's folder; the rest comes from the person. */
 export type HarnessThread = Pick<EmployeePermission, "gitRoot" | "tmpdir" | "fence" | "harnessHomes">

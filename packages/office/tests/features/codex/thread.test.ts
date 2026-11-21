@@ -8,7 +8,6 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import {
-  gitRootOf,
   harnessTemp,
   ownerConfig,
   employeeLoad,
@@ -18,7 +17,7 @@ import {
   threadProbe,
 } from "../../../src/features/codex/thread.ts"
 import { fenceIn, freshFolder, removeFolder, sweepTemp } from "../../../src/runtime/sandbox/harness_temp.ts"
-import { instructions } from "../../../src/features/codex/instrument.ts"
+import { instructions } from "../../../src/runtime/sessions/speakers.ts"
 import { type EmployeePermission, codexThread, harnessPath } from "../../../src/runtime/sandbox/harness_profile.ts"
 import { UnsafeProfile } from "../../../src/runtime/sandbox/policy.ts"
 import { CodexProcess, nativeCodex, threadLoad } from "../../../src/tools/codex/codex.ts"
@@ -93,18 +92,6 @@ test("a thread's temp folder is fresh, empty and private each time, and removed 
   // Nothing there is fine.
   removeFolder(root, "S1")
   expect(() => freshFolder(root, "../S1")).toThrow()
-})
-
-test("the git root is the nearest folder holding .git, a worktree's .git file too", () => {
-  const root = fs.realpathSync(tempDir())
-  const deep = path.join(root, "repo/a/b")
-  fs.mkdirSync(deep, { recursive: true })
-  expect(gitRootOf(deep)).toBeNull()
-  fs.mkdirSync(path.join(root, "repo/.git"))
-  expect(gitRootOf(deep)).toBe(path.join(root, "repo"))
-  expect(gitRootOf(path.join(root, "repo"))).toBe(path.join(root, "repo"))
-  fs.writeFileSync(path.join(root, "repo/a/.git"), "gitdir: ../.git/worktrees/a\n")
-  expect(gitRootOf(deep)).toBe(path.join(root, "repo/a"))
 })
 
 /** A temp layout for a thread: a home, an office home in it, a workspace, a fresh temp folder and the fence, and a

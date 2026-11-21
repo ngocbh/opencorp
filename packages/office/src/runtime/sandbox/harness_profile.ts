@@ -619,3 +619,18 @@ function openToOthers(p: string): boolean {
   const stat = fs.statSync(p, { throwIfNoEntry: false })
   return stat !== undefined && (stat.mode & 0o022) !== 0
 }
+
+/** The git root of `dir`, a resolved folder: the nearest folder at or above it holding `.git` (a folder, a worktree's
+ *  file, or a link), as `git rev-parse --show-toplevel` finds it, or null. Nothing is run. */
+export function gitRootOf(dir: string): string | null {
+  for (let at = dir; ; at = path.dirname(at)) {
+    if (fs.lstatSync(path.join(at, ".git"), { throwIfNoEntry: false }) !== undefined) return at
+    if (at === path.dirname(at)) return null
+  }
+}
+
+/** The harnesses' own config folders the office's environment sets apart from the home (`CODEX_HOME`,
+ *  `CLAUDE_CONFIG_DIR`), denied by name; a relative one is kept, so the permission's check refuses it. */
+export function harnessHomes(environ: Record<string, string | undefined>): string[] {
+  return [environ.CODEX_HOME, environ.CLAUDE_CONFIG_DIR].filter((dir): dir is string => Boolean(dir))
+}

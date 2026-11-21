@@ -1,6 +1,6 @@
 /** What a Codex thread runs under beside its employee's permission: the private folder under `/tmp` holding each
- *  thread's temp folder and the fence, the git root Codex keys trust by, the app-server's PATH and TMPDIR, and the load
- *  that turns the owner's MCP servers off. Also doctor's probe of a thread that starts but can't be used. */
+ *  thread's temp folder and the fence, the app-server's PATH and TMPDIR, and the load that turns the owner's MCP
+ *  servers off. Also doctor's probe of a thread that starts but can't be used. */
 import fs from "node:fs"
 import path from "node:path"
 import {
@@ -8,6 +8,7 @@ import {
   type HarnessInstall,
   checkCodexInstall,
   codexThread,
+  harnessHomes,
   harnessPath,
 } from "../../runtime/sandbox/harness_profile.ts"
 import { fenceIn, freshFolder, harnessRoot, removeFolder } from "../../runtime/sandbox/harness_temp.ts"
@@ -23,15 +24,6 @@ const PROBE_GRACE_MS = 2_000
 /** `<base>/opencorp-<uid>/codex`, which holds each Codex thread's temp folder and the fence (`harnessRoot`). */
 export function harnessTemp(base = "/tmp"): string {
   return harnessRoot("codex", base)
-}
-
-/** The git root of `dir`, a resolved folder: the nearest folder at or above it holding `.git` (a folder, a worktree's
- *  file, or a link), as `git rev-parse --show-toplevel` finds it, or null. Nothing is run. */
-export function gitRootOf(dir: string): string | null {
-  for (let at = dir; ; at = path.dirname(at)) {
-    if (fs.lstatSync(path.join(at, ".git"), { throwIfNoEntry: false }) !== undefined) return at
-    if (at === path.dirname(at)) return null
-  }
 }
 
 /** The app-server's environment for a thread under `p`: `base` with the harness PATH and `p`'s temp folder as TMPDIR.
@@ -205,12 +197,6 @@ async function projectConfigs(rpc: JsonRpc): Promise<string[]> {
     }
   }
   return [...new Set(found)]
-}
-
-/** The harnesses' own config folders the office's environment sets apart from the home (`CODEX_HOME`,
- *  `CLAUDE_CONFIG_DIR`), denied by name; a relative one is kept, so the permission's check refuses it. */
-export function harnessHomes(environ: Record<string, string | undefined>): string[] {
-  return [environ.CODEX_HOME, environ.CLAUDE_CONFIG_DIR].filter((dir): dir is string => Boolean(dir))
 }
 
 /** Why the probe failed at `step` (empty before Codex runs). */

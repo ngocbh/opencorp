@@ -18,9 +18,17 @@ import type { CompanyGit } from "../../company/git.ts"
 import { loadRepo, missingPerson } from "../../company/loader.ts"
 import type { Bus } from "../../runtime/bus.ts"
 import type { Tools } from "../../runtime/service/programs.ts"
-import { type EmployeePermission, checkClaudeInstall } from "../../runtime/sandbox/harness_profile.ts"
+import {
+  type EmployeePermission,
+  checkClaudeInstall,
+  gitRootOf,
+  harnessHomes,
+} from "../../runtime/sandbox/harness_profile.ts"
 import { fenceIn, freshFolder, harnessRoot, removeFolder, sweepTemp } from "../../runtime/sandbox/harness_temp.ts"
 import { type OfficePaths as SandboxOfficePaths, UnsafeProfile, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
+import { checkFolder } from "../../runtime/sessions/folder.ts"
+import { employeePermission } from "../../runtime/sessions/permission.ts"
+import { instructions } from "../../runtime/sessions/speakers.ts"
 import { HarnessError, notWaiting, writeState } from "../../runtime/sessions/state.ts"
 import { LIVE, type SessionRecord, type Store } from "../../runtime/store/store.ts"
 import { workerEnv } from "../../runtime/worker/spawn.ts"
@@ -39,10 +47,6 @@ import { type Msg, nameOf } from "../../tools/claude/stream.ts"
 import { Translator } from "../../tools/claude/translate.ts"
 import type { HarnessEvent } from "../../tools/harness/adapter.ts"
 import type { ThreadEvents, ThreadState } from "../../tools/harness/instrument.ts"
-import { instructions } from "../codex/instrument.ts"
-import { employeePermission } from "../codex/permission.ts"
-import { checkFolder } from "../codex/sessions.ts"
-import { gitRootOf, harnessHomes } from "../codex/thread.ts"
 
 /** What the Claude Code sessions use of the office; `Office` has all of it. */
 export interface ClaudeOffice {

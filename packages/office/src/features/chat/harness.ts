@@ -11,14 +11,8 @@ import { loadRepo, missingPerson } from "../../company/loader.ts"
 import { readRules, removeRule as removeAgentRule, RulesRefused } from "../../company/rules.ts"
 import type { Bus } from "../../runtime/bus.ts"
 import type { LiveRelay } from "./live.ts"
-import {
-  type CodexSessions,
-  checkFolder,
-  checkOverlap,
-  folderOf,
-  notSupported,
-  unsafeWorkspace,
-} from "../codex/sessions.ts"
+import { type CodexSessions, notSupported } from "../codex/sessions.ts"
+import { checkFolder, checkOverlap, folderOf, unsafeWorkspace } from "../../runtime/sessions/folder.ts"
 import type { Monitor } from "../../runtime/permissions/monitor.ts"
 import { MANAGER_FLOW, profileTools } from "../profile/manager.ts"
 import { GitProfileStore } from "../../company/profile.ts"
@@ -44,7 +38,7 @@ import { EmployeeTerminal } from "./terminal.ts"
 import { EmployeeCodex } from "./codex.ts"
 import { EmployeeClaude } from "./claude.ts"
 import type { ClaudeSessions } from "../claude/sessions.ts"
-import { speakers } from "../codex/instrument.ts"
+import { speakers } from "../../runtime/sessions/speakers.ts"
 import type { Transcript } from "./transcript.ts"
 
 /** How long, in milliseconds, the stop waits for worker requests, office tool bodies and actor jobs still running. */

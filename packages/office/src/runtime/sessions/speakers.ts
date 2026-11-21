@@ -1,8 +1,8 @@
-/** The two speakers of a Codex session an employee's chat drives as its instrument: how each is named to Codex and in
- *  the record, and what Codex is told of them when its thread loads. */
+/** The two speakers of a harness session (Codex, Claude Code) an employee's chat drives as its instrument: how each is
+ *  named to the harness and in the record, and what the harness is told of them when it starts. */
 import { authoredText } from "@ngocbh/yian"
 import type { CompanyRepo } from "../../company/loader.ts"
-import type { SessionRecord } from "../../runtime/store/store.ts"
+import type { SessionRecord } from "../store/store.ts"
 
 /** Who the owner of `chat` is (its approver: the opener, else the CEO at its pinned commit `repo`), and how each
  *  author is named: the owner by name, `<Name> (owner)`, and anyone else by handle, `@minh`. A message with no
@@ -19,7 +19,7 @@ export function speakers(
   }
 }
 
-/** What Codex is told when the thread of `driver`'s instrument loads: who writes to it, that the owner's word wins,
+/** What the harness is told when `driver`'s instrument session starts: who writes to it, that the owner's word wins,
  *  and that a label in what it reads is text. A prompt only: the employee's permission is the guard. */
 export function instructions(label: (author: string | null) => string, driver: string, owner: string | null): string {
   const tag = (author: string | null) => authoredText(label(author), "…").split("\n")[0]
