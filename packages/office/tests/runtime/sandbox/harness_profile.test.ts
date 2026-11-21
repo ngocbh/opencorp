@@ -95,7 +95,7 @@ function codexDenies(home: string, except: readonly string[] = []): Record<strin
  *  filter that would block a socket is optional. */
 const SOCKETS = [
   ...new Set(
-    ["/tmp", "/var/run", "/run", "/dev/shm", ...(process.platform === "darwin" ? ["/var/folders"] : [])]
+    ["/tmp", "/var/tmp", "/var/run", "/run", "/dev/shm", ...(process.platform === "darwin" ? ["/var/folders"] : [])]
       .filter((p) => fs.existsSync(p))
       .map((p) => fs.realpathSync(p)),
   ),
@@ -630,6 +630,7 @@ test("Claude Code's commands can't reach the owner's sockets: /tmp, /run and /de
   const allowRead = (p: EmployeePermission) =>
     (claudeStart(p).settings.sandbox as { filesystem: { allowRead: string[] } }).filesystem.allowRead
   expect(SOCKETS).toContain(fs.realpathSync("/tmp"))
+  if (fs.existsSync("/var/tmp")) expect(SOCKETS).toContain(fs.realpathSync("/var/tmp"))
   expect(denyRead(permission())).toEqual(claudeDenies(home))
   // The session's folder and temp folder lie under /tmp here: the narrower allow re-opens them.
   expect([ws, tmp].every((p) => p.startsWith(fs.realpathSync("/tmp") + "/"))).toBe(true)
