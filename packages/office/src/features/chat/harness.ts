@@ -1007,7 +1007,9 @@ export class ChatHarness implements SessionHarness {
     const session = this.store.getSession(sessionId)
     if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
     if (session.harness !== "claude") return undefined
-    if (this.office.claude === undefined) throw new HarnessError(409, "not_live", `session ${sessionId} has no live run`)
+    if (this.office.claude === undefined) {
+      throw new HarnessError(409, "not_live", `session ${sessionId} has no live run`)
+    }
     return this.office.claude
   }
 

@@ -26,7 +26,14 @@ import { LIVE, type SessionRecord, type Store } from "../../runtime/store/store.
 import { workerEnv } from "../../runtime/worker/spawn.ts"
 import type { OfficePaths } from "../../util/home.ts"
 import { startTime } from "../../util/proc.ts"
-import { CLOSE_GRACE_MS, ClaudeMissing, ClaudeProcess, ClaudeStartError, claudeSession, nativeClaude } from "../../tools/claude/claude.ts"
+import {
+  CLOSE_GRACE_MS,
+  ClaudeMissing,
+  ClaudeProcess,
+  ClaudeStartError,
+  claudeSession,
+  nativeClaude,
+} from "../../tools/claude/claude.ts"
 import { markClaudeInterrupted } from "../../tools/claude/instrument.ts"
 import { type Msg, nameOf } from "../../tools/claude/stream.ts"
 import { Translator } from "../../tools/claude/translate.ts"

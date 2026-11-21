@@ -235,7 +235,7 @@ export function Session() {
   )
   /** Esc: freezes the view; the turn after the stopped one starts from what it shows now. */
   function interrupt() {
-    // A Codex or Claude Code steer joins the live turn, so the next message after it can still be the stopped turn's.
+    // A harness steer joins the live turn, so the next message after it can still be the stopped turn's.
     setFrozen(freeze(messages(), frozen(), harnessed() ? undefined : turnStart))
     turnStart = assistantIds(messages())
   }
@@ -1512,7 +1512,12 @@ export function toolView(
     case "claude.Edit":
       return {
         view: "edit",
-        input: pick(input, { filePath: "file_path", oldString: "old_string", newString: "new_string", replaceAll: "replace_all" }),
+        input: pick(input, {
+          filePath: "file_path",
+          oldString: "old_string",
+          newString: "new_string",
+          replaceAll: "replace_all",
+        }),
       }
     case "claude.Glob":
     case "claude.Grep":

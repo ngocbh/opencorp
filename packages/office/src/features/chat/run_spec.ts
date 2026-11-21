@@ -112,7 +112,8 @@ function profileMemory(git: CompanyGit, handle: string): Record<string, MemoryBa
  * The person's main flow, who they are and who they're talking with, their profile as its `profile` memory, their
  * skills, and the toolbox, workspace (the file tools), terminal, codex, claude and company groups; codex is empty
  * without `codex`, and claude without `claude`. Each run's build binds its permissions to `terminal`, whose commands
- * they gate; an approved call runs there. Throws `HarnessError` (`422`) when the person isn't in `repo` or has no main flow.
+ * they gate; an approved call runs there. Throws `HarnessError` (`422`) when the person isn't in `repo` or has no
+ * main flow.
  */
 export function mainSpec({
   store,

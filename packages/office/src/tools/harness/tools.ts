@@ -125,7 +125,13 @@ export function toolSpecs(h: Harness): Record<ToolName, ToolSpec> {
   const said = descriptions(h)
   const params = parameters(h)
   const spec = (name: ToolName): ToolSpec => ({ description: said[name], parameters: params[name] })
-  return { start: spec("start"), send: spec("send"), interrupt: spec("interrupt"), stop: spec("stop"), history: spec("history") }
+  return {
+    start: spec("start"),
+    send: spec("send"),
+    interrupt: spec("interrupt"),
+    stop: spec("stop"),
+    history: spec("history"),
+  }
 }
 
 /** `tool`'s arguments read, or why they can't be: an argument its parameters don't name, or one of the wrong kind. A
