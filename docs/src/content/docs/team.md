@@ -39,7 +39,10 @@ while a command runs), and a missing `.mcp.json` can still be created.
   (ctrl+p), or ctrl+x down, opens one as a chat of its own, where you watch Codex work and write to it too; ctrl+x up
   goes back. Codex reads each message with its author and is told your word wins: your employee reads what you told
   Codex with Codex's next answer, and can't interrupt or stop a turn you started. Esc in your employee's chat stops
-  your employee and the Codex turn they were waiting on; Esc in the Codex session stops Codex's turn.
+  your employee and the Codex turn they were waiting on, and so does their run stopping (the cost cap, say); Esc in
+  the Codex session stops Codex's turn. A chat has at most four Codex sessions live at once. The chat's mode doesn't
+  gate Codex: in `ask` and `default` too, your employee starts and messages Codex with no card, and Codex runs every
+  command inside their permission without asking.
 - **The end.** Ending the session ends its shells and their commands, and its Codex sessions. Restarting the office
   ends the Codex sessions too, and your employee starts new ones.
 
