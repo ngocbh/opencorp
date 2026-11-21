@@ -378,7 +378,8 @@ test("the template flows pass lint", async () => {
   await writeCompany(root, path.join(dir, "worktrees"), { company: "Acme", owner: { handle: "ngocbh", name: "Ngoc" } })
   const agent = {
     handle: "minh", name: "Minh", kind: "agent", title: "Engineer", manager: "ngocbh",
-    main: "../../shared/flows/chat.yaml", harnesses: ["composer"],
+    main: "../../shared/flows/chat.yaml", sops: [{ flow: "../../shared/flows/drive_harness.yaml" }],
+    harnesses: ["composer", "codex", "claude"],
   }
   fs.mkdirSync(path.join(root, "people/minh/memory"), { recursive: true })
   fs.writeFileSync(path.join(root, "people/minh/person.yaml"), writeYaml(agent))
@@ -469,6 +470,47 @@ test.each(["[codex]", "[ask_user, claude]", "[{codex: [send, history]}]"])(
 
 test("an agent that grants no instrument group needs no steer inbox", async () => {
   expect(await codes(withSop(sopFlow("[workspace, terminal]", { steered: false })))).toEqual(new Set())
+})
+
+/** A company whose minh, using `harnesses`, runs `flow` as an SOP and as a routine. */
+function driving(flow: string, harnesses: string[]): string {
+  const ref = "../../shared/flows/drive.yaml"
+  const minh = person("minh", { sops: [{ flow: ref }], routines: [{ name: "daily", flow: ref }], harnesses })
+  return makeCompany({ "shared/flows/drive.yaml": flow, "people/minh/person.yaml": minh })
+}
+
+test("an SOP or routine that drives only harnesses its person doesn't use is a lint warning, one for each", async () => {
+  const root = driving(sopFlow("[codex]", { steered: true }), ["composer"])
+  expect(await codes(root)).toEqual(new Set())
+  const found = await withCode(root, "person.harness_not_used")
+  expect(found.map((issue) => [issue.path, issue.severity, issue.message])).toEqual(
+    Array(2).fill([
+      "people/minh/person.yaml",
+      "warning",
+      "../../shared/flows/drive.yaml drives codex, but @minh doesn't use the codex harness, so each session it"
+        + " starts is refused; add codex to harnesses",
+    ]),
+  )
+  expect(await withCode(driving(sopFlow("[codex]", { steered: true }), ["composer", "codex"]), "person.harness_not_used"))
+    .toEqual([])
+})
+
+test("an SOP that drives either harness is a lint warning only for a person who uses neither", async () => {
+  const sop = fs.readFileSync(new URL("../../src/company/template/shared/flows/drive_harness.yaml", import.meta.url), "utf8")
+  const [issue] = await withCode(driving(sop, ["composer"]), "person.harness_not_used")
+  expect(issue!.message).toBe(
+    "../../shared/flows/drive.yaml drives codex or claude, but @minh uses neither harness, so each session it starts"
+      + " is refused; add the one it should drive to harnesses",
+  )
+  for (const harnesses of [["composer", "codex"], ["claude"]]) {
+    expect(await lint(loadRepo(driving(sop, harnesses)))).toEqual([])
+  }
+})
+
+test("a main flow that grants an instrument its person doesn't use is no lint finding", async () => {
+  const flow = MAIN.replace("        steer_inbox: ${input.messages}\n", "$&        tools: [codex, claude]\n")
+  expect(flow).toContain("tools: [codex, claude]")
+  expect(await lint(loadRepo(makeCompany({ "shared/flows/chat.yaml": flow })))).toEqual([])
 })
 
 test("an agent inside a turn that grants an instrument group without a steer inbox is named by its path", async () => {
