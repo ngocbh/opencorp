@@ -54,9 +54,8 @@ its run steer them, and an interrupt stops them and the harness turn they wait o
 
 A run resumed in the same office never repeats a start or a message: a call a crash cut off comes back as one whose
 outcome is unknown, and your employee reads the session's record before acting again. The office keeps harness
-sessions only while it runs, so after it restarts the session is gone and a resumed run starts the work over
-([#962](https://github.com/ngocbh/opencorp/issues/962)). `opencorp doctor` warns about an employee who lists the SOP
-in `sops:` but uses neither harness.
+sessions only while it runs, so after it restarts the session is gone and a resumed run starts the work over.
+`opencorp doctor` warns about an employee who lists the SOP in `sops:` but uses neither harness.
 
 ## What an employee may touch
 

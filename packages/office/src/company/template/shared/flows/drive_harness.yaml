@@ -7,7 +7,7 @@
 # A resume in the same office never repeats a start or a message: each call with a recorded result is replayed, and the
 # harness tools aren't resumable, so a call a crash cut off is never sent again. The driver reads that its outcome is
 # unknown, and checks the session's record before it starts or sends anything again. The office keeps the harness
-# sessions in memory, so after it restarts they are gone: a resumed run finds none, and starts the work over (#962).
+# sessions in memory, so after it restarts they are gone: a resumed run finds none, and starts the work over.
 id: drive_harness
 name: drive_harness
 description: Hand a task to Codex or Claude Code, and see it through.
