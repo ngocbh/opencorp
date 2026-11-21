@@ -46,13 +46,17 @@ to Claude Code if it lists claude.
 
 ### The SOP that drives a harness
 
-Every new company has an SOP for handing a task to a harness, `shared/flows/drive_harness.yaml`. It takes the task,
-the harness (`codex` or `claude`) and the folder to work in. Your employee starts one session of that harness,
-follows it, checks its work, sends it what is missing, then stops the session and reports. Messages sent to its run
-steer them, and an interrupt stops them and the harness turn they wait on. A resumed run never starts a second
-session or sends a message again: a call a crash cut off comes back as one whose outcome is unknown, and your
-employee reads the session's record before acting again. `opencorp doctor` warns about an employee who lists it in
-`sops:` but uses neither harness.
+Every new company has an SOP for handing a task to a harness, `shared/flows/drive_harness.yaml`. OpenCorp doesn't
+start SOPs yet; the flow is there to read, reuse and list in an employee's `sops:`. It takes the task, which says
+where in the chat's folder to work, and the harness (`codex` or `claude`). Your employee starts one session of that
+harness, follows it, checks its work, sends it what is missing, then stops the session and reports. Messages sent to
+its run steer them, and an interrupt stops them and the harness turn they wait on.
+
+A run resumed in the same office never repeats a start or a message: a call a crash cut off comes back as one whose
+outcome is unknown, and your employee reads the session's record before acting again. The office keeps harness
+sessions only while it runs, so after it restarts the session is gone and a resumed run starts the work over
+([#962](https://github.com/ngocbh/opencorp/issues/962)). `opencorp doctor` warns about an employee who lists the SOP
+in `sops:` but uses neither harness.
 
 ## What an employee may touch
 
@@ -138,9 +142,9 @@ folders of tools you run yourself read-only: `~/.cargo` read-only, `~/miniconda3
 - **Unix sockets.** Claude Code's commands can't see `/tmp`, `/run` or `/dev/shm` (nor `/var/folders` on macOS),
   where the sockets of your tmux, ssh-agent and desktop session live. Whether its Linux sandbox also blocks
   connecting to a socket elsewhere is unchecked.
-- **The network.** On, the harness's commands get your machine's network: services on localhost and abstract Unix
-  sockets, which can act as you, your LAN, and a cloud machine's metadata endpoint. Off, they get none, and the
-  harness still reaches its own model.
+- **The network.** On, Codex's commands get your machine's network: services on localhost and abstract Unix sockets,
+  which can act as you, your LAN, and a cloud machine's metadata endpoint. Claude Code won't start with the network
+  on. Off, commands get none, and the harness still reaches its own model.
 - **No `/tmp`.** Commands get only their own temp folder, so a tool that writes to `/tmp` fails unless a listed
   folder covers it.
 - **Project config.** Only the `.codex/`, `.agents/` and `.claude/` at the top of the project folder and its
