@@ -15,7 +15,8 @@ import type { RepoIssue } from "../../company/issues.ts"
 import { lint } from "../../company/lint.ts"
 import { loadRepo } from "../../company/loader.ts"
 import { companyState, missingFiles } from "../../company/template.ts"
-import { CodexMissing, codexCommand } from "../../tools/codex/codex.ts"
+import { CodexMissing, codexCommand, nativeCodex } from "../../tools/codex/codex.ts"
+import { type Probed, threadProbe } from "../codex/thread.ts"
 import { SANDBOX_FIX } from "../../tools/terminal/terminal.ts"
 import { selfCommand, tuiAssetRoot } from "../../platform.ts"
 import {
@@ -60,6 +61,12 @@ const SIGNED_OUT = "not logged in"
 
 /** The most of a line from `codex --version` or `codex login status` the report shows. */
 const LINE_CAP = 200
+
+/** The oldest Codex the office runs: its threads take an employee's permission profile in the form the office sends. */
+const CODEX_FLOOR = [0, 167, 0] as const
+/** How to update Codex past the floor. */
+const UPDATE_CODEX =
+  "update Codex: `npm install -g @openai/codex@latest` (or `brew upgrade codex`), then `opencorp doctor`"
 
 /** The most of a plist or unit file doctor reads: `opencorp onboard` writes about 2 KiB. */
 const SERVICE_FILE_CAP = 64 * 1024
@@ -586,11 +593,20 @@ function codexChangeLands(mode: string | null): string {
   return "`opencorp restart` from that shell"
 }
 
+/** The owner's home and `<OPENCORP_HOME>`, which the Codex check's thread denies by name as an employee's does. */
+export interface CodexOffice {
+  home: string
+  officeHome: string
+}
+
 /**
  * Whether the office can start Codex sessions, in the environment it gives an app-server (`env`): the binary on its
- * PATH, the version, and the sign-in. Missing, signed out, or a `login status` that fails otherwise (shown by the
- * first line it printed) is a warning, not a failure: only people with `codex` in `harnesses` need it. A `codex` that
- * won't run or doesn't answer within `timeoutMs` fails.
+ * PATH, the version (0.167.0 or later), the sign-in, and, given `office`, a thread under an employee's permission that
+ * can be used (`threadProbe`, under `base`'s harness temp folder: a thread that starts but whose config no turn could
+ * load fails, with no model turn run), and a warning for each trusted project whose own config Codex would load.
+ * Missing, signed out, or a `login status` that fails otherwise (shown by the first line it printed) is a warning, not
+ * a failure: only people with `codex` in `harnesses` need it. A `codex` that won't run, doesn't answer within
+ * `timeoutMs`, is older than the floor or whose version can't be read fails.
  *
  * `environ` is the office's environment: its `OPENCORP_CODEX_BIN` picks the binary and its `CODEX_HOME` joins `env`,
  * as they do for an app-server. `mode` is the office's recorded service mode, which decides how a fix reaches it.
@@ -599,7 +615,7 @@ export async function codexCheck(
   env: Record<string, string>,
   environ: Env,
   mode: string | null = null,
-  timeoutMs = 30_000,
+  { timeoutMs = 30_000, office, base }: { timeoutMs?: number; office?: CodexOffice; base?: string } = {},
 ): Promise<Check> {
   let found: string
   try {
@@ -637,10 +653,20 @@ export async function codexCheck(
     const why = lines(version.stderr)[0]?.slice(0, LINE_CAP) || `exit ${version.code}`
     return { name: "codex", status: "fail", detail: `${found} --version failed: ${why}` }
   }
+  const first = lines(version.stdout)[0] ?? ""
+  const printed = first.slice(0, LINE_CAP)
+  const named = printed ? `${printed} at ${found}` : `${found} (no version printed)`
+  // `codex-cli X.Y.Z`, perhaps with a pre-release after.
+  const at = first.match(/(\d+)\.(\d+)\.(\d+)/)
+  if (at === null) {
+    const detail = `${named}: OpenCorp needs Codex 0.167.0 or later and can't read this one's version; ${UPDATE_CODEX}`
+    return { name: "codex", status: "fail", detail }
+  }
+  if (older(at.slice(1).map(Number), CODEX_FLOOR)) {
+    return { name: "codex", status: "fail", detail: `${named} is older than 0.167.0, which OpenCorp needs; ${UPDATE_CODEX}` }
+  }
   const login = await ask("login", "status")
   if ("name" in login) return login
-  const printed = (lines(version.stdout)[0] ?? "").slice(0, LINE_CAP)
-  const named = printed ? `${printed} at ${found}` : `${found} (no version printed)`
   if (login.code !== 0) {
     const said = lines(`${login.stderr}\n${login.stdout}`)
     // Codex says "Not logged in" when signed out, and exits 1 on other errors too (a bad config.toml, say),
@@ -648,11 +674,41 @@ export async function codexCheck(
     if (said.some((line) => line.toLowerCase().startsWith(SIGNED_OUT))) {
       return { name: "codex", status: "warn", detail: `${named} is signed out; run \`${found} login\`` }
     }
-    const first = said.find((line) => line.startsWith("Error")) ?? said[0]
-    const why = first ? first.slice(0, LINE_CAP) : `exit ${login.code}`
+    const error = said.find((line) => line.startsWith("Error")) ?? said[0]
+    const why = error ? error.slice(0, LINE_CAP) : `exit ${login.code}`
     return { name: "codex", status: "warn", detail: `${named}: \`${found} login status\` failed: ${why}` }
   }
-  return { name: "codex", status: "ok", detail: `${named}, signed in` }
+  if (office === undefined) return { name: "codex", status: "ok", detail: `${named}, signed in` }
+  let probed: Probed
+  try {
+    probed = await threadProbe({ codex: nativeCodex(found), env, environ, ...office, base, timeoutMs })
+  } catch (error) {
+    // Its folders under /tmp couldn't be made or removed, or the binary is gone.
+    const detail = `${named} is signed in, but doctor can't try a thread under an employee's permission: ${messageOf(error)}`
+    return { name: "codex", status: "fail", detail }
+  }
+  const { failed, projectConfigs } = probed
+  if (failed !== null) {
+    const detail =
+      `${named} is signed in, but a thread under an employee's permission can't be used: ` +
+      `${failed.why.slice(0, LINE_CAP)}; Codex's output is in ${failed.log}`
+    return { name: "codex", status: "fail", detail }
+  }
+  const runs = `${named}, signed in, and a thread under an employee's permission runs`
+  if (projectConfigs.length === 0) return { name: "codex", status: "ok", detail: runs }
+  const files = projectConfigs.map((dir) => path.join(dir, "config.toml"))
+  const shown = files.length > 3 ? [...files.slice(0, 3), `${files.length - 3} more`] : files
+  const detail =
+    `${runs}, but your Codex config trusts projects whose own config it would load, as you, so employees' Codex ` +
+    `sessions there are refused (${shown.join(", ")}); untrust those projects in your Codex config.toml, or remove ` +
+    "those files"
+  return { name: "codex", status: "warn", detail }
+}
+
+/** Whether version `got` comes before `floor`. */
+function older(got: readonly number[], floor: readonly number[]): boolean {
+  const at = got.findIndex((n, i) => n !== floor[i])
+  return at !== -1 && got[at]! < floor[at]!
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -996,9 +1052,14 @@ export interface CheckOptions {
   probe?: (officeHome: string) => Promise<string | null>
   /** Why a sandboxed program can't run on a terminal, or null if one does (default `terminalProblem`). */
   terminal?: () => Promise<string | null>
-  /** The Codex check, given the worker env, the office's env and its recorded service mode (default
-   *  `codexCheck`). */
-  codex?: (env: Record<string, string>, environ: Env, mode: string | null) => Promise<Check>
+  /** The Codex check, given the worker env, the office's env, its recorded service mode, and the owner's and the
+   *  office's homes (default `codexCheck`). */
+  codex?: (
+    env: Record<string, string>,
+    environ: Env,
+    mode: string | null,
+    options: { office: CodexOffice },
+  ) => Promise<Check>
   /** The shell's environment (default `process.env`). */
   environ?: Env
   /** `GET /hq` from the office on the socket, sent with the identity's token when there is one
@@ -1163,7 +1224,8 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   if (folders !== null) found.push(folders)
   // run.env is the environment an office set up or started from this shell gets, which can differ from the running
   // daemon's (a launchd or systemd office keeps the one `opencorp onboard` wrote into its service file).
-  found.push(await codex(workerEnv(run.env), run.env, service.recordedMode(run)))
+  const homes = { home: host.userHome, officeHome: paths.home }
+  found.push(await codex(workerEnv(run.env), run.env, service.recordedMode(run), { office: homes }))
   return found
 }
 

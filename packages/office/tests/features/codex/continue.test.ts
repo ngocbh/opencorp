@@ -3,7 +3,6 @@ import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
-import { ownerLoad } from "../../../src/tools/codex/codex.ts"
 import { realPath } from "../../../src/runtime/sandbox/policy.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
 import { waitFor } from "../../helpers.ts"
@@ -69,11 +68,11 @@ test("continuing makes a new row on the same thread and resumes it", async () =>
   await waitFor(() => status(h, fresh.id) === "idle", { what: "the resume" })
   const resumes = h.fake.calls("thread/resume")
   expect(resumes.map((c) => (c as { threadId: string }).threadId)).toEqual(["thr_1"])
-  expect(resumes[0]).toEqual({
-    threadId: "thr_1",
-    excludeTurns: true,
-    ...ownerLoad(fresh.cwd, { sandbox: "workspace-write", network: false }),
-  })
+  // The continued stretch runs under its own profile, the employee's permission as it is now.
+  const resumed = resumes[0] as Record<string, any>
+  expect([resumed.threadId, resumed.excludeTurns, resumed.cwd]).toEqual(["thr_1", true, fresh.cwd])
+  expect([resumed.approvalPolicy, resumed.permissions]).toEqual(["never", `opencorp-${fresh.id}`])
+  expect(resumed.config.permissions[`opencorp-${fresh.id}`].filesystem[fresh.cwd]).toBe("write")
   // Only the first stretch started a thread.
   expect(h.fake.calls("thread/start")).toHaveLength(1)
   await h.sessions.prompt(fresh.id, "two")

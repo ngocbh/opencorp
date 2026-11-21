@@ -5,6 +5,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import {
+  checkCodexInstall,
   checkPermission,
   claudeStart,
   codexThread,
@@ -13,6 +14,7 @@ import {
   mcpServersOff,
 } from "../../../src/runtime/sandbox/harness_profile.ts"
 import { UnsafeProfile, UnsafeWorkspace } from "../../../src/runtime/sandbox/policy.ts"
+import { nativeCodex } from "../../../src/tools/codex/codex.ts"
 import { tempDir } from "../../helpers.ts"
 import { sandboxAvailable } from "./helpers.ts"
 
@@ -44,6 +46,8 @@ function layout() {
   const install = path.join(root, "codex-install")
   fs.mkdirSync(path.join(install, "bin"), { recursive: true })
   fs.writeFileSync(path.join(install, "bin/codex"), "")
+  // Only the user may change Codex's install, whatever the umask.
+  for (const p of [install, path.join(install, "bin"), path.join(install, "bin/codex")]) fs.chmodSync(p, 0o755)
   fs.mkdirSync(path.join(ws, ".git"), { recursive: true })
   fs.writeFileSync(path.join(ws, ".git/config"), "[core]\n")
   fs.mkdirSync(tmp, { mode: 0o700 })
@@ -130,6 +134,7 @@ test("a writable employee's Codex override reads the minimal set and Codex's ins
   expect(thread(permission())).toEqual({
     permissions: "opencorp-s1",
     config: {
+      default_permissions: "opencorp-s1",
       permissions: {
         "opencorp-s1": {
           filesystem: {
@@ -161,6 +166,15 @@ test("a writable employee's Codex override reads the minimal set and Codex's ins
   // No git root, only the folder.
   const bare = thread(permission({ gitRoot: null }), { id: "opencorp-s3" })
   expect(bare.config.projects).toEqual({ [ws]: { trust_level: "untrusted" } })
+})
+
+test("every Codex override makes its own profile the default, or every reload of the thread's config fails", () => {
+  const { permission, thread } = layout()
+  for (const id of ["opencorp-s1", "opencorp-01ABC"]) {
+    const { permissions, config } = thread(permission({ writable: false }), { id })
+    expect([permissions, config.default_permissions]).toEqual([id, id])
+    expect(Object.keys(config.permissions as object)).toEqual([id])
+  }
 })
 
 test("every Codex override turns hooks, apps, plugins, memories, notify and the given MCP servers off, and web search too with the network off", () => {
@@ -269,6 +283,35 @@ test("Codex reads its own install folder, which the employee can't write", () =>
   >
   expect(read["opencorp-s1"]!.filesystem[install]).toBe("read")
   expect(thread(permission({ writable: false })).config.permissions).toBeDefined()
+})
+
+test("codex as the office runs it is refused before it runs where anyone but the user could change it", () => {
+  const { root, ws, install, permission, folder } = layout()
+  const binary = path.join(install, "bin/codex")
+  expect(() => checkCodexInstall(permission(), { run: binary, install })).not.toThrow()
+  // A wrapper the office spawns, in or reached through a folder the employee can write, though its install isn't.
+  const wrapper = path.join(ws, "codex.sh")
+  fs.writeFileSync(wrapper, "#!/bin/sh\n", { mode: 0o755 })
+  expect(() => checkCodexInstall(permission(), { run: wrapper, install })).toThrow(/the Codex the office runs/)
+  expect(() => checkCodexInstall(permission({ writable: false }), { run: wrapper, install })).not.toThrow()
+  // Another person's writable folder, or a live session's folder.
+  const shared = folder("shared")
+  fs.mkdirSync(path.join(shared, "codex/bin"), { recursive: true })
+  fs.writeFileSync(path.join(shared, "codex/bin/codex"), "", { mode: 0o755 })
+  const elsewhere = { run: path.join(shared, "codex/bin/codex"), install: path.join(shared, "codex") }
+  expect(() => checkCodexInstall(permission({ othersWritable: [shared] }), elsewhere)).toThrow(UnsafeProfile)
+  expect(() => checkCodexInstall(permission(), elsewhere)).not.toThrow()
+  // codexThread holds its install to the same.
+  expect(() => codexThread(permission({ othersWritable: [shared] }), "opencorp-s1", { install: elsewhere.install }))
+    .toThrow(/Codex's install folder/)
+  // Open to the group or others: the binary, its folder, the install folder.
+  for (const open of [elsewhere.run, path.dirname(elsewhere.run), elsewhere.install]) {
+    fs.chmodSync(open, 0o775)
+    expect(() => checkCodexInstall(permission(), elsewhere), open).toThrow(/others than the user may write/)
+    fs.chmodSync(open, 0o755)
+  }
+  fs.chmodSync(path.join(root, "codex-install"), 0o757)
+  expect(() => codexThread(permission(), "opencorp-s1", { install })).toThrow(/others than the user may write/)
 })
 
 test("the office's home, the home's credential folders and the harnesses' own config folders are denied by name", () => {
@@ -815,30 +858,12 @@ const NO_CODEX = CODEX === undefined ? !process.env.OPENCORP_TEST_SANDBOX : !san
 /** The oldest Codex whose sandbox takes a per-thread permission profile in these tests' form. */
 const CODEX_FLOOR = [0, 167, 0]
 
-/** What the real-Codex tests run, and Codex's install folder (the one holding its native binary's `bin`).
+/** What the real-Codex tests run, and Codex's install folder, as the office finds them (`nativeCodex`):
  *  `OPENCORP_TEST_CODEX` may be the native binary, npm's launcher (which needs node, so the native binary it execs runs
  *  instead), or a wrapper script beside a `node_modules` holding Codex. */
 function testCodex(): { run: string; install: string } {
   if (CODEX === undefined) throw new Error("OPENCORP_TEST_SANDBOX is set: set OPENCORP_TEST_CODEX to a Codex 0.167.0+")
-  const real = fs.realpathSync(CODEX)
-  if (fs.readFileSync(real).subarray(0, 2).toString() !== "#!") {
-    return { run: real, install: path.dirname(path.dirname(real)) }
-  }
-  // A wrapper's sibling <node_modules>/@openai, or the launcher's own: <node_modules>/@openai/codex/bin/codex.js.
-  for (const scope of [path.join(path.dirname(real), "node_modules/@openai"), path.resolve(real, "../../..")]) {
-    const found = (fs.existsSync(scope) ? fs.readdirSync(scope) : [])
-      .filter((name) => name.startsWith("codex-"))
-      .flatMap((pkg) => {
-        const vendor = path.join(scope, pkg, "vendor")
-        if (!fs.existsSync(vendor)) return []
-        return fs.readdirSync(vendor).map((target) => path.join(vendor, target, "bin/codex"))
-      })
-      .filter((p) => fs.existsSync(p))
-    if (found.length === 1) {
-      return { run: real.endsWith(".js") ? found[0]! : real, install: path.dirname(path.dirname(found[0]!)) }
-    }
-  }
-  throw new Error(`found no single native Codex behind ${CODEX}`)
+  return nativeCodex(CODEX)
 }
 
 /** Runs the test's Codex with `args` and none of this process's environment: a temp HOME and CODEX_HOME, never the

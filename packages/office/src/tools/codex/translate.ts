@@ -292,7 +292,7 @@ export class Translator {
         return `${changeName(c)} (${pyStr(changeType(c))}, +${added}/-${removed})`
       }).join("\n")
       if (truthy(params.grantRoot)) text += `\nand write access under ${params.grantRoot} for this session`
-      // Codex 0.162.1 sends no list here, so all four show; the filter applies once it does.
+      // Codex 0.167.0 sends no list here, so all four show; the filter applies once it does.
       return approval("file_change", params, asked, "Codex wants to change files",
         truthy(text) ? text : "(no diff yet)", offered(params.availableDecisions, APPROVE))
     }
@@ -528,16 +528,43 @@ export const REFUSED: ReadonlySet<string> = new Set([
   "item/tool/call", "account/chatgptAuthTokens/refresh", "attestation/generate", "currentTime/read",
   "applyPatchApproval", "execCommandApproval",
 ])
-/** The pinned response schema each served request's reply must match. */
+/** The pinned response schema each served or declined request's reply must match. */
 export const REPLY_SCHEMAS: Readonly<Record<string, string>> = {
   "item/commandExecution/requestApproval": "CommandExecutionRequestApprovalResponse",
   "item/fileChange/requestApproval": "FileChangeRequestApprovalResponse",
   "item/permissions/requestApproval": "PermissionsRequestApprovalResponse",
   "item/tool/requestUserInput": "ToolRequestUserInputResponse",
   "mcpServer/elicitation/request": "McpServerElicitationRequestResponse",
+  execCommandApproval: "ExecCommandApprovalResponse",
+  applyPatchApproval: "ApplyPatchApprovalResponse",
 }
 /** The question id prefix Codex gives an MCP tool-call approval. */
 const MCP_APPROVAL_PREFIX = "mcp_tool_call_approval"
+/** Why an approval asked as a question gets an error. */
+const DECLINED_TEXT = "OpenCorp declines every approval: Codex runs under its employee's permission and asks nothing"
+
+/** How an approval request is declined at once, with no card: the reply that declines it, or an error for one with no
+ *  decline to pick (Codex takes it as one); null for a request that isn't an approval. Codex runs under its employee's
+ *  permission and asks nothing, so none should come; one that does gets no grant, for the turn or the session. */
+export function declined(method: string, params: Obj): { result: Record<string, unknown> } | { error: string } | null {
+  if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
+    return { result: { decision: "decline" } }
+  }
+  if (method === "item/permissions/requestApproval") return { result: { permissions: {}, scope: "turn" } }
+  // The v1 forms Codex may still send.
+  if (method === "execCommandApproval" || method === "applyPatchApproval") {
+    return { result: { decision: { denied: { rejection: DECLINED_TEXT } } } }
+  }
+  if (method === "mcpServer/elicitation/request" && truthy(params._meta?.codex_approval_kind)) {
+    return { result: { action: "decline" } }
+  }
+  const questions: unknown = params.questions
+  if (method === "item/tool/requestUserInput" && Array.isArray(questions)
+    && questions.some((q: Obj) => typeof q?.id === "string" && q.id.startsWith(MCP_APPROVAL_PREFIX))) {
+    return { error: DECLINED_TEXT }
+  }
+  return null
+}
 /** Run id prefix of a request with no turn (`codex-<app-server pid>-<id made per app-server>`). */
 export const TURNLESS = "codex-"
 

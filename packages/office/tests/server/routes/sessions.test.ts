@@ -13,7 +13,18 @@ import { register } from "../../../src/features/questions/extension.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
 import { fakeLlm, makeHarness, noWorkersLeft, status as chatStatus } from "../../features/chat/helpers.ts"
-import { allGone, approvalTurn, makeCodex, openCard, requestsValid, start, status, texts } from "../../features/codex/helpers.ts"
+import {
+  YES,
+  allGone,
+  makeCodex,
+  openCard,
+  picked,
+  questionTurn,
+  requestsValid,
+  start,
+  status,
+  texts,
+} from "../../features/codex/helpers.ts"
 import { tempDir, unusableFolders, waitFor } from "../../helpers.ts"
 import { session } from "../../runtime/store/helpers.ts"
 import {
@@ -231,7 +242,7 @@ test("a codex session over the routes", async () => {
   // Before served, so the office's start runs the cards' sweep.
   register(h.office)
   const { sock } = await served(h.office)
-  c.fake.script([approvalTurn()])
+  c.fake.script([questionTurn()])
   const r = await post(sock, "/sessions", { person: "minh", cwd: h.folder, harness: "codex" })
   expect(r.status).toBe(200)
   const created = r.json() as { id: string }
@@ -254,10 +265,10 @@ test("a codex session over the routes", async () => {
   )
   expect(live.session_id).toBe(sid)
   const card = await openCard(c, sid)
-  const answered = await post(sock, `/questions/${card.id}/answer`, { answer: "Approve", answer_kind: "option" })
+  const answered = await post(sock, `/questions/${card.id}/answer`, { answer: YES, answer_kind: "text" })
   expect(answered.status).toBe(200)
   expect(answered.json()).toMatchObject({ status: "consumed", answered_by: CEO })
-  await waitFor(() => JSON.stringify(c.fake.replies()[1]) === JSON.stringify({ decision: "accept" }), {
+  await waitFor(() => JSON.stringify(c.fake.replies()[1]) === JSON.stringify(picked("Yes")), {
     what: "the reply",
   })
   await waitFor(() => status(c, sid) === "idle", { what: "the turn to end" })
@@ -305,7 +316,7 @@ test("a cost cap or a model on a codex session is 422 not supported", async () =
   }
 })
 
-test("a codex session's mode can't be switched until Codex follows it", async () => {
+test("a codex session's mode can't be switched: codex runs under its employee's permission", async () => {
   const h = makeCodex()
   h.office.harness = h.sessions
   const { sock } = await served(h.office)

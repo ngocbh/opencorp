@@ -22,7 +22,7 @@ afterAll(allGone)
 test("an idle session stays idle and reloads on its next message", async () => {
   const h = makeCodex()
   h.fake.script([
-    [fc.commandApproval(1, "c1", "x", { wait: false }), { end: "completed" }],
+    [fc.choice(1, "c1", { wait: false }), { end: "completed" }],
     fc.agentMessage("m1", "Resumed"),
   ])
   const sid = await start(h, h.workspace)
@@ -41,7 +41,7 @@ test("an idle session stays idle and reloads on its next message", async () => {
 
 test("a busy session becomes idle with a marker and its cards go stale", async () => {
   const h = makeCodex()
-  h.fake.script([[fc.commandStarted("c1", "sleep 60"), fc.commandApproval(1, "c1", "sleep 60")]])
+  h.fake.script([[fc.commandStarted("c1", "sleep 60"), fc.choice(1, "c1")]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "go")
   await waitFor(() => h.store.listQuestions({ sessionId: sid, status: "open" }).length > 0, { what: "the card" })
@@ -171,7 +171,7 @@ test("a restored session whose first reload fails says why and stays idle", asyn
 
 test("a restore after office stop restores nothing", async () => {
   const h = makeCodex()
-  h.fake.script([[fc.commandStarted("c1", "sleep 60"), fc.commandApproval(1, "c1", "sleep 60")]])
+  h.fake.script([[fc.commandStarted("c1", "sleep 60"), fc.choice(1, "c1")]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "go")
   await waitFor(() => h.store.listQuestions({ sessionId: sid, status: "open" }).length > 0, { what: "the card" })

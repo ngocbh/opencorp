@@ -12,7 +12,8 @@ import {
   CodexStartError,
   appServerCommand,
   codexCommand,
-  ownerLoad,
+  nativeCodex,
+  threadLoad,
 } from "../../../src/tools/codex/codex.ts"
 import { RpcClosed } from "../../../src/tools/codex/rpc.ts"
 import { killGroup, sameProcess, startTime } from "../../../src/util/proc.ts"
@@ -43,23 +44,66 @@ function thrown(fn: () => unknown): Error {
   throw new Error("did not throw")
 }
 
-test("owner load takes the persons policy", () => {
-  expect(ownerLoad("/w", { sandbox: "workspace-write", network: true })).toEqual({
-    cwd: "/w",
-    sandbox: "workspace-write",
-    approvalPolicy: "on-request",
-    approvalsReviewer: "user",
-    config: { sandbox_workspace_write: { network_access: true } },
-  })
-  expect(ownerLoad("/w", null).sandbox).toBe("read-only")
-  expect(ownerLoad("/w", null).config).toEqual({ sandbox_workspace_write: { network_access: false } })
-  // Loads Codex takes.
-  for (const policy of [null, { sandbox: "workspace-write" as const, network: true }]) {
-    const params = ownerLoad("/w", policy)
-    expect(CLIENT({ id: 1, method: "thread/start", params }), ajv.errorsText(CLIENT.errors)).toBe(true)
-    const resume = { id: 2, method: "thread/resume", params: { threadId: "t", ...params } }
-    expect(CLIENT(resume), ajv.errorsText(CLIENT.errors)).toBe(true)
+test("a thread load runs under its profile and override, and asks nothing", () => {
+  const thread = {
+    permissions: "opencorp-s1",
+    config: { default_permissions: "opencorp-s1", permissions: { "opencorp-s1": { network: { enabled: false } } } },
   }
+  const params = threadLoad("/w", thread)
+  expect(params).toEqual({ cwd: "/w", approvalPolicy: "never", permissions: "opencorp-s1", config: thread.config })
+  // A profile can't be combined with a sandbox mode.
+  expect("sandbox" in params).toBe(false)
+  // Loads Codex takes.
+  expect(CLIENT({ id: 1, method: "thread/start", params }), ajv.errorsText(CLIENT.errors)).toBe(true)
+  const resume = { id: 2, method: "thread/resume", params: { threadId: "t", excludeTurns: true, ...params } }
+  expect(CLIENT(resume), ajv.errorsText(CLIENT.errors)).toBe(true)
+})
+
+/** npm's install of Codex under `<dir>/lib`: its launcher, `bin/codex` linking to it, and the native binary in its
+ *  platform package, beside the launcher's package (`flat`, as a project's `npm install` lays it out) or inside it
+ *  (as `npm install -g` does); returns the link and the native binary. */
+function npmInstall(dir: string, { flat = true }: { flat?: boolean } = {}): { link: string; native: string } {
+  const scope = path.join(dir, "lib/node_modules/@openai")
+  const launcher = path.join(scope, "codex/bin/codex.js")
+  const platform = flat ? scope : path.join(scope, "codex/node_modules/@openai")
+  const native = path.join(platform, "codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex")
+  for (const file of [launcher, native]) fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(launcher, "#!/usr/bin/env node\n", { mode: 0o755 })
+  fs.writeFileSync(native, "\x7fELF", { mode: 0o755 })
+  const link = path.join(dir, "bin/codex")
+  fs.mkdirSync(path.dirname(link))
+  fs.symlinkSync(launcher, link)
+  return { link, native }
+}
+
+test("npm's codex launcher runs as the native binary it would start, which is codex's install", () => {
+  const dir = fs.realpathSync(tempDir())
+  const { link, native } = npmInstall(dir)
+  // The launcher needs node on PATH, which the harness PATH needn't hold.
+  expect(nativeCodex(link)).toEqual({ run: native, install: path.dirname(path.dirname(native)) })
+  // `npm install -g` puts the platform package inside the launcher's.
+  const global = npmInstall(path.join(dir, "global"), { flat: false })
+  expect(global.native).toContain("/@openai/codex/node_modules/@openai/codex-linux-x64/")
+  expect(nativeCodex(global.link)).toEqual({ run: global.native, install: path.dirname(path.dirname(global.native)) })
+  // A native binary runs as itself, installed in the folder holding its bin.
+  expect(nativeCodex(native)).toEqual({ run: native, install: path.dirname(path.dirname(native)) })
+  const brew = path.join(dir, "Caskroom/codex/0.167.0/codex")
+  fs.mkdirSync(path.dirname(brew), { recursive: true })
+  fs.writeFileSync(brew, "\x7fELF", { mode: 0o755 })
+  fs.symlinkSync(brew, path.join(dir, "brew-codex"))
+  expect(nativeCodex(path.join(dir, "brew-codex"))).toEqual({ run: brew, install: path.join(dir, "Caskroom/codex") })
+})
+
+test("a wrapper script runs as itself, and reads the native codex beside it when it has one", () => {
+  const dir = fs.realpathSync(tempDir())
+  const { native } = npmInstall(path.join(dir, "prefix"))
+  const beside = path.join(dir, "prefix/lib/codex.sh")
+  fs.writeFileSync(beside, "#!/bin/sh\nexec node_modules/.bin/codex \"$@\"\n", { mode: 0o755 })
+  expect(nativeCodex(beside)).toEqual({ run: beside, install: path.dirname(path.dirname(native)) })
+  const other = path.join(dir, "tools/bin/codex")
+  fs.mkdirSync(path.dirname(other), { recursive: true })
+  fs.writeFileSync(other, "#!/bin/sh\nexec something-else \"$@\"\n", { mode: 0o755 })
+  expect(nativeCodex(other)).toEqual({ run: other, install: path.join(dir, "tools") })
 })
 
 test("codex command finds codex on the office path", () => {

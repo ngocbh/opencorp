@@ -166,7 +166,7 @@ async function stopAll(root: string): Promise<void> {
  *  fake LLM when the current test finishes. `hq` is written as `office/hq.json` (HQ's TCP listener stays off by
  *  default: it is on by default on macOS, where the owner's own office holds its port). `PATH` starts with refusing
  *  stand-ins for the service tools, so no test registers a real service, and the fake Codex as `codex`, run with
- *  `codexScript` when given. Call inside a test. */
+ *  `codexScript` (an empty one by default). Call inside a test. */
 export async function openOffice({
   hq = { tcp: false },
   device = false,
@@ -209,12 +209,10 @@ export async function openOffice({
   for (const name of SERVICE_TOOLS) script(path.join(tools, name), `echo "${name} $*" >> ${q(calls)}\nexit 1\n`)
   const codexDir = path.join(root, "codex")
   fs.mkdirSync(codexDir)
-  let scripted = ""
-  if (codexScript !== undefined) {
-    const file = path.join(codexDir, "script.json")
-    fs.writeFileSync(file, JSON.stringify(codexScript))
-    scripted = ` --script ${q(file)} --log ${q(path.join(codexDir, "rpc.jsonl"))}`
-  }
+  // Always a script, so doctor's Codex check can start a thread on the fake.
+  const file = path.join(codexDir, "script.json")
+  fs.writeFileSync(file, JSON.stringify(codexScript ?? {}))
+  const scripted = ` --script ${q(file)} --log ${q(path.join(codexDir, "rpc.jsonl"))}`
   // Bun in a fixed cwd and env, reading no .env or bunfig.toml there.
   script(
     path.join(tools, "codex"),
@@ -222,6 +220,8 @@ export async function openOffice({
       `exec /usr/bin/env -i PATH=/usr/bin:/bin HOME=${q(codexDir)} ${q(process.execPath)} --no-install ` +
       `--no-env-file --config=/dev/null ${q(FAKE_CODEX)}${scripted} "$@"\n`,
   )
+  // Only the user may change the Codex the office runs, whatever the umask: it refuses one others could.
+  for (const p of [path.dirname(tools), tools, path.join(tools, "codex")]) fs.chmodSync(p, 0o755)
 
   llm = await FakeLLM.start()
   const env = gitEnv(process.env)

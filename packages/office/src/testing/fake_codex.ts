@@ -3,10 +3,16 @@
  *      bun fake_codex.ts (--script s.json | --scenario e2e) [--log rpc.jsonl] [ignored args]
  *
  *  A script is `{"thread": {"id", "model"}, "account": {...} | null, "initialize_error": {...}, "initialize_delay":
- *  seconds, "interrupt_hangs": bool, "load_exit": code, "resume_error": {...}, "stderr": "...", "turns": [[step, ...],
- *  ...]}`; `load_exit` dies with `code` on `thread/start` or `thread/resume`, before answering. Each `turn/start` that
- *  starts a turn takes the next list of steps (an unscripted turn just completes). The count is kept next to `--log`,
- *  so a restarted fake goes on with the next turn. A step is one of:
+ *  seconds, "interrupt_hangs": bool, "load_exit": code, "resume_error": {...}, "load_answer": {...}, "mcp_servers":
+ *  {name: {...}}, "projects": {path: {...}}, "project_layers": {cwd: [{"dotCodexFolder", "disabledReason"?}]},
+ *  "config_read_error": {...}, "mcp_status_error": {...}, "stderr": "...", "turns": [[step, ...], ...]}`; `load_exit`
+ *  dies with `code` on `thread/start` or `thread/resume`, before answering, and `load_answer`'s keys replace its
+ *  answer's. `config/read` answers the owner's config with `mcp_servers` and `projects` (none by default) and, asked
+ *  for a `cwd`'s layers, the project layers `project_layers` gives that cwd. `mcpServerStatus/list` lists the
+ *  servers, each disabled when the thread's config
+ *  turned it off, and fails as Codex does when the thread's config defines a permission profile but no
+ *  `default_permissions`. Each `turn/start` that starts a turn takes the next list of steps (an unscripted turn just
+ *  completes). The count is kept next to `--log`, so a restarted fake goes on with the next turn. A step is one of:
  *
  *  - `{"notify": method, "params": {...}}` sends a notification;
  *  - `{"request": method, "params": {...}, "id": n, "wait": bool}` sends a server request, waiting for the reply when
@@ -60,6 +66,8 @@ export class Fake {
   private readonly waiting = new Set<unknown>() // requests sent and not resolved yet
   private readonly turnless = new Set<unknown>() // the waiting requests whose turnId is null
   private turn: string | null = null
+  /** The config override of the last thread/start or thread/resume. */
+  private config: Obj = {}
   private interrupted = false
   private readonly countFile: string | null
   private count = 0
@@ -159,6 +167,7 @@ export class Fake {
         this.thread.id = params.threadId
       }
       this.cwd = params.cwd || this.cwd
+      this.config = truthy(params.config) ? params.config : {}
       return this.reply(requestId, {
         thread: { id: this.thread.id, turns: [] },
         model: this.thread.model ?? null,
@@ -167,8 +176,25 @@ export class Fake {
         approvalPolicy: params.approvalPolicy ?? null,
         approvalsReviewer: "approvalsReviewer" in params ? params.approvalsReviewer : "user",
         sandbox: { type: "readOnly" },
+        activePermissionProfile: params.permissions ? { id: params.permissions, extends: null } : null,
+        ...this.script.load_answer,
       })
     }
+    if (method === "config/read") {
+      if (truthy(this.script.config_read_error)) return this.reply(requestId, undefined, this.script.config_read_error)
+      const config = { mcp_servers: this.script.mcp_servers ?? {}, projects: this.script.projects ?? {} }
+      if (!params.includeLayers) return this.reply(requestId, { config, origins: {} })
+      const projects: Obj[] = (params.cwd && this.script.project_layers?.[params.cwd]) || []
+      const layers: Obj[] = projects.map((layer) => ({
+        name: { type: "project", dotCodexFolder: layer.dotCodexFolder },
+        version: "sha256:fake",
+        config: {},
+        ...(layer.disabledReason ? { disabledReason: layer.disabledReason } : {}),
+      }))
+      layers.push({ name: { type: "user", file: "/fake/config.toml" }, version: "sha256:fake", config })
+      return this.reply(requestId, { config, origins: {}, layers })
+    }
+    if (method === "mcpServerStatus/list") return this.mcpStatus(requestId)
     if (method === "turn/start") return this.turnStart(requestId)
     if (method === "turn/interrupt") {
       if (this.script.interrupt_hangs) return // a Codex stuck on the interrupt: no answer, the turn runs on
@@ -185,6 +211,22 @@ export class Fake {
       return this.reply(requestId, {})
     }
     this.reply(requestId, undefined, { code: -32601, message: `fake codex doesn't serve ${method}` })
+  }
+
+  /** The owner's MCP servers and whether the thread's config turned each off; an error as Codex reloads the config. */
+  mcpStatus(requestId: unknown): void {
+    if (truthy(this.script.mcp_status_error)) return this.reply(requestId, undefined, this.script.mcp_status_error)
+    if (truthy(this.config.permissions) && !truthy(this.config.default_permissions)) {
+      const message =
+        "failed to reload config: config defines `[permissions]` profiles but does not set `default_permissions`"
+      return this.reply(requestId, undefined, { code: -32603, message })
+    }
+    const off: Obj = this.config.mcp_servers ?? {}
+    const data = Object.keys(this.script.mcp_servers ?? {}).map((name) => ({
+      name,
+      runtimeStatus: off[name]?.enabled === false ? "disabled" : "connected",
+    }))
+    this.reply(requestId, { data, nextCursor: null })
   }
 
   nextSteps(): Obj[] {
@@ -401,6 +443,11 @@ export function userInput(requestId: number, itemId: string, questions: Obj[], {
   }
 }
 
+/** A question on one page, "Go", taking "Yes" or "No" (question id `go`), about item `itemId`: the plain card. */
+export function choice(requestId: number, itemId: string, { wait = true } = {}): Obj {
+  return userInput(requestId, itemId, [question("go", "Go", "Go on?", { options: ["Yes", "No"] })], { wait })
+}
+
 /** An MCP tool approval in its elicitation form (`_meta.codex_approval_kind`). */
 export function mcpApproval(
   requestId: number,
@@ -567,8 +614,8 @@ const USAGE = "usage: fake_codex (--script SCRIPT | --scenario e2e) [--log LOG]"
 /** Runs the fake on `argv` (the real command's `app-server --listen stdio://` is ignored); returns its exit code. */
 export async function main(argv: string[]): Promise<number> {
   if (argv.includes("--version")) {
-    // what `opencorp doctor` asks a codex on the office's PATH
-    process.stdout.write("codex-cli 0.0.0-fake\n")
+    // what `opencorp doctor` asks a codex on the office's PATH: the oldest version it takes
+    process.stdout.write("codex-cli 0.167.0-fake\n")
     return 0
   }
   if (argv.includes("login")) return 0 // `codex login status`: the fake is always signed in

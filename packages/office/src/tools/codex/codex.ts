@@ -2,7 +2,6 @@
 import { type ChildProcess, spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import type { HarnessPolicy } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
 import { killGroup } from "../../util/proc.ts"
 import { which } from "../../util/env.ts"
@@ -64,18 +63,66 @@ export function codexCommand(
   return appServerCommand(which(override || "codex", env.PATH) ?? undefined, override)
 }
 
-/** The params of every owner load (thread/start, thread/resume): the person's sandbox and network, and approvals
- *  that always come to the office's cards whatever the owner's config.toml says.
+/** The params of every thread load (thread/start, thread/resume): the thread's permission profile and config override
+ *  (`codexThread`), and no approval asked, since the profile is the fence. No `sandbox`: Codex refuses one beside a
+ *  profile.
  *
  *  `config` values are nested objects, never dotted keys: Codex splits override keys on every dot. */
-export function ownerLoad(cwd: string, policy: HarnessPolicy | null) {
-  return {
-    cwd,
-    sandbox: policy?.sandbox ?? "read-only",
-    approvalPolicy: "on-request",
-    approvalsReviewer: "user",
-    config: { sandbox_workspace_write: { network_access: Boolean(policy?.network) } },
+export function threadLoad(cwd: string, thread: { permissions: string; config: Record<string, unknown> }) {
+  return { cwd, approvalPolicy: "never", permissions: thread.permissions, config: thread.config }
+}
+
+/** What runs `codex` (found on a PATH, links not yet followed) and the folder it is installed in: the one holding
+ *  the `bin` of its native binary, which Codex's sandboxed commands run.
+ *
+ *  A native binary runs as itself. npm's launcher (`@openai/codex/bin/codex.js`) runs as the native binary it would
+ *  start, from its platform package inside its own (as `npm install -g` lays it out) or beside it, since it needs
+ *  `node` on a PATH a harness's needn't hold. Any other
+ *  script runs as itself, and is installed where its native binary is when a `node_modules` beside it holds exactly
+ *  one, else in the folder holding its own folder. */
+export function nativeCodex(codex: string): { run: string; install: string } {
+  const real = fs.realpathSync(codex)
+  const installOf = (binary: string) => path.dirname(path.dirname(binary))
+  if (!isScript(real)) return { run: real, install: installOf(real) }
+  // npm's launcher is <node_modules>/@openai/codex/bin/codex.js. `npm install -g` puts its platform package inside
+  // its own package; a project's `npm install` beside it.
+  const pkg = path.dirname(path.dirname(real))
+  const launcher = path.basename(real) === "codex.js" && path.basename(pkg) === "codex"
+  const scopes = launcher
+    ? [path.join(pkg, "node_modules/@openai"), path.dirname(pkg)]
+    : [path.join(path.dirname(real), "node_modules/@openai")]
+  for (const scope of scopes) {
+    const found = nativesIn(scope)
+    if (found.length === 1) return { run: launcher ? found[0]! : real, install: installOf(found[0]!) }
   }
+  return { run: real, install: installOf(real) }
+}
+
+/** Whether `file` starts with `#!`. */
+function isScript(file: string): boolean {
+  const fd = fs.openSync(file, "r")
+  try {
+    const head = Buffer.alloc(2)
+    return fs.readSync(fd, head, 0, 2, 0) === 2 && head.toString() === "#!"
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/** The native Codex binaries in `scope` (an `@openai` folder): `codex-<platform>/vendor/<target>/bin/codex`, resolved. */
+function nativesIn(scope: string): string[] {
+  const list = (dir: string): string[] => {
+    try {
+      return fs.readdirSync(dir)
+    } catch {
+      return []
+    }
+  }
+  return list(scope)
+    .filter((pkg) => pkg.startsWith("codex-"))
+    .flatMap((pkg) => list(path.join(scope, pkg, "vendor")).map((t) => path.join(scope, pkg, "vendor", t, "bin/codex")))
+    .filter((p) => fs.statSync(p, { throwIfNoEntry: false })?.isFile())
+    .map((p) => fs.realpathSync(p))
 }
 
 /** What `account/read` answers, as far as the sign-in check reads it. */

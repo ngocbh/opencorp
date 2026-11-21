@@ -4,8 +4,8 @@ import { Ajv } from "ajv"
 import { expect, test } from "bun:test"
 import type { Message, Part } from "@opencorp/protocol"
 import type { HarnessEvent } from "../../../src/tools/codex/adapter.ts"
-import { changeCounts, COMMAND, FILE_CHANGE, type Issued, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED, relative,
-  REPLY_SCHEMAS, REQUEST, SERVED, Translator, Unserved, Unshowable } from "../../../src/tools/codex/translate.ts"
+import { changeCounts, COMMAND, declined, FILE_CHANGE, type Issued, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED,
+  relative, REPLY_SCHEMAS, REQUEST, SERVED, Translator, Unserved, Unshowable } from "../../../src/tools/codex/translate.ts"
 import { agentMessage, agentMessageDelta, command, commandApproval, commandStarted, error, fileChange,
   fileChangeApproval, fill, formElicitation, mcpApproval, mcpApprovalQuestion, networkApproval, permissionsApproval,
   question, urlElicitation, userInput } from "../../../src/testing/fake_codex.ts"
@@ -717,6 +717,36 @@ test("a decision after its turn ended writes nothing", () => {
   const before = shape(events)
   t.decided(c, "accept", "ngocbh")
   expect(shape(events)).toEqual(before)
+})
+
+// --- approvals, declined ------------------------------------------------------------------
+
+/** Why OpenCorp declines an approval. */
+const TEXT = "OpenCorp declines every approval: Codex runs under its employee's permission and asks nothing"
+
+test("every approval codex can ask is declined with a reply its schema takes, and never a grant", () => {
+  const legacy = (request: string, id: number) => ({ request, id, params: { conversationId: "thr_1", callId: "x" } })
+  const steps = [commandApproval(1, "c1", "touch a"), fileChangeApproval(2, "f1"), permissionsApproval(3, "p1"),
+    networkApproval(7, "c2", "example.com"), mcpApproval(5, "docs", "search"), legacy("execCommandApproval", 8),
+    legacy("applyPatchApproval", 9)]
+  const replies = steps.map((step) => {
+    const reply = declined(step.request, fill(step.params, "turn_1", "/w", "thr_1"))
+    if (reply === null || !("result" in reply)) throw new Error(`${step.request} isn't declined with a reply`)
+    expect(replyCheck(step.request)(reply.result), `${step.request} ${JSON.stringify(reply.result)}`).toBe(true)
+    return reply.result
+  })
+  expect(replies).toEqual([{ decision: "decline" }, { decision: "decline" }, { permissions: {}, scope: "turn" },
+    { decision: "decline" }, { action: "decline" }, ...[0, 1].map(() => ({ decision: { denied: { rejection: TEXT } } }))])
+  // An MCP tool approval asked as a question has no decline to pick: it gets an error, which Codex takes as one.
+  const asked = mcpApprovalQuestion(6, "u2", "docs", "search")
+  expect(declined(asked.request, fill(asked.params, "turn_1", "/w", "thr_1"))).toEqual({ error: TEXT })
+})
+
+test("questions and elicitations that aren't approvals are not declined", () => {
+  const steps = [userInput(4, "u1", [question("env", "Env", "Where?", { options: ["prod", "dev"] })]),
+    urlElicitation(8, "gh", "Sign in", "https://e.com/l"), formElicitation(9, "jira", "Ticket", {}),
+    { request: "item/tool/call", params: {} }]
+  for (const step of steps) expect(declined(step.request, fill(step.params, "turn_1", "/w", "thr_1"))).toBeNull()
 })
 
 // --- the pinned schema -------------------------------------------------------------------

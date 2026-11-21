@@ -186,7 +186,7 @@ test(
   "doctor questions get fake answers",
   async () => {
     const version = await output(tempDir(), ["--version"])
-    expect(version.trim()).toBe("codex-cli 0.0.0-fake")
+    expect(version.trim()).toBe("codex-cli 0.167.0-fake")
   },
   TIMEOUT,
 )

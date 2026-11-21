@@ -1,4 +1,5 @@
-/** Codex requests as cards: store, then reply; first answer wins; stale when Codex no longer waits. */
+/** Codex requests as cards: store, then reply; first answer wins; stale when Codex no longer waits. Approvals are
+ *  declined at once, with no card. */
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
@@ -14,12 +15,15 @@ import { waitFor } from "../../helpers.ts"
 import { question } from "../../runtime/store/helpers.ts"
 import {
   type Codex,
+  NO,
+  YES,
   allGone,
-  approvalTurn,
   codexLog,
   makeCodex,
   messages,
   openCard,
+  picked,
+  questionTurn,
   start,
   status,
 } from "./helpers.ts"
@@ -33,20 +37,60 @@ const SID = "01M53FTBYV710JBB471KEBQDVC"
 /** A JSON-RPC error reply's code. */
 const code = (reply: unknown) => (reply as { code: number }).code
 
-test("an approval is an open card on a waiting session", async () => {
+test("a question is an open card on a waiting session", async () => {
   const h = makeCodex()
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
-  expect([q.source, q.run_id, q.node_id, q.asker, q.options[0]]).toEqual(["harness", "turn_1", "1", "minh", "Approve"])
+  expect([q.source, q.run_id, q.node_id, q.asker, q.questions?.[0]?.header]).toEqual(["harness", "turn_1", "1", "minh", "Go"])
   // Someone must answer it.
   await waitFor(() => status(h, sid) === "waiting", { what: "waiting on the card" })
 })
 
+test("a stray approval is declined at once with no card and no grant, and the turn goes on", async () => {
+  const h = makeCodex()
+  h.fake.script([
+    [
+      fc.commandStarted("c1", "touch a"),
+      fc.commandApproval(1, "c1", "touch a"),
+      fc.command("c1", "touch a", { status: "declined", exitCode: null })[1]!,
+      fc.fileChangeApproval(2, "f1"),
+      fc.permissionsApproval(3, "p1"),
+      fc.networkApproval(4, "c2", "example.com"),
+      fc.mcpApproval(5, "docs", "search"),
+      fc.mcpApprovalQuestion(6, "u1", "docs", "search"),
+      ...fc.agentMessage("m1", "I can't run that."),
+    ],
+  ])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "make a")
+  await waitFor(() => status(h, sid) === "idle" && 6 in h.fake.replies(), { what: "the turn's end" })
+  expect(h.fake.replies()).toEqual({
+    1: { decision: "decline" },
+    2: { decision: "decline" },
+    3: { permissions: {}, scope: "turn" },
+    4: { decision: "decline" },
+    5: { action: "decline" },
+    6: {
+      code: -32603,
+      message: "OpenCorp declines every approval: Codex runs under its employee's permission and asks nothing",
+    },
+  })
+  expect(h.store.listQuestions({ sessionId: sid })).toEqual([])
+  // Nothing waited on anyone.
+  const seen = h.storeEvents.filter((e) => e.type === "session.updated" && e.subject_id === sid)
+  expect(seen.some((e) => (e.data as { status: string }).status === "waiting")).toBe(false)
+  const [part] = toolParts(h, sid)
+  expect([part!.state, part!.error, "approval" in part!.input]).toEqual(["error", "declined", false])
+  expect(h.lines).toContain(
+    `codex session ${sid}: declined item/commandExecution/requestApproval; Codex runs under its employee's permission`,
+  )
+})
+
 test("a request no card can be made from gets a json rpc error", async () => {
   const h = makeCodex()
-  const broken = fc.commandApproval(3, "c1", "touch a")
+  const broken = fc.choice(3, "c1")
   // Not as the pinned schema says: Codex would otherwise wait on it until Esc.
   delete broken.params.itemId
   h.fake.script([[broken]])
@@ -60,7 +104,7 @@ test("a request no card can be made from gets a json rpc error", async () => {
 
 test("a card the store refuses is an error reply and the turn still ends", async () => {
   const h = makeCodex()
-  h.fake.script([[fc.commandApproval(1, "c1", "touch a", { wait: false }), { sleep: 0.3 }]])
+  h.fake.script([[fc.choice(1, "c1", { wait: false }), { sleep: 0.3 }]])
   const sid = await start(h, h.workspace)
   const live = h.sessions.get(sid)!
   spyOn(h.store, "addQuestion").mockImplementation((q) => {
@@ -112,49 +156,49 @@ function toolParts(h: Codex, sid: string): Extract<Part, { type: "tool" }>[] {
   return messages(h, sid).flatMap((m) => m.parts.flatMap((p) => (p.type === "tool" ? [p] : [])))
 }
 
-test("an approvals answer is codexs reply and its resolved leaves the card consumed", async () => {
+test("a cards answer is codexs reply and its resolved leaves the card consumed", async () => {
   const h = makeCodex()
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
-  expect((await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })).status).toBe("consumed")
-  await waitFor(() => Bun.deepEquals(h.fake.replies()[1], { decision: "accept" }), { what: "the reply" })
+  expect((await h.sessions.answer(q.id, YES, "text", { by: "ngocbh" })).status).toBe("consumed")
+  await waitFor(() => Bun.deepEquals(h.fake.replies()[1], picked("Yes")), { what: "the reply" })
   await waitFor(
     () => h.fake.messages("out").some((m) => m.method === "serverRequest/resolved" && m.params.requestId === 1),
     { what: "Codex's resolved" },
   )
   await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
   const got = h.store.getQuestion(q.id)!
-  expect([got.status, got.answer, got.answered_by]).toEqual(["consumed", "Approve", "ngocbh"])
+  expect([got.status, got.answer, got.answered_by]).toEqual(["consumed", YES, "ngocbh"])
   const [part, ...more] = toolParts(h, sid)
   expect(more).toEqual([])
-  expect(part!.input.approval).toEqual({ decision: "accept", by: "ngocbh" })
+  expect(part!.input.approval).toEqual({ decision: "answer", by: "ngocbh" })
   expect(part!.state).toBe("completed")
 })
 
-test("an approval answered after a steer lands on the commands part", async () => {
+test("a card answered after a steer lands on the commands part", async () => {
   const h = makeCodex()
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a", { by: "ngocbh" })
   const q = await openCard(h, sid)
   expect(await h.sessions.prompt(sid, "and b", { by: "ngocbh" })).toBe("steer")
-  await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })
+  await h.sessions.answer(q.id, YES, "text", { by: "ngocbh" })
   await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
   expect(toolParts(h, sid).map((p) => [p.state, (p.input.approval as { decision: string }).decision])).toEqual([
-    ["completed", "accept"],
+    ["completed", "answer"],
   ])
 })
 
 test("an answer no reply can be made from tells codex it failed", async () => {
   const h = makeCodex()
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
   // No Cards here to check it first, as on a route without them: "Maybe" isn't one of the options.
-  expect((await h.sessions.answer(q.id, "Maybe", "option", { by: "ngocbh" })).status).toBe("stale")
+  expect((await h.sessions.answer(q.id, { Go: "Maybe" }, "text", { by: "ngocbh" })).status).toBe("stale")
   await waitFor(() => 1 in h.fake.replies(), { what: "the error reply" })
   expect(code(h.fake.replies()[1])).toBe(-32602)
   await waitFor(() => status(h, sid) === "idle", { what: "Codex going on" })
@@ -163,11 +207,11 @@ test("an answer no reply can be made from tells codex it failed", async () => {
 
 test("an answer with no named sender is the openers", async () => {
   const h = makeCodex()
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace, "ngocbh")
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
-  expect((await h.sessions.answer(q.id, "Approve", "option")).answered_by).toBe("ngocbh")
+  expect((await h.sessions.answer(q.id, YES, "text")).answered_by).toBe("ngocbh")
   await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
   const [part, ...more] = toolParts(h, sid)
   expect(more).toEqual([])
@@ -176,7 +220,7 @@ test("an answer with no named sender is the openers", async () => {
 
 test("office stop makes an answer waiting for its reply give up at once", async () => {
   const h = makeCodex({ stopWaitMs: 200 })
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
@@ -192,7 +236,7 @@ test("office stop makes an answer waiting for its reply give up at once", async 
   })
   await began
   // No await comes between the answer's store write and its reply job's post, so the job is queued now.
-  const answering = h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })
+  const answering = h.sessions.answer(q.id, YES, "text", { by: "ngocbh" })
   try {
     expect(h.store.getQuestion(q.id)!.status).toBe("answered")
     await h.sessions.closeAll()
@@ -205,12 +249,12 @@ test("office stop makes an answer waiting for its reply give up at once", async 
 
 test("two answerers make one reply", async () => {
   const h = makeCodex()
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
   const results = await Promise.allSettled(
-    ["Approve", "Deny and stop"].map((c) => h.sessions.answer(q.id, c, "option", { by: "ngocbh" })),
+    [YES, NO].map((c) => h.sessions.answer(q.id, c, "text", { by: "ngocbh" })),
   )
   const outcomes = results.map((r) =>
     r.status === "fulfilled" ? r.value.status : r.reason instanceof HarnessError ? r.reason.code : r.reason,
@@ -219,15 +263,13 @@ test("two answerers make one reply", async () => {
   await waitFor(() => 1 in h.fake.replies(), { what: "the one reply" })
   expect(h.fake.messages().filter((m) => m.id === 1 && !("method" in m))).toHaveLength(1)
   // What Codex got is what the store kept.
-  const stored = h.store.getQuestion(q.id)!.answer as string
-  expect(h.fake.replies()[1]).toEqual({
-    decision: ({ Approve: "accept", "Deny and stop": "cancel" } as Record<string, string>)[stored],
-  })
+  const stored = h.store.getQuestion(q.id)!.answer as { Go: string }
+  expect(h.fake.replies()[1]).toEqual(picked(stored.Go))
 })
 
 test("an answer that codex resolved first goes stale with no reply", async () => {
   const h = makeCodex()
-  h.fake.script([[fc.commandApproval(1, "c1", "touch a", { wait: false }), { sleep: 5 }]])
+  h.fake.script([[fc.choice(1, "c1", { wait: false }), { sleep: 5 }]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
@@ -239,14 +281,14 @@ test("an answer that codex resolved first goes stale with no reply", async () =>
     live.notified(live.process!, "serverRequest/resolved", { requestId: 1 })
     return got
   })
-  expect((await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })).status).toBe("stale")
+  expect((await h.sessions.answer(q.id, YES, "text", { by: "ngocbh" })).status).toBe("stale")
   expect(1 in h.fake.replies()).toBe(false)
   expect(toolParts(h, sid).every((p) => !("approval" in p.input))).toBe(true)
 })
 
 test("an answer after the app server died goes stale", async () => {
   const h = makeCodex()
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
@@ -256,7 +298,7 @@ test("an answer after the app server died goes stale", async () => {
   killGroup(w.pgid)
   await waitFor(() => !live.process || !live.process.alive, { what: "death" })
   try {
-    expect((await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })).status).toBe("stale")
+    expect((await h.sessions.answer(q.id, YES, "text", { by: "ngocbh" })).status).toBe("stale")
   } catch (error) {
     // The app-server's exit expired the card first.
     if (!(error instanceof HarnessError)) throw error
@@ -267,9 +309,7 @@ test("an answer after the app server died goes stale", async () => {
 
 test("an unanswered card goes stale when codex resolves it", async () => {
   const h = makeCodex()
-  h.fake.script([
-    [fc.commandApproval(1, "c1", "touch a", { wait: false }), { sleep: 0.3 }, { resolve: 1 }, { sleep: 5 }],
-  ])
+  h.fake.script([[fc.choice(1, "c1", { wait: false }), { sleep: 0.3 }, { resolve: 1 }, { sleep: 5 }]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
@@ -280,7 +320,7 @@ test("an unanswered card goes stale when codex resolves it", async () => {
 
 test("a card codex left waiting at its turns end goes stale", async () => {
   const h = makeCodex()
-  h.fake.script([[fc.commandApproval(1, "c1", "touch a", { wait: false }), { sleep: 0.3 }]])
+  h.fake.script([[fc.choice(1, "c1", { wait: false }), { sleep: 0.3 }]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
@@ -297,30 +337,25 @@ function openByNode(h: Codex, sid: string): Record<string, QuestionRecord> {
 test("two cards open and close independently and a message leaves them alone", async () => {
   const h = makeCodex()
   h.fake.script([
-    [
-      fc.commandApproval(1, "c1", "touch a", { wait: false }),
-      fc.permissionsApproval(2, "p1", { wait: false }),
-      { wait_reply: 1 },
-      { wait_reply: 2 },
-    ],
+    [fc.choice(1, "c1", { wait: false }), fc.choice(2, "p1", { wait: false }), { wait_reply: 1 }, { wait_reply: 2 }],
   ])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "go")
   await waitFor(() => h.store.listQuestions({ sessionId: sid, status: "open" }).length === 2, { what: "two cards" })
   expect(await h.sessions.prompt(sid, "also do b")).toBe("steer")
   const byNode = openByNode(h, sid)
-  const second = await h.sessions.answer(byNode["2"]!.id, "Approve for this session", "option", { by: "ngocbh" })
+  const second = await h.sessions.answer(byNode["2"]!.id, NO, "text", { by: "ngocbh" })
   expect(second.status).toBe("consumed")
   expect(h.store.getQuestion(byNode["1"]!.id)!.status).toBe("open")
-  expect((await h.sessions.answer(byNode["1"]!.id, "Approve", "option", { by: "ngocbh" })).status).toBe("consumed")
+  expect((await h.sessions.answer(byNode["1"]!.id, YES, "text", { by: "ngocbh" })).status).toBe("consumed")
   await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
-  expect((h.fake.replies()[2] as { scope: string }).scope).toBe("session")
-  expect(h.fake.replies()[1]).toEqual({ decision: "accept" })
+  expect(h.fake.replies()[2]).toEqual(picked("No"))
+  expect(h.fake.replies()[1]).toEqual(picked("Yes"))
 })
 
 test("esc makes open cards stale though codex never resolves them", async () => {
   const h = makeCodex()
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
@@ -334,7 +369,7 @@ test("esc makes open cards stale though codex never resolves them", async () => 
   await waitFor(() => h.store.getQuestion(q.id)!.status === "stale" && status(h, sid) === "idle", {
     what: "stale card, idle session",
   })
-  const refused = await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" }).catch((error) => error)
+  const refused = await h.sessions.answer(q.id, YES, "text", { by: "ngocbh" }).catch((error) => error)
   expect(refused).toBeInstanceOf(HarnessError)
   expect(refused.code).toBe("not_open")
   expect(1 in h.fake.replies()).toBe(false)
@@ -447,23 +482,6 @@ test("a request no card can show is refused with its reason and logged", async (
   expect(h.store.listQuestions({ sessionId: sid })).toEqual([])
 })
 
-test("an approval with no decision a card can offer is refused, not left unanswerable", async () => {
-  const h = makeCodex()
-  const step = fc.commandApproval(9, "c1", `echo ${SENTINEL}`)
-  step.params.availableDecisions = [{ acceptWithExecpolicyAmendment: { execpolicy_amendment: [SENTINEL] } }]
-  h.fake.script([[step]])
-  const sid = await start(h, h.workspace)
-  await h.sessions.prompt(sid, "go")
-  await waitFor(() => 9 in h.fake.replies(), { what: "the error reply" })
-  expect(h.fake.replies()[9]).toEqual({ code: -32603,
-    message: "OpenCorp can't show item/commandExecution/requestApproval with no option a card can offer" })
-  expect(h.lines.filter((x) => x.includes("no card can show"))).toEqual([
-    `codex session ${sid}: no card can show item/commandExecution/requestApproval with no option a card can offer`])
-  expect(h.lines.join("\n")).not.toContain(SENTINEL)
-  await waitFor(() => status(h, sid) === "idle", { what: "Codex going on" })
-  expect(h.store.listQuestions({ sessionId: sid })).toEqual([])
-})
-
 test("an elicitation in a mode a card cannot answer is refused without echoing the mode", async () => {
   const h = makeCodex()
   const params = { serverName: "gh", threadId: "{thread}", turnId: "{turn}", mode: SENTINEL, message: "Pick" }
@@ -486,12 +504,12 @@ test("cards answer a codex card and refuse its other actions", async () => {
   register(h.office)
   const cards = h.office.cards!
   try {
-    h.fake.script([approvalTurn()])
+    h.fake.script([[fc.formElicitation(1, "jira", "Go on?", {}), { sleep: 0.3 }]])
     const sid = await start(h, h.workspace)
     await h.sessions.prompt(sid, "make a")
     const q = await openCard(h, sid)
-    // An approval takes an option.
-    await expect(cards.answer(q.id, "approve it please", "text", { by: "ngocbh" })).rejects.toBeInstanceOf(HarnessError)
+    // A card of options takes an option.
+    await expect(cards.answer(q.id, "accept it please", "text", { by: "ngocbh" })).rejects.toBeInstanceOf(HarnessError)
     for (const refused of [
       () => cards.openSide(q.id, "why?", { by: "ngocbh" }),
       () => cards.sendBack(q.id, "", { by: "ngocbh" }),
@@ -502,8 +520,8 @@ test("cards answer a codex card and refuse its other actions", async () => {
       expect(error.code).toBe("harness_card")
     }
     expect(h.store.getQuestion(q.id)!.status).toBe("open")
-    expect((await cards.answer(q.id, "Approve", "option", { by: "ngocbh" })).status).toBe("consumed")
-    await waitFor(() => Bun.deepEquals(h.fake.replies()[1], { decision: "accept" }), { what: "the reply" })
+    expect((await cards.answer(q.id, "Accept", "option", { by: "ngocbh" })).status).toBe("consumed")
+    await waitFor(() => Bun.deepEquals(h.fake.replies()[1], { action: "accept" }), { what: "the reply" })
   } finally {
     await cards.close()
   }
@@ -511,7 +529,7 @@ test("cards answer a codex card and refuse its other actions", async () => {
 
 test("an answer that waited too long for its reply tells codex it came too late", async () => {
   const h = makeCodex({ replyWaitMs: 200 })
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
@@ -526,7 +544,7 @@ test("an answer that waited too long for its reply tells codex it came too late"
     await released
   })
   await began
-  expect((await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })).status).toBe("stale")
+  expect((await h.sessions.answer(q.id, YES, "text", { by: "ngocbh" })).status).toBe("stale")
   release()
   await waitFor(() => 1 in h.fake.replies(), { what: "the error reply" })
   // With no card left, Codex mustn't wait on one.
@@ -553,7 +571,7 @@ test("on a card with a secret only what is known to be safe is stored", () => {
 
 test("a card that cant be marked consumed after the reply still answers", async () => {
   const h = makeCodex()
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
@@ -563,11 +581,11 @@ test("a card that cant be marked consumed after the reply still answers", async 
     return set(id, to)
   })
   // Codex has the reply: the answer stands, as answered, rather than failing the request.
-  expect((await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })).status).toBe("answered")
-  await waitFor(() => Bun.deepEquals(h.fake.replies()[1], { decision: "accept" }), { what: "the reply" })
+  expect((await h.sessions.answer(q.id, YES, "text", { by: "ngocbh" })).status).toBe("answered")
+  await waitFor(() => Bun.deepEquals(h.fake.replies()[1], picked("Yes")), { what: "the reply" })
   await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
   const [part, ...more] = toolParts(h, sid)
   expect(more).toEqual([])
-  expect(part!.input.approval).toEqual({ decision: "accept", by: "ngocbh" })
+  expect(part!.input.approval).toEqual({ decision: "answer", by: "ngocbh" })
   expect(h.lines).toContain(`codex session ${sid}: card ${q.id} wasn't marked consumed (StoreError)`)
 })

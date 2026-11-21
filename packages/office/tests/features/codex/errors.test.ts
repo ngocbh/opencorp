@@ -120,7 +120,7 @@ test("a dead app server leaves the session idle and the next message reloads the
     [
       [
         ...fc.agentMessage("m1", "Working").slice(0, 2),
-        fc.commandApproval(1, "c1", "x", { wait: false }),
+        fc.choice(1, "c1", { wait: false }),
         { sleep: 0.3 },
         { spawn: 300 },
         { exit: 1 },
@@ -146,7 +146,7 @@ test("a dead app server leaves the session idle and the next message reloads the
   const resumes = calls(h, "thread/resume")
   expect(resumes).toHaveLength(1)
   expect(resumes[0]!.threadId).toBe("thr_1")
-  expect(resumes[0]!.approvalPolicy).toBe("on-request")
+  expect([resumes[0]!.approvalPolicy, resumes[0]!.permissions]).toEqual(["never", `opencorp-${sid}`])
   expect(resumes[0]!.excludeTurns).toBeTruthy()
   expect(calls(h, "initialize")).toHaveLength(2)
   expect(workerKeys(h)).toEqual([`harness:${sid}`]) // the new one's record
@@ -627,8 +627,8 @@ test("a reload whose app server dies before taking the message says so once", as
   await waitFor(() => errors(h, sid).length > 0 && status(h, sid) === "idle", { what: "the first crash handled" })
   const realLaunch = h.sessions.launch.bind(h.sessions)
   // The reloaded app-server dies as the queued message reaches it.
-  spyOn(h.sessions, "launch").mockImplementation(async (live) => {
-    const p = await realLaunch(live)
+  spyOn(h.sessions, "launch").mockImplementation(async (live, prepared) => {
+    const p = await realLaunch(live, prepared)
     const realRequest = p.rpc!.request.bind(p.rpc!)
     spyOn(p.rpc!, "request").mockImplementation(async (method, params, options) => {
       if (method !== "turn/start") return realRequest(method, params, options)
