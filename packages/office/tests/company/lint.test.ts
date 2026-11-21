@@ -428,6 +428,57 @@ test("a reply input named __steer_inbox is refused at load, so it can't pass for
   expect(issue!.message).toContain("input '__steer_inbox' starts with '__'")
 })
 
+/** An SOP whose agent `work` grants `tools`, steering from a `messages` inbox when `steered`. */
+function sopFlow(tools: string, { steered }: { steered: boolean }): string {
+  return `id: drive
+name: drive
+input:
+  task: !str
+${steered ? "  messages: !Inbox(Message)\n" : ""}nodes:
+  work:
+    kind: agent
+${steered ? "    steer_inbox: ${input.messages}\n" : ""}    tools: ${tools}
+    input:
+      task: \${input.task}
+    output: !Optional(str)
+    prompt: "\${task}"
+output: \${work.output}
+`
+}
+
+/** A company whose minh runs `flow` as an SOP. */
+function withSop(flow: string): string {
+  const sops = [{ flow: "../../shared/flows/drive.yaml" }]
+  return makeCompany({ "shared/flows/drive.yaml": flow, "people/minh/person.yaml": person("minh", { sops }) })
+}
+
+test.each(["[codex]", "[ask_user, claude]", "[{codex: [send, history]}]"])(
+  "an agent that grants an instrument group without a steer inbox is a lint error [%s]",
+  async (tools) => {
+    const root = withSop(sopFlow(tools, { steered: false }))
+    expect(await codes(root)).toEqual(new Set(["person.instrument_unsteered"]))
+    const [issue, ...rest] = await withCode(root, "person.instrument_unsteered")
+    expect(rest).toEqual([])
+    expect([issue!.path, issue!.severity]).toEqual(["people/minh/person.yaml", "error"])
+    expect(issue!.message).toStartWith("../../shared/flows/drive.yaml's agent work grants")
+    expect(issue!.message).toContain("Esc")
+    expect(issue!.message).toContain("steer_inbox:")
+    expect(await codes(withSop(sopFlow(tools, { steered: true })))).toEqual(new Set())
+  },
+)
+
+test("an agent that grants no instrument group needs no steer inbox", async () => {
+  expect(await codes(withSop(sopFlow("[workspace, terminal]", { steered: false })))).toEqual(new Set())
+})
+
+test("an agent inside a turn that grants an instrument group without a steer inbox is named by its path", async () => {
+  const flow = MAIN.replace("        steer_inbox: ${input.messages}\n", "        tools: [codex]\n")
+  const root = makeCompany({ "shared/flows/chat.yaml": flow })
+  expect(await codes(root)).toEqual(new Set(["person.main_chat_shape", "person.instrument_unsteered"]))
+  const [issue] = await withCode(root, "person.instrument_unsteered")
+  expect(issue!.message).toStartWith("../../shared/flows/chat.yaml's agent chat/reply grants codex")
+})
+
 test("a main flow whose reply output is not optional is a lint error", async () => {
   const message = (await chatShapeIssue(MAIN.replace("output: !Optional(str)", "output: !str"))).message
   expect(message).toContain("interrupt")

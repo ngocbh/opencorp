@@ -1,4 +1,4 @@
-/** Each session's live instruments: the shells (later, Codex and Claude Code sessions) its agents work, which the
+/** Each session's live instruments: the shells and Codex sessions (later, Claude Code's) its agents work, which the
  *  owner watches and steps into. The registry lists them, publishes their changes (`instrument.updated`), their output
  *  (`instrument.output`) and their removal (`instrument.removed`) as live events, and keeps each one's last output for
  *  a client that joins late.

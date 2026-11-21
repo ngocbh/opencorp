@@ -31,7 +31,7 @@ export const session = (id: string, who: string, status: Session["status"], over
   ({ id, person: who, harness: "composer", office: "mac", cwd: "/work", repo_commit: SHA, status, kind: "main",
      waiting_on: [], capped: false, harness_session_id: null, work_item_id: null, run_ids: [], question_id: null,
      seed: null, cost: 0, cost_cap_usd: null, opened_by: null, connection: null, model: null, model_note: null,
-     harness_model: null, harness_turn_id: null, harness_usage: null, parent_session_id: null, turns: 0, mode: "auto",
+     harness_model: null, harness_turn_id: null, harness_usage: null, parent_session_id: null, instrument_of: null, turns: 0, mode: "auto",
      created_at: T, updated_at: T, ...over })
 
 export const card = (id: string, sessionId: string, asker: string, over: Partial<Question> = {}): Question =>

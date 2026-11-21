@@ -131,10 +131,11 @@ export function Prompt(props: PromptProps) {
   const waiting = createMemo(() =>
     props.sessionID ? waitingInstrument(office.state.instruments[props.sessionID]) : undefined,
   )
-  /** An ended Codex session, which a message continues in a new session on the same thread. */
+  /** An ended Codex session, which a message continues in a new session on the same thread; not one an employee's
+   *  chat drove, which only its employee starts again. */
   const continues = createMemo(() => {
     const s = session()
-    return s?.harness === "codex" && ["ended", "failed", "debriefing"].includes(s.status)
+    return s?.harness === "codex" && !s.instrument_of && ["ended", "failed", "debriefing"].includes(s.status)
   })
   const history = usePromptHistory()
   const stash = usePromptStash()

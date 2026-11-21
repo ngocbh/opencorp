@@ -21,6 +21,7 @@ import {
   threadEnv,
   threadProbe,
 } from "../../../src/features/codex/thread.ts"
+import { instructions } from "../../../src/features/codex/instrument.ts"
 import { type EmployeePermission, codexThread, harnessPath } from "../../../src/runtime/sandbox/harness_profile.ts"
 import { UnsafeProfile } from "../../../src/runtime/sandbox/policy.ts"
 import { CodexProcess, nativeCodex, threadLoad } from "../../../src/tools/codex/codex.ts"
@@ -444,6 +445,29 @@ test.skipIf(NO_CODEX)(
     } finally {
       await proc.close(2000)
     }
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
+  "a real codex takes an employee instrument's thread: the employee's permission, and Codex told of its two speakers",
+  async () => {
+    const real = realHome()
+    const { codexHome, config, options } = real
+    const { p, proc } = await realServer(real, path.join(real.root, "ws"))
+    try {
+      await proc.start()
+      const params = await employeeLoad(proc.rpc!, p, "opencorp-real", options.codex.install)
+      const developerInstructions = instructions((a) => (a === "minh" ? "@minh" : "Ngoc (owner)"), "minh", "ngocbh")
+      const loaded = await proc.rpc!.request("thread/start", { ...params, developerInstructions, ephemeral: true })
+      checkLoaded(loaded, "opencorp-real")
+      // The thread's config reloads as each turn's does: no model turn runs.
+      const threadId = (loaded as { thread: { id: string } }).thread.id
+      await proc.rpc!.request("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly" })
+    } finally {
+      await proc.close(2000)
+    }
+    expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).toBe(config)
   },
   120_000,
 )

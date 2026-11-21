@@ -74,6 +74,7 @@ import { PaneResizeHandle } from "../../ui/pane-resize-handle"
 import { DialogInstruments, DialogInstrumentView } from "./dialog-instruments"
 import { waitingInstrument } from "./instrument-line"
 import { InstrumentView, nextPlacement, PLACEMENTS, type InstrumentPlacement } from "./instrument-view"
+import { childSessions, InstrumentFooter } from "./instrument-footer"
 import { endsLine } from "./keys"
 import { LIVE } from "./terminal-pane"
 
@@ -94,6 +95,10 @@ const sessionBindingCommands = [
   "messages.copy",
   "session.copy",
   "session.export",
+  "session.child.first",
+  "session.parent",
+  "session.child.next",
+  "session.child.previous",
 ] as const
 
 const sessionGlobalBindingCommands = [
@@ -333,6 +338,27 @@ export function Session() {
       },
     ),
   )
+  // The chat's Codex sessions, each its own child session, which open as a chat; in a child, its chat and siblings.
+  const harnesses = createMemo(() =>
+    (office.state.instruments[route.sessionID] ?? []).filter((i) => i.kind !== "terminal"),
+  )
+  const parentID = createMemo(() => session()?.instrument_of ?? undefined)
+  const children = createMemo(() => childSessions(office.state.sessions, parentID() ?? route.sessionID))
+  // The store may not hold a child yet (it holds the latest sessions): the chat's list names it too.
+  const firstChild = () => children()[0]?.id ?? harnesses()[0]?.id
+  /** Opens child session `sessionID` in place of this chat. */
+  function enterChild(sessionID: string) {
+    dialog.clear()
+    navigate({ type: "session", sessionID })
+  }
+  /** Moves to the next (1) or previous (-1) Codex session of the chat, round its list. */
+  function moveChild(direction: number) {
+    const list = children()
+    if (list.length < 2) return
+    const at = list.findIndex((s) => s.id === route.sessionID)
+    const next = list[(at + direction + list.length) % list.length]
+    if (next) enterChild(next.id)
+  }
   // The open instrument, kept while it closes.
   const openInstrument = createMemo<Instrument | undefined>((last) => {
     const id = opened()?.id
@@ -619,15 +645,44 @@ export function Session() {
       title: "Open an instrument…",
       value: "session.instrument.list",
       category: "Session",
-      enabled: instruments().length > 0,
+      enabled: instruments().length > 0 || harnesses().length > 0,
       run: () =>
         dialog.replace(() => (
           <DialogInstruments
-            instruments={instruments()}
+            instruments={[...instruments(), ...harnesses()]}
             current={opened()?.id}
-            onOpen={(id) => showInstrument(id)}
+            // A Codex session is a child session: it opens as a chat.
+            onOpen={(id) => (harnesses().some((i) => i.id === id) ? enterChild(id) : showInstrument(id))}
           />
         )),
+    },
+    {
+      title: "Go to the chat's first Codex session",
+      value: "session.child.first",
+      category: "Session",
+      enabled: !parentID() && firstChild() !== undefined,
+      run: () => enterChild(firstChild()!),
+    },
+    {
+      title: "Go back to the chat that drives this Codex session",
+      value: "session.parent",
+      category: "Session",
+      enabled: !!parentID(),
+      run: () => enterChild(parentID()!),
+    },
+    {
+      title: "Next Codex session of the chat",
+      value: "session.child.next",
+      category: "Session",
+      enabled: !!parentID() && children().length > 1,
+      run: () => moveChild(1),
+    },
+    {
+      title: "Previous Codex session of the chat",
+      value: "session.child.previous",
+      category: "Session",
+      enabled: !!parentID() && children().length > 1,
+      run: () => moveChild(-1),
     },
     {
       title: "List the chat's rules",
@@ -1092,6 +1147,10 @@ export function Session() {
                         </Show>
                       }
                     >
+                      {/* A child session: the Codex session an employee's chat drives, with the way back to it. */}
+                      <Show when={parentID() ? current() : undefined}>
+                        {(child) => <InstrumentFooter session={child()} />}
+                      </Show>
                       {/* Keyed by id, so a card whose question is re-read (a reconnect) keeps its state. */}
                       <For each={cards().map((q) => q.id)}>
                         {(id, i) => (

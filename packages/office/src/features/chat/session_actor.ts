@@ -134,6 +134,10 @@ export interface ActorContext {
   log(line: string): void
 }
 
+/** The tool groups whose calls Esc never answers early: the workspace and the terminal stop their own, and the
+ *  harnesses' (`codex`, `claude`) hear Esc through their call's interrupt and reply with what the harness did. */
+const SELF_STOPPING: ReadonlySet<string> = new Set(["workspace", "terminal", "codex", "claude"])
+
 /** The note of a chat that continues on a fresh run after its worker died, as its model or connection changed. */
 export const FRESH_NOTE =
   "This chat continues on a fresh run because its model or connection changed. " +
@@ -2157,12 +2161,14 @@ export class SessionActor implements LiveCalls {
         name: string,
         args: Record<string, unknown>,
         callId?: string,
+        options: { interrupted?: AbortSignal } = {},
       ): Promise<unknown> {
         if (actor.#closed) return Promise.reject(new Error("the office is stopping"))
-        const call = () => super.toolCall(worker, group, name, args, callId)
+        const call = () => super.toolCall(worker, group, name, args, callId, options)
         // The workspace kills its own calls when interrupted, and the terminal's stop themselves: a call whose check
-        // still runs is never answered early.
-        return group === "workspace" || group === "terminal" ? call() : actor.#cancellable(call)
+        // still runs is never answered early. A harness's call hears Esc through its interrupt and replies with what
+        // the harness did so far, which an early answer would lose.
+        return SELF_STOPPING.has(group) ? call() : actor.#cancellable(call)
       }
     })({ tools, memories })
   }
@@ -2561,8 +2567,10 @@ export class SessionActor implements LiveCalls {
     this.#run = null
     const session = this.#ctx.store.getSession(this.sessionId)
     if (session !== undefined) void this.#ctx.hooks.notify("callEnded", session)
-    // Nobody is left to read what these calls return, finished or not.
+    // Nobody is left to read what these calls return, finished or not: a Codex turn the employee waited on stops, as
+    // a cut-off command does.
     this.#interruptShells()
+    this.#spec?.codex?.cutCalls()
     this.#answerCalls()
     if (this.#finished) {
       // Its hard stop spawns under the session's id, so a parked worker goes first.
@@ -3267,13 +3275,17 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** Closes the terminal: every command ends, its records end and its listings go. Never rejects. */
+  /** Closes the terminal and the Codex instrument: every command and Codex session ends, and their listings go. Never
+   *  rejects. */
   #closeShells(): Promise<void> {
-    const terminal = this.#spec?.terminal
-    if (terminal === undefined) return Promise.resolve()
-    return terminal.close().catch((error: unknown) => {
+    const { terminal, codex } = this.#spec ?? {}
+    const shells = terminal?.close().catch((error: unknown) => {
       this.#log(`session ${this.sessionId}: its terminal didn't close cleanly (${errorName(error)})`)
     })
+    const threads = codex?.close().catch((error: unknown) => {
+      this.#log(`session ${this.sessionId}: its Codex sessions didn't close cleanly (${errorName(error)})`)
+    })
+    return Promise.all([shells, threads]).then(() => {})
   }
 
   /** Where a new shell of the session's terminal runs, as its sandbox says: what the approvals decide a card again
