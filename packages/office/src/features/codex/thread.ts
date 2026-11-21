@@ -5,6 +5,7 @@ import fs from "node:fs"
 import path from "node:path"
 import {
   type EmployeePermission,
+  type HarnessInstall,
   checkCodexInstall,
   codexThread,
   harnessPath,
@@ -94,8 +95,8 @@ export function checkLoaded(answer: unknown, id: string): void {
 
 /** What `threadProbe` runs. */
 export type ProbeOptions = {
-  /** What runs Codex, and its install folder (`nativeCodex`). */
-  codex: { run: string; install: string }
+  /** What runs Codex, its install folder (`nativeCodex`), and the path found on PATH that led to it. */
+  codex: HarnessInstall
   /** The app-server's environment, as the office gives one (the worker environment). */
   env: Record<string, string>
   /** The office's environment: its `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. */
@@ -107,6 +108,8 @@ export type ProbeOptions = {
   base?: string
   /** Milliseconds each request has to answer. */
   timeoutMs: number
+  /** Folders others may write: every person's writable listed folders, and live sessions' folders. */
+  othersWritable?: readonly string[]
 }
 
 /** What `threadProbe` found: what failed and the log holding Codex's output, or null; and the projects the owner's
@@ -146,6 +149,7 @@ export async function threadProbe(options: ProbeOptions): Promise<Probed> {
       home: options.home,
       officeHome: options.officeHome,
       harnessHomes: harnessHomes(options.environ),
+      othersWritable: options.othersWritable ?? [],
     }
     checkCodexInstall(p, options.codex)
     const started: CodexProcess = (proc = new CodexProcess({

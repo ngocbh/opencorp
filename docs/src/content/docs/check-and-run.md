@@ -19,4 +19,9 @@ OpenCorp needs Claude Code 2.1.325 or later. For an older one doctor fails and s
 Claude Code as an employee's session starts it, under their permission, and reads its sign-in,
 without sending it a message. Signed out is a warning: run `claude` and sign in with `/login`.
 Claude Code runs only inside its own sandbox, so doctor fails when that sandbox can't start; on
-Linux, install `bubblewrap` and `socat`.
+Linux, install `bubblewrap` and `socat`. Doctor runs no command in that sandbox, so one that
+starts but fails on a command shows only when your employee runs one.
+
+Codex and Claude Code run as you. Doctor fails, without running it, a Codex or Claude Code that
+someone else could change: one the group or others may write, or one in a folder an employee may
+write.

@@ -29,6 +29,8 @@ import {
 } from "../../tools/claude/claude.ts"
 import { probeStart } from "../../tools/claude/probe.ts"
 import { type Probed, threadProbe } from "../codex/thread.ts"
+import { writableFolders } from "../codex/permission.ts"
+import { checkHarnessBinary } from "../../runtime/sandbox/harness_profile.ts"
 import { SANDBOX_FIX } from "../../tools/terminal/terminal.ts"
 import { selfCommand, tuiAssetRoot } from "../../platform.ts"
 import {
@@ -36,12 +38,13 @@ import {
   checkWorkspace,
   type OfficePaths as Guards,
   SandboxPolicy,
+  UnsafeProfile,
   UnsafeWorkspace,
 } from "../../runtime/sandbox/policy.ts"
 import { fsHelper, run, startOnTerminal } from "../../runtime/sandbox/run.ts"
 import { latestVersion, newerStore, userVersion } from "../../runtime/store/migrate.ts"
 import { storeProblem } from "../../runtime/store/problem.ts"
-import { StoreError } from "../../runtime/store/store.ts"
+import { LIVE, StoreError } from "../../runtime/store/store.ts"
 import { CHECKOUT } from "../../util/checkout.ts"
 import { type Env, which } from "../../util/env.ts"
 import { strerror } from "../../util/errors.ts"
@@ -614,6 +617,9 @@ function changeLands(mode: string | null): string {
 export interface CodexOffice {
   home: string
   officeHome: string
+  /** Folders others may write (every person's writable listed folders, and live sessions' folders): no harness doctor
+   *  runs, nor a link that leads to it, may be in one. */
+  othersWritable?: readonly string[]
 }
 
 /**
@@ -647,13 +653,21 @@ export async function codexCheck(
         `(npm install -g @openai/codex, then ${changeLands(mode)})`
     return { name: "codex", status: "warn", detail }
   }
+  // Codex runs as the owner: one others could change is refused before doctor runs it at all.
+  const codex = { ...nativeCodex(found), found }
+  try {
+    checkHarnessBinary("codex", codex, office?.othersWritable ?? [])
+  } catch (error) {
+    if (!(error instanceof UnsafeProfile)) throw error
+    return { name: "codex", status: "fail", detail: `${found} wasn't run: ${error.message}` }
+  }
   const home = environ.CODEX_HOME
   if (home) env = { ...env, CODEX_HOME: home }
-  /** `found <args>`, or the failed check when it timed out or never started. */
+  /** Codex as the office runs it, with `args`, or the failed check when it timed out or never started. */
   const ask = async (...args: string[]) => {
     // In its own group, so a hung Codex and anything it started go with the timeout.
-    const done = await runCommand([found, ...args], { env, timeoutMs, group: true })
-    if (done.code === 124 && done.stderr === `${found} timed out`) {
+    const done = await runCommand([codex.run, ...args], { env, timeoutMs, group: true })
+    if (done.code === 124 && done.stderr === `${codex.run} timed out`) {
       const detail = `${found} ${args.join(" ")} didn't answer in ${timeoutMs / 1000} s`
       return { name: "codex", status: "fail", detail } satisfies Check
     }
@@ -698,7 +712,7 @@ export async function codexCheck(
   if (office === undefined) return { name: "codex", status: "ok", detail: `${named}, signed in` }
   let probed: Probed
   try {
-    probed = await threadProbe({ codex: nativeCodex(found), env, environ, ...office, base, timeoutMs })
+    probed = await threadProbe({ codex, env, environ, ...office, base, timeoutMs })
   } catch (error) {
     // Its folders under /tmp couldn't be made or removed, or the binary is gone.
     const detail = `${named} is signed in, but doctor can't try a thread under an employee's permission: ${messageOf(error)}`
@@ -724,8 +738,10 @@ export async function codexCheck(
 
 /**
  * Whether employees can drive Claude Code, in the environment the office gives it (`env`): the binary on its PATH,
- * the version (2.1.325 or later), and, given `office`, a start under an employee's permission (`probeStart`, under
- * `base`'s harness folder), which reads the sign-in from `initialize` and sends no message, so no model call runs.
+ * refused before it runs if others could change it (`checkHarnessBinary`, with `office`'s others' folders), the
+ * version (2.1.325 or later), and, given `office`, a start under an employee's permission (`probeStart`, under
+ * `base`'s harness folder), which reads the sign-in from `initialize` and sends no message, so no model call runs and
+ * no command runs in its sandbox: a sandbox that starts but fails on its first command isn't seen.
  * Missing or signed out is a warning, not a failure: only employees who drive Claude Code need it. A `claude` that
  * won't run, doesn't answer within `timeoutMs`, is older than the floor or whose version can't be read fails, and so
  * does one that can't start under an employee's permission (its sandbox can't start, or others could change it).
@@ -752,11 +768,19 @@ export async function claudeCheck(
         `(install it from https://code.claude.com/docs/en/setup, then ${changeLands(mode)})`
     return { name: "claude", status: "warn", detail }
   }
+  // Claude Code runs as the owner: one others could change is refused before doctor runs it at all.
+  const claude = { ...nativeClaude(found), found }
+  try {
+    checkHarnessBinary("claude", claude, office?.othersWritable ?? [])
+  } catch (error) {
+    if (!(error instanceof UnsafeProfile)) throw error
+    return { name: "claude", status: "fail", detail: `${found} wasn't run: ${error.message}` }
+  }
   const config = environ.CLAUDE_CONFIG_DIR
   const ran = config ? { ...env, CLAUDE_CONFIG_DIR: config } : env
   // In its own group, so a hung Claude Code and anything it started go with the timeout.
-  const version = await runCommand([found, "--version"], { env: ran, timeoutMs, group: true })
-  if (version.code === 124 && version.stderr === `${found} timed out`) {
+  const version = await runCommand([claude.run, "--version"], { env: ran, timeoutMs, group: true })
+  if (version.code === 124 && version.stderr === `${claude.run} timed out`) {
     return { name: "claude", status: "fail", detail: `${found} --version didn't answer in ${timeoutMs / 1000} s` }
   }
   const unstarted = version.code === 127 ? version.stderr.match(SPAWN_ERROR) : null
@@ -783,14 +807,18 @@ export async function claudeCheck(
   const cant = `${named} can't start under an employee's permission`
   let probed: { error: Error | null; log: string }
   try {
-    probed = await probeStart({ claude: nativeClaude(found), env, environ, ...office, base })
+    probed = await probeStart({ claude, env, environ, ...office, base })
   } catch (error) {
     // Its folders under /tmp couldn't be made or removed, or the binary is gone.
     return { name: "claude", status: "fail", detail: `${cant}: doctor can't try one: ${messageOf(error)}` }
   }
   const { error, log } = probed
   if (error === null) {
-    return { name: "claude", status: "ok", detail: `${named}, signed in, and starts under an employee's permission` }
+    // No command ran: a sandbox that fails only on its first command shows only in a session.
+    const detail =
+      `${named}, signed in, and starts with its sandbox required under an employee's permission ` +
+      "(no command tried in it)"
+    return { name: "claude", status: "ok", detail }
   }
   if (error instanceof ClaudeSignedOut) {
     const detail = `${named} is signed out; run \`claude\` in a terminal and sign in with /login`
@@ -1337,10 +1365,32 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   if (folders !== null) found.push(folders)
   // run.env is the environment an office set up or started from this shell gets, which can differ from the running
   // daemon's (a launchd or systemd office keeps the one `opencorp onboard` wrote into its service file).
-  const homes = { home: host.userHome, officeHome: paths.home }
+  // A store that failed its own check isn't opened again (it may be a FIFO).
+  const others = othersWritable(paths, host.userHome, store?.status !== "fail")
+  const homes = { home: host.userHome, officeHome: paths.home, othersWritable: others }
   found.push(await codex(workerEnv(run.env), run.env, service.recordedMode(run), { office: homes }))
   found.push(await claude(workerEnv(run.env), run.env, service.recordedMode(run), { office: homes }))
   return found
+}
+
+/** Every person's writable listed folders in the company's working tree, and, when `storeReadable`, the folders of
+ *  the office's live sessions: where no harness doctor runs may be. What can't be read adds nothing. */
+function othersWritable(paths: OfficePaths, home: string, storeReadable: boolean): string[] {
+  const found: string[] = []
+  try {
+    if (fs.existsSync(paths.company)) found.push(...writableFolders(loadRepo(paths.company), home))
+  } catch {
+    // The company check says why it doesn't load.
+  }
+  try {
+    if (storeReadable && fs.lstatSync(paths.store, { throwIfNoEntry: false })?.isFile()) {
+      const sql = `SELECT DISTINCT cwd FROM sessions WHERE status IN (${LIVE.map(() => "?").join(", ")})`
+      found.push(...readStore(paths.store, (db) => db.prepare(sql).all(...LIVE).map((row) => String(row.cwd))))
+    }
+  } catch {
+    // The store check says why it can't be read.
+  }
+  return [...new Set(found)]
 }
 
 /** 1 if any check failed, else 0. */

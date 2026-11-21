@@ -1208,7 +1208,9 @@ test("a sandbox that cant start fails", async () => {
  *  otherwise. Returns the env to run it with. */
 function fakeCodex(dir: string, loginExit: number, loginErr?: string, loginOut = ""): Record<string, string> {
   const bin = path.join(dir, "bin")
-  fs.mkdirSync(bin)
+  // Only the user may change the Codex doctor runs, whatever the umask: it refuses to run one others could.
+  fs.mkdirSync(bin, { mode: 0o755 })
+  fs.chmodSync(bin, 0o755)
   const err = loginErr ?? (loginExit === 0 ? "Logged in using ChatGPT\n" : "Not logged in\n")
   fs.writeFileSync(path.join(dir, "login.err"), err)
   fs.writeFileSync(path.join(dir, "login.out"), loginOut)
@@ -1562,7 +1564,9 @@ test("checks run the codex check they are given in the app servers environment",
 test("opencorp codex bin names the codex the check runs", async () => {
   const dir = tempDir()
   const env = fakeCodex(dir, 0)
-  const other = path.join(dir, "codex-dev")
+  // In a folder of its own: a script's install is the folder holding its folder, which must be the user's alone.
+  fs.mkdirSync(path.join(dir, "dev"), { mode: 0o755 })
+  const other = path.join(dir, "dev", "codex-dev")
   fs.writeFileSync(other, '#!/bin/sh\ncase "$1" in --version) echo "codex-cli 9.9.9";; login) exit 0;; esac\n', {
     mode: 0o755,
   })
@@ -1610,7 +1614,7 @@ test("checks give the codex check the offices environment to find codex", async 
   })
   const { env, environ, office } = seen[0]!
   // The probe's thread denies the owner's home and the office's by name.
-  expect(office).toEqual({ home: dir, officeHome: path.join(dir, "home") })
+  expect(office).toEqual({ home: dir, officeHome: path.join(dir, "home"), othersWritable: [] })
   expect(environ.CODEX_HOME).toBe("/x/home")
   expect(environ.OPENCORP_CODEX_BIN).toBe("/x/codex")
   expect(env).not.toHaveProperty("CODEX_HOME")
@@ -1672,7 +1676,9 @@ test("claude at the floor and signed in, starting under an employee's permission
   expect(await doctor.claudeCheck(env, {}, null, { office, base })).toEqual({
     name: "claude",
     status: "ok",
-    detail: `2.1.325 (Claude Code) at ${claude}, signed in, and starts under an employee's permission`,
+    detail:
+      `2.1.325 (Claude Code) at ${claude}, signed in, and starts with its sandbox required under an employee's ` +
+      "permission (no command tried in it)",
   })
   const starts = fake.log().filter((e) => e.dir === "start")
   expect(starts.map((s) => s.argv![0])).toEqual(["--version", "--output-format"])
@@ -1747,15 +1753,52 @@ test("a claude whose sandbox can't start fails, saying what to fix and where its
   })
 })
 
-test("a claude others could change fails before it runs under an employee's permission", async () => {
+test("a claude others could change, or one in another person's writable folder, fails and is never run", async () => {
   const { dir, office, base } = probeHomes()
   const { env, fake, claude } = fakeClaudeIn(dir)
   fs.chmodSync(fake.bin, 0o775)
-  const check = await doctor.claudeCheck(env, {}, null, { office, base })
+  for (const given of [{ office, base }, {}]) {
+    const check = await doctor.claudeCheck(env, {}, null, given)
+    expect(check.status).toBe("fail")
+    expect(check.detail).toStartWith(`${claude} wasn't run: `)
+    expect(check.detail).toContain("others than the user may write")
+  }
+  fs.chmodSync(fake.bin, 0o755)
+  const shared = { office: { ...office, othersWritable: [path.dirname(fake.bin)] }, base }
+  const check = await doctor.claudeCheck(env, {}, null, shared)
   expect(check.status).toBe("fail")
-  expect(check.detail).toStartWith(`2.1.325 (Claude Code) at ${claude} can't start under an employee's permission: `)
-  expect(check.detail).toContain("others than the user may write")
-  expect(fake.log().filter((e) => e.dir === "start")).toHaveLength(1)
+  expect(check.detail).toContain("is writable by the employee or others")
+  expect(fake.log().filter((e) => e.dir === "start")).toEqual([])
+})
+
+test("a codex others could change, or one in another person's writable folder, fails and is never run", async () => {
+  const dir = fs.realpathSync(tempDir())
+  const env = fakeCodex(dir, 0)
+  const codex = path.join(dir, "bin", "codex")
+  const ran = path.join(dir, "ran")
+  fs.writeFileSync(codex, `#!/bin/sh\ntouch ${ran}\ncase "$1" in --version) echo "codex-cli 0.167.0";; login) exit 0;; esac\n`)
+  fs.chmodSync(path.join(dir, "bin"), 0o775)
+  const open = await doctor.codexCheck(env, {})
+  expect([open.status, open.detail]).toEqual(["fail", expect.stringContaining(`${codex} wasn't run: `)])
+  expect(open.detail).toContain("others than the user may write")
+  fs.chmodSync(path.join(dir, "bin"), 0o755)
+  const office = { home: dir, officeHome: path.join(dir, ".opencorp"), othersWritable: [path.join(dir, "bin")] }
+  const shared = await doctor.codexCheck(env, {}, null, { office })
+  expect([shared.status, shared.detail]).toEqual(["fail", expect.stringContaining("is writable by the employee or others")])
+  expect(fs.existsSync(ran)).toBe(false)
+  expect((await doctor.codexCheck(env, {})).status).toBe("ok")
+  expect(fs.existsSync(ran)).toBe(true)
+})
+
+test("checks give the harness checks every person's writable listed folders, as the office's own folders are kept from them", async () => {
+  const dir = fs.realpathSync(tempDir())
+  const paths = await onboarded(dir)
+  const person = path.join(paths.company, "people/ngocbh/person.yaml")
+  fs.appendFileSync(person, "harness_policy:\n  folders:\n    - { path: ~/shared, access: write }\n    - { path: /data/ro, access: read }\n")
+  const { seen, seenClaude } = await checksSeeingCodex(dir, { PATH: "/usr/bin:/bin", HOME: dir }, { paths })
+  for (const office of [seen[0]!.office, seenClaude[0]!.office]) {
+    expect(office).toEqual({ home: dir, officeHome: paths.home, othersWritable: [path.join(dir, "shared")] })
+  }
 })
 
 test("the check runs claude with the office's config folder when set, and never with a claude key", async () => {
@@ -1779,7 +1822,7 @@ test("checks run the claude check they are given, in the worker env, with the of
   for (const key of Object.keys(env)) expect(inherited.includes(key) || key.startsWith("LC_")).toBe(true)
   expect(env).not.toHaveProperty("ANTHROPIC_API_KEY")
   expect(given.CLAUDE_CONFIG_DIR).toBe("/x/claude")
-  expect(office).toEqual({ home: dir, officeHome: path.join(dir, "home") })
+  expect(office).toEqual({ home: dir, officeHome: path.join(dir, "home"), othersWritable: [] })
 })
 
 test("a codex that says nothing is still described", async () => {
