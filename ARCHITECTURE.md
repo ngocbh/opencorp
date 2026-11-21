@@ -108,7 +108,7 @@ imports and what imports it").
 
 | Folder | Is | Does | Depends on | Used by |
 |---|---|---|---|---|
-| `company/template/` | The starting company (data) | The files `init` writes into a new repo; `template.ts` reads them | — | `company/template.ts` |
+| `company/template/` | The starting company (data) | The files `init` writes into a new repo, among them the shared flows: the chats' and the SOP that drives a harness (`drive_harness.yaml`); `template.ts` reads them | — | `company/template.ts` |
 | `runtime/` root files | Asset secrets and the event bus | `secrets.ts`: asset secrets under `office/secrets`. `bus.ts`: the office's events and live events | util | runtime/permissions, features/{chat, claude, codex}, server (root, daemon, hq, local, routes) |
 | `runtime/store/` | The office's database | Opens and migrates SQLite; rows for sessions, questions, runs, workers, HQ sessions; which statuses are live | util | runtime/{permissions, questions, runs, sessions, worker}, models, tools, features/{chat, claude, codex, doctor, profile, questions}, server (root, daemon, hq, local, routes) |
 | `runtime/sandbox/` | The fence around an agent's commands | bubblewrap and Seatbelt profiles; runs a command in one; `fs_helper.ts`, the file helper that runs inside; the permission a harness's own sandbox enforces, the folder's git root and the harnesses' own config folders it takes, and the checks of the harness the office runs (`harness_profile.ts`); each harness's private folder under `/tmp`, with a fresh temp folder per session (`harness_temp.ts`) | util | runtime/{service, sessions}, tools (root, claude, terminal), features/{chat, claude, codex, doctor, reach}, server (root, daemon), main.ts |
@@ -145,21 +145,6 @@ imports and what imports it").
 - tools: `harness/` → `codex/`, `claude/`; `terminal/` is independent; the root uses `terminal/`;
 - features: profile, codex, claude, setup → chat, doctor, reach → questions;
 - server: root → routes → hq, local → daemon, commands.
-
-**What #888 adds (future, not today):**
-- `tools/terminal/` and `tools/claude/`, which depend only on util, `runtime/sandbox`, `runtime/permissions`'
-  office-free policy and (`tools/claude/`) the shared harness types (`tools/harness/`). `tools/terminal/` is built: `features/reach` runs
-  learning's shells on it, and an employee's commands run in its pipes shell (`features/chat/terminal.ts`).
-  `tools/claude/` is built: doctor's check starts its driver, and employees drive it as an instrument
-  (`features/claude/`);
-- `server/local/`, built: the no-office host. `opencorp hq`'s learning and `init`'s interview run their chats with
-  OpenCorp on it, with the TUI reading it over its private socket. `onboard` and `offboard` ask on the terminal, as
-  `init` asks its model, password and remote; the TUI's setup screen is gone;
-- `runtime/permissions/` gains modes and rules, as a module that needs no store, beside `monitor.ts`, which needs
-  the store and asset secrets;
-- `features/reach/tools/shell.ts` is gone, replaced by `tools/terminal/`;
-- `features/codex/` serves both the owner's own Codex sessions and the Codex sessions an employee's chat drives as
-  its instrument, each that chat's child session.
 
 ## Feature folders
 
