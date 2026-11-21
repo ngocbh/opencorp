@@ -60,11 +60,13 @@ test("a thread load runs under its profile and override, and asks nothing", () =
 })
 
 /** npm's install of Codex under `<dir>/lib`: its launcher, `bin/codex` linking to it, and the native binary in its
- *  platform package; returns the link and the native binary. */
-function npmInstall(dir: string): { link: string; native: string } {
+ *  platform package, beside the launcher's package (`flat`, as a project's `npm install` lays it out) or inside it
+ *  (as `npm install -g` does); returns the link and the native binary. */
+function npmInstall(dir: string, { flat = true }: { flat?: boolean } = {}): { link: string; native: string } {
   const scope = path.join(dir, "lib/node_modules/@openai")
   const launcher = path.join(scope, "codex/bin/codex.js")
-  const native = path.join(scope, "codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex")
+  const platform = flat ? scope : path.join(scope, "codex/node_modules/@openai")
+  const native = path.join(platform, "codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex")
   for (const file of [launcher, native]) fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(launcher, "#!/usr/bin/env node\n", { mode: 0o755 })
   fs.writeFileSync(native, "\x7fELF", { mode: 0o755 })
@@ -79,6 +81,10 @@ test("npm's codex launcher runs as the native binary it would start, which is co
   const { link, native } = npmInstall(dir)
   // The launcher needs node on PATH, which the harness PATH needn't hold.
   expect(nativeCodex(link)).toEqual({ run: native, install: path.dirname(path.dirname(native)) })
+  // `npm install -g` puts the platform package inside the launcher's.
+  const global = npmInstall(path.join(dir, "global"), { flat: false })
+  expect(global.native).toContain("/@openai/codex/node_modules/@openai/codex-linux-x64/")
+  expect(nativeCodex(global.link)).toEqual({ run: global.native, install: path.dirname(path.dirname(global.native)) })
   // A native binary runs as itself, installed in the folder holding its bin.
   expect(nativeCodex(native)).toEqual({ run: native, install: path.dirname(path.dirname(native)) })
   const brew = path.join(dir, "Caskroom/codex/0.167.0/codex")

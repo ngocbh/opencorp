@@ -76,19 +76,24 @@ export function threadLoad(cwd: string, thread: { permissions: string; config: R
  *  the `bin` of its native binary, which Codex's sandboxed commands run.
  *
  *  A native binary runs as itself. npm's launcher (`@openai/codex/bin/codex.js`) runs as the native binary it would
- *  start, from its platform package beside it, since it needs `node` on a PATH a harness's needn't hold. Any other
+ *  start, from its platform package inside its own (as `npm install -g` lays it out) or beside it, since it needs
+ *  `node` on a PATH a harness's needn't hold. Any other
  *  script runs as itself, and is installed where its native binary is when a `node_modules` beside it holds exactly
  *  one, else in the folder holding its own folder. */
 export function nativeCodex(codex: string): { run: string; install: string } {
   const real = fs.realpathSync(codex)
   const installOf = (binary: string) => path.dirname(path.dirname(binary))
   if (!isScript(real)) return { run: real, install: installOf(real) }
-  // A wrapper's <node_modules>/@openai beside it, or the launcher's own: <node_modules>/@openai/codex/bin/codex.js.
-  for (const scope of [path.join(path.dirname(real), "node_modules/@openai"), path.resolve(real, "../../..")]) {
+  // npm's launcher is <node_modules>/@openai/codex/bin/codex.js. `npm install -g` puts its platform package inside
+  // its own package; a project's `npm install` beside it.
+  const pkg = path.dirname(path.dirname(real))
+  const launcher = path.basename(real) === "codex.js" && path.basename(pkg) === "codex"
+  const scopes = launcher
+    ? [path.join(pkg, "node_modules/@openai"), path.dirname(pkg)]
+    : [path.join(path.dirname(real), "node_modules/@openai")]
+  for (const scope of scopes) {
     const found = nativesIn(scope)
-    if (found.length !== 1) continue
-    const launcher = path.basename(real) === "codex.js" && path.dirname(path.dirname(real)) === path.join(scope, "codex")
-    return { run: launcher ? found[0]! : real, install: installOf(found[0]!) }
+    if (found.length === 1) return { run: launcher ? found[0]! : real, install: installOf(found[0]!) }
   }
   return { run: real, install: installOf(real) }
 }
