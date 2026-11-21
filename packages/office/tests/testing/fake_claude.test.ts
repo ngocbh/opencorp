@@ -531,9 +531,17 @@ test("the fake exits loudly on what it doesn't model, so no test can rely on it"
     expect(code).toBe(FAKE_CLAUDE_UNMODELLED)
     expect(stderr).toContain("not modelled")
   }
-  // At the start: a rule's form, and a mode.
+  // At the start: a rule's form, a mode, a flag it doesn't know, a short flag, an argument no flag takes, and a value
+  // of --permission-prompts it doesn't model.
   const rule = JSON.stringify({ permissions: { allow: ["WebFetch(domain:example.com)"] } })
-  for (const args of [["--settings", rule], ["--permission-mode", "plan"]]) {
+  for (const args of [
+    ["--settings", rule],
+    ["--permission-mode", "plan"],
+    ["--unknown-flag"],
+    ["-p"],
+    ["a prompt"],
+    ["--permission-prompts", "sometimes"],
+  ]) {
     const ran = runOnce(fake, [...STREAM, ...args], work)
     loud(ran.status, ran.stderr)
   }
@@ -579,7 +587,7 @@ test("the fake exits loudly on what it doesn't model, so no test can rely on it"
   }
   const touch = [{ tool: "Bash", input: { command: "LANG=C touch t" } }]
   expect(await outcome(["--permission-mode", "acceptEdits"], touch)).toEqual(["refused"])
-  expect(fake.log().filter((entry) => entry.dir === "unmodelled").length).toBe(11)
+  expect(fake.log().filter((entry) => entry.dir === "unmodelled").length).toBe(15)
 })
 
 test("a Bash step's result is its command's real output and exit", async () => {
@@ -690,6 +698,32 @@ test("a message with priority next joins the running turn, and one without waits
   expect(await claude.close()).toBe(0)
 })
 
+test("--permission-prompts none asks the host nothing, --no-session-persistence keeps no session, and an appended system prompt file is read at the start", async () => {
+  const { fake, work } = fakeClaude({ turns: [[{ tool: "Bash", input: { command: "touch made" } }]] })
+  // With a prompt tool the fake would ask; with none, nothing is asked and the call is refused.
+  const none = new Claude(fake, ["--permission-prompt-tool", "stdio", "--permission-prompts=none"], work)
+  none.send(user("Go.", "u-1"))
+  const lines = await none.turn()
+  expect(lines.some(isRequest("can_use_tool"))).toBe(false)
+  expect(verdicts(lines)).toEqual(["refused"])
+  expect(await none.close()).toBe(0)
+
+  fake.set({ turns: [[{ say: "kept nowhere" }]] })
+  const prompt = path.join(work, "instructions.md")
+  fs.writeFileSync(prompt, "Be brief.\n")
+  const unsaved = new Claude(fake, ["--session-id", "s-gone", "--no-session-persistence", `--append-system-prompt-file=${prompt}`], work)
+  unsaved.send(user("Hi.", "u-2"))
+  await unsaved.turn()
+  expect(await unsaved.close()).toBe(0)
+  expect(Object.keys(fake.sessions())).not.toContain("s-gone")
+  const start = fake.log().filter((e) => e.dir === "start").at(-1)!
+  expect(start.flags).toMatchObject({ "no-session-persistence": true, "append-system-prompt-file": prompt })
+  expect(start.appended).toBe("Be brief.\n")
+  // A file that isn't there stops the start (its wording unrecorded).
+  const missing = runOnce(fake, [...STREAM, `--append-system-prompt-file=${path.join(work, "none.md")}`], work)
+  expect([missing.status, missing.stdout]).toEqual([1, ""])
+})
+
 test("--resume goes on with the session's turns", async () => {
   const { fake, work } = fakeClaude({ turns: [[{ say: "one" }], [{ say: "two" }]] })
   const first = new Claude(fake, ["--session-id", "s-1"], work)
@@ -729,7 +763,6 @@ test("the fake logs the settings and setting sources it was started with, and a 
     "s-1",
     "--permission-mode",
     "acceptEdits",
-    "--unknown-flag",
   ]
   expect(await new Claude(fake, args, work).close()).toBe(0)
   const file = path.join(work, "settings.json")

@@ -16,9 +16,12 @@
  *
  *  - **Start.** `--version` prints the version. Any other run needs `--input-format stream-json --output-format
  *    stream-json`, else it exits 2. It reads `--session-id`, `--resume`, `--permission-mode`,
- *    `--permission-prompt-tool`, `--model`, `--settings` (JSON, or a JSON file), `--setting-sources`,
- *    `--allowedTools`, `--disallowedTools`, `--add-dir` and `--append-system-prompt`, as `--flag v` or `--flag=v`, and
- *    the bare `--strict-mcp-config`, `--verbose` and `--dangerously-skip-permissions`; it ignores the rest. With the
+ *    `--permission-prompt-tool`, `--permission-prompts` (`host` or `none`), `--model`, `--settings` (JSON, or a JSON
+ *    file), `--setting-sources`, `--allowedTools`, `--disallowedTools`, `--add-dir`, `--append-system-prompt` and
+ *    `--append-system-prompt-file` (read whole at the start, logged as `appended`; one it can't read stops the start,
+ *    its wording unrecorded), as `--flag v` or `--flag=v`, and the bare `--strict-mcp-config`, `--verbose`,
+ *    `--dangerously-skip-permissions` and `--no-session-persistence` (no session kept). Any other flag, and any
+ *    argument that is no flag's value, isn't modelled. With the
  *    script's `sandbox_unavailable`, settings that enable the sandbox with `failIfUnavailable` stop the start: exit 1
  *    and a stderr line (its wording unrecorded); without `failIfUnavailable` it goes on unsandboxed, as Claude Code
  *    does.
@@ -123,6 +126,8 @@ export interface FakeClaudeLogEntry {
   what?: string
   /** A start's argv, folder, environment, and the flags it read by name (`settings` parsed). */
   argv?: string[]
+  /** What `--append-system-prompt-file` held at the start. */
+  appended?: string
   cwd?: string
   env?: Record<string, string>
   flags?: Obj
@@ -200,25 +205,33 @@ const VALUED = new Set([
   "disallowedTools",
   "add-dir",
   "append-system-prompt",
+  "append-system-prompt-file",
+  "permission-prompts",
   "input-format",
   "output-format",
 ])
-const BARE = new Set(["strict-mcp-config", "verbose", "dangerously-skip-permissions"])
+const BARE = new Set(["strict-mcp-config", "verbose", "dangerously-skip-permissions", "no-session-persistence"])
 const REPEATED = new Set(["allowedTools", "disallowedTools", "add-dir"])
 
-/** The flags the fake reads, by name; `allowedTools`, `disallowedTools` and `add-dir` as lists of the values given. */
+/** The flags the fake reads, by name; `allowedTools`, `disallowedTools` and `add-dir` as lists of the values given.
+ *  `Unmodelled` for any other flag, and for an argument that is no flag's value. */
 function parseFlags(argv: readonly string[]): Obj {
   const flags: Obj = {}
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!
-    if (!arg.startsWith("--")) continue
+    if (!arg.startsWith("--")) unmodelled(`the argument ${arg}`)
     const eq = arg.indexOf("=")
     const name = arg.slice(2, eq < 0 ? undefined : eq)
-    if (BARE.has(name)) flags[name] = true
-    if (!VALUED.has(name)) continue
+    if (BARE.has(name) && eq < 0) {
+      flags[name] = true
+      continue
+    }
+    if (!VALUED.has(name)) unmodelled(`the flag ${arg}`)
     const value = eq < 0 ? (argv[++i] ?? "") : arg.slice(eq + 1)
     flags[name] = REPEATED.has(name) ? [...(flags[name] ?? []), value] : value
   }
+  if (flags["permission-prompts"] !== undefined && !["host", "none"].includes(flags["permission-prompts"]))
+    unmodelled(`--permission-prompts ${flags["permission-prompts"]}`)
   return flags
 }
 
@@ -837,6 +850,7 @@ class Fake {
   }
 
   keep(msg: Obj): void {
+    if (this.flags["no-session-persistence"] === true) return
     fs.appendFileSync(this.sessionFile, JSON.stringify(msg) + "\n")
   }
 
@@ -1150,8 +1164,9 @@ class Fake {
     const decided = this.policy.decide(name, used, this.mode, hook)
     if (decided === "allow") return { allow: true, input: used }
     if (decided !== "ask") return { allow: false, message: decided.deny, source: "rule" }
-    if (this.mode === "dontAsk" || this.flags["permission-prompt-tool"] !== "stdio")
-      return { allow: false, message: denied(name), source: "mode" }
+    // --permission-prompts none: nobody answers, so the host isn't asked (the refusal's text unrecorded).
+    const noHost = this.flags["permission-prompt-tool"] !== "stdio" || this.flags["permission-prompts"] === "none"
+    if (this.mode === "dontAsk" || noHost) return { allow: false, message: denied(name), source: "mode" }
     const answered = await this.ask(turn, { subtype: "can_use_tool", tool_name: name, input: used, tool_use_id: id })
     if (answered === null) return null
     const r = isObj(answered.response) ? answered.response : {}
@@ -1457,20 +1472,40 @@ function answer(id: unknown, response: Obj): Obj {
 
 function main(state: string, argv: string[]): void {
   const script = JSON.parse(fs.readFileSync(path.join(state, "script.json"), "utf8")) as FakeClaudeScript
-  const flags = parseFlags(argv)
   const cwd = process.cwd()
-  const settings = flags.settings === undefined ? null : readSettings(flags.settings, cwd)
   const { [NO_CACHE]: _, ...env } = process.env
-  const logged = { ...flags, ...(settings === null ? {} : { settings }) }
-  const start = { pid: process.pid, dir: "start", argv, cwd, env, flags: logged }
-  fs.appendFileSync(path.join(state, "log.jsonl"), JSON.stringify(start) + "\n")
   const quit = (code: number, message: string): void => {
     process.stderr.write(message + "\n", () => process.exit(code))
   }
+  const log = (entry: Obj) => fs.appendFileSync(path.join(state, "log.jsonl"), JSON.stringify(entry) + "\n")
   if (argv.includes("--version")) {
+    log({ pid: process.pid, dir: "start", argv, cwd, env, flags: {} })
     process.stdout.write(`${script.version ?? VERSION} (Claude Code)\n`, () => process.exit(0))
     return
   }
+  let flags: Obj
+  try {
+    flags = parseFlags(argv)
+  } catch (error) {
+    if (!(error instanceof Unmodelled)) throw error
+    log({ pid: process.pid, dir: "start", argv, cwd, env, flags: {} })
+    log({ pid: process.pid, dir: "unmodelled", what: error.message })
+    return quit(FAKE_CLAUDE_UNMODELLED, `fake claude: not modelled: ${error.message}`)
+  }
+  const settings = flags.settings === undefined ? null : readSettings(flags.settings, cwd)
+  const file = flags["append-system-prompt-file"]
+  let appended: string | undefined
+  if (typeof file === "string") {
+    try {
+      appended = fs.readFileSync(path.resolve(cwd, file), "utf8")
+    } catch {
+      appended = undefined
+    }
+  }
+  const logged = { ...flags, ...(settings === null ? {} : { settings }) }
+  log({ pid: process.pid, dir: "start", argv, cwd, env, flags: logged, ...(appended === undefined ? {} : { appended }) })
+  if (typeof file === "string" && appended === undefined)
+    return quit(1, `fake claude: --append-system-prompt-file can't be read: ${file}`)
   if (flags["input-format"] !== "stream-json" || flags["output-format"] !== "stream-json")
     return quit(2, "fake claude: runs only with --input-format stream-json --output-format stream-json")
   if (flags.settings !== undefined && settings === null)
@@ -1480,8 +1515,8 @@ function main(state: string, argv: string[]): void {
     return quit(1, "Error: the sandbox is enabled with failIfUnavailable, but it can't start on this machine.")
   const sandboxUp = script.sandbox_unavailable !== true
   // A rule's `/` anchors at a settings file's folder, else at the working folder.
-  const file = flags.settings !== undefined && !flags.settings.trimStart().startsWith("{")
-  const settingsDir = file ? path.dirname(path.resolve(cwd, flags.settings)) : cwd
+  const fromFile = flags.settings !== undefined && !flags.settings.trimStart().startsWith("{")
+  const settingsDir = fromFile ? path.dirname(path.resolve(cwd, flags.settings)) : cwd
   const named = flags["dangerously-skip-permissions"] === true ? "bypassPermissions" : flags["permission-mode"]
   let [policy, mode]: [Policy | undefined, string] = [undefined, "default"]
   try {
