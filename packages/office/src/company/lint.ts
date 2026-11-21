@@ -193,7 +193,8 @@ function* checkAssets(repo: CompanyRepo): Iterable<RepoIssue> {
  *  person's memory folder to `profile`. */
 const MAIN_INPUTS = ["messages", "person", "talking_to", "summary", "history", "turns", "max_turns", "profile"]
 
-/** The fields of a compiled node or type the chat-shape checks read; yian exports none of their classes. */
+/** The fields of a compiled node or type the chat-shape and instrument checks read; yian exports none of their
+ *  classes. */
 interface Shape {
   kind?: string
   memory?: string
@@ -204,7 +205,16 @@ interface Shape {
   predicateKind?: string
   steerInbox?: boolean
   outputContract?: { type?: Shape } | null
+  /** An AGENT's grants (`{kind: "name", name}` or `{kind: "group", group}`), the memory inputs and flows they
+   *  name, which are never host groups. */
+  tools?: readonly { kind?: string; name?: string; group?: string }[]
+  memoryInputs?: readonly string[]
+  flowTools?: readonly { name?: string; child?: Compiled }[]
 }
+
+/** The host tool groups whose calls hear Esc only through an interrupt of the agent that made them, which yian gives
+ *  only an agent reading a steer inbox: the harness instruments. */
+const INSTRUMENT_GROUPS: ReadonlySet<string> = new Set(["codex", "claude"])
 
 /** A compiled flow's nodes and input wiring, as the chat-shape checks read them. */
 interface Compiled {
@@ -263,9 +273,34 @@ function chatShapeProblems(ref: string, flow: ComposedFlow): string[] {
   return problems
 }
 
+/** Each AGENT of `flow` (in its defs, loops and the flows it grants as tools too) that grants an instrument group but
+ *  reads no steer inbox, as `[its node path, the groups]`, in node order. */
+function unsteeredInstruments(flow: ComposedFlow): [string, string[]][] {
+  const found: [string, string[]][] = []
+  const seen = new Set<Compiled>()
+  const walk = (compiled: Compiled, at: string) => {
+    if (seen.has(compiled)) return
+    seen.add(compiled)
+    for (const [name, node] of compiled.nodes) {
+      const here = at ? `${at}/${name}` : name
+      if (node.kind === "agent") {
+        const own = new Set([...(node.memoryInputs ?? []), ...(node.flowTools ?? []).map((tool) => tool.name)])
+        const groups = (node.tools ?? [])
+          .map((grant) => (grant.kind === "group" ? grant.group : grant.name))
+          .filter((group): group is string => group !== undefined && INSTRUMENT_GROUPS.has(group) && !own.has(group))
+        if (groups.length > 0 && node.steerInbox !== true) found.push([here, groups])
+        for (const tool of node.flowTools ?? []) if (tool.child !== undefined) walk(tool.child, `${here}/${tool.name}`)
+      }
+      if (node.child !== undefined) walk(node.child, here)
+    }
+  }
+  walk(flow.compiled as unknown as Compiled, "")
+  return found
+}
+
 /** Agents have a main flow; every main, SOP, and routine flow is a relative path to a file inside the repo
- *  that compiles and isn't a library; a main flow declares the inputs the office passes it and has the template
- *  chat's shape. */
+ *  that compiles and isn't a library; an agent that grants an instrument group reads a steer inbox; a main flow
+ *  declares the inputs the office passes it and has the template chat's shape. */
 async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
     const file = personPath(handle)
@@ -313,6 +348,11 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
         yield repoIssue(file, "person.flow_invalid",
           `${ref} is a library (defs: and no nodes:), which can't run; import it with uses: and call a def`)
         continue
+      }
+      for (const [node, groups] of unsteeredInstruments(flow)) {
+        yield repoIssue(file, "person.instrument_unsteered",
+          `${ref}'s agent ${node} grants ${groups.join(" and ")} but reads no steer inbox, so Esc can't reach a turn`
+          + " of the harness it waits on; set `steer_inbox:` on it, as the template's shared/flows/chat.yaml does")
       }
       if (!isMain) continue
       const declared = new Set(flow.input.map((parameter) => parameter.name))
