@@ -538,6 +538,27 @@ export const REPLY_SCHEMAS: Readonly<Record<string, string>> = {
 }
 /** The question id prefix Codex gives an MCP tool-call approval. */
 const MCP_APPROVAL_PREFIX = "mcp_tool_call_approval"
+/** Why an approval asked as a question gets an error. */
+const DECLINED_TEXT = "OpenCorp declines every approval: Codex runs under its employee's permission and asks nothing"
+
+/** How an approval request is declined at once, with no card: the reply that declines it, or an error for one with no
+ *  decline to pick (Codex takes it as one); null for a request that isn't an approval. Codex runs under its employee's
+ *  permission and asks nothing, so none should come; one that does gets no grant, for the turn or the session. */
+export function declined(method: string, params: Obj): { result: Record<string, unknown> } | { error: string } | null {
+  if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
+    return { result: { decision: "decline" } }
+  }
+  if (method === "item/permissions/requestApproval") return { result: { permissions: {}, scope: "turn" } }
+  if (method === "mcpServer/elicitation/request" && truthy(params._meta?.codex_approval_kind)) {
+    return { result: { action: "decline" } }
+  }
+  const questions: unknown = params.questions
+  if (method === "item/tool/requestUserInput" && Array.isArray(questions)
+    && questions.some((q: Obj) => typeof q?.id === "string" && q.id.startsWith(MCP_APPROVAL_PREFIX))) {
+    return { error: DECLINED_TEXT }
+  }
+  return null
+}
 /** Run id prefix of a request with no turn (`codex-<app-server pid>-<id made per app-server>`). */
 export const TURNLESS = "codex-"
 

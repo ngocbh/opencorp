@@ -3,7 +3,7 @@ import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { RpcError } from "../../../src/tools/codex/rpc.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
 import { waitFor } from "../../helpers.ts"
-import { type Codex, allGone, approvalTurn, makeCodex, openCard, restarted, start, status, texts } from "./helpers.ts"
+import { type Codex, YES, allGone, makeCodex, openCard, questionTurn, restarted, start, status, texts } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 afterAll(allGone)
@@ -22,14 +22,14 @@ function statuses(h: Codex, sid: string): string[] {
   return seen.filter((x, n) => n === 0 || seen[n - 1] !== x)
 }
 
-test("an approval inside a turn is waiting then busy after the reply", async () => {
+test("a card inside a turn is waiting then busy after the reply", async () => {
   const h = makeCodex()
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
   const q = await openCard(h, sid)
   await waitFor(() => Bun.deepEquals(state(h, sid), ["waiting", ["ngocbh"]]), { what: "waiting on the opener" })
-  await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })
+  await h.sessions.answer(q.id, YES, "text", { by: "ngocbh" })
   await waitFor(() => Bun.deepEquals(state(h, sid), ["idle", []]), { what: "the turn's end" })
   expect(statuses(h, sid).slice(-3)).toEqual(["waiting", "busy", "idle"])
 })
@@ -124,7 +124,7 @@ test("esc refuses a request with no turn that isnt an elicitation", async () => 
 test("a card codex resolves itself leaves waiting", async () => {
   const h = makeCodex()
   h.fake.script([
-    [fc.commandApproval(1, "c1", "touch a", { wait: false }), { sleep: 0.3 }, { resolve: 1 }, { sleep: 5 }],
+    [fc.choice(1, "c1", { wait: false }), { sleep: 0.3 }, { resolve: 1 }, { sleep: 5 }],
   ])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "make a")
@@ -137,7 +137,7 @@ test("a card codex resolves itself leaves waiting", async () => {
 
 test("a waiting session with a turn card restores idle with the marker", async () => {
   const h = makeCodex()
-  h.fake.script([[fc.commandStarted("c1", "sleep 60"), fc.commandApproval(1, "c1", "sleep 60")]])
+  h.fake.script([[fc.commandStarted("c1", "sleep 60"), fc.choice(1, "c1")]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "go")
   await waitFor(() => status(h, sid) === "waiting", { what: "the card" })
@@ -190,7 +190,7 @@ test("a turn started while a turnless card waits restores with the marker", asyn
 
 test("the stored turn id is the running turn's and clears when it ends", async () => {
   const h = makeCodex()
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   expect(h.store.getSession(sid)!.harness_turn_id).toBeNull()
   await h.sessions.prompt(sid, "make a")
@@ -199,7 +199,7 @@ test("the stored turn id is the running turn's and clears when it ends", async (
   const turn = h.sessions.get(sid)!.turnId
   expect(turn).not.toBeNull()
   expect(h.store.getSession(sid)!.harness_turn_id).toBe(turn)
-  await h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })
+  await h.sessions.answer(q.id, YES, "text", { by: "ngocbh" })
   await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
   expect(h.store.getSession(sid)!.harness_turn_id).toBeNull()
 })

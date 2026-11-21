@@ -146,6 +146,9 @@ export function codexThread(
   const projects: Record<string, unknown> = { [c.workspace]: untrusted }
   if (c.gitRoot !== null) projects[c.gitRoot] = untrusted
   const config: Record<string, unknown> = {
+    // The thread's own profile is also the config's default: Codex reloads the config for a turn (and for its MCP
+    // list), and a config that defines a profile but sets no default fails to load, so every turn would fail.
+    default_permissions: id,
     permissions: { [id]: { filesystem, network: { enabled: c.network } } },
     projects,
     // Memories write the owner's Codex home; a skill's MCP dependency installs a server that runs as the owner.

@@ -3,10 +3,12 @@ import path from "node:path"
 import type { Message } from "@opencorp/protocol"
 import { HarnessError, notWaiting, runState, writeState } from "../../runtime/sessions/state.ts"
 import { type SessionRecord, type Store, newId } from "../../runtime/store/store.ts"
-import { type CodexProcess, CodexStartError, ownerLoad } from "../../tools/codex/codex.ts"
+import { UnsafeProfile, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
+import { type CodexProcess, CodexStartError } from "../../tools/codex/codex.ts"
 import { RpcClosed, RpcError, nameOf } from "../../tools/codex/rpc.ts"
-import { type Issued, NOT_AN_OPTION, NOT_A_NUMBER, TURNLESS, Translator, Unserved, Unshowable } from "../../tools/codex/translate.ts"
+import { type Issued, NOT_AN_OPTION, NOT_A_NUMBER, TURNLESS, Translator, Unserved, Unshowable, declined } from "../../tools/codex/translate.ts"
 import type { CodexSessions } from "./sessions.ts"
+import { employeeLoad } from "./thread.ts"
 
 /** Milliseconds office stop waits for the session to finish the job it is in. */
 export const STOP_WAIT_MS = 10_000
@@ -29,6 +31,10 @@ function isTimeout(error: unknown): error is Error {
 /** What an error part says about a failed load: what went wrong and what to do, never Codex's stderr. */
 export function why(error: unknown): string {
   if (error instanceof CodexStartError) return error.message
+  if (error instanceof UnsafeWorkspace) return `Codex can't run in this folder: ${error.reason} (the office log has the paths).`
+  if (error instanceof UnsafeProfile) {
+    return "Codex can't run under this employee's permission here; the office log says why."
+  }
   if (error instanceof RpcError && WRITER_LOCK.test(error.rpcMessage)) return OPEN_ELSEWHERE
   if (error instanceof RpcError) return `Codex refused to load the thread: ${error.rpcMessage}`
   if (isTimeout(error)) return `Codex didn't answer in time: ${error.message}`
@@ -426,8 +432,10 @@ export class CodexSession {
     let proc: CodexProcess
     let result: Loaded
     try {
-      proc = await this.owner.launch(this)
-      const params = ownerLoad(this.cwd, await this.owner.policy(this.sessionId))
+      // Each load runs under the employee's permission as it is now, in a fresh temp folder.
+      const prepared = await this.owner.prepare(this)
+      proc = await this.owner.launch(this, prepared)
+      const params = await employeeLoad(proc.rpc!, prepared.permission, `opencorp-${this.sessionId}`, prepared.install)
       // The office never reads past turns, so a resume needn't send them.
       result = (await (resume
         ? proc.rpc!.request("thread/resume", { threadId: this.threadId, excludeTurns: true, ...params })
@@ -462,7 +470,8 @@ export class CodexSession {
     // A start error names codex.log already.
     const named = proc === null || error instanceof CodexStartError
     const where = named ? "" : `; Codex's output is in ${this.log}`
-    if (error instanceof CodexStartError || error instanceof RpcError || isTimeout(error))
+    const said = error instanceof UnsafeProfile || error instanceof UnsafeWorkspace
+    if (error instanceof CodexStartError || error instanceof RpcError || isTimeout(error) || said)
       this.owner.log(`codex session ${this.sessionId} can't load its thread: ${error.message}${where}`)
     else this.owner.log(`codex session ${this.sessionId} can't load its thread (${nameOf(error)})${where}`)
     // Before the error, which stays the last thing the transcript says.
@@ -623,9 +632,17 @@ export class CodexSession {
   }
 
   /** A server request: a card the owner answers, or a JSON-RPC error for a method the office doesn't serve or a
-   *  request no card can show. */
+   *  request no card can show. An approval is declined at once with no card: Codex runs under its employee's
+   *  permission, which is the fence, and asks nothing. */
   async #request(proc: CodexProcess, id: unknown, method: string, params: Obj): Promise<void> {
     if (proc !== this.process) return // its app-server is gone: no one would read the reply
+    const decline = declined(method, params)
+    if (decline !== null) {
+      this.owner.log(`codex session ${this.sessionId}: declined ${method}; Codex runs under its employee's permission`)
+      if ("error" in decline) await this.#refuse(proc, id, -32603, decline.error)
+      else await this.#reply(proc, id, decline.result)
+      return
+    }
     const runId: string = params.turnId || this.#turnlessRun(proc)
     let issued: Issued
     try {
@@ -738,6 +755,15 @@ export class CodexSession {
   /** The card `questionId` goes stale. */
   #expire(questionId: string): void {
     this.owner.event(this, { type: "request_resolved", key: questionId })
+  }
+
+  /** Answers request `id` with `result`. */
+  async #reply(proc: CodexProcess, id: unknown, result: Record<string, unknown>): Promise<void> {
+    try {
+      await proc.rpc!.reply(id, result)
+    } catch (error) {
+      if (!(error instanceof RpcClosed)) throw error // closed: the app-server is gone, so nothing waits on the answer
+    }
   }
 
   /** Answers request `id` with a JSON-RPC error. */

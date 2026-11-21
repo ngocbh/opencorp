@@ -118,7 +118,9 @@ function tracked(store: Store): void {
  *  the office stops (closing the sessions before the store closes), then every app-server it recorded that is still
  *  running is killed. */
 export function makeCodex({ files = {}, ...options }: { files?: Record<string, unknown> } & CodexSessionsOptions = {}) {
-  const office = makeOffice({ files: { ...CODEX_PERSON, ...files } })
+  const home = tempDir()
+  // The owner's home is a temp one, so an employee's permission denies its folders, never the real home's.
+  const office = makeOffice({ files: { ...CODEX_PERSON, ...files }, guards: { home } })
   const store = office.store
   // After makeOffice, so its stop runs first: onTestFinished runs callbacks in registration order.
   tracked(store)
@@ -131,7 +133,6 @@ export function makeCodex({ files = {}, ...options }: { files?: Record<string, u
   })
   const lines: string[] = []
   const log = (line: string) => lines.push(line)
-  const home = tempDir()
   const fake = new FakeCodex(path.join(home, "fake-codex"))
   const hooks = new Hooks({ log })
   const sessions = new CodexSessions(office, hooks, {
@@ -207,14 +208,23 @@ export async function start(h: Codex, workspace: string, by = "ngocbh"): Promise
   return id
 }
 
-/** A turn with a command Codex asks to run (request `requestId`, waiting for the reply unless `wait` is false) and
- *  then runs. */
-export function approvalTurn(requestId = 1, { wait = true }: { wait?: boolean } = {}): Record<string, any>[] {
+/** A turn with a command Codex asks a question about (request `requestId`, `fc.choice`, waiting for the reply unless
+ *  `wait` is false) and then runs. */
+export function questionTurn(requestId = 1, { wait = true }: { wait?: boolean } = {}): Record<string, any>[] {
   return [
     fc.commandStarted("c1", "touch a"),
-    fc.commandApproval(requestId, "c1", "touch a", { wait }),
+    fc.choice(requestId, "c1", { wait }),
     fc.command("c1", "touch a")[1]!,
   ]
+}
+
+/** The answers to `fc.choice`'s card. */
+export const YES = { Go: "Yes" }
+export const NO = { Go: "No" }
+
+/** The reply Codex gets for `label` picked on `fc.choice`'s card. */
+export function picked(label: string): Record<string, unknown> {
+  return { answers: { go: { answers: [label] } } }
 }
 
 /** The session's first open card, once there is one. */

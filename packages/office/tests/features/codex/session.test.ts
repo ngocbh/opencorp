@@ -7,24 +7,27 @@ import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from
 import type { Part } from "@opencorp/protocol"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
 import type { HarnessEvent } from "../../../src/tools/codex/adapter.ts"
-import { type CodexProcess, CodexStartError, ownerLoad } from "../../../src/tools/codex/codex.ts"
+import { type CodexProcess, CodexStartError } from "../../../src/tools/codex/codex.ts"
 import { JsonRpc, RpcClosed, RpcError } from "../../../src/tools/codex/rpc.ts"
 import type { CodexSession } from "../../../src/features/codex/session.ts"
-import { CodexSessions } from "../../../src/features/codex/sessions.ts"
+import { harnessTemp } from "../../../src/features/codex/thread.ts"
+import { harnessPath } from "../../../src/runtime/sandbox/harness_profile.ts"
 import { killGroup, startTime } from "../../../src/util/proc.ts"
 import { realPath } from "../../../src/runtime/sandbox/policy.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
-import { workerEnv } from "../../../src/runtime/worker/spawn.ts"
 import { fakeLlm, makeHarness } from "../chat/helpers.ts"
-import { envNames, waitFor } from "../../helpers.ts"
+import { person } from "../../company/helpers.ts"
+import { envEntries, waitFor } from "../../helpers.ts"
 import {
   type Codex,
+  YES,
   allGone,
   codexLog,
   deltas,
   errors,
   makeCodex,
   messages,
+  picked,
   requestsValid,
   restarted,
   start,
@@ -100,32 +103,29 @@ function live(sessionId: string, cwd: string, stopped = false) {
 }
 
 test("launch registers the app server before it starts and refuses once stopped", async () => {
-  const { office, store, hooks, sessions, workspace, fake } = makeCodex()
+  const { office, store, sessions, workspace, fake } = makeCodex()
+  const run = { command: fake.command(), env: { PATH: "/usr/bin:/bin", HOME: workspace } }
   const s1 = live("S1", workspace)
-  const p = await sessions.launch(s1)
+  const p = await sessions.launch(s1, run)
   expect(s1.launching).toBe(p)
   expect(s1.unspawned).toBe(true)
   expect(p.alive).toBe(true)
   expect(store.listWorkers().map((r) => r.key)).toEqual(["harness:S1"])
   expect(fs.statSync(office.paths.runDir("S1")).mode & 0o777).toBe(0o700)
   await p.close(1000)
-  const refused = sessions.launch(live("S2", workspace, true))
+  const refused = sessions.launch(live("S2", workspace, true), run)
   await expect(refused).rejects.toBeInstanceOf(CodexStartError)
   await expect(refused).rejects.toThrow("The office is stopping.")
   expect(fs.existsSync(office.paths.runDir("S2"))).toBe(false)
   expect(store.listWorkers()).toEqual([])
-  // With no env given, an app-server gets the worker environment and CODEX_HOME, nothing else.
-  const plain = new CodexSessions(office, hooks, { command: () => fake.command() })
-  const p3 = await plain.launch(live("S3", workspace))
-  const allowed = [...Object.keys(workerEnv(process.env)), "CODEX_HOME"]
-  const names = envNames(p3.pid)
-  expect(names.filter((name) => !allowed.includes(name))).toEqual([])
-  expect(names).toContain("PATH")
-  await p3.close(1000)
 })
 
-test("a codex session starts with an owner load", async () => {
+/** The features every employee's Codex thread turns off. */
+const OFF = { hooks: false, apps: false, plugins: false, memories: false, skill_mcp_dependency_install: false }
+
+test("a codex session's thread starts under its employee's permission and asks nothing", async () => {
   const h = makeCodex()
+  h.fake.script([], { mcp_servers: { docs: { command: "docs-mcp" } } })
   const row = await h.sessions.startSession("minh", h.workspace, { openedBy: "ngocbh" })
   await waitFor(() => status(h, row.id) === "idle", { what: "the Codex session to load" })
   const s = h.store.getSession(row.id)!
@@ -136,7 +136,24 @@ test("a codex session starts with an owner load", async () => {
   const inits = h.fake.calls("initialize") as { capabilities: unknown }[]
   expect(inits).toHaveLength(1)
   expect(inits[0]!.capabilities).toEqual({ experimentalApi: true })
-  expect(h.fake.calls("thread/start")).toEqual([ownerLoad(s.cwd, { sandbox: "workspace-write", network: false })])
+  // The owner's MCP servers are read, and nothing written.
+  expect(h.fake.calls("config/read")).toEqual([{}])
+  const [load, ...more] = h.fake.calls("thread/start") as Record<string, any>[]
+  expect(more).toEqual([])
+  const id = `opencorp-${row.id}`
+  expect(Object.keys(load!).sort()).toEqual(["approvalPolicy", "config", "cwd", "permissions"])
+  expect([load!.cwd, load!.approvalPolicy, load!.permissions]).toEqual([s.cwd, "never", id])
+  const config = load!.config
+  expect(config.default_permissions).toBe(id)
+  const filesystem = config.permissions[id].filesystem
+  // minh may write the folder, has no network, and the fence is denied.
+  expect(filesystem[s.cwd]).toBe("write")
+  expect(filesystem[path.join(harnessTemp(), "fence")]).toBe("deny")
+  expect(filesystem[path.join(harnessTemp(), row.id)]).toBe("write")
+  expect(config.permissions[id].network).toEqual({ enabled: false })
+  expect(config.projects).toEqual({ [s.cwd]: { trust_level: "untrusted" } })
+  expect([config.features, config.notify, config.web_search]).toEqual([OFF, [], "disabled"])
+  expect(config.mcp_servers).toEqual({ docs: { enabled: false } })
   expect(h.store.listWorkers().map((r) => r.key)).toEqual([`harness:${row.id}`])
   requestsValid(h.fake)
   expect(s.cwd).toBe(realPath(h.workspace))
@@ -150,6 +167,48 @@ test("a codex session starts with an owner load", async () => {
     `Chat with Minh in ${path.basename(s.cwd)}`,
   ])
   expect(h.store.workedFolders("minh")[0]!.cwd).toBe(s.cwd)
+})
+
+test("a codex app server runs with the harness PATH and its own fresh temp folder, removed when the session ends", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  const tmp = path.join(harnessTemp(), sid)
+  const env = Object.fromEntries(envEntries(h.store.listWorkers()[0]!.pid))
+  const permission = await h.sessions.permission(sid, { gitRoot: null, tmpdir: tmp, fence: path.join(harnessTemp(), "fence") })
+  expect([env.TMPDIR, env.PATH]).toEqual([tmp, harnessPath(permission)])
+  expect(env.PATH!.split(":")).toContain("/usr/bin")
+  // The rest is the environment the sessions give an app-server.
+  expect(env.HOME).toBe(h.home)
+  expect(fs.statSync(tmp).mode & 0o777).toBe(0o700)
+  // A reload gets it fresh, whatever the last app-server's commands left there.
+  fs.writeFileSync(path.join(tmp, "left.txt"), "x")
+  killGroup(h.store.listWorkers()[0]!.pid)
+  await waitFor(() => status(h, sid) === "idle" && errors(h, sid).length > 0, { what: "the app-server's death" })
+  await h.sessions.prompt(sid, "hi")
+  await waitFor(() => h.fake.calls("thread/resume").length === 1 && status(h, sid) === "idle", { what: "the reload" })
+  expect(fs.readdirSync(tmp)).toEqual([])
+  await h.sessions.end(sid)
+  await waitFor(() => status(h, sid) === "ended", { what: "the end" })
+  expect(fs.existsSync(tmp)).toBe(false)
+})
+
+test("a session whose employee's permission can't be built fails with why, before codex starts", async () => {
+  const h = makeCodex({
+    files: {
+      "people/minh/person.yaml": person("minh", {
+        harnesses: ["composer", "codex"],
+        harness_policy: { sandbox: "workspace-write", network: false, folders: [{ path: "relative", access: "read" }] },
+      }),
+    },
+  })
+  const { id: sid } = await h.sessions.startSession("minh", h.workspace, { openedBy: "ngocbh" })
+  await waitFor(() => status(h, sid) === "failed", { what: "failed" })
+  expect(errors(h, sid)).toEqual(["Codex can't run under this employee's permission here; the office log says why."])
+  expect(h.fake.calls("initialize")).toEqual([])
+  expect(h.lines.some((l) => l.includes(`codex session ${sid} can't load its thread: the harness's listed folder`))).toBe(
+    true,
+  )
+  expect(fs.existsSync(path.join(harnessTemp(), sid))).toBe(false)
 })
 
 test("a codex session that cant be set up fails at once", async () => {
@@ -811,7 +870,7 @@ test("ending on a codex that never answers the interrupt returns and ends after 
   expect(h.store.getSession(sid)!.harness_turn_id).toBeNull()
 })
 
-test("every load of the thread carries the owner load", async () => {
+test("every load of the thread runs under the employee's permission", async () => {
   const h = makeCodex()
   const sid = await start(h, h.workspace)
   const cwd = h.store.getSession(sid)!.cwd
@@ -822,8 +881,16 @@ test("every load of the thread carries the owner load", async () => {
   await waitFor(() => h.fake.calls("turn/start").length === 1 && status(h, sid) === "idle", {
     what: "the queued message's turn",
   })
-  expect(h.fake.calls("thread/resume")).toEqual([
-    { threadId: "thr_1", excludeTurns: true, ...ownerLoad(cwd, { sandbox: "workspace-write", network: false }) },
+  const [first] = h.fake.calls("thread/start") as Record<string, any>[]
+  const [resume, ...more] = h.fake.calls("thread/resume") as Record<string, any>[]
+  expect(more).toEqual([])
+  // The same profile and override, under the same id, with no sandbox mode.
+  expect(resume).toEqual({ threadId: "thr_1", excludeTurns: true, ...first })
+  expect([resume!.cwd, resume!.approvalPolicy, resume!.permissions, "sandbox" in resume!]).toEqual([
+    cwd,
+    "never",
+    `opencorp-${sid}`,
+    false,
   ])
   requestsValid(h.fake)
 })
@@ -913,16 +980,16 @@ function requests(h: Codex): () => Extract<HarnessEvent, { type: "request" }>[] 
   return () => spy.mock.calls.flatMap(([, e]) => (e.type === "request" ? [e] : []))
 }
 
-/** A turn with a command Codex asks to run (request 7) and then runs. */
-function approvalTurn() {
+/** A turn with a command Codex asks a question about (request 7) and then runs. */
+function questionTurn() {
   const cmd = "rm -rf build"
-  return [fc.commandStarted("c1", cmd), fc.commandApproval(7, "c1", cmd), fc.command("c1", cmd)[1]]
+  return [fc.commandStarted("c1", cmd), fc.choice(7, "c1"), fc.command("c1", cmd)[1]]
 }
 
-/** Starts a session whose turn asks to run a command, and returns its id, its live session and the card. */
+/** Starts a session whose turn asks about a command, and returns its id, its live session and the card. */
 async function waitingCard(h: Codex) {
   const seen = requests(h)
-  h.fake.script([approvalTurn()])
+  h.fake.script([questionTurn()])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "clean up", { by: "ngocbh" })
   const [card] = await waitFor(() => (seen().length ? seen() : null), { timeout: 10_000, what: "the request" })
@@ -934,7 +1001,7 @@ test("a server request is a request event and the session waits on its card", as
   const h = makeCodex()
   const { sid, card, seen } = await waitingCard(h)
   expect(seen()).toHaveLength(1)
-  expect([card.runId, card.nodeId, card.card.kind]).toEqual(["turn_1", "7", "command"])
+  expect([card.runId, card.nodeId, card.card.kind]).toEqual(["turn_1", "7", "question"])
   const s = h.store.getSession(sid)!
   expect([s.status, s.waiting_on]).toEqual(["waiting", ["ngocbh"]])
 })
@@ -942,15 +1009,14 @@ test("a server request is a request event and the session waits on its card", as
 test("a reply is written before the messages it causes are handled", async () => {
   const h = makeCodex()
   const { sid, live, card } = await waitingCard(h)
-  // The first option of a command approval approves it.
-  expect(await live.reply(card.key, card.card.options[0], "ngocbh")).toBe(true)
+  expect(await live.reply(card.key, YES, "ngocbh")).toBe(true)
   // The fake logs what it read once it reads it.
   await waitFor(() => 7 in h.fake.replies(), { what: "the reply" })
-  expect(h.fake.replies()[7]).toEqual({ decision: "accept" })
+  expect(h.fake.replies()[7]).toEqual(picked("Yes"))
   await waitFor(() => status(h, sid) === "idle", { what: "the turn's end" })
   const parts = h.events.flatMap((e) => (e.type === "part.updated" ? [e.data.part as Part] : []))
   const decided = parts.findIndex(
-    (p) => p.type === "tool" && (p.input as Record<string, any>).approval?.decision === "accept",
+    (p) => p.type === "tool" && (p.input as Record<string, any>).approval?.decision === "answer",
   )
   const completed = parts.findIndex((p) => p.type === "tool" && p.state === "completed")
   expect(decided).toBeGreaterThan(-1)
@@ -970,7 +1036,7 @@ test("office stop makes a reply not yet written give up at once", async () => {
     await released
   })
   await began
-  const replying = live.reply(card.key, card.card.options[0], "ngocbh")
+  const replying = live.reply(card.key, YES, "ngocbh")
   const closing = h.sessions.closeAll()
   expect(await Promise.race([replying, sleep(1000).then(() => "late")])).toBe(false)
   release()

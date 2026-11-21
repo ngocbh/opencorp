@@ -29,8 +29,8 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
       return reply && (!event || reply.updated_at > event.updated_at) ? reply : event
     }
 
-    /** The session's mode while it can be switched, else null: a Codex session (until Codex follows the mode) or one
-     *  with no live run. */
+    /** The session's mode while it can be switched, else null: a Codex session (which runs under its employee's
+     *  permission and asks nothing) or one with no live run. */
     function mode(sessionID: string): SessionMode | null {
       const session = latest(sessionID)
       if (!session || session.harness === "codex" || !LIVE.includes(session.status)) return null
