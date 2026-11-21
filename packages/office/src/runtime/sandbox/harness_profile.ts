@@ -129,7 +129,7 @@ export function codexThread(
   // read, and a more specific entry beats a broader one.
   const filesystem: Record<string, string> = {
     ":minimal": "read",
-    [installFolder(install, [...c.writableRoots, ...c.others])]: "read",
+    [installFolder(install, [...c.writableRoots, ...c.others], CODEX.folder)]: "read",
     [c.workspace]: c.writable ? "write" : "read",
   }
   filesystem[c.tmpdir] = "write"
@@ -213,6 +213,8 @@ export function claudeStart(p: EmployeePermission): {
     },
     permissions: {
       blockReadsOutsideWorkingDirectories: true,
+      // Its file tools run as the owner, outside its sandbox: they write only the working folders.
+      blockWritesOutsideWorkingDirectories: true,
       deny: [
         ...(c.writable ? [] : ["Edit", "Write", "NotebookEdit"]),
         ...readOnly.flatMap((folder) => rules("Edit", folder, true)),
@@ -471,17 +473,41 @@ function checkReached(workspace: string, writable: readonly string[]): void {
   }
 }
 
+/** How a harness's install is named in a refusal. */
+interface Named {
+  /** The file the office spawns: "the Codex the office runs". */
+  run: string
+  /** Its install folder: "Codex's install folder". */
+  folder: string
+}
+
+const CODEX: Named = { run: "the Codex the office runs", folder: "Codex's install folder" }
+const CLAUDE: Named = { run: "the Claude Code the office runs", folder: "Claude Code's install folder" }
+
 /** Throws `UnsafeProfile` unless Codex as the office runs it can't be changed by anyone but the user: `run`, the file
  *  the office spawns, and `install`, the folder Codex's sandboxed commands run it from (`nativeCodex`). Neither, nor a
  *  folder either's path walks through, may lie in a folder the employee's harness can write, another person's
  *  writable folder or a live session's folder (`othersWritable`); the install folder may hold none of them; and
  *  neither file's folder, the file itself, the install folder nor its `bin` may be open to the group or others. Codex
  *  runs as the owner, outside any sandbox, so this comes before it runs. Throws as `checkPermission` does too. */
-export function checkCodexInstall(p: EmployeePermission, { run, install }: { run: string; install: string }): void {
+export function checkCodexInstall(p: EmployeePermission, install: { run: string; install: string }): void {
+  checkInstall(p, install, CODEX)
+}
+
+/** Throws `UnsafeProfile` unless Claude Code as the office runs it can't be changed by anyone but the user, as
+ *  `checkCodexInstall` checks Codex: `run`, the file the office spawns (a launcher link's walk included), and
+ *  `install`, the folder its binary is in (`nativeClaude`). Claude Code runs as the owner, outside its own sandbox, so
+ *  this comes before it runs. Throws as `checkPermission` does too. */
+export function checkClaudeInstall(p: EmployeePermission, install: { run: string; install: string }): void {
+  checkInstall(p, install, CLAUDE)
+}
+
+/** `checkCodexInstall` and `checkClaudeInstall`, with the harness's names for the refusals. */
+function checkInstall(p: EmployeePermission, { run, install }: { run: string; install: string }, named: Named): void {
   const c = checked(p)
   const roots = [...c.writableRoots, ...c.others]
-  installFolder(install, roots)
-  const what = `the Codex the office runs, ${JSON.stringify(run)},`
+  installFolder(install, roots, named.folder)
+  const what = `${named.run}, ${JSON.stringify(run)},`
   if (!path.isAbsolute(run)) throw new UnsafeProfile(`${what} isn't absolute`)
   const visited: string[] = []
   const real = realPath(run, visited)
@@ -493,9 +519,9 @@ export function checkCodexInstall(p: EmployeePermission, { run, install }: { run
 
 /** `install` resolved, if no one but the user can write it: neither it nor a folder its path walks through lies in
  *  one of `writable` (the folders the harness can write, and others' writable folders), it holds none, and neither it
- *  nor its `bin` is open to the group or others. */
-function installFolder(install: string, writable: readonly string[]): string {
-  const what = `Codex's install folder ${JSON.stringify(install)}`
+ *  nor its `bin` is open to the group or others. `name` names it in a refusal. */
+function installFolder(install: string, writable: readonly string[], name: string): string {
+  const what = `${name} ${JSON.stringify(install)}`
   if (!path.isAbsolute(install)) throw new UnsafeProfile(`${what} isn't absolute`)
   const visited: string[] = []
   const real = realPath(install, visited)

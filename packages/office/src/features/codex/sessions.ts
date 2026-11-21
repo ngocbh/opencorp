@@ -47,16 +47,8 @@ import { instructions } from "./instrument.ts"
 import type { ThreadEvents } from "../../tools/codex/instrument.ts"
 import { markInterrupted } from "../../tools/codex/record.ts"
 import { authoredText } from "@ngocbh/yian"
-import {
-  fenceIn,
-  freshFolder,
-  gitRootOf,
-  harnessHomes,
-  harnessTemp,
-  removeFolder,
-  sweepTemp,
-  threadEnv,
-} from "./thread.ts"
+import { fenceIn, freshFolder, removeFolder, sweepTemp } from "../../runtime/sandbox/harness_temp.ts"
+import { gitRootOf, harnessHomes, harnessTemp, threadEnv } from "./thread.ts"
 
 /** What a yian chat's session calls answer, until the chat harness serves them. */
 const NOT_SERVED = "yian chats are not served yet"

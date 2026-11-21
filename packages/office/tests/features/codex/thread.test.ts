@@ -8,19 +8,16 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import {
-  freshFolder,
-  fenceIn,
   gitRootOf,
   harnessTemp,
   ownerConfig,
   employeeLoad,
   ProjectConfigLoads,
   checkLoaded,
-  removeFolder,
-  sweepTemp,
   threadEnv,
   threadProbe,
 } from "../../../src/features/codex/thread.ts"
+import { fenceIn, freshFolder, removeFolder, sweepTemp } from "../../../src/runtime/sandbox/harness_temp.ts"
 import { instructions } from "../../../src/features/codex/instrument.ts"
 import { type EmployeePermission, codexThread, harnessPath } from "../../../src/runtime/sandbox/harness_profile.ts"
 import { UnsafeProfile } from "../../../src/runtime/sandbox/policy.ts"

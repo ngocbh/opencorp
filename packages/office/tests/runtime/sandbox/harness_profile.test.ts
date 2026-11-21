@@ -5,6 +5,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import {
+  checkClaudeInstall,
   checkCodexInstall,
   checkPermission,
   claudeStart,
@@ -314,6 +315,42 @@ test("codex as the office runs it is refused before it runs where anyone but the
   expect(() => codexThread(permission(), "opencorp-s1", { install })).toThrow(/others than the user may write/)
 })
 
+test("claude as the office runs it is refused before it runs where anyone but the user could change it", () => {
+  const { root, ws, permission, folder } = layout()
+  // The native installer's layout: a launcher linking to a version in a folder of its own.
+  const versions = folder("claude-install/versions")
+  const binary = path.join(versions, "2.1.325")
+  fs.writeFileSync(binary, "", { mode: 0o755 })
+  const launcher = path.join(root, "claude-install/bin/claude")
+  fs.mkdirSync(path.dirname(launcher), { recursive: true })
+  fs.symlinkSync(binary, launcher)
+  const native = { run: binary, install: versions }
+  expect(() => checkClaudeInstall(permission(), native)).not.toThrow()
+  // A launcher the employee can write, though the binary it links to isn't.
+  const planted = path.join(ws, "claude")
+  fs.symlinkSync(binary, planted)
+  const reached = { run: planted, install: versions }
+  expect(() => checkClaudeInstall(permission(), reached)).toThrow(/the Claude Code the office runs/)
+  expect(() => checkClaudeInstall(permission({ writable: false }), reached)).not.toThrow()
+  // Another person's writable folder, or a live session's folder, holding the install.
+  const shared = folder("shared")
+  fs.writeFileSync(path.join(shared, "claude"), "", { mode: 0o755 })
+  const elsewhere = { run: path.join(shared, "claude"), install: shared }
+  expect(() => checkClaudeInstall(permission({ othersWritable: [shared] }), elsewhere)).toThrow(UnsafeProfile)
+  expect(() => checkClaudeInstall(permission({ othersWritable: [shared] }), elsewhere)).toThrow(
+    /Claude Code's install folder/,
+  )
+  expect(() => checkClaudeInstall(permission(), elsewhere)).not.toThrow()
+  // Open to the group or others: the binary, its folder, the install folder.
+  for (const open of [binary, versions]) {
+    fs.chmodSync(open, 0o775)
+    expect(() => checkClaudeInstall(permission(), native), open).toThrow(/others than the user may write/)
+    fs.chmodSync(open, 0o755)
+  }
+  // The check is the permission's too.
+  expect(() => checkClaudeInstall(permission({ tmpdir: ws }), native)).toThrow(UnsafeProfile)
+})
+
 test("the office's home, the home's credential folders and the harnesses' own config folders are denied by name", () => {
   const { root, home, officeHome, permission, filesystem } = layout()
   const entries = filesystem(permission())
@@ -509,7 +546,7 @@ test("a listed bin folder others can write, or one another person's permission l
   expect(inside).toBe([...SYSTEM, path.join(team, "bin")].join(":"))
 })
 
-test("Claude Code's start turns its sandbox on, fails if it can't start, allows no unsandboxed command, reads only the folder in the home, and turns auto memory off", () => {
+test("Claude Code's start turns its sandbox on, fails if it can't start, allows no unsandboxed command, reads only the folder in the home, keeps its file tools to the working folders, and turns auto memory off", () => {
   const { home, ws, tmp, permission } = layout()
   const kept = claudeKept(ws)
   expect(claudeStart(permission())).toEqual({
@@ -529,6 +566,7 @@ test("Claude Code's start turns its sandbox on, fails if it can't start, allows 
       },
       permissions: {
         blockReadsOutsideWorkingDirectories: true,
+        blockWritesOutsideWorkingDirectories: true,
         deny: [...kept.deny, ...claudeReads(home), "WebFetch", "WebSearch"],
       },
       disableAllHooks: true,
