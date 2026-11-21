@@ -44,12 +44,14 @@ while a command runs), and a missing `.mcp.json` can still be created.
   gate Codex: in `ask` and `default` too, your employee starts and messages Codex with no card, and Codex runs every
   command inside their permission without asking.
 - **Claude Code.** An employee who uses the claude harness (`harnesses: [composer, claude]`) can hand work to Claude
-  Code the same way: its sessions are counted under the prompt, open with ctrl+x down, and take your messages and
-  Esc as a Codex session does. A message you or your employee send while Claude Code works joins its turn once its
-  running tool calls finish. A chat has at most four Claude Code sessions live at once, beside its Codex ones. A
-  session left idle for five minutes stops Claude Code, and the next message resumes the same conversation; so does
-  the next message after Claude Code exits on its own, whose turn is marked interrupted. Claude Code doesn't hold
-  commands to a network that's on yet, so an employee whose permission turns it on can't start it.
+  Code the same way: its sessions are counted under the prompt, open with ctrl+x down, and take your messages as a
+  Codex session does. A message you or your employee send while Claude Code works joins its turn once its running
+  tool calls finish. Esc, in the session or in your employee's chat while they wait on it, stops Claude Code's turn
+  and cancels every message it hasn't started, so none of them runs after. A chat has at most four Claude Code
+  sessions live at once, beside its Codex ones. A session left idle for five minutes stops Claude Code, and the next
+  message resumes the same conversation; so does the next message after Claude Code exits on its own, whose turn is
+  marked interrupted. Claude Code doesn't hold commands to a network that's on yet, so an employee whose permission
+  turns it on can't start it.
 - **The end.** Ending the session ends its shells and their commands, and its Codex and Claude Code sessions.
   Restarting the office ends those sessions too, and your employee starts new ones.
 

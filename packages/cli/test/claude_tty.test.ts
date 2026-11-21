@@ -35,16 +35,19 @@ describe.skipIf(!TMUX)("the owner and an employee both write to Claude Code, in 
   let fake: FakeClaude
   let root: string
   beforeAll(async () => {
-    // Short, for the socket paths; the fake and Claude Code's config folder, outside the office's home.
+    // Short, for the socket paths; the fake, Claude Code's config folder and the office's own home (the owner's, as
+    // its harnesses see it), outside the office's OPENCORP_HOME: nothing reads or writes the real home.
     root = fs.realpathSync(fs.mkdtempSync("/tmp/oc888."))
     fake = installFakeClaude(path.join(root, "fake"), { version: "2.1.325" })
     const config = path.join(root, "claude-config")
-    fs.mkdirSync(config, { mode: 0o700 })
-    office = await startOffice({ env: { OPENCORP_CLAUDE_BIN: fake.claude, CLAUDE_CONFIG_DIR: config } })
+    const owner = path.join(root, "owner")
+    for (const dir of [config, owner]) fs.mkdirSync(dir, { mode: 0o700 })
+    office = await startOffice({ env: { OPENCORP_CLAUDE_BIN: fake.claude, CLAUDE_CONFIG_DIR: config, HOME: owner } })
   }, 180_000)
   afterAll(async () => {
     await office?.stop()
-    // Nothing of the fake's outlives the office.
+    // Nothing of the fake's outlives the office, and nothing was written to the owner's Claude Code config.
+    expect(fs.readdirSync(path.join(root, "claude-config"))).toEqual([])
     for (const deadline = performance.now() + 5000; pidsNaming(root).length > 0 && performance.now() < deadline; )
       await Bun.sleep(100)
     const left = pidsNaming(root)
