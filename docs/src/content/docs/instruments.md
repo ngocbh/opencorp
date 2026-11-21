@@ -150,6 +150,11 @@ folders of tools you run yourself read-only: `~/.cargo` read-only, `~/miniconda3
 - **Project config.** Only the `.codex/`, `.agents/` and `.claude/` at the top of the project folder and its
   repository's root are read-only; ones in folders below aren't. Codex's check for a trusted project runs when a
   session starts, so a project you trust while a session runs there isn't checked until one starts again.
+- **Placeholders on Linux.** Codex's sandbox holds a missing `.claude` or `.mcp.json` read-only by mounting an empty
+  file there (a missing `.codex`, `.agents` or `.git`, an empty folder). So `git status` in your employee's Codex
+  session lists `.claude` and `.mcp.json` as untracked though they aren't in your project; `.git` is read-only there,
+  so nothing can commit them. On your side the empty files exist only while one of their commands runs, and go when
+  it ends: don't `git add -A` in the project then.
 - **The sandbox must run.** Each harness holds the permission with its own sandbox: bubblewrap in a user namespace on
   Linux, Seatbelt on macOS. Claude Code doesn't start without it ([Check and run](/check-and-run/)). On macOS, how
   either sandbox holds an employee's permission is unchecked.

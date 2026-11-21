@@ -1,8 +1,9 @@
 /** A harness's permission, from its employee's: Codex's per-thread profile and override, Claude Code's settings, the
  *  harnesses' PATH, and the checks before any is built. */
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
+import { setTimeout as sleep } from "node:timers/promises"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import {
   checkClaudeInstall,
@@ -1031,6 +1032,23 @@ function codexSandbox(p: EmployeePermission, codexHome: string, script: string) 
   })
 }
 
+/** `codexSandbox`, run without blocking: resolves with its stdout and stderr once it exits (60 s at most). */
+function codexSandboxAsync(p: EmployeePermission, codexHome: string, script: string): Promise<string> {
+  checkCodexVersion()
+  const { permissions, config } = codexThread(p, "opencorp-t", { install: testCodex().install })
+  const flags = Object.entries(config).flatMap(([key, value]) => ["-c", `${key}=${toml(value)}`])
+  const child = spawn(testCodex().run, ["sandbox", "-P", permissions, "-C", p.workspace, ...flags, "--", "bash", "-c", script], {
+    cwd: p.workspace,
+    env: { HOME: p.home, CODEX_HOME: codexHome, PATH: harnessPath(p), TMPDIR: p.tmpdir },
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 60_000,
+  })
+  let output = ""
+  child.stdout.on("data", (d: Buffer) => (output += d.toString("utf8")))
+  child.stderr.on("data", (d: Buffer) => (output += d.toString("utf8")))
+  return new Promise((resolve) => child.on("close", () => resolve(output)))
+}
+
 test.skipIf(NO_CODEX)(
   "under the override, Codex's sandbox runs sh, git and cc in the folder, reads no credential, the office's home or the fence, and writes nothing on the host outside the folder",
   () => {
@@ -1074,6 +1092,53 @@ test.skipIf(NO_CODEX)(
     }
     expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).toBe(ownerConfig)
   },
+)
+
+test.skipIf(NO_CODEX)(
+  "in Codex's sandbox a missing .claude or .mcp.json is an empty read-only file git lists, which no command can commit, and the host has it only while a command runs",
+  async () => {
+    const { root, home, ws, permission } = layout()
+    fs.rmSync(path.join(ws, ".git"), { recursive: true })
+    const git = (...args: string[]) =>
+      spawnSync("git", ["-C", ws, ...args], { env: { PATH: "/usr/bin:/bin", HOME: home }, encoding: "utf8" })
+    expect(git("init", "-q").status).toBe(0)
+    fs.writeFileSync(path.join(ws, "a.txt"), "a\n")
+    expect(git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "add", "-A").status).toBe(0)
+    expect(git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "a").status).toBe(0)
+    const codexHome = path.join(root, "codex")
+    fs.mkdirSync(codexHome)
+    const script = [
+      "git status --porcelain --untracked-files=all",
+      "for f in .claude .mcp.json; do test -f $f && test ! -s $f && echo empty-file $f; done",
+      "for d in .codex .agents; do test -d $d && echo empty-folder $d; done",
+      "echo x > .mcp.json 2>/dev/null || echo read-only .mcp.json",
+      "git add -A 2>&1 | head -1",
+      "sleep 2",
+    ].join("\n")
+    // While the command runs, the host has the empty files Codex mounts its read-only copies onto.
+    const running = codexSandboxAsync(permission(), codexHome, script)
+    let seen = false
+    for (const deadline = Date.now() + 20_000; !seen && Date.now() < deadline; await sleep(50)) {
+      seen = fs.existsSync(path.join(ws, ".mcp.json"))
+    }
+    const output = await running
+    expect(output, output).toContain("?? .claude\n")
+    expect(output, output).toContain("?? .mcp.json\n")
+    expect(output, output).not.toContain("?? .codex")
+    expect(output, output).toContain("empty-file .claude")
+    expect(output, output).toContain("empty-file .mcp.json")
+    expect(output, output).toContain("empty-folder .codex")
+    expect(output, output).toContain("read-only .mcp.json")
+    // .git is read-only in there: nothing stages or commits the placeholders.
+    expect(output, output).toMatch(/index\.lock.*Read-only file system/)
+    expect(seen).toBe(true)
+    // Once it has run, the host has none of them, and the repository is as it was.
+    for (const name of [".claude", ".mcp.json", ".codex", ".agents"]) {
+      expect(fs.existsSync(path.join(ws, name)), name).toBe(false)
+    }
+    expect(git("status", "--porcelain").stdout).toBe("")
+  },
+  60_000,
 )
 
 test.skipIf(NO_CODEX)("in a folder with no .git, Codex's sandbox can't start a repository and plant its config", () => {
