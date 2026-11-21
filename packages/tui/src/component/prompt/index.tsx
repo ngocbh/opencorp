@@ -51,6 +51,7 @@ import { useTuiConfig } from "../../config"
 import { readLocalAttachment } from "./local-attachment"
 import { display } from "../../util/printable"
 import { InstrumentLine, InstrumentWarning, waitingInstrument } from "../../routes/session/instrument-line"
+import { sessionOwner } from "../../routes/session/speakers"
 import { useInteractivity } from "../../context/interactivity"
 
 registerOpenCorpSpinner()
@@ -929,6 +930,14 @@ export function Prompt(props: PromptProps) {
       }),
     }
   })
+  // Who writes in the prompt: the person the chat is with, except in a Codex or Claude Code session an employee's
+  // chat drives, where the owner writes to the harness beside the employee who drives it.
+  const writer = createMemo(() => {
+    const s = session()
+    if (!s?.instrument_of) return local.person.current()
+    const handle = office.person ?? sessionOwner(s, office.state.people)
+    return office.state.people.find((p) => p.handle === handle) ?? local.person.current()
+  })
   // The open session's model, or Codex for a new chat that will run on it.
   const footerModel = createMemo(() => {
     const s = session()
@@ -1047,7 +1056,7 @@ export function Prompt(props: PromptProps) {
             />
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
               <box flexDirection="row" gap={1}>
-                <Show when={local.person.current()} fallback={<box height={1} />}>
+                <Show when={writer()} fallback={<box height={1} />}>
                   {(person) => (
                     <>
                       <text fg={fadeColor(highlight(), agentMetaAlpha())}>@{person().handle}</text>

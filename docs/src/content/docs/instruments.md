@@ -33,9 +33,10 @@ to Claude Code if it lists claude.
 - **Sessions.** The line under the prompt counts their Codex and Claude Code sessions. "Open an instrument…" in the
   command list (ctrl+p), or ctrl+x down, opens one as a chat of its own, where you watch the harness work and write
   to it too; ctrl+x up goes back. A chat has at most four live sessions of each harness.
-- **Two speakers.** The harness reads each message with its author and is told your word wins: your employee reads
-  what you told it with its next answer, and can't interrupt or stop a turn you started. A message you or your
-  employee send while Claude Code works joins its turn once its running tool calls finish.
+- **Two speakers.** The session shows who sent each message, and the harness reads each one with its author and is
+  told your word wins: your employee reads what you told it with its next answer, and can't interrupt or stop a turn
+  you started. A message you or your employee send while Claude Code works joins its turn once its running tool calls
+  finish.
 - **Esc.** Esc in your employee's chat stops your employee and the harness turn they were waiting on, and so does
   their run stopping (the cost cap, say); Esc in the session stops the harness's turn. Either Esc on a Codex turn
   also stops every command Codex still runs in that session, which would otherwise go on after the turn. Either Esc

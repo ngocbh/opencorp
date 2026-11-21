@@ -75,6 +75,7 @@ import { DialogInstruments, DialogInstrumentView } from "./dialog-instruments"
 import { waitingInstrument } from "./instrument-line"
 import { InstrumentView, nextPlacement, PLACEMENTS, type InstrumentPlacement } from "./instrument-view"
 import { childSessions, InstrumentFooter } from "./instrument-footer"
+import { sessionOwner, speakerLabel } from "./speakers"
 import { endsLine } from "./keys"
 import { LIVE } from "./terminal-pane"
 
@@ -373,15 +374,14 @@ export function Session() {
     const id = opened()?.id
     if (id && !instruments().some((i) => i.id === id)) closeInstrument()
   })
-  // The session's approver, the one person whose keys its shells take: who opened it, else the CEO, the company's
-  // human at the top of the org chart; with more than one there, it isn't known. Whether that is who this TUI acts as.
-  const approver = () => {
-    const opener = session()?.opened_by
-    if (opener) return opener
-    const top = office.state.people.filter((p) => p.kind === "human" && !p.manager)
-    return top.length === 1 ? top[0]!.handle : undefined
-  }
+  // The session's approver, the one person whose keys its shells take (`sessionOwner`). Whether that is who this TUI
+  // acts as.
+  const approver = () => sessionOwner(session(), office.state.people)
   const approving = () => !!office.person && office.person === approver()
+  // In a Codex or Claude Code session an employee's chat drives, both the owner and the employee write to the
+  // harness: each message is labelled with who sent it.
+  const speaker = (message: Message) =>
+    session()?.instrument_of ? speakerLabel(message.author, approver(), office.state.people) : undefined
   // Whether the owner has typed text into the open shell since their last Enter, Ctrl-C or Ctrl-D.
   const [midLine, setMidLine] = createSignal(false)
   // A PTY shell waiting for the approver's password opens itself when none is open: with the keys, in the default view,
@@ -1080,6 +1080,7 @@ export function Session() {
                           <Match when={message.role === "user"}>
                             <UserMessage
                               index={index()}
+                              speaker={speaker(message)}
                               onMouseUp={() => {
                                 if (renderer.getSelection()?.getSelectedText()) return
                                 dialog.replace(() => <DialogMessage messageID={message.id} sessionID={route.sessionID} />)
@@ -1284,7 +1285,7 @@ function within(node: Renderable | null | undefined, root: Renderable | undefine
   return false
 }
 
-function UserMessage(props: { message: Message; onMouseUp: () => void; index: number }) {
+function UserMessage(props: { message: Message; onMouseUp: () => void; index: number; speaker?: string }) {
   const ctx = use()
   const text = createMemo(() =>
     props.message.parts
@@ -1316,6 +1317,9 @@ function UserMessage(props: { message: Message; onMouseUp: () => void; index: nu
           backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
           flexShrink={0}
         >
+          <Show when={props.speaker}>
+            {(speaker) => <text fg={theme.textMuted}>{display(speaker())}</text>}
+          </Show>
           <Show when={text()}>
             <text fg={theme.text}>{text()}</text>
           </Show>
