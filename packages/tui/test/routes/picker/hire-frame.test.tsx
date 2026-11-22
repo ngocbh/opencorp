@@ -1,8 +1,11 @@
-import { expect, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import { InputRenderable, type Renderable } from "@opentui/core"
 import { createFakeOffice, createStub } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
 import { typeInto } from "./type"
+
+// A frame test boots the whole TUI, which takes longer than bun's 5 s on a loaded machine.
+setDefaultTimeout(30_000)
 
 /** Whether one of the form's fields has focus. The picker's `filter` keeps it until the form focuses its first field
  *  a tick after it mounts; until then nothing may have it, and a Tab pressed meanwhile is undone by that focus. */
