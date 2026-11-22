@@ -1,5 +1,5 @@
 /** Claude Code's lines as the office's transcript: real lines from the fixtures (`tests/fixtures/claude/stream.jsonl`,
- *  from the upstream TUI's recordings, and `stream-2.1.330.jsonl`, O5's), through the translator, as message, part and
+ *  from the upstream TUI's recordings, and `stream-2.1.330.jsonl`, a real 2.1.330's), through the translator, as message, part and
  *  turn events. */
 import fs from "node:fs"
 import { fileURLToPath } from "node:url"
@@ -201,7 +201,7 @@ test("messages Esc dropped before any turn took them end with the marker, in a m
   expect(opened).toHaveLength(2)
 })
 
-/** O5's lines of 2.1.330 from run `run` (`f1`, `e1`), in the order Claude Code wrote them. */
+/** The 2.1.330 lines of recorded run `name` (`f1`, `e1`), in the order Claude Code wrote them. */
 function run(name: string): Obj[] {
   const file = fileURLToPath(new URL("../../fixtures/claude/stream-2.1.330.jsonl", import.meta.url))
   return fs
@@ -209,7 +209,7 @@ function run(name: string): Obj[] {
     .split("\n")
     .filter(Boolean)
     .map((text) => JSON.parse(text) as Obj)
-    .filter((entry) => entry.source.startsWith(`o5/${name}.`))
+    .filter((entry) => entry.source.startsWith(`${name}.`))
     .map((entry) => entry.message)
 }
 

@@ -530,7 +530,7 @@ test.skipIf(NO_CODEX)(
         await proc.close(2000)
       }
     }
-    // With CODEX_HOME elsewhere (as O4's scratch one), the home's .codex is a trusted project's own config.
+    // With CODEX_HOME elsewhere (a scratch one, say), the home's .codex is a trusted project's own config.
     const elsewhere = path.join(root, "elsewhere")
     fs.mkdirSync(elsewhere)
     fs.writeFileSync(path.join(elsewhere, "config.toml"), config)

@@ -4,7 +4,7 @@
  *  state is the folder `installFakeClaude` is given.
  *
  *  Every line it writes has the keys of a line real Claude Code wrote (`tests/fixtures/claude/stream-2.1.330.jsonl`,
- *  O5's recordings of 2.1.330 under an employee's start; `stream.jsonl`, the upstream TUI's of 2.1.302 and 2.1.309,
+ *  recordings of a real 2.1.330 under an employee's start; `stream.jsonl`, the upstream TUI's of 2.1.302 and 2.1.309,
  *  for an API error and a mode change), except where "unrecorded" says no recording holds it. What it
  *  doesn't model at all it doesn't guess: it exits `FAKE_CLAUDE_UNMODELLED`, saying "not modelled: …" on stderr and
  *  in the log, so no test passes by relying on a guess.
@@ -583,7 +583,7 @@ const FIND_ACTIONS = /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls
 const FILE_OPS = new Set(["mkdir", "touch", "rm", "rmdir", "mv", "cp"])
 const PROTECTED = new Set([".git", ".claude"])
 
-/** Whether a tool runs without asking, as Claude Code's docs describe it (all unrecorded; O5 re-records it): the
+/** Whether a tool runs without asking, as Claude Code's docs describe it (unrecorded, from the docs): the
  *  working folders, the rules of the flags and the settings, the sandbox's auto-allow, and the mode. */
 class Policy {
   readonly dirs: string[]

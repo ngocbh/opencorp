@@ -270,7 +270,7 @@ export function claudeStart(p: EmployeePermission): {
     CLAUDE_CODE_TMPDIR: c.tmpdir,
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     // No Bash command, subagent or timed-out command goes to the background (Claude Code's docs, env-vars): Esc stops
-    // the command a turn runs (O5: gone 17 ms after), but one in the background outlived Esc and the turn.
+    // the command a turn runs (a real one's was gone 17 ms after), but one in the background outlived Esc and the turn.
     CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
   }
   return { settings, addDirs: c.folders.map((folder) => folder.path), env }

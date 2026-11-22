@@ -35,7 +35,7 @@ export const CLAUDE_TOOLS = ["Bash", "Read", "Edit", "Write", "NotebookEdit", "G
 
 /** Whether Claude Code can't run commands in a folder its employee may only read on `platform`: on Linux its sandbox
  *  makes a `.gitconfig` in the working folder for each command, which a read-only folder refuses, so every Bash
- *  command fails (`bwrap: Can't create file at <folder>/.gitconfig: Read-only file system`, O5). macOS's isn't known
+ *  command fails (`bwrap: Can't create file at <folder>/.gitconfig: Read-only file system`). macOS's isn't known
  *  to. */
 export function readOnlyFails(platform: NodeJS.Platform = process.platform): boolean {
   return platform === "linux"
@@ -47,7 +47,7 @@ export const READ_ONLY_FIX =
   "harness_policy sandbox workspace-write, or they use Codex for read-only work"
 
 /** Whether Claude Code's sandbox needs socat on `platform`: on Linux it bridges the sandbox's network through it, and
- *  refuses to start without it (O5: "socat not installed"). */
+ *  refuses to start without it ("socat not installed"). */
 export function socatNeeded(platform: NodeJS.Platform = process.platform): boolean {
   return platform === "linux"
 }

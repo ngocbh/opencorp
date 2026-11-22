@@ -1,6 +1,6 @@
 /** The fake Claude Code: scripted turns over its stream-json stdio, run through its shim with an explicit env, and
  *  every line it writes shaped as a line real Claude Code wrote (`tests/fixtures/claude/stream-2.1.330.jsonl`, and
- *  `stream.jsonl` for what O5 didn't record). */
+ *  `stream.jsonl` for what no 2.1.330 recording holds). */
 import { type ChildProcess, spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
@@ -24,7 +24,7 @@ type Msg = Record<string, any>
 const ENV = { PATH: "/usr/bin:/bin" }
 const STREAM = ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
 const FIXTURE = fileURLToPath(new URL("../fixtures/claude/stream-2.1.330.jsonl", import.meta.url))
-/** The upstream TUI's recordings, of 2.1.301 to 2.1.309; the fake writes those O5 didn't record as they were. */
+/** The upstream TUI's recordings, of 2.1.301 to 2.1.309; the fake writes those no 2.1.330 recording holds as they were. */
 const OLDER = fileURLToPath(new URL("../fixtures/claude/stream.jsonl", import.meta.url))
 const OLDER_KEPT = new Set(["billing-error.jsonl:8", "billing-error.jsonl:9", "controls.jsonl:24"])
 /** What 2.1.330 writes that the office reads none of, and the fake leaves out. */
