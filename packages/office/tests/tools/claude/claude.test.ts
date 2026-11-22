@@ -135,7 +135,7 @@ test("a start runs claude in the folder with the employee's settings and folders
     "--permission-mode=acceptEdits",
     "--permission-prompts=none",
     // Only these: the rest act on the owner's account, outside the sandbox, or after the turn.
-    "--tools=Bash,Read,Edit,Write,NotebookEdit,Glob,Grep,TaskStop,ToolSearch",
+    "--tools=Bash,Read,Edit,Write,NotebookEdit,Glob,Grep,ToolSearch",
     "--settings",
     JSON.stringify(start.settings),
     `--add-dir=${cargo}`,

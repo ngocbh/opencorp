@@ -83,17 +83,17 @@ back to Codex. In your employee's Codex threads your MCP servers, hooks, `notify
 is web search when the network is off, and your `~/.codex/config.toml` is left as it is.
 
 **Claude Code** asks you nothing either: what its permission doesn't allow is refused. Its only tools are its file
-tools, Bash, TaskStop and ToolSearch: none that acts on your claude.ai account (routines, Claude Design, push
-notifications), reaches outside its sandbox or runs on after the turn. A Claude Code that offers more is stopped before
-it uses them. Neither your Claude Code settings nor the project's load: your hooks, plugins, MCP servers, skills,
-permission rules and default model don't apply there, and auto memory, background sessions and agent view are off. Only
-a `/login` sign-in reaches it: an API key in your shell or your settings doesn't. OpenCorp passes it your
-`~/.claude/CLAUDE.md` and the project's `CLAUDE.md` (at the folder and at its repository's root, or its `AGENTS.md` when
-there's none) as text; an `@` import in them isn't followed. It doesn't take messages from your other Claude Code
-sessions, and can't message or list them. Claude Code doesn't hold commands to a network that's on, so an employee whose
-permission turns it on can't start it. On Linux its sandbox fails every command in a folder your employee may only read,
-so an employee whose `harness_policy` keeps the folder read-only can't start it either: make it `workspace-write`, or
-have them use Codex. `opencorp doctor` names them.
+tools, Bash and ToolSearch: none that acts on your claude.ai account (routines, Claude Design, push notifications),
+reaches outside its sandbox or runs on after the turn. A Claude Code that offers more is stopped before it uses them.
+Neither your Claude Code settings nor the project's load: your hooks, plugins, MCP servers, skills, permission rules and
+default model don't apply there, and auto memory, background sessions and agent view are off. Only a `/login` sign-in
+reaches it: an API key in your shell or your settings doesn't. OpenCorp passes it your `~/.claude/CLAUDE.md` and the
+project's `CLAUDE.md` (at the folder and at its repository's root, or its `AGENTS.md` when there's none) as text; an `@`
+import in them isn't followed. It doesn't take messages from your other Claude Code sessions, and can't message or list
+them. Claude Code doesn't hold commands to a network that's on, so an employee whose permission turns it on can't start
+it. On Linux its sandbox fails every command in a folder your employee may only read, so an employee whose
+`harness_policy` keeps the folder read-only can't start it either: make it `workspace-write`, or have them use Codex.
+`opencorp doctor` names them.
 
 A project you've trusted in Codex (Codex asks the first time you run it there) loads its own `.codex/config.toml`,
 whose MCP servers and hooks would run as you, outside your employee's permission. So your employee's Codex session

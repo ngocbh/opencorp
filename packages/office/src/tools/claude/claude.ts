@@ -26,21 +26,12 @@ import { type Msg, StreamJson, isObj, nameOf } from "./stream.ts"
  *  under an `allowRead` inside a `denyRead`, as an employee's permission lays it out. */
 export const CLAUDE_FLOOR = "2.1.325"
 
-/** The only tools Claude Code has in an employee's session (`--tools`): its file tools, Bash, and TaskStop and
- *  ToolSearch, which act on nothing outside it. The rest are off: they act on the owner's claude.ai account
- *  (RemoteTrigger, DesignSync, PushNotification, and the skills that drive them), reach outside the sandbox (Monitor's
- *  WebSocket), or keep running after the turn (Task, Workflow, the Cron tools, ScheduleWakeup). */
-export const CLAUDE_TOOLS = [
-  "Bash",
-  "Read",
-  "Edit",
-  "Write",
-  "NotebookEdit",
-  "Glob",
-  "Grep",
-  "TaskStop",
-  "ToolSearch",
-] as const
+/** The only tools Claude Code has in an employee's session (`--tools`): its file tools, Bash, and ToolSearch, which
+ *  loads only from that list. The rest are off: they act on the owner's claude.ai account (RemoteTrigger, DesignSync,
+ *  PushNotification, and the skills that drive them), reach outside the sandbox (Monitor's WebSocket), keep running
+ *  after the turn (Task, Workflow, the Cron tools, ScheduleWakeup), or have nothing to act on with no background tasks
+ *  (TaskStop). */
+export const CLAUDE_TOOLS = ["Bash", "Read", "Edit", "Write", "NotebookEdit", "Glob", "Grep", "ToolSearch"] as const
 
 /** Whether Claude Code can't run commands in a folder its employee may only read on `platform`: on Linux its sandbox
  *  makes a `.gitconfig` in the working folder for each command, which a read-only folder refuses, so every Bash
