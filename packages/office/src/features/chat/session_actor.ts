@@ -80,6 +80,7 @@ import { chatJob, type RunSpec } from "./run_spec.ts"
 import { ChatApprovals } from "./approvals.ts"
 import type { Mode, Where } from "../../runtime/permissions/policy.ts"
 import { HarnessError, notWaiting, runState, SETTLED, writeState } from "../../runtime/sessions/state.ts"
+import { restoreNotes } from "./terminal.ts"
 import { type LiveCalls, messageId, type Transcript, userMessage } from "./transcript.ts"
 import { type ChatFlow, MAIN_CHAT } from "../../company/chat_flow.ts"
 
@@ -1234,6 +1235,8 @@ export class SessionActor implements LiveCalls {
       return
     }
     const ending = session.status === "ending"
+    // Notes the office's stop may have cost: they wait for the next message or answer, as after Esc.
+    if (!ending) this.#heldNotes.push(...restoreNotes(this.#ctx.paths.sessionDir(this.sessionId)))
     if (!fs.existsSync(this.#logOf(runId))) {
       const lost = this.#ranStarted(runId)
       if (lost) {

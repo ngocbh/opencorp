@@ -18,6 +18,7 @@ import {
   chatOffice,
   fakeLlm,
   noWorkersLeft,
+  reopen,
   session,
   startActor,
   status,
@@ -349,4 +350,36 @@ test("after Esc, a card answer that resumes the agent takes the held notes with 
   await waitFor(() => texts(o, sid).includes("A, and it built.") && status(o, sid) === "idle", { what: "the reply" })
   expect(fake.requests()).toHaveLength(4)
   expect(asked(fake, 4, heading("shell 1", "make all", 0))).toBe(true)
+})
+
+test("a restart while a command runs on holds a note of it for the next message, and none is ever doubled", async () => {
+  const fake = await fakeLlm()
+  const both: ScriptedReply = {
+    tool_calls: [
+      { name: "terminal_run", arguments: { command: "make all", why: "builds", wait: 0 } },
+      { name: "terminal_run", arguments: { command: "make docs", why: "builds", wait: 0 } },
+    ],
+  }
+  fake.script(both, { content: "Started." }, { content: "Docs done." }, { content: "Noted." }, { content: "Again." })
+  const { o, end } = await notesOffice(fake)
+  const { actor: first, sid } = await started(o)
+  // make docs ends and its note is sent; make all still runs when the office stops.
+  end("make docs", 0)
+  await waitFor(() => texts(o, sid).includes("Docs done.") && status(o, sid) === "idle", { what: "the docs note's turn" })
+  const restarted = await reopen(o, first)
+  await restarted.restore()
+  await Bun.sleep(300)
+  expect(fake.requests()).toHaveLength(3)
+  await restarted.prompt("hello")
+  await waitFor(() => texts(o, sid).includes("Noted.") && status(o, sid) === "idle", { what: "the reply" })
+  const gone = "shell 1 (gone): `make all` ended with no exit code: it was stopped, maybe when the office stopped"
+  expect(asked(fake, 4, gone) && asked(fake, 4, "hello")).toBe(true)
+  // The docs note, already sent, isn't sent again.
+  expect(notes(o, sid).map((note) => note.split("\n")[0])).toEqual([heading("shell 2", "make docs", 0), gone])
+  // Another restart: the same notes, under the same keys, append nothing.
+  const again = await reopen(o, restarted)
+  await again.restore()
+  await again.prompt("again")
+  await waitFor(() => texts(o, sid).includes("Again.") && status(o, sid) === "idle", { what: "the last reply" })
+  expect(notes(o, sid)).toHaveLength(2)
 })

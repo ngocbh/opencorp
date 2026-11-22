@@ -27,8 +27,10 @@ while a command runs), and a missing `.mcp.json` can still be created.
 - **When a command ends.** Your employee is told when a command they were told is still running ends: its shell, the
   command, its exit code and its last lines. While they work, they read it before their next step; while they rest,
   it starts a new turn, as a message does. The chat shows it as one line, ``↳ shell 1: `make test` ended, exit 2``;
-  click it to read the whole note. After Esc, a note waits for your next message and goes with it; over the cost cap,
-  it waits for a raise. No note comes for a command your employee stopped, or once the chat has ended.
+  click it to read the whole note. After Esc, notes wait, one your employee hadn't read yet included, and go with your
+  next message or answer; messages of yours they hadn't read go on, in order. Over the cost cap, a note waits for a
+  raise. No note comes for a command your employee stopped, or once the chat has ended. If the office restarts while
+  such a command runs, its shell is gone, and your next message tells your employee so.
 
 ## Codex and Claude Code
 

@@ -35,7 +35,8 @@
  *  **Notes.** A host that takes them (`ended`) gets one note when a command whose reply said it runs on ends: its
  *  shell, the command, its exit and its last lines, fenced, keyed by the shell and the command's number there. None comes when
  *  the agent interrupted the command or closed its shell, when a read or type the agent was waiting on returned the
- *  end, or once the terminal has closed. A note leaves the agent's place in the view where it was. */
+ *  end, or once the terminal has closed. A note leaves the agent's place in the view where it was. The shell's record
+ *  keeps the key of each note owed (`told`), so the host can send a note of it after a restart (`restoredNote`). */
 import {
   type Action, type CheckInput, type Gate, gate, type Permissions, type Where,
 } from "../../runtime/permissions/policy.ts"
@@ -45,6 +46,7 @@ import { type Result, type RunOptions, SandboxUnavailable } from "../../runtime/
 import { SshPolicy } from "../../runtime/sandbox/ssh_policy.ts"
 import { PipeShell } from "./pipes.ts"
 import { PtyShell, type Reply, type ShellHost, shellKind, type ShellState } from "./shell.ts"
+import type { InstrumentRecord, RecordedCommand } from "./record.ts"
 import { cardArgs, type Parsed, parseArgs, refusalText, replyText, type ToolName, TOOLS, toolSpecs } from "./tools.ts"
 
 /** How a terminal's shells run: on PTYs, in `sandbox` (null: none, which only the owner allows); or as the
@@ -189,6 +191,8 @@ interface Entry {
   readonly id: string
   readonly name: string
   readonly opened: Promise<TerminalShell>
+  /** Its record, as its host bound it. */
+  readonly record: InstrumentRecord
   shell: TerminalShell | null
   /** The calls on this shell, one after another. */
   queue: Promise<unknown>
@@ -413,13 +417,13 @@ export class Terminal {
             const reply = shell.interrupt()
             if (reply.refused === undefined && running !== null) {
               running.stopped ??= AGENT_INTERRUPT
-              running.told = false
+              this.untell(entry, running)
             }
             return this.text(entry, shell, reply)
           }
           case "close":
             // The agent ends its own command: it needs no note of that.
-            if (entry.running !== null) entry.running.told = false
+            if (entry.running !== null) this.untell(entry, entry.running)
             await shell.close()
             return this.text(entry, shell, await shell.read({ waitMs: 0 }))
         }
@@ -491,6 +495,13 @@ export class Terminal {
     if (!running.seen && entry.running === running) entry.running = null
     if (!call.signal.aborted && running.seen && reply.refused === undefined && runsOn(reply)) {
       running.told = this.host.ended !== undefined
+      if (running.told) {
+        try {
+          entry.record.told(noteKey(entry, running))
+        } catch {
+          // meta.json can't be written: only a note after a restart is lost.
+        }
+      }
       // It ended between this reply and now: its end came untold.
       if (running.end !== null) this.tell(entry, running)
       return this.text(entry, shell, reply, running.told)
@@ -543,10 +554,20 @@ export class Terminal {
     const shell = entry.shell
     if (shell === null) return
     try {
-      const key = `terminal:${entry.id}:${running.n}`
-      this.host.ended?.({ key, shell: entry.name, text: noteText(entry, shell, running) })
+      this.host.ended?.({ key: noteKey(entry, running), shell: entry.name, text: noteText(entry, shell, running) })
     } catch {
       // The host's notes failed; the command's end stands, and its row is written.
+    }
+  }
+
+  /** `running` needs no note: the agent stopped it, or a reply told it of its end. */
+  private untell(entry: Entry, running: Running): void {
+    if (!running.told) return
+    running.told = false
+    try {
+      entry.record.untold(noteKey(entry, running))
+    } catch {
+      // meta.json can't be written: a restart may then send a note of it after all.
     }
   }
 
@@ -684,8 +705,8 @@ export class Terminal {
       opened = PtyShell.open(binding.id, name, { ...host, start, env: shells.env, ...kind })
     }
     const entry: Entry = {
-      id: binding.id, name, opened, shell: null, queue: Promise.resolve(), running: null, noExit: null, commands: 0,
-      waits: 0, untold: null,
+      id: binding.id, name, opened, record: binding.record, shell: null, queue: Promise.resolve(), running: null,
+      noExit: null, commands: 0, waits: 0, untold: null,
     }
     made = entry
     this.entries.push(entry)
@@ -723,7 +744,7 @@ export class Terminal {
    *  that shows the shell's command has ended carries the end of one whose note waited on it. */
   private text(entry: Entry, shell: TerminalShell, reply: Reply, told = false): string {
     if (entry.untold !== null && !runsOn(reply)) {
-      entry.untold.told = false
+      this.untell(entry, entry.untold)
       entry.untold = null
     }
     const dontAsk = this.host.permissions.mode() === "dontAsk"
@@ -741,6 +762,25 @@ function noExitNote(entry: Entry, reply: Reply): string | undefined {
   const why = entry.noExit === null ? undefined : NO_EXIT_NOTES[entry.noExit]
   if (reply.status === "ended") return why ?? SHELL_GONE
   return reply.status === "idle" ? why : undefined
+}
+
+/** The key of `running`'s note: its shell and its number there, the same each time it is sent. */
+function noteKey(entry: Entry, running: Running): string {
+  return `terminal:${entry.id}:${running.n}`
+}
+
+/** The note a host sends after a restart of `command`, which shell `shell` ran and whose note the agent was owed
+ *  (`told`): the shell is gone, and the command ended as its record says, or was stopped, perhaps by the office's
+ *  stop. Its first line names the shell as gone, since a new shell may take its name. */
+export function restoredNote(shell: string, command: RecordedCommand): string {
+  const ended =
+    typeof command.exit === "number"
+      ? `ended, exit ${command.exit}`
+      : "ended with no exit code: it was stopped, maybe when the office stopped"
+  const head = `${shell} (gone): \`${oneLine(command.command)}\` ${ended}`
+  const gone = "The office has restarted since, so that shell is gone; run the command again in a new shell if you " +
+    "need to."
+  return `${head}\n${gone}`
 }
 
 /** Whether `reply` says its shell's command still runs, at a secret prompt or not. */

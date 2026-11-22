@@ -28,12 +28,14 @@ export interface RecordMeta {
 export type RecordState = "running" | "ended" | "failed" | "interrupted"
 
 /** A command the shell ran: what, who ran it, when, and its exit code once it ended (null for none, as when a signal
- *  ended it). No `exit` means it never ended in the record: still running, or cut off. */
+ *  ended it). No `exit` means it never ended in the record: still running, or cut off. `told` is the key of the note
+ *  the agent is owed of its end, once its reply said it runs on, until something else told the agent of it. */
 export interface RecordedCommand {
   command: string
   by: string
   at: string
   exit?: number | null
+  told?: string
 }
 
 /** What a record's meta.json holds. `error` says why a shell failed or ended; `outputError` says why output.log
@@ -68,8 +70,14 @@ const isText = (value: unknown): value is string => typeof value === "string"
 /** Whether `value` is a command as meta.json holds it. */
 function isCommand(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false
-  const { command, by, at, exit } = value as Record<string, unknown>
-  return isText(command) && isText(by) && isText(at) && (exit === undefined || exit === null || typeof exit === "number")
+  const { command, by, at, exit, told } = value as Record<string, unknown>
+  return (
+    isText(command) &&
+    isText(by) &&
+    isText(at) &&
+    (exit === undefined || exit === null || typeof exit === "number") &&
+    (told === undefined || isText(told))
+  )
 }
 
 /** Whether `value` is a terminal's record, as meta.json holds it. */
@@ -149,6 +157,22 @@ export class InstrumentRecord {
     const last = this.file.commands.at(-1)
     if (this.file.state !== "running" || last === undefined || last.exit !== undefined) return
     last.exit = code
+    this.save()
+  }
+
+  /** Records that the agent is owed a note, under `key`, of the last command's end: its reply said it runs on. */
+  told(key: string): void {
+    const last = this.file.commands.at(-1)
+    if (this.file.state !== "running" || last === undefined) return
+    last.told = key
+    this.save()
+  }
+
+  /** Records that the command owed the note under `key` needs none: something else told the agent of its end. */
+  untold(key: string): void {
+    const command = this.file.commands.find((c) => c.told === key)
+    if (this.file.state !== "running" || command === undefined) return
+    delete command.told
     this.save()
   }
 

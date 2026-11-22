@@ -4,7 +4,8 @@
  *  rules, Auto's check and cards); and each command the gate holds or refuses, and each one that ran, once it ends, is
  *  an audit row of the session's, of the run it started in. A command an office crash cut off gets its row at the
  *  next start (`auditInterrupted`). The note of a command the agent was told runs on, once it ends, goes to the
- *  session's actor (`onEnded`). */
+ *  session's actor (`onEnded`), and after a restart the actor holds a note of each one still owed (`restoreNotes`). */
+import fs from "node:fs"
 import path from "node:path"
 import { now } from "@opencorp/protocol"
 import { REASON_CHARS } from "../../runtime/permissions/monitor.ts"
@@ -12,10 +13,10 @@ import type { ApprovalCard, CheckInput, Mode, Permissions, Where } from "../../r
 import type { Instruments } from "../../runtime/sessions/instruments.ts"
 import type { Store } from "../../runtime/store/store.ts"
 import { shellInstrument } from "../../tools/terminal/instrument.ts"
-import { InstrumentRecord, type RecordFile } from "../../tools/terminal/record.ts"
+import { InstrumentRecord, readRecord, RecordError, type RecordFile } from "../../tools/terminal/record.ts"
 import type { ShellState } from "../../tools/terminal/shell.ts"
 import {
-  type CommandEnded, Terminal, type TerminalAudit, type TerminalProfile, type TerminalShells,
+  type CommandEnded, restoredNote, Terminal, type TerminalAudit, type TerminalProfile, type TerminalShells,
 } from "../../tools/terminal/terminal.ts"
 import { newId } from "../../util/ids.ts"
 import { checkFolder, makePrivateFolder } from "../../util/private_files.ts"
@@ -66,6 +67,34 @@ export function auditInterrupted(
     const row = { person, sessionId, runId: null, tool: "terminal_run", text: command, shell: file.name }
     writeRow(store, { ...row, outcome: "interrupted", detail: OFFICE_STOPPED })
   }
+}
+
+/** The notes a restart may have cost the session at `folder`: one (`restoredNote`) for each command of its terminal's
+ *  records whose note the agent is still owed, oldest shell first, under that note's key, so a note the run already
+ *  has is never sent twice. A record that can't be read gives none. */
+export function restoreNotes(folder: string): { text: string; key: string }[] {
+  const dir = path.join(folder, "terminal")
+  let names: string[]
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return []
+  }
+  const files = names.flatMap((name) => {
+    try {
+      const file = readRecord(path.join(dir, name))
+      return file === null ? [] : [file]
+    } catch (error) {
+      if (error instanceof RecordError) return []
+      throw error
+    }
+  })
+  files.sort((a, b) => a.started.localeCompare(b.started))
+  return files.flatMap((file) =>
+    file.commands.flatMap((command) =>
+      command.told === undefined ? [] : [{ text: restoredNote(file.name, command), key: command.told }],
+    ),
+  )
 }
 
 /** What an employee's terminal is made from; the agent sets none of it. */
