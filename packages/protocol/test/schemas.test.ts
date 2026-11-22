@@ -166,7 +166,7 @@ test("an instrument session is the child of the chat that drives it, and no othe
 })
 
 test("a person's harness policy lists extra folders, each read-only or writable, and none by default", () => {
-  expect(Schemas.HarnessPolicy.parse({})).toEqual({ sandbox: "read-only", network: false, folders: [] })
+  expect(Schemas.HarnessPolicy.parse({})).toEqual({ sandbox: "read-only", network: false, folders: [], mcp_servers: [] })
   const folders: { path: string; access: "read" | "write" }[] = [
     { path: "~/.cargo", access: "read" },
     { path: "/data/shared", access: "write" },
@@ -176,6 +176,14 @@ test("a person's harness policy lists extra folders, each read-only or writable,
   expect(Schemas.HarnessPolicy.parse({ folders: [{ path: "envs/ml", access: "write" }] }).folders).toHaveLength(1)
   for (const folder of [{ path: "/x" }, { path: "/x", access: "exec" }, { path: "/x", access: "read", mode: 1 }])
     expect(Schemas.HarnessPolicy.safeParse({ folders: [folder] }).success).toBe(false)
+})
+
+test("a person's harness policy allows the owner's MCP servers by name, none by default", () => {
+  expect(Schemas.HarnessPolicy.parse({ mcp_servers: ["github", "linear"] }).mcp_servers).toEqual(["github", "linear"])
+  // The office's lint checks each name, so a person whose name is wrong still loads.
+  expect(Schemas.HarnessPolicy.parse({ mcp_servers: ["a b"] }).mcp_servers).toEqual(["a b"])
+  for (const mcp_servers of ["github", [1], [{ name: "github" }]])
+    expect(Schemas.HarnessPolicy.safeParse({ mcp_servers }).success).toBe(false)
 })
 
 test("a session has a mode, auto by default, and a mode request takes only auto, default, ask or dontAsk", () => {

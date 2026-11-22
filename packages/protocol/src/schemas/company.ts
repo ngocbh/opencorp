@@ -26,6 +26,10 @@ export const HarnessPolicy = z.strictObject({
    *  as listed, whatever it holds. A path is absolute or starts with `~/`, the owner's home; the office's lint checks
    *  it. */
   folders: z.array(z.strictObject({ path: z.string(), access: z.enum(["read", "write"]) })).default(() => []),
+  /** The owner's MCP servers the person's Codex and Claude Code may use, by the name the owner's harness config gives
+   *  each; every other server stays off. An allowed server runs as the owner, outside the person's folder fence. The
+   *  office's lint checks each name. */
+  mcp_servers: z.array(z.string()).default(() => []),
 })
 export type HarnessPolicy = z.input<typeof HarnessPolicy>
 

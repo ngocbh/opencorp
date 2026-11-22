@@ -7,7 +7,7 @@ import { MAIN_CHAT } from "./chat_flow.ts"
 import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
 import { type RepoIssue, repoIssue } from "./issues.ts"
 import { type CompanyRepo, profilePath } from "./loader.ts"
-import { shownAssetToolName, TOOL_NAME } from "./naming.ts"
+import { MCP_SERVER_NAME, shownAssetToolName, TOOL_NAME } from "./naming.ts"
 import { COMPANY_RULES, inTree, loadRules, rulesPath } from "./rules.ts"
 
 /** One lint check: the issues it finds in a repo. */
@@ -583,6 +583,31 @@ function folderProblem(folder: { path: string; access: "read" | "write" }, seen:
   return null
 }
 
+/** Each MCP server a person's `harness_policy` allows is named plainly (`MCP_SERVER_NAME`) and once: one named
+ *  otherwise allows nothing. Each one that is gets a warning: it runs as the owner, outside the person's folder fence,
+ *  with whatever credentials the owner gave it. */
+function* checkMcpServers(repo: CompanyRepo): Iterable<RepoIssue> {
+  for (const [handle, person] of sorted(repo.people)) {
+    const seen = new Set<string>()
+    for (const name of person.harness_policy?.mcp_servers ?? []) {
+      const shown = JSON.stringify(name)
+      if (!MCP_SERVER_NAME.test(name)) {
+        yield repoIssue(personPath(handle), "person.mcp_server_invalid", `MCP server ${shown} isn't a server name:`
+          + " write it with letters, digits, - and _ only, as your Codex or Claude Code config names it")
+        continue
+      }
+      if (seen.has(name)) {
+        yield repoIssue(personPath(handle), "person.mcp_server_invalid", `MCP server ${shown} is listed twice`)
+        continue
+      }
+      seen.add(name)
+      yield repoIssue(personPath(handle), "person.mcp_server_unguarded",
+        `MCP server ${shown} runs as you, outside @${handle}'s folder fence: their Codex and Claude Code can do`
+        + " whatever it can with your credentials", "warning")
+    }
+  }
+}
+
 /** The company's `rules.yaml` and each person's `people/<handle>/rules.yaml` load, read as the office reads them at a
  *  commit (`inTree`): while one doesn't, every command of the sessions it covers asks. A `*` that isn't a pattern's
  *  last word on its own is a warning: it matches only a literal `*`. */
@@ -597,4 +622,4 @@ function* checkRules(repo: CompanyRepo): Iterable<RepoIssue> {
 }
 
 const CHECKS: Check[] = [checkIdCase, checkManagers, checkCeo, checkGroups, checkPersonGroups, checkAssets,
-  checkFlows, checkSkills, checkProfiles, checkDevices, checkFolders, checkRules]
+  checkFlows, checkSkills, checkProfiles, checkDevices, checkFolders, checkMcpServers, checkRules]

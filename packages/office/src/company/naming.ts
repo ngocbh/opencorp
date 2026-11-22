@@ -1,4 +1,5 @@
-/** Naming rules: person handles, and the names the model sees for host tools. */
+/** Naming rules: person handles, the names of the MCP servers a person may use, and the names the model sees for host
+ *  tools. */
 import { Handle } from "@opencorp/protocol"
 
 /** Why `handle` can't be a person's handle, or null if it can. */
@@ -10,6 +11,11 @@ export function handleProblem(handle: string): string | null {
   if (issue?.code === "invalid_format" && issue.pattern) return `should match pattern ${issue.pattern}`
   return "isn't a valid handle"
 }
+
+/** A name a person's `harness_policy.mcp_servers` allows a server by: letters, digits, `-` and `_`, the names Claude
+ *  Code's `claude mcp add` takes, which its tool names (`mcp__<server>__<tool>`) keep as they are. Any other allows
+ *  nothing. */
+export const MCP_SERVER_NAME = /^[A-Za-z0-9_-]+$/
 
 /** A name a model can call a tool by: yian refuses a run that would show a model any other. */
 export const TOOL_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/
