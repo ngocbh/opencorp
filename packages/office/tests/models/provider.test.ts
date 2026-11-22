@@ -50,7 +50,7 @@ function expectNoneOf(error: Error, ...texts: string[]): void {
   }
 }
 
-test("no file means composer defaults", async () => {
+test("no file means yian defaults", async () => {
   const provider = await loadProvider(path.join(tempDir(), "provider.json"), Provider.parse)
   expect(provider).toEqual(Provider.parse({}))
 })

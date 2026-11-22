@@ -91,12 +91,12 @@ test("continuing makes a new row on the same thread and resumes it", async () =>
   requestsValid(h.fake)
 })
 
-test.each(["live", "composer", "missing", "continued"])(
+test.each(["live", "yian", "missing", "continued"])(
   "only an ended codex session with no live continuation continues [%s]",
   async (kind) => {
     const h = makeCodex()
     const sid = kind !== "missing" ? await start(h, h.workspace) : "01J0000000000000000000000X"
-    if (kind === "composer") h.store.updateSession(sid, { harness: "composer", status: "ended" })
+    if (kind === "yian") h.store.updateSession(sid, { harness: "yian", status: "ended" })
     if (kind === "continued") {
       await h.sessions.end(sid)
       await waitFor(() => status(h, sid) === "ended", { what: "ended" })
@@ -105,7 +105,7 @@ test.each(["live", "composer", "missing", "continued"])(
     }
     const error = await rejection(h.sessions.continueSession(sid, { by: "ngocbh" }))
     expect(error).toBeInstanceOf(HarnessError)
-    expect(error.status).toBe({ live: 409, composer: 422, missing: 404, continued: 409 }[kind])
+    expect(error.status).toBe({ live: 409, yian: 422, missing: 404, continued: 409 }[kind])
   },
 )
 
@@ -160,10 +160,10 @@ test("why a session can not continue", async () => {
   h.fake.script([], { initialize_error: { code: -32600, message: "nope" } })
   const never = (await h.sessions.startSession("minh", h.workspace, { openedBy: "ngocbh" })).id
   await waitFor(() => status(h, never) === "failed", { what: "failed" })
-  const composer = h.store.createSession(session({ status: "ended" }))
+  const chat = h.store.createSession(session({ status: "ended" }))
   for (const [sid, why] of [
     [never, "this Codex session never loaded its thread, so there is nothing to continue"],
-    [composer.id, "only a Codex session can be continued"],
+    [chat.id, "only a Codex session can be continued"],
   ] as const) {
     const error = await rejection(h.sessions.continueSession(sid, { by: "ngocbh" }))
     expect(error).toBeInstanceOf(HarnessError)

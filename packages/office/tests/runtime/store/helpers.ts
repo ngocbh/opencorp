@@ -46,14 +46,14 @@ export function comment(workItemId: string, over?: Partial<Comment>): z.output<t
 /** A git commit id for fixtures. */
 export const COMMIT = "a".repeat(40)
 
-/** A Session with Python's defaults (`session` in conftest): minh, composer, office "mac", cwd "/w/app", COMMIT,
+/** A Session with Python's defaults (`session` in conftest): minh, yian, office "mac", cwd "/w/app", COMMIT,
  *  idle, main, now() times, overridden by `over`; parsed, so defaults are filled. */
 export function session(over?: Partial<Session>): z.output<typeof Session> {
   const t = now()
   return Session.parse({
     id: newId(),
     person: "minh",
-    harness: "composer",
+    harness: "yian",
     office: "mac",
     cwd: "/w/app",
     repo_commit: COMMIT,

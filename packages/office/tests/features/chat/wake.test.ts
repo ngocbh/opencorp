@@ -357,7 +357,7 @@ test("a wake into a missing folder answers 422 and leaves the session idle", asy
   expect(h.kinds.length).toBe(before)
 })
 
-test("a codex session is never woken as a composer one", async () => {
+test("a codex session is never woken as a yian one", async () => {
   // This harness has no Codex sessions to hand it to.
   const h = await makeHarness(await fakeLlm())
   const codex = h.store.createSession(

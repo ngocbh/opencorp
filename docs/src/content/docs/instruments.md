@@ -34,8 +34,9 @@ while a command runs), and a missing `.mcp.json` can still be created.
 
 ## Codex and Claude Code
 
-An employee hands work to Codex if their `person.yaml` lists the codex harness (`harnesses: [composer, codex]`), and
-to Claude Code if it lists claude.
+An employee's `person.yaml` lists the harnesses they use in `tools`, such as `tools: [yian, codex, claude]`. `yian`
+is the employee's own chat, on the Yian engine. They hand work to Codex if `tools` lists codex, and to Claude Code if
+it lists claude.
 
 - **Sessions.** The line under the prompt counts their Codex and Claude Code sessions. "Open an instrument…" in the
   command list (ctrl+p), or ctrl+x down, opens one as a chat of its own, where you watch the harness work and write

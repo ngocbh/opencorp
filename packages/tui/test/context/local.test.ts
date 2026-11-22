@@ -32,21 +32,21 @@ test("an unknown --person falls through; with no agents the first person is pick
 })
 
 test("a harness pick holds for the person it names; anyone else starts on their first harness", () => {
-  const minh = { handle: "minh", kind: "agent", harnesses: ["composer", "codex"] } as Person
-  const lan = { handle: "lan", kind: "agent", harnesses: ["composer", "codex"] } as Person
+  const minh = { handle: "minh", kind: "agent", tools: ["yian", "codex"] } as Person
+  const lan = { handle: "lan", kind: "agent", tools: ["yian", "codex"] } as Person
   const [current, setCurrent] = createSignal<Person | undefined>(minh)
   const harness = createHarnessPick(current)
-  expect(harness.current()).toBe("composer")
+  expect(harness.current()).toBe("yian")
   harness.set("minh", "codex")
   expect(harness.current()).toBe("codex")
   setCurrent(lan)
-  expect(harness.current()).toBe("composer")
+  expect(harness.current()).toBe("yian")
   setCurrent(minh)
   expect(harness.current()).toBe("codex")
-  harness.set("minh", "composer")
+  harness.set("minh", "yian")
   // A pick for someone else (the switch to them was refused) is no pick for the current person.
   harness.set("ghost", "codex")
-  expect(harness.current()).toBe("composer")
+  expect(harness.current()).toBe("yian")
   setCurrent(undefined)
-  expect(harness.current()).toBe("composer")
+  expect(harness.current()).toBe("yian")
 })

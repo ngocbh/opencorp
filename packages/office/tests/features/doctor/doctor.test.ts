@@ -1481,11 +1481,11 @@ test("given the office, the check loads a thread under an employee's permission,
  *  (allowed none). */
 function mcpCompany() {
   const minh = person("minh", {
-    harnesses: ["composer", "codex", "claude"],
+    tools: ["yian", "codex", "claude"],
     harness_policy: { sandbox: "workspace-write", mcp_servers: ["github", "linear", "not plain"] },
   })
-  const ann = person("minh", { handle: "ann", name: "Ann", harnesses: ["claude"], harness_policy: { mcp_servers: ["docs"] } })
-  const bob = person("minh", { handle: "bob", name: "Bob", harnesses: ["codex"] })
+  const ann = person("minh", { handle: "ann", name: "Ann", tools: ["claude"], harness_policy: { mcp_servers: ["docs"] } })
+  const bob = person("minh", { handle: "bob", name: "Bob", tools: ["codex"] })
   return loadRepo(
     makeCompany({ "people/minh/person.yaml": minh, "people/ann/person.yaml": ann, "people/bob/person.yaml": bob }),
   )
@@ -1521,7 +1521,7 @@ test("doctor's MCP line reads the names Codex's check found and the owner's .cla
   const dir = tempDir()
   const paths = await onboarded(dir)
   const policy = { mcp_servers: ["github", "docs"] }
-  const minh = person("minh", { harnesses: ["composer", "codex", "claude"], harness_policy: policy })
+  const minh = person("minh", { tools: ["yian", "codex", "claude"], harness_policy: policy })
   fs.mkdirSync(path.join(paths.company, "people/minh"), { recursive: true })
   fs.writeFileSync(path.join(paths.company, "people/minh/person.yaml"), writeYaml(minh))
   const servers = { github: { command: "gh-mcp", env: { GITHUB_TOKEN: "ghp_decoy-token" } } }
@@ -1888,10 +1888,10 @@ test("on Linux, claude fails without a socat for its sandbox, saying how to fix 
 test("doctor names the employees who use Claude Code with a read-only folder, from the company's people", () => {
   const repo = {
     people: new Map([
-      ["minh", { harnesses: ["composer", "claude"], harness_policy: { sandbox: "read-only", network: false } }],
-      ["lan", { harnesses: ["claude"], harness_policy: null }],
-      ["tuan", { harnesses: ["claude"], harness_policy: { sandbox: "workspace-write", network: false } }],
-      ["vy", { harnesses: ["codex"], harness_policy: { sandbox: "read-only", network: false } }],
+      ["minh", { tools: ["yian", "claude"], harness_policy: { sandbox: "read-only", network: false } }],
+      ["lan", { tools: ["claude"], harness_policy: null }],
+      ["tuan", { tools: ["claude"], harness_policy: { sandbox: "workspace-write", network: false } }],
+      ["vy", { tools: ["codex"], harness_policy: { sandbox: "read-only", network: false } }],
     ]),
   }
   expect(doctor.readOnlyClaude(repo as never)).toEqual(["lan", "minh"])

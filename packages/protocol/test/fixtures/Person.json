@@ -9,7 +9,7 @@
   "main": "../../shared/flows/chat.yaml",
   "sops": [{ "flow": "sops/release.yaml", "gate": false }],
   "skills": ["code-review"],
-  "harnesses": ["composer"],
+  "tools": ["yian"],
   "harness_policy": {
     "sandbox": "workspace-write", "network": false,
     "folders": [{ "path": "~/.cargo", "access": "read" }, { "path": "/data/shared", "access": "write" }]

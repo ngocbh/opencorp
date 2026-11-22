@@ -748,7 +748,7 @@ export function Prompt(props: PromptProps) {
     sending = store.prompt.input
     try {
       if (!sessionID) {
-        // A Codex chat runs on Codex's own model, so it takes no model pick; composer is the office's default.
+        // A Codex chat runs on Codex's own model, so it takes no model pick; yian is the office's default.
         const codex = local.harness.current() === "codex"
         const pick = !codex && kv.get("start_on_last_pick", false) ? local.model.last() : undefined
         const created = await office.client.sessions.create({

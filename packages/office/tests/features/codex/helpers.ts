@@ -16,8 +16,8 @@ import { CEO, makeOffice } from "../../server/helpers.ts"
 import { isGone, tempDir, waitFor } from "../../helpers.ts"
 import { recordEvents, session, workItem } from "../../runtime/store/helpers.ts"
 
-/** minh, allowed the composer and Codex harnesses. */
-export const CODEX_PERSON = { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"] }) }
+/** minh, allowed the yian and Codex harnesses. */
+export const CODEX_PERSON = { "people/minh/person.yaml": person("minh", { tools: ["yian", "codex"] }) }
 
 const ajv = new Ajv({ strict: false, validateFormats: false })
 const CLIENT = ajv.compile(

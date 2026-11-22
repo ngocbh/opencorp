@@ -7,7 +7,7 @@ import {
 } from "@opencorp/protocol"
 import type { z } from "zod"
 import type { CompanyGit } from "./git.ts"
-import { parseFile, type RepoIssue, repoIssue } from "./issues.ts"
+import { parseFile, renamedInPerson, type RepoIssue, repoIssue } from "./issues.ts"
 import { blankSecrets } from "./secret_keys.ts"
 
 type Company = z.output<typeof CompanySchema>
@@ -47,7 +47,7 @@ export async function loadCompanyAt(git: CompanyGit, sha: string): Promise<Compa
   }
   const found: Person[] = []
   for (const path of [...people.keys()].sort()) {
-    const person = parseFile(path, bytes(people.get(path)!), PersonSchema, issues)
+    const person = parseFile(path, bytes(people.get(path)!), PersonSchema, issues, renamedInPerson)
     const folder = path.split("/")[1]!
     if (person !== null && person.handle !== folder) {
       issues.push(repoIssue(path, "person.dir_mismatch",

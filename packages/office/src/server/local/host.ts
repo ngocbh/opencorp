@@ -301,7 +301,7 @@ export class LocalHost {
     this.#record = Session.parse({
       id: this.id,
       person: spec.agent.handle,
-      harness: "composer",
+      harness: "yian",
       office: "local",
       cwd: spec.folder,
       // A GitId: what runs, as a commit names it in the office.

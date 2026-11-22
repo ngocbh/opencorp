@@ -13,7 +13,7 @@ function session(id: string, fields: Partial<Session> = {}): Session {
   return {
     id,
     person: "minh",
-    harness: "composer",
+    harness: "yian",
     office: "laptop",
     cwd: "/tmp/proj",
     repo_commit: "c",

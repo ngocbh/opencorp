@@ -8,7 +8,7 @@ import {
   Person as PersonSchema,
 } from "@opencorp/protocol"
 import type { z } from "zod"
-import { parseFile, type RepoIssue, repoIssue } from "./issues.ts"
+import { parseFile, renamedInPerson, type RepoIssue, repoIssue } from "./issues.ts"
 import { reservedHandle, reservedPerson } from "./naming.ts"
 
 type Company = z.output<typeof CompanySchema>
@@ -42,8 +42,15 @@ function list(root: string, rel: string, errors: RepoIssue[]): string[] {
   }
 }
 
-/** The file at repo path `rel` parsed by `schema`; a problem is recorded in `errors` and gives null. */
-function parse<S extends z.ZodObject>(root: string, rel: string, schema: S, errors: RepoIssue[]): z.output<S> | null {
+/** The file at repo path `rel` parsed by `schema` (`refuse` as `parseFile` takes it); a problem is recorded in `errors`
+ *  and gives null. */
+function parse<S extends z.ZodObject>(
+  root: string,
+  rel: string,
+  schema: S,
+  errors: RepoIssue[],
+  refuse?: (doc: Record<string, unknown>) => string | null,
+): z.output<S> | null {
   let data: Uint8Array
   try {
     data = fs.readFileSync(path.join(root, rel))
@@ -53,7 +60,7 @@ function parse<S extends z.ZodObject>(root: string, rel: string, schema: S, erro
     errors.push(repoIssue(rel, "repo.unreadable", missing ? "company.yaml is missing" : "can't be read"))
     return null
   }
-  return parseFile(rel, data, schema, errors)
+  return parseFile(rel, data, schema, errors, refuse)
 }
 
 /** Each `<folder>/<id>.yaml` under `root` parsed by `schema`, by id; problems go to `errors`. */
@@ -98,7 +105,7 @@ export function loadRepo(root: string): CompanyRepo {
       errors.push(repoIssue(rel, "person.reserved_handle", reservedPerson(folder)))
       continue
     }
-    const person = parse(root, rel, PersonSchema, errors)
+    const person = parse(root, rel, PersonSchema, errors, renamedInPerson)
     if (person === null) continue
     if (person.handle !== folder) {
       errors.push(repoIssue(rel, "person.dir_mismatch",

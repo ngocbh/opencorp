@@ -48,13 +48,14 @@ function firstProblem(value: unknown): string | null {
  *
  * A `__proto__` key or an integer outside the safe range (a bigint) anywhere is refused before the schema:
  * zod drops a `__proto__` record key and a number can't hold the integer, so a grant's `where` would
- * otherwise read looser than written and fail open.
+ * otherwise read looser than written and fail open. So is what `refuse` finds in the file's mapping.
  */
 export function parseFile<S extends z.ZodObject>(
   path: string,
   data: Uint8Array,
   schema: S,
   issues: RepoIssue[],
+  refuse: (doc: Record<string, unknown>) => string | null = () => null,
 ): z.output<S> | null {
   let text: string
   try {
@@ -83,9 +84,26 @@ export function parseFile<S extends z.ZodObject>(
     issues.push(repoIssue(path, "repo.schema", `${field}: ${problem}`))
     return null
   }
+  const refused = refuse(doc as Record<string, unknown>)
+  if (refused !== null) {
+    issues.push(repoIssue(path, "repo.schema", refused))
+    return null
+  }
   const result = schema.safeParse(doc)
   if (result.success) return result.data
   // The ZodError quotes unknown keys, so only validationMessage's field names and fixed phrases leave.
   issues.push(repoIssue(path, "repo.schema", validationMessage(schema, result.error, doc)))
   return null
+}
+
+/** What a person file holds under an old name, for `parseFile`'s `refuse`: the `harnesses` field, now `tools`, and
+ *  the `composer` harness, now `yian`. The schema's fixed phrases would say only that the field or value isn't
+ *  allowed. */
+export function renamedInPerson(doc: Record<string, unknown>): string | null {
+  const found: string[] = []
+  if (Object.hasOwn(doc, "harnesses")) found.push("`harnesses` was renamed `tools`")
+  if ([doc.harnesses, doc.tools].some((list) => Array.isArray(list) && list.includes("composer"))) {
+    found.push("`composer` was renamed `yian`")
+  }
+  return found.length > 0 ? found.join("; ") : null
 }

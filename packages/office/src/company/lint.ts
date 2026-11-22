@@ -301,7 +301,7 @@ function instrumentAgents(flow: ComposedFlow): InstrumentAgent[] {
   return found
 }
 
-/** Why a person who uses `harnesses` can't run the SOP or routine `ref`, whose agents grant the instrument groups
+/** Why a person who uses `tools` can't run the SOP or routine `ref`, whose agents grant the instrument groups
  *  `granted`, or null: it drives none of them, and the office binds an instrument's group, empty otherwise, only for a
  *  harness its person uses. A main flow isn't asked: a chat offers its instruments beside its other tools, while an
  *  SOP that drives a harness exists for it. */
@@ -309,16 +309,16 @@ function unusedHarnesses(
   ref: string,
   handle: string,
   granted: ReadonlySet<string>,
-  harnesses: readonly string[],
+  tools: readonly string[],
 ): string | null {
-  if (granted.size === 0 || [...granted].some((group) => harnesses.includes(group))) return null
+  if (granted.size === 0 || [...granted].some((group) => tools.includes(group))) return null
   const groups = [...granted]
   if (groups.length === 1) {
     return `${ref} drives ${groups[0]}, but @${handle} doesn't use the ${groups[0]} harness, so it gets no ${groups[0]}`
-      + ` tools and can't start a session; add ${groups[0]} to harnesses`
+      + ` tools and can't start a session; add ${groups[0]} to tools`
   }
   return `${ref} drives ${groups.join(" or ")}, but @${handle} uses neither harness, so it gets neither's tools and`
-    + " can't start a session; add the one it should drive to harnesses"
+    + " can't start a session; add the one it should drive to tools"
 }
 
 /** Agents have a main flow; every main, SOP, and routine flow is a relative path to a file inside the repo
@@ -380,7 +380,7 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
           + " of the harness it waits on; set `steer_inbox:` on it, as the template's shared/flows/chat.yaml does")
       }
       if (!isMain) {
-        const unused = unusedHarnesses(ref, handle, new Set(instruments.flatMap((agent) => agent.groups)), person.harnesses)
+        const unused = unusedHarnesses(ref, handle, new Set(instruments.flatMap((agent) => agent.groups)), person.tools)
         if (unused !== null) yield repoIssue(file, "person.harness_not_used", unused, "warning")
         continue
       }

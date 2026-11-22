@@ -10,7 +10,7 @@ const S = "S1"
 const session = (over: Partial<Session> = {}): Session => ({
   id: S,
   person: "minh",
-  harness: "composer",
+  harness: "yian",
   office: "laptop",
   cwd: "/tmp/proj",
   repo_commit: "c",

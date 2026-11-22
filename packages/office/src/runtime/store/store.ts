@@ -1530,7 +1530,7 @@ export class Store {
   /** Spend per person since `since` (a Timestamp): priced usage, and harness sessions updated since then. A
    *  subscription's model calls cost nothing, so they are left out.
    *
-   *  Only composer sessions record priced usage; a Codex or Claude session's tokens aren't priced, so it is
+   *  Only yian sessions record priced usage; a Codex or Claude session's tokens aren't priced, so it is
    *  counted instead. `unpriced_sessions` counts harness sessions whose `updated_at` is at or after `since`,
    *  which any update moves (a status change, a rename), so a counted session may not have spent anything since
    *  then. Every session kind counts: all of it is real spend. */
@@ -1546,7 +1546,7 @@ export class Store {
     for (const r of priced) usd.set(r.person as string, r.usd as number)
     const unpriced = this.db
       .prepare(
-        "SELECT person, COUNT(*) AS n FROM sessions WHERE harness != 'composer' AND updated_at >= ? GROUP BY person",
+        "SELECT person, COUNT(*) AS n FROM sessions WHERE harness != 'yian' AND updated_at >= ? GROUP BY person",
       )
       .all(since)
     for (const r of unpriced) count.set(r.person as string, r.n as number)

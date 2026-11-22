@@ -4,8 +4,9 @@ import { join } from "node:path"
 import { expect, onTestFinished, test } from "bun:test"
 import { openSqlite, sqliteErrorCode, type Sqlite } from "@ngocbh/yian/platform"
 import { MIGRATIONS, MigrationError, migrate, userVersion, type MigrationFile } from "../../../src/runtime/store/migrate.ts"
+import { Store, newId } from "../../../src/runtime/store/store.ts"
 import { tempDir } from "../../helpers.ts"
-import { thrown } from "./helpers.ts"
+import { COMMIT, session, thrown } from "./helpers.ts"
 
 function open(): Sqlite {
   const db = openSqlite(join(tempDir(), "db.sqlite"))
@@ -107,9 +108,9 @@ test("every migration file is in the ladder", () => {
   for (const m of MIGRATIONS) expect(m.sql).toBe(fs.readFileSync(new URL(m.name, dir), "utf8"))
 })
 
-test("the office migrations bring a fresh database to version 11", () => {
+test("the office migrations bring a fresh database to version 12", () => {
   const db = open()
-  expect(migrate(db)).toBe(11)
+  expect(migrate(db)).toBe(12)
   const questions = db.prepare("PRAGMA table_info(questions)").all()
   expect(questions.map((c) => c.name)).toContain("call_id")
   const turns = db.prepare("PRAGMA table_info(sessions)").all().find((c) => c.name === "turns")
@@ -139,14 +140,14 @@ test("a store at version 10 gets only the usage subscription migration, and its 
   const db = open()
   expect(migrate(db, MIGRATIONS.slice(0, 10))).toBe(10)
   db.prepare("INSERT INTO usage (at, session_id, run_id, model, usd) VALUES ('t', 's1', 'r1', 'm', 0.5)").run()
-  expect(migrate(db)).toBe(11)
+  expect(migrate(db)).toBe(12)
   expect(db.prepare("SELECT usd, subscription FROM usage").all()).toEqual([{ usd: 0.5, subscription: 0 }])
 })
 
 test("a store already at version 6 gets only the runs started_at migration", () => {
   const db = open()
   expect(migrate(db, MIGRATIONS.slice(0, 6))).toBe(6)
-  expect(migrate(db)).toBe(11)
+  expect(migrate(db)).toBe(12)
   const runs = db.prepare("PRAGMA table_info(runs)").all().map((c) => c.name)
   expect(runs).toContain("started_at")
   const sessions = db.prepare("PRAGMA table_info(hq_sessions)").all().map((c) => c.name)
@@ -161,7 +162,7 @@ test("a store already at version 7 gets only the session mode migration, and its
     "INSERT INTO sessions (id, person, harness, office, cwd, repo_commit, status, kind, created_at, updated_at) " +
       "VALUES ('s1', 'minh', 'composer', 'mac', '/w', 'c0ffee', 'idle', 'main', ?, ?)",
   ).run(at, at)
-  expect(migrate(db)).toBe(11)
+  expect(migrate(db)).toBe(12)
   expect(db.prepare("SELECT id, mode FROM sessions").all()).toEqual([{ id: "s1", mode: "auto" }])
   const runs = db.prepare("PRAGMA table_info(runs)").all().map((c) => c.name)
   expect(runs).toContain("started_at")
@@ -179,7 +180,7 @@ test("a store at version 8 gets only the approval migration", () => {
     "INSERT INTO questions (id, session_id, run_id, source, asker, question, status, created_at, updated_at) " +
       "VALUES ('q1', 's1', 'run-1', 'ask_user', 'minh', 'Which db?', 'open', ?, ?)",
   ).run(at, at)
-  expect(migrate(db)).toBe(11)
+  expect(migrate(db)).toBe(12)
   expect(db.prepare("SELECT id, approval FROM questions").all()).toEqual([{ id: "q1", approval: null }])
   expect(db.prepare("PRAGMA table_info(sessions)").all().map((c) => c.name)).toContain("mode")
 })
@@ -192,6 +193,31 @@ test("a store at version 9 gets only the instrument_of migration, and its sessio
     "INSERT INTO sessions (id, person, harness, office, cwd, repo_commit, status, kind, created_at, updated_at) " +
       "VALUES ('s1', 'minh', 'composer', 'mac', '/w', 'c0ffee', 'idle', 'main', ?, ?)",
   ).run(at, at)
-  expect(migrate(db)).toBe(11)
+  expect(migrate(db)).toBe(12)
   expect(db.prepare("SELECT id, instrument_of FROM sessions").all()).toEqual([{ id: "s1", instrument_of: null }])
+})
+
+test("a store at version 11 renames its composer sessions yian, and new sessions are yian", () => {
+  // The rename comes after the subscription cost migration.
+  const last = MIGRATIONS.slice(-2).map((m) => m.name)
+  expect(last).toEqual(["0011_usage_subscription.sql", "0012_session_harness_yian.sql"])
+  const file = join(tempDir(), "store.sqlite")
+  const db = openSqlite(file)
+  expect(migrate(db, MIGRATIONS.slice(0, 11))).toBe(11)
+  const at = "2026-11-22T00:00:00.000Z"
+  const insert = db.prepare(
+    "INSERT INTO sessions (id, person, harness, office, cwd, repo_commit, status, kind, created_at, updated_at) " +
+      "VALUES (?, 'minh', ?, 'mac', '/w', ?, 'idle', 'main', ?, ?)",
+  )
+  const ids = { composer: newId(), codex: newId(), claude: newId() }
+  for (const [harness, id] of Object.entries(ids)) insert.run(id, harness, COMMIT, at, at)
+  db.close()
+  const store = new Store(file)
+  onTestFinished(() => store.close())
+  expect(userVersion(store.db)).toBe(12)
+  const harness = (id: string) => store.db.prepare("SELECT harness FROM sessions WHERE id = ?").get(id)?.harness
+  expect([harness(ids.composer), harness(ids.codex), harness(ids.claude)]).toEqual(["yian", "codex", "claude"])
+  expect(store.getSession(ids.composer)?.harness).toBe("yian")
+  const fresh = store.createSession(session())
+  expect([fresh.harness, harness(fresh.id)]).toEqual(["yian", "yian"])
 })

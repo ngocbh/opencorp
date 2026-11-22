@@ -18,7 +18,7 @@ import { strip } from "../util/redact.ts"
 export const NEW_AGENT = {
   kind: "agent",
   main: "../../shared/flows/chat.yaml",
-  harnesses: ["composer"],
+  tools: ["yian"],
   harness_policy: { sandbox: "workspace-write", network: false },
 } as const
 

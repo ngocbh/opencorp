@@ -169,7 +169,7 @@ export class CodexSessions implements SessionHarness {
       model?: string | null
     } = {},
   ): Promise<SessionRecord> {
-    if (harness === "composer") throw new HarnessError(501, "not_implemented", NOT_SERVED)
+    if (harness === "yian") throw new HarnessError(501, "not_implemented", NOT_SERVED)
     if (harness !== "codex")
       throw new HarnessError(422, "unsupported_harness", `the ${harness} harness is not supported yet`)
     const session = await this.#open(handle, cwd, { openedBy, connection })
@@ -343,11 +343,11 @@ export class CodexSessions implements SessionHarness {
     const repo = loadRepo(await this.office.git.pin(chat.repo_commit))
     const person = repo.people.get(chat.person)
     if (person === undefined) throw new HarnessError(404, "not_found", missingPerson(repo, chat.person))
-    if (!person.harnesses.includes("codex")) {
+    if (!person.tools.includes("codex")) {
       throw new HarnessError(
         422,
         "unsupported_harness",
-        `@${chat.person} doesn't use the codex harness: the owner adds codex to their person's harnesses`,
+        `@${chat.person} doesn't use the codex harness: the owner adds codex to their person's tools`,
       )
     }
   }
@@ -808,7 +808,7 @@ export class CodexSessions implements SessionHarness {
     const person = repo.people.get(handle)
     if (person === undefined) throw new HarnessError(404, "not_found", missingPerson(repo, handle))
     if (person.kind !== "agent") throw notAnAgent()
-    if (!person.harnesses.includes("codex"))
+    if (!person.tools.includes("codex"))
       throw new HarnessError(422, "unsupported_harness", "the person doesn't use the codex harness")
     const real = checkFolder(this.office, cwd, this.log)
     const chosen = await startConnection(this.office, connection, this.log)

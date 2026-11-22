@@ -89,7 +89,7 @@ test("the start sweep interrupts what an earlier office left open", () => {
   addRuns(store, idle)
   const ended = store.createSession(session({ status: "ended", run_ids: [newId()] }))
   const [killed] = addRuns(store, ended, { flow: DEBRIEF, flowPath: "shared/flows/debrief.yaml", driver: OFFICE })
-  // Only composer sessions' current runs are kept: a live Codex session's run is swept.
+  // Only yian sessions' current runs are kept: a live Codex session's run is swept.
   const codex = store.createSession(session({ harness: "codex", status: "idle", run_ids: [newId()] }))
   const [coded] = addRuns(store, codex)
   const yian = yianOf()

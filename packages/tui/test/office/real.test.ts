@@ -181,7 +181,7 @@ test("connections: the list with can_manage for the asker, a connection's models
   expect((await failure(client().connections.models("nope"))).code).toBe("not_found")
 })
 
-test("continue waits the create limit; the office refuses a composer session", async () => {
+test("continue waits the create limit; the office refuses a yian session", async () => {
   const { id } = await chat("continue")
   const timeout = AbortSignal.timeout.bind(AbortSignal)
   const asked: number[] = []

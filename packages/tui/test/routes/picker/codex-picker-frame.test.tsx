@@ -23,10 +23,10 @@ function lastPickOn() {
   }
 }
 
-/** The fake office, with minh using Codex as well as composer. */
+/** The fake office, with minh using Codex as well as yian. */
 function codexOffice() {
   const s = seed()
-  s.people = s.people.map((p) => (p.handle === "minh" ? { ...p, harnesses: ["composer", "codex"] } : p))
+  s.people = s.people.map((p) => (p.handle === "minh" ? { ...p, tools: ["yian", "codex"] } : p))
   return createFakeOffice({ seed: s })
 }
 
@@ -48,7 +48,7 @@ test("a person who uses Codex has a Codex row, and picking it picks the harness"
   const app = await bootFrame(createStub(fake))
   try {
     const picker = await pickCodex(app)
-    // One row per harness; the current one (composer, minh's first) is marked, as rows are compared by value.
+    // One row per harness; the current one (yian, minh's first) is marked, as rows are compared by value.
     expect(picker).toContain("● @minh Minh · Software engineer")
     expect(picker).toContain("@minh · Codex Minh · Software engineer")
   } finally {
@@ -58,7 +58,7 @@ test("a person who uses Codex has a Codex row, and picking it picks the harness"
 })
 
 test("a chat started on Codex asks the office for a Codex session, without a model pick", async () => {
-  // A composer chat would start on this pick; a Codex chat runs on Codex's own model.
+  // A yian chat would start on this pick; a Codex chat runs on Codex's own model.
   const undo = lastPickOn()
   const fake = codexOffice()
   const app = await bootFrame(createStub(fake))

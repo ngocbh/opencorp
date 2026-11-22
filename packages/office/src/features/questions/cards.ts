@@ -557,7 +557,7 @@ export class Cards {
     const side = Session.parse({
       id: newId(),
       person: question.asker,
-      harness: "composer",
+      harness: "yian",
       office: os.hostname(),
       cwd: asker.cwd,
       repo_commit: asker.repo_commit,

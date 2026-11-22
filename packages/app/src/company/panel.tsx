@@ -145,8 +145,8 @@ export function Panel(props: {
       <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-3 text-sm">
         <dt class={MUTED}>Home office</dt>
         <dd>{props.person.home_office ?? "—"}</dd>
-        <dt class={MUTED}>Harnesses</dt>
-        <dd>{(props.person.harnesses ?? []).join(", ") || "—"}</dd>
+        <dt class={MUTED}>Tools</dt>
+        <dd>{(props.person.tools ?? []).join(", ") || "—"}</dd>
         <Show when={props.person.kind === "agent"}>
           <dt class={MUTED}>Model</dt>
           <dd>{props.person.model ?? "the office's default"}</dd>
@@ -197,9 +197,9 @@ export function Panel(props: {
             <For each={sessions()}>
               {(x) => (
                 <li>
-                  {/* The office prices composer tokens only; a harness session's spend isn't known here. */}
+                  {/* The office prices yian tokens only; a harness session's spend isn't known here. */}
                   {statusLabel(x)} ·{" "}
-                  {x.harness === "composer" ? sessionCost(x.cost ?? 0, x.subscription_cost ?? 0) : "unpriced"} ·{" "}
+                  {x.harness === "yian" ? sessionCost(x.cost ?? 0, x.subscription_cost ?? 0) : "unpriced"} ·{" "}
                   {x.office}
                   <Show when={x.work_item_id ? office.state.workItems[x.work_item_id] : undefined}>
                     {(w) => <> · now doing: {w().title}</>}
