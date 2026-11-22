@@ -549,6 +549,8 @@ function pendingCall(over: Partial<PendingCall>): PendingCall {
     pendingSeq: 1,
     deadline: null,
     ask: null,
+    held: false,
+    source: null,
     ...over,
   }
 }
