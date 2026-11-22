@@ -490,6 +490,23 @@ test("ssh behind command, builtin, exec or env is ssh to the reader; one that sk
   expect(risk("command -v ssh")).toBeNull()
 })
 
+test("env's combined flags, -C and assignments after -- are read, and an env the reader can't read before ssh asks", () => {
+  const skips = "it runs ssh without the shell's PATH lookup, so around any ssh wrapper on it"
+  const lines = [
+    "env -iu PATH ssh h", "env -0i ssh h", "env -i0 ssh h", "env -uPATH -0 ssh h", "env -- PATH=/x ssh h",
+    "env -0 -- PATH=/x ssh h", "env -C /usr/bin ./ssh h", "env -C/usr/bin ./ssh h", "env --chdir=/usr/bin ./ssh h",
+    "env --chdir /usr/bin ./ssh h", "env -vC /usr/bin ./ssh h",
+    // Options the reader doesn't know: it fails closed.
+    "env --frobnicate ssh h", "env -X ssh h", "env -i --frobnicate /tmp/ssh h",
+  ]
+  each(lines, risk, skips)
+  each(lines, (line) => readCommand(line).parts.map((p) => ownerOnly(p, true)).find((r) => r !== null) ?? null, skips)
+  // Read, they leave the PATH lookup as it is: plain ssh.
+  for (const line of ["env -0 ssh h", "env -C /tmp ssh h", "env -u FOO ssh h", "env -v -- A=1 ssh h", "env -0v ssh h"]) {
+    expect([line, sshHosts(readCommand(line)), risk(line)]).toEqual([line, ["h"], null])
+  }
+})
+
 test("on the SSH-only profile, a line that sets, exports or unsets PATH, or runs hash -p, asks in every mode", () => {
   const sets = "it changes the shell's PATH, which OpenCorp's ssh wrapper comes first on"
   const lines = [
