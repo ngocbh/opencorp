@@ -8,8 +8,8 @@
  * plain push of a feature branch (`auto`, `dontAsk`); or, inside the workspace sandbox, by a file operation on
  * paths inside the workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it:
  * inside substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. A literal `sh -c` or
- * `eval` string it reads whole is judged as the commands it holds, and a `for` or `case` list is data. A line typed
- * into a shell or a login is a command there, so command deny rules refuse it as well as input ones. Where the reader
+ * `eval` string it reads whole is judged as the commands it holds, and a `for` or `case` list is data. A finished
+ * typed line may be a command wherever it goes, so command deny rules refuse it as well as input ones. Where the reader
  * can't see, while any deny rule that applies to the line is in force (the company's `rules.yaml` or the agent's), a
  * line it can't fully read (a substitution, `eval` or `sh -c` of a variable, an unclosed quote, `[[`, or anything else
  * it marks unreadable) asks in every mode and `dontAsk` refuses it, saying so; Auto's check never judges it, since a
@@ -53,8 +53,8 @@
  */
 import { ruleWords } from "@opencorp/protocol"
 import {
-  assignmentsOf, classify, EMPTY, fileOp, innerParts, lineCredential, logsIn, opensShell, ownerOnly, passesThrough,
-  pathChange, programOf, pushOf, readCommand, remoteOf, type SimpleCommand, sshHosts, sshOf, type Where,
+  assignmentsOf, classify, EMPTY, fileOp, innerParts, lineCredential, logsIn, ownerOnly, passesThrough, pathChange,
+  programOf, pushOf, readCommand, remoteOf, type SimpleCommand, sshHosts, sshOf, type Where,
 } from "./commands.ts"
 export type { Where } from "./commands.ts"
 
@@ -171,9 +171,10 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
   const read = readCommand(action.text)
   const parts = read.parts.length > 0 ? read.parts : [EMPTY]
   const into = action.kind === "input" ? readCommand(action.into ?? "") : null
-  // A line typed into a shell runs there as a command, so command deny rules refuse it too.
-  const shell = into !== null && opensShell(into)
-  const own = rules.filter((r) => r.kind === action.kind || (shell && r.effect === "deny"))
+  // A finished typed line may run as a command wherever it goes (a shell, a login, a launcher the reader doesn't
+  // know), so command deny rules refuse it too.
+  const finished = action.kind === "input" && !action.partial
+  const own = rules.filter((r) => r.kind === action.kind || (finished && r.effect === "deny"))
   const everything = parts.flatMap(withInner)
   const first = (effect: Effect) =>
     own.find((r) => r.effect === effect && everything.some((p) => fits(r.pattern, p, false)))

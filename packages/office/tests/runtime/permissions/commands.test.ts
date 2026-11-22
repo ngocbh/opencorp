@@ -325,6 +325,41 @@ test("more text bash runs that a line doesn't show as a command makes it unreada
   expect(programOf(readCommand("busybox rm -rf x").parts[0]!)).toEqual(["rm", "-rf", "x"])
 })
 
+test("what the review found the reader read through it reads as bash does, or marks unreadable", () => {
+  // eval, command, exec and builtin end their options at --.
+  for (const line of ["eval -- 'rm -rf x'", "command -- rm -rf x", "exec -- rm -rf x", "builtin -- eval 'rm -rf x'"])
+    expect([line, readCommand(line).parts.some((p) => programOf(p)[0] === "rm")]).toEqual([line, true])
+  expect(why("eval -- 'rm -rf x'")).toBeNull()
+  expect(programOf(readCommand("command -- rm -rf x").parts[0]!)).toEqual(["rm", "-rf", "x"])
+  // A wrapper fed its input doesn't pass through: what it runs may read that input as commands.
+  each(["echo 'rm -rf x' | sh -c sh", "echo x | sh -c 'grep y'"], why, "it runs text as a command: sh -c")
+  expect(why("echo 'rm -rf x' | eval sh")).toBe("it runs text as a command: sh from its input")
+  // A here-document or here-string is data only to a program known to take it as data, with no shell or interpreter
+  // among its words; a compound's, on the keyword that ends it, goes to every command in it.
+  each(
+    ["sh -c 'bash -s' <<EOF\nrm -rf x\nEOF", "eval sh <<EOF\nrm -rf x\nEOF", "bash /dev/fd/3 3<<EOF\nrm -rf x\nEOF",
+      "sh /proc/self/fd/3 3<<<'rm -rf x'", "docker exec -i c sh <<EOF\nrm -rf x\nEOF", "srun bash <<EOF\nrm x\nEOF",
+      "setsid sh <<EOF\nrm x\nEOF", "python3 <<'EOF'\nprint(1)\nEOF", "kubectl apply -f - <<EOF\nx: 1\nEOF",
+      "while :; do bash; break; done <<'EOF'\nrm -rf x\nEOF", "grep bash <<< x", "cat {fd}<<EOF\nx\nEOF\nbash /dev/fd/$fd"],
+    (line) => why(line) !== null,
+    true,
+  )
+  expect(why("docker exec -i c sh <<EOF\nrm x\nEOF")).toBe("it feeds a here-document or here-string to what may run it")
+  each(
+    ["git commit -F - <<'EOF'\nFix\nEOF", "cat > notes.md <<'EOF'\n# Notes\nEOF", "read -r x <<< \"$y\"",
+      "grep -c x <<< 'a'", "ps aux | grep bash", "timeout 5 cat <<EOF\nx\nEOF"],
+    why,
+    null,
+  )
+  // An unknown program fed from a pipe with a shell among its words may run it there.
+  each(["echo 'rm -rf x' | docker exec -i c sh", "cat s | srun bash"], (line) => why(line)?.endsWith("from its input"), true)
+  // `for x do` and `select x do` loop over "$@": what follows `do` is the body, not the list.
+  expect(words("for x do rm -rf y; done")).toEqual([["for", "x"], ["rm", "-rf", "y"]])
+  expect(why("for x do rm -rf y; done")).toBeNull()
+  expect(words("select x do ls; done")).toContainEqual(["ls"])
+  expect(why("select x do ls; done")).toBe("it uses a shell keyword: select")
+})
+
 test("a literal sh -c or eval string the reader reads whole is read through: its commands, not the wrapper, are judged", () => {
   for (const line of ["sh -c 'git status'", "bash -lc 'make test'", "dash -ec 'ls; ls'", "eval 'git status'",
     'eval "r""m -rf x"', "timeout 5 sh -c 'ls'"])

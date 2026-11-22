@@ -415,20 +415,47 @@ test("a literal sh -c or eval string is judged as the commands it holds", () => 
         : { verdict: "ask", reason: "it force-pushes", rules: [] }]])
 })
 
-test("a line typed into a shell or a login is judged by command deny rules too", () => {
+test("a finished typed line is judged by command deny rules too, whatever it is typed into", () => {
   const into = (text: string, to: string, partial = false): Action => ({ kind: "input", text, into: to, partial })
   for (const mode of MODES)
-    for (const to of ["bash", "ssh u@n", "mosh u@n", "sudo -i", "docker exec -it c sh", "busybox ash"])
+    for (const to of ["bash", "ssh u@n", "mosh u@n", "sudo -i", "docker exec -it c sh", "busybox ash", "$SHELL",
+      "script -q", "tmux", "salloc -N1", "python3 -c 'import pty; pty.spawn(\"/bin/sh\")'", "python3"])
       table(mode, [[into("rm -rf x", to), [deny("rm *")], S, { verdict: "deny", reason: "a deny rule: rm *" }]])
   const why = "deny rules are in force and it can't be read to check them: it runs text as a command: eval"
   table("auto", [
     [into('eval "$X"', "bash"), [deny("rm *")], S, { verdict: "ask", reason: why, rules: [] }],
-    [into("rm -rf x", "python3"), [deny("rm *")], S, { verdict: "check", rules: ["rm -rf x"] }],
+    [into('eval "$X"', "python3"), [deny("rm *")], S, { verdict: "ask", reason: why, rules: [] }],
+    [input("rm x"), [deny("rm *")], S, { verdict: "deny", reason: "a deny rule: rm *" }],
     [into("rm -rf x", "bash"), [ask("rm *")], S, { verdict: "check", rules: ["rm -rf x"] }],
+    // Typed without Enter, it runs nothing yet; the whole line is decided again when it is finished.
+    [into("rm -rf x", "bash", true), [deny("rm *")], S,
+      { verdict: "ask", reason: "Auto asks: the line isn't finished", rules: ["rm -rf x"] }],
   ])
 })
 
-test("a typed line the reader can't read asks while an input deny rule is in force; a command deny rule doesn't apply to it", () => {
+test("what the review found the reader read through it no longer does, with a deny rule in force", () => {
+  const why = (text: string) => `deny rules are in force and it can't be read to check them: ${readCommand(text).unreadable}`
+  for (const text of [
+    "echo 'rm -rf x' | sh -c sh", "echo 'rm -rf x' | eval sh", "sh -c 'bash -s' <<EOF\nrm -rf x\nEOF",
+    "eval sh <<EOF\nrm -rf x\nEOF", "bash /dev/fd/3 3<<EOF\nrm -rf x\nEOF", "sh /proc/self/fd/3 3<<<'rm -rf x'",
+    "docker exec -i c sh <<EOF\nrm -rf x\nEOF", "srun bash <<EOF\nrm -rf x\nEOF", "setsid sh <<EOF\nrm -rf x\nEOF",
+    "echo 'rm -rf x' | docker exec -i c sh", "while :; do bash; break; done <<'EOF'\nrm -rf x\nEOF",
+  ]) {
+    table("auto", [[cmd(text), [deny("rm *")], W, { verdict: "ask", reason: why(text), rules: [] }]])
+    table("dontAsk", [[cmd(text), [deny("rm *")], W, { verdict: "deny", reason: DONT + why(text) }]])
+  }
+  const denied: Decision = { verdict: "deny", reason: "a deny rule: rm *" }
+  for (const mode of MODES)
+    table(mode, [
+      [cmd("eval -- 'rm -rf x'"), [deny("rm *")], W, denied],
+      [cmd("for x do rm -rf y; done"), [deny("rm *")], W, denied],
+      [cmd("for x\ndo rm -rf y; done"), [deny("rm *")], W, denied],
+    ])
+  table("default", [[cmd("for x do rm -rf y; done"), [], W,
+    { verdict: "ask", reason: "Default mode asks: it deletes or moves files", rules: ["rm -rf y"] }]])
+})
+
+test("a typed line the reader can't read asks while an input deny rule is in force; a command one applies only once it's finished", () => {
   const why = "deny rules are in force and it can't be read to check them: it runs text as a command: eval"
   for (const mode of ["auto", "default", "ask"] as const)
     table(mode, [
@@ -436,7 +463,7 @@ test("a typed line the reader can't read asks while an input deny rule is in for
       [input('eval "$X"', true), [deny("rm *", "input")], S, { verdict: "ask", reason: why, rules: [] }],
     ])
   table("dontAsk", [[input('eval "$X"'), [deny("rm *", "input")], S, { verdict: "deny", reason: DONT + why }]])
-  table("auto", [[input('eval "$X"'), [deny("rm *")], S, { verdict: "check", rules: [] }]])
+  table("auto", [[input('eval "$X"', true), [deny("rm *")], S, { verdict: "ask", reason: "Auto asks: the line isn't finished", rules: [] }]])
 })
 
 test("with no deny rule in force, a line the reader can't read is decided as before", () => {
@@ -736,14 +763,14 @@ test("a suggested rule that can't match its command is not offered", () => {
   ])
 })
 
-test("input rules match typed input and command rules don't", () => {
+test("input rules match typed input; command rules don't, but a finished line's command deny rules", () => {
   table("ask", [
     [input("ls"), [allow("ls *")], S, askMode(["ls"])],
     [input("ls"), [allow("ls *", "input")], S, BY_RULE],
     [cmd("ls"), [allow("ls *", "input")], W, askMode(["ls *"])],
   ])
   table("auto", [
-    [input("rm x"), [deny("rm *")], S, { verdict: "check", rules: ["rm x"] }],
+    [input("rm x", true), [deny("rm *")], S, { verdict: "ask", reason: "Auto asks: the line isn't finished", rules: ["rm x"] }],
     [input("rm x"), [deny("rm *", "input")], S, { verdict: "deny", reason: "a deny rule: rm *" }],
     [cmd("rm x"), [deny("rm *", "input")], S, { verdict: "check", rules: ["rm x"] }],
   ])

@@ -14,11 +14,14 @@
  * variable that may be an integer one), running any `$(…)` there, quoted or not; compgen's `-C`, `-F` and `-W` and
  * mapfile's `-C`; a shell fed its commands from its input, here or over ssh; and a variable a shell runs at its prompt
  * or start (`PS1`, `PROMPT_COMMAND`, `BASH_ENV`, `ENV`), set for itself or through `env`. A literal `sh -c` (sh, bash
- * or dash, with no operand after the string or option that does more) or `eval` string it reads whole passes through:
- * its commands are judged, not the wrapper (`passesThrough`). Here-documents and here-strings are data, their
- * substitutions read as commands; an if, a loop or a case is read through its keywords, and one out of place, `[[`,
- * `select` or `coproc` marks the line. It doesn't know programs that run their arguments as a command (`setsid`,
- * `srun`) or interpreters' code (`python -c`).
+ * or dash, with no operand after the string or option that does more) or `eval` string it reads whole, not fed
+ * input, passes through: its commands are judged, not the wrapper (`passesThrough`). A here-document or here-string
+ * is data to a program known to take it so (`cat`, `git`, `grep`), its substitutions read as commands; to any other,
+ * a compound command, or with a shell or an interpreter among the words, it marks the line, as does a shell given a
+ * descriptor as its script (`/dev/fd/3`) or a program it doesn't know fed input with a shell among its words. An if,
+ * a loop or a case is read through its keywords, and one out of place, `[[`, `select` or `coproc` marks the line. It
+ * doesn't know programs that run their arguments as a command (`setsid`, `srun`) or interpreters' code
+ * (`python -c`).
  * The reader asks, in every mode, before a command that names a credential path anywhere in the line (an operand,
  * an option's value, an assignment, a `for` list, a here-string or a redirect), one the host marks
  * (`Where.credentials`), or a folder that holds them. On the SSH-only profile and over ssh, where credentials are
@@ -155,6 +158,7 @@ const RUNS_TEXT = "it runs text as a command"
 const CHANGES = "it changes how later commands run"
 const KEYWORD = "it uses a shell keyword"
 const SUBSCRIPT = "it has an array subscript bash evaluates"
+const HERE_INPUT = "it feeds a here-document or here-string to what may run it"
 const PROMPT = "it sets what a shell runs at its prompt or start"
 
 const DELETES = "it deletes or moves files"
@@ -191,6 +195,8 @@ const THROUGH_SHELLS = set("sh bash dash")
 const THROUGH_OPTIONS = /^-[ceuxvfl]+$/
 /** The names a shell may be given for its input as its script. */
 const STDIN_NAMES = set("- /dev/stdin /dev/fd/0 /proc/self/fd/0")
+/** A name for one of a process's descriptors, given as a script: its number, or what names it. */
+const DESCRIPTOR = /^\/(?:dev\/fd|proc\/[^/]+\/fd)\/(.+)$/
 /** Long options of the shells that take the next word as their value. */
 const SHELL_VALUE_LONGS = set("--rcfile --init-file")
 /** Where an if, a loop or a case ends, by the keyword that opens it. */
@@ -253,6 +259,16 @@ const RUNS_CODE = set(
   "sh bash dash zsh ksh fish python python2 python3 perl ruby node bun deno php lua tclsh R Rscript julia " +
     "awk gawk mawk nawk sed make cmake ninja npm npx yarn pnpm cargo go java mvn gradle",
 )
+/** Programs known to take a here-document or here-string as data, never as commands: to any other, or with a shell
+ *  or an interpreter among the words, the reader can't say what it does with one. */
+const DATA_INPUT = new Set([
+  ...READ_ANY,
+  ...set(
+    "git tee sort uniq diff comm paste join base64 base32 xxd hexdump strings rev tac expand unexpand fmt pr shuf " +
+      "iconv jq yq gzip gunzip zcat bzip2 bunzip2 bzcat xz unxz xzcat printf test [ tree file date read mapfile " +
+      "readarray",
+  ),
+])
 /** Wrappers that make a command not read-only even when what they run is: `nohup` writes `nohup.out` on a
  *  terminal, and `env` runs a program it finds itself. */
 const NOT_READ_ONLY_WRAPPERS = set("nohup env")
@@ -477,13 +493,6 @@ export function sshHosts(read: ReadCommand): readonly string[] {
  *  reads. A line typed into it runs there. */
 export function logsIn(read: ReadCommand): boolean {
   return read.parts.some((part) => sshOf(part) !== null || moshHost(part) !== null)
-}
-
-/** Whether a line typed into what `read` runs goes to a shell, here or on another machine: it logs in (`ssh`, `mosh`),
- *  a word of it names a shell (`bash`, `docker exec -it c sh`), or it runs as another user (`sudo -i`, `su`). */
-export function opensShell(read: ReadCommand): boolean {
-  return logsIn(read) || read.parts.some((part) =>
-    part.words.some((w) => SHELLS.has(base(w))) || OTHER_USERS.has(base(programOf(part)[0] ?? "")))
 }
 
 /** Whether the policy judges `part` by other parts instead of on its own: a `for`, `select` or `case` word list,
@@ -781,13 +790,15 @@ interface Building {
   /** After `for`, `select` or `case`: the keyword and the words that follow it, which are no command. */
   listed: string[]
   fed: boolean
+  /** Whether a here-document or here-string feeds one of its descriptors. */
+  here: boolean
   redirect: Redirect | null
   skip: boolean
   skipName: boolean
 }
 const building = (fed = false): Building => ({
   assignments: [], words: [], expands: [], substituted: [], writes: [], reads: [], data: [], listed: [], fed,
-  redirect: null, skip: false, skipName: false,
+  here: false, redirect: null, skip: false, skipName: false,
 })
 const INPUTS: ReadonlySet<Redirect> = new Set(["read", "readwrite", "dup-in", "heredoc", "heredoc-tabs", "herestring"])
 const newWord = (): Word => ({ text: "", expands: false, substituted: false, quoted: false, firstQuoted: Infinity })
@@ -892,6 +903,7 @@ class Reader {
         this.pos += op.length
         cmd.redirect = kind
         if (INPUTS.has(kind) && !named && (fd === null || fd === 0)) cmd.fed = true
+        if (kind === "heredoc" || kind === "heredoc-tabs" || kind === "herestring") cmd.here = true
       } else if (c === "(" && n === "(" && w === null && cmd.words.length === 0 && this.arithmetic(2)) {
         this.mark(ARITHMETIC)
       } else if (c === "(" && cmd.skip) {
@@ -956,6 +968,12 @@ class Reader {
       return false
     }
     if (cmd.skip) {
+      // `for x do` and `select x do` loop over "$@": the `do` ends the list, and the body follows as commands.
+      const loop = cmd.listed.length === 2 && (cmd.listed[0] === "for" || cmd.listed[0] === "select")
+      if (loop && text === "do" && !w.quoted) {
+        this.compound(text)
+        return true
+      }
       cmd.listed.push(text)
       return false
     }
@@ -979,6 +997,15 @@ class Reader {
       cmd.substituted.push(w.substituted)
     }
     return false
+  }
+
+  /** Marks the line when a here-document or here-string goes to what may run it as commands: a program the reader
+   *  doesn't know to take it as data, any with a shell or an interpreter among its words, or a compound command (the
+   *  keyword that ends it holds the redirect, and no program), whose every command reads it. */
+  private hereInput(words: readonly string[], assignments: readonly string[]): void {
+    const { start } = unwrap({ ...EMPTY, words, assignments })
+    const runner = words.some((w) => SHELLS.has(base(w)) || RUNS_CODE.has(base(w)))
+    if (runner || !DATA_INPUT.has(base(words[start] ?? ""))) this.mark(HERE_INPUT)
   }
 
   /** Follows an if, a loop or a case through its keywords; one out of place marks the line, as bash would refuse it
@@ -1007,6 +1034,7 @@ class Reader {
       THROUGH.add(listed)
       this.complete(listed)
     }
+    if (cmd.here) this.hereInput(cmd.words, cmd.assignments)
     if (cmd.words.length + cmd.assignments.length + cmd.writes.length + cmd.reads.length + cmd.data.length === 0) return
     const { assignments, words, expands, substituted, writes, reads, data, fed } = cmd
     this.complete({ assignments, words, expands, substituted, writes, reads, data, fed })
@@ -1039,7 +1067,7 @@ class Reader {
       if (remote) REMOTES.set(part, remote)
       if (remote?.unreadable) this.mark(`on ${host}: ${remote.unreadable}`)
       if (!command && host && part.fed) this.mark(`on ${host}: ${FEEDS_SHELL}`)
-      const shell = part.fed ? remote?.parts.map(inputShell).find((found) => found !== null) : undefined
+      const shell = part.fed ? remote?.parts.map((p) => inputShell(p, true)).find((found) => found !== null) : undefined
       if (shell) this.mark(`on ${host}: ${RUNS_TEXT}: ${shell} from its input`)
     }
     this.inner(part, start, name, args)
@@ -1063,8 +1091,11 @@ class Reader {
         substituted: part.substituted.slice(start + 1 + from), writes: [], reads: [], data: [], fed: false,
       })
     const literal = (k: number) => !part.expands[start + 1 + k] && !part.substituted[start + 1 + k]
-    if (name === "eval") this.through(part, args.join(" "), args.every((_, k) => literal(k)), "eval")
-    else if (SHELLS.has(name)) {
+    // eval ends its options at `--`.
+    if (name === "eval") {
+      const text = args.slice(args[0] === "--" ? 1 : 0).join(" ")
+      this.through(part, text, args.every((_, k) => literal(k)), "eval")
+    } else if (SHELLS.has(name)) {
       const { runsText, at } = shellString(args)
       // Operands after the string are its $0, $1, …: values no rule sees in the commands that use them.
       const plain = THROUGH_SHELLS.has(name) && at === args.length - 1 && literal(at) &&
@@ -1085,12 +1116,12 @@ class Reader {
 
   /** Reads `text`, the string `part` runs as a command (`label`), and keeps its commands. `part` passes through
    *  (`passesThrough`) when the string is `plain` (literal, and run with no option that does more), the reader reads
-   *  it whole, and `part` does nothing else: it sets no variable, writes no file, and is run by name with no wrapper
-   *  that changes it. Otherwise it marks the line. */
+   *  it whole, and `part` does nothing else: it isn't fed input (which what it runs may run in turn), sets no variable,
+   *  writes no file, and is run by name with no wrapper that changes it. Otherwise it marks the line. */
   private through(part: SimpleCommand, text: string, plain: boolean, label: string): void {
     const unreadable = this.sub(text)
     const { start, sets, wrappers } = unwrap(part)
-    const alone = sets.length === 0 && part.writes.every((w) => w === "/dev/null") &&
+    const alone = !part.fed && sets.length === 0 && part.writes.every((w) => w === "/dev/null") &&
       !part.words[start]!.includes("/") && !wrappers.some((w) => NOT_READ_ONLY_WRAPPERS.has(w))
     if (plain && alone && unreadable === null) THROUGH.add(part)
     else this.mark(`${RUNS_TEXT}: ${label}`)
@@ -1364,20 +1395,31 @@ function hiddenText(part: SimpleCommand, name: string, args: readonly string[]):
   if (name === "compgen" && args.some((w) => /^-[A-Za-z]*[CFW]/.test(w))) return `${RUNS_TEXT}: compgen`
   if ((name === "mapfile" || name === "readarray") && args.some((w) => /^-[A-Za-z]*C/.test(w)))
     return `${RUNS_TEXT}: ${name} -C`
-  const shell = part.fed ? inputShell(part) : null
+  // A program it doesn't know, fed from its input, with a shell among its words, may run it there.
+  const launched = part.fed && name !== "ssh" && !SHELLS.has(name) && !DATA_INPUT.has(name)
+    ? part.words.find((w) => SHELLS.has(base(w)))
+    : undefined
+  if (launched !== undefined) return `${RUNS_TEXT}: ${base(launched)} from its input`
+  const shell = inputShell(part)
   return shell === null ? null : `${RUNS_TEXT}: ${shell} from its input`
 }
 
-/** The shell `part` runs when that shell reads its commands from its input: it has no string to run, and no script,
- *  `-s`, or a name for its input as its script. Null otherwise. */
-function inputShell(part: SimpleCommand): string | null {
+/** The shell `part` runs when that shell reads its commands from a descriptor: `fed` from its input (as `part` is,
+ *  unless the caller knows better), with no string to run and no script, `-s`, or a name for its input as its script;
+ *  or, fed or not, a name for another descriptor as its script (`/dev/fd/3`), whose text the reader doesn't see. Null
+ *  otherwise. */
+function inputShell(part: SimpleCommand, fed = part.fed): string | null {
   const { start } = unwrap(part)
   const [prog = "", ...args] = part.words.slice(start)
   const name = base(prog)
   if (!SHELLS.has(name)) return null
   const { runsText, at } = shellString(args)
-  const input = at >= args.length || STDIN_NAMES.has(args[at]!) || args.slice(0, at).some((w) => /^-[A-Za-z]*s/.test(w))
-  return !runsText && input ? name : null
+  if (runsText) return null
+  const script = args[at]
+  const other = script !== undefined && DESCRIPTOR.exec(script)?.[1]
+  if (other && other !== "0") return name
+  const input = script === undefined || STDIN_NAMES.has(script) || args.slice(0, at).some((w) => /^-[A-Za-z]*s/.test(w))
+  return fed && input ? name : null
 }
 
 // ---- Wrappers and options ----
