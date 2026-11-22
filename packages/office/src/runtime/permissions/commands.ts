@@ -9,6 +9,9 @@
  * workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it: inside
  * substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. Where it can't see, it marks the
  * line unreadable, and while a deny rule is in force such a line asks in every mode and Auto's check never judges it.
+ * That includes text bash runs that the line doesn't show as a command: `let`, an array element named to `read`,
+ * `printf -v`, `getopts`, `wait -p` or `test -v` (bash evaluates its subscript, running any `$(…)` there, quoted or
+ * not), compgen's and mapfile's `-C`, a shell fed its commands from its input, and a prompt variable set.
  * The reader asks, in every mode, before a command that names a credential path anywhere in the line (an operand,
  * an option's value, an assignment, a `for` list, a here-string or a redirect), one the host marks
  * (`Where.credentials`), or a folder that holds them. On the SSH-only profile and over ssh, where credentials are
@@ -55,8 +58,8 @@ export interface SimpleCommand {
   readonly fed: boolean
 }
 /** A command line read: its simple commands in order, those inside substitutions, groups, compound commands,
- *  `sh -c` strings and `eval` included (before the command that holds them), and why the line can't be read
- *  safely, or null. */
+ *  `sh -c` strings and `eval` included, under `sudo`, `doas` and `find -exec` too (before the command that holds
+ *  them), and why the line can't be read safely, or null. */
 export interface ReadCommand {
   readonly parts: readonly SimpleCommand[]
   readonly unreadable: string | null
@@ -146,6 +149,8 @@ const DEEP = "it is nested too deeply"
 const RUNS_TEXT = "it runs text as a command"
 const CHANGES = "it changes how later commands run"
 const KEYWORD = "it uses a shell keyword"
+const SUBSCRIPT = "it names an array element, whose subscript bash evaluates"
+const PROMPT = "it sets what the shell runs at its prompt"
 
 const DELETES = "it deletes or moves files"
 const WRITES = "it writes or overwrites files"
@@ -178,6 +183,9 @@ const SHELLS = set("sh bash dash zsh ksh fish")
 const CHANGES_LATER = set(
   "alias unalias function set shopt enable hash export declare typeset readonly local unset trap builtin",
 )
+/** A word that names a variable an interactive shell expands or runs at each prompt (`PS0` before each command), as
+ *  `PATH_VARIABLE` names PATH. A plain read of its value is left out. */
+const PROMPT_VARIABLE = /(?:^|[^A-Za-z0-9_${])(?:-[A-Za-z]+)?(?:PS[0124]|PROMPT_COMMAND)(?![A-Za-z0-9_])/
 const CONTROL_CHARS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/
 const ANSI: Readonly<Record<string, string>> = {
   a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", "'": "'",
@@ -931,27 +939,43 @@ class Reader {
   }
 
   private complete(part: SimpleCommand): void {
+    this.examine(part)
+    this.parts.push(part)
+  }
+
+  /** Marks what makes `part` unreadable and keeps the commands its words run, inner ones first. What `sudo`, `doas`
+   *  and `find -exec` run is examined as a command of its own, so a shell string or `eval` there is read too. */
+  private examine(part: SimpleCommand): void {
     const { start, wrappers } = unwrap(part)
     const [prog, ...args] = part.words.slice(start)
+    const name = base(prog ?? "")
     // `builtin` runs what it names, which the reader reads; it still marks the line, as it does alone.
     if (wrappers.includes("builtin")) this.mark(`${CHANGES}: builtin`)
-    if (prog !== undefined) {
-      const name = base(prog)
-      if (prog !== "[" && (part.expands[start] || /[$*?[{}]/.test(prog) || prog.startsWith("~"))) this.mark(EXPANDED)
-      if (RUNS_TEXT_PROGRAMS.has(name)) this.mark(`${RUNS_TEXT}: ${name}`)
-      if (name === "env" && splitString(args) !== null) this.mark(`${RUNS_TEXT}: env -S`)
-      if (SHELLS.has(name) && shellString(args).runsText) this.mark(`${RUNS_TEXT}: ${name} -c`)
-      if (CHANGES_LATER.has(name)) this.mark(`${CHANGES}: ${name}`)
-      if (name === "ssh") {
-        const { host, command } = sshParse(args)
-        const remote = command ? read(command.join(" "), this.depth + 1) : null
-        if (remote) REMOTES.set(part, remote)
-        if (remote?.unreadable) this.mark(`on ${host}: ${remote.unreadable}`)
-        if (!command && host && part.fed) this.mark(`on ${host}: ${FEEDS_SHELL}`)
-      }
-      this.inner(part, start, name, args)
+    if (prog !== undefined && prog !== "[" && (part.expands[start] || /[$*?[{}]/.test(prog) || prog.startsWith("~")))
+      this.mark(EXPANDED)
+    if (RUNS_TEXT_PROGRAMS.has(name)) this.mark(`${RUNS_TEXT}: ${name}`)
+    if (name === "env" && splitString(args) !== null) this.mark(`${RUNS_TEXT}: env -S`)
+    if (SHELLS.has(name) && shellString(args).runsText) this.mark(`${RUNS_TEXT}: ${name} -c`)
+    if (CHANGES_LATER.has(name)) this.mark(`${CHANGES}: ${name}`)
+    const hidden = hiddenText(part, name, args)
+    if (hidden !== null) this.mark(hidden)
+    if (prog === undefined) return
+    if (name === "ssh") {
+      const { host, command } = sshParse(args)
+      const remote = command ? read(command.join(" "), this.depth + 1) : null
+      if (remote) REMOTES.set(part, remote)
+      if (remote?.unreadable) this.mark(`on ${host}: ${remote.unreadable}`)
+      if (!command && host && part.fed) this.mark(`on ${host}: ${FEEDS_SHELL}`)
     }
-    this.parts.push(part)
+    this.inner(part, start, name, args)
+    if (name !== "sudo" && name !== "doas" && name !== "find") return
+    if (this.depth >= MAX_DEPTH) throw new TooDeep()
+    this.depth++
+    try {
+      for (const run of innerParts(part)) this.examine(run)
+    } finally {
+      this.depth--
+    }
   }
 
   /** Reads what a program runs as a command, so deny and ask rules see it: `eval`'s words, an `sh -c` string,
@@ -1217,6 +1241,34 @@ function readableParameter(body: string): boolean {
   const [, count, , rest] = m
   if (rest === "") return true
   return count === "" && /^(:?[-+]|%%?|##?|\/\/?|\^\^?|,,?)/.test(rest!)
+}
+
+/** Why `part`, running builtin or shell `name`, runs text it doesn't show as a command, or null: it sets a prompt
+ *  variable, which an interactive shell expands (`$(…)` and all) or runs at each prompt; it is `let`, or names an array
+ *  element to `read`, `printf -v`, `getopts`, `wait -p` or `test -v`, where bash evaluates the subscript, running any
+ *  `$(…)` in it, quoted or not; it is compgen's or mapfile's `-C` command; or it is a shell fed its commands from its
+ *  input. */
+function hiddenText(part: SimpleCommand, name: string, args: readonly string[]): string | null {
+  if (part.assignments.some((a) => PROMPT_VARIABLE.test(a))) return PROMPT
+  if (name === "let") return ARITHMETIC
+  // printf names a variable only with -v.
+  const v = name === "printf" && (args[0] ?? "").startsWith("-v")
+  if (SETS_VARIABLE.has(name) && (name !== "printf" || v) && args.some((w) => PROMPT_VARIABLE.test(w))) return PROMPT
+  // The words that name a variable: printf's -v value, read's operands, getopts's name, any of wait's or test -v's.
+  let names: readonly string[] = []
+  if (v) names = [args[0]!.slice(2) || (args[1] ?? "")]
+  else if (name === "read") names = args.slice(optionsEnd(args, "adinNptu", []))
+  else if (name === "getopts") names = args.slice(1, 2)
+  else if (name === "wait" || ((name === "test" || name === "[") && args.includes("-v"))) names = args
+  if (names.some((w) => w.includes("["))) return SUBSCRIPT
+  if (name === "compgen" && args.some((w) => /^-[A-Za-z]*[CF]/.test(w))) return `${RUNS_TEXT}: compgen`
+  if ((name === "mapfile" || name === "readarray") && args.some((w) => /^-[A-Za-z]*C/.test(w)))
+    return `${RUNS_TEXT}: ${name} -C`
+  if (!SHELLS.has(name) || !part.fed) return null
+  const { runsText, at } = shellString(args)
+  const stdin = at >= args.length || args[at] === "-" || args[at] === "/dev/stdin" ||
+    args.slice(0, at).some((w) => /^-[A-Za-z]*s/.test(w))
+  return !runsText && stdin ? `${RUNS_TEXT}: ${name} from its input` : null
 }
 
 // ---- Wrappers and options ----

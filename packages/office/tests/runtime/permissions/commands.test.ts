@@ -204,6 +204,59 @@ test("programs that run text, and builtins that change later commands, make it u
   expect(why("env -i ls")).toBeNull()
 })
 
+test("what sudo, doas and find -exec run is read as any command is, so a shell string there makes it unreadable", () => {
+  for (const [line, reason] of [
+    ["find . -exec sh -c 'rm -rf x' \\;", "it runs text as a command: sh -c"],
+    ["find . -name y -execdir bash -c \"$C\" {} +", "it runs text as a command: bash -c"],
+    ["sudo sh -c 'rm -rf x'", "it runs text as a command: sh -c"],
+    ["doas -u u env -S 'rm x'", "it runs text as a command: env -S"],
+    ["sudo find . -exec sh -c 'rm x' \\;", "it runs text as a command: sh -c"],
+    ["find . -exec $X \\;", "the program's name is expanded"],
+  ])
+    expect([line, why(line!)]).toEqual([line, reason])
+  expect(words("find . -exec sh -c 'rm -rf x' \\;")).toContainEqual(["rm", "-rf", "x"])
+  expect(words("sudo sh -c 'rm -rf x'")).toContainEqual(["rm", "-rf", "x"])
+  each(["find . -exec rm {} \\;", "sudo -u root ls", "find . -ok cat {} ; -print"], why, null)
+})
+
+test("builtins that run text or evaluate a subscript, a shell fed its commands, and a prompt that runs commands make it unreadable", () => {
+  // Each runs a command the line doesn't show as one: bash evaluates an array element's subscript, `$(…)` and all,
+  // even when it was quoted; compgen and mapfile run their -C command; an interactive shell expands its prompts.
+  for (const [line, reason] of [
+    ["let 'a[$(rm -rf x)]=1'", "it has an arithmetic expansion"],
+    ["let x=1", "it has an arithmetic expansion"],
+    ["printf -v 'a[$(rm -rf x)]' %s y", "it names an array element, whose subscript bash evaluates"],
+    ["printf -va[0] %s y", "it names an array element, whose subscript bash evaluates"],
+    ["test -v 'a[$(rm -rf x)]'", "it names an array element, whose subscript bash evaluates"],
+    ["[ -v 'a[$(rm -rf x)]' ]", "it names an array element, whose subscript bash evaluates"],
+    ["read 'a[$(rm -rf x)]'", "it names an array element, whose subscript bash evaluates"],
+    ["getopts ab 'o[$(rm -rf x)]'", "it names an array element, whose subscript bash evaluates"],
+    ["wait -n -p 'p[$(rm -rf x)]'", "it names an array element, whose subscript bash evaluates"],
+    ["compgen -C 'rm -rf x' w", "it runs text as a command: compgen"],
+    ["compgen -F f w", "it runs text as a command: compgen"],
+    ["mapfile -C 'rm -rf x' -c 1 arr", "it runs text as a command: mapfile -C"],
+    ["readarray -tC f arr < list", "it runs text as a command: readarray -C"],
+    ["echo 'rm -rf x' | sh", "it runs text as a command: sh from its input"],
+    ["bash < script.sh", "it runs text as a command: bash from its input"],
+    ["cat x | bash -s -- a", "it runs text as a command: bash from its input"],
+    ["cat x | timeout 5 sh -", "it runs text as a command: sh from its input"],
+    ["PS1='$(rm -rf x)'", "it sets what the shell runs at its prompt"],
+    ["PS0=x ls", "it sets what the shell runs at its prompt"],
+    ["printf -v PS1 %s '$(rm -rf x)'", "it sets what the shell runs at its prompt"],
+    ["read -r PS4 < f", "it sets what the shell runs at its prompt"],
+    ["read -a PS1 <<< x", "it has a here-string"],
+    ["read -a PS1 < f", "it sets what the shell runs at its prompt"],
+    ["PROMPT_COMMAND='rm -rf x'", "it sets what the shell runs at its prompt"],
+  ])
+    expect([line, why(line!)]).toEqual([line, reason])
+  each(
+    ["printf '[%s]\\n' x", "printf -v x %s y", "test -f 'a[1]'", "[ \"$a\" = \"[\" ]", "read -r line", "read -p '[y/N] ' ok", "compgen -c ls",
+      "mapfile -t arr < f", "sh x.sh", "echo x | sh x.sh", "bash", "MYPS1=x", "echo $PS1", "printf '%s' \"$PS1\""],
+    why,
+    null,
+  )
+})
+
 test("reserved words make it unreadable", () => {
   for (const [line, word] of [
     ["if true; then rm x; fi", "if"],

@@ -351,7 +351,8 @@ test("with a deny rule in force, a line the reader can't read asks in every mode
   const lines = [
     "$(printf rm) -rf x", "`printf rm` -rf x", 'sh -c "$CMD"', 'eval "$CMD"', "$X -rf x", "echo 'rm -rf x",
     'echo "rm -rf x', "cat <<EOF\nhi\nEOF", 'bash <<< "$CMD"', 'ssh h "$(printf rm) -rf x"', "echo ${!x}",
-    "if true; then $X; fi", "{ $X; }", "echo $((x))", "alias ls=rm", "echo \x01",
+    "if true; then $X; fi", "{ $X; }", "echo $((x))", "alias ls=rm", "echo \x01", "find . -exec sh -c \"$C\" \\;",
+    "let 'a[$(printf rm) -rf x]=1'", "echo 'rm -rf x' | sh", "PS1='$(rm -rf x)'",
   ]
   for (const text of lines) {
     const unreadable = readCommand(text).unreadable
@@ -415,6 +416,8 @@ test("a deny rule refuses what sudo, doas, find -exec, trap, case and a program 
       [cmd("find . -exec rm {} \\;"), [deny("rm *")], W, denied],
       [cmd("find . -name x -execdir rm {} +"), [deny("rm *")], W, denied],
       [cmd("find . -ok rm {} ; -print"), [deny("rm *")], W, denied],
+      [cmd("find . -exec sh -c 'rm x' \\;"), [deny("rm *")], W, denied],
+      [cmd("sudo bash -c 'rm x'"), [deny("rm *")], W, denied],
       [cmd("echo $(( 1 << 2 ))\nrm x"), [deny("rm *")], W, denied],
       [cmd("(( x << 2 ))\nrm x"), [deny("rm *")], W, denied],
       [cmd("case x in (x) rm y;; esac"), [deny("rm *")], W, denied],
