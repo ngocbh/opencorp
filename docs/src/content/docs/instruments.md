@@ -22,9 +22,10 @@ while a command runs), and a missing `.mcp.json` can still be created.
   mode to `default`, `ask`, `dontAsk` and back. A card asks you before what the mode doesn't allow; `dontAsk`
   refuses it instead.
 - **Deny rules.** A deny rule in the company's `rules.yaml` or your employee's `people/<handle>/rules.yaml` refuses
-  the commands it matches in every mode. A command OpenCorp can't fully read (an `eval`, a `$(…)`, `sh -c "$CMD"`,
-  a here-document, an unclosed quote) could hide one, so while any deny rule is in force it never goes to Auto's
-  check: it asks you in every mode, and `dontAsk` refuses it.
+  the commands it matches in every mode, including a line your employee types into a shell or an ssh session. A
+  command OpenCorp can't fully read (a `$(…)`, `eval "$CMD"`, `sh -c "$CMD"`, an unclosed quote) could hide one, so
+  while any deny rule is in force it never goes to Auto's check: it asks you in every mode, and `dontAsk` refuses it.
+  A literal string, as in `sh -c 'git status'`, is judged as the commands in it.
 - **Watching.** The line under the prompt counts your employee's shells that run a command, after ↓. Press ↓ at the
   end of the prompt, or click the count, to open the picker in the prompt's place: its Shell tab lists the chat's
   shells, Enter opens one to watch, and ctrl+d sends it Ctrl-C. Or press ctrl+x o to open one and switch how it

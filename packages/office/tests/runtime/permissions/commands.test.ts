@@ -3,7 +3,8 @@
 import path from "node:path"
 import { expect, test } from "bun:test"
 import {
-  classify, CREDENTIALS, credentialOf, fileOp, ownerOnly, programOf, pushOf, readCommand, sshHosts, type Where,
+  classify, CREDENTIALS, credentialOf, fileOp, ownerOnly, passesThrough, programOf, pushOf, readCommand, sshHosts,
+  type Where,
 } from "../../../src/runtime/permissions/commands.ts"
 import { decide, type Mode } from "../../../src/runtime/permissions/policy.ts"
 import { REAL_SSH } from "../../../src/runtime/sandbox/ssh_policy.ts"
@@ -45,7 +46,7 @@ test("leading assignments are kept apart from the words", () => {
   expect(readCommand("'FOO'=1 ls").parts[0]!.assignments).toEqual([])
 })
 
-test("substitutions, subshells, groups and here-documents make it unreadable", () => {
+test("substitutions, subshells and groups make it unreadable", () => {
   for (const [line, reason] of [
     ["echo $(id)", "it has a command substitution"],
     ["echo `id`", "it has a command substitution"],
@@ -57,9 +58,10 @@ test("substitutions, subshells, groups and here-documents make it unreadable", (
     ["(cd x; rm y)", "it has a subshell or group"],
     ["{ rm x; }", "it has a subshell or group"],
     ["f() { rm x; }", "it has a subshell or group"],
-    ["cat <<EOF", "it has a here-document"],
-    ["cat <<-'EOF'\n\tx\n\tEOF", "it has a here-document"],
-    ["cat <<<x", "it has a here-string"],
+    ["cat <<EOF\n$(rm x)\nEOF", "it has a command substitution"],
+    ["cat <<EOF\n`rm x`\nEOF", "it has a command substitution"],
+    ["cat <<EOF\n${!x}\nEOF", "it has a parameter expansion it can't read"],
+    ['cat <<< "$(rm x)"', "it has a command substitution"],
     ["echo 'a", "it has an unclosed quote"],
     ['echo "a', "it has an unclosed quote"],
     ["echo $(id", "it has a command substitution"],
@@ -69,7 +71,17 @@ test("substitutions, subshells, groups and here-documents make it unreadable", (
   expect(why(`echo '$(id)' "\\$(id)" a\\(b`)).toBeNull()
 })
 
-test("an unreadable line still lists the commands inside it, for rules", () => {
+test("a here-document or here-string is data: read whole, its substitutions read as commands", () => {
+  each(
+    ["cat <<EOF", "cat <<-'EOF'\n\tx\n\tEOF", "cat <<<x", "git commit -F - <<'EOF'\nFix $(rm x)\nEOF",
+      "cat <<EOF\nhello $USER ${HOME}\nEOF", "cat <<\\EOF\n`rm x`\nEOF"],
+    why,
+    null,
+  )
+  expect(words("cat <<EOF\nhi $(rm x)\nEOF")).toEqual([["cat"], ["rm", "x"]])
+})
+
+test("a line lists the commands inside it, for rules, readable or not", () => {
   for (const line of [
     "echo $(rm -rf x)",
     "echo `rm x`",
@@ -172,7 +184,7 @@ test("a program word that the shell expands makes it unreadable", () => {
 
 test("programs that run text, and builtins that change later commands, make it unreadable", () => {
   for (const [line, reason] of [
-    ["eval x", "it runs text as a command: eval"],
+    ["eval $x", "it runs text as a command: eval"],
     ["exec rm x", "it runs text as a command: exec"],
     ["source f", "it runs text as a command: source"],
     [". f", "it runs text as a command: ."],
@@ -180,9 +192,9 @@ test("programs that run text, and builtins that change later commands, make it u
     ["watch rm x", "it runs text as a command: watch"],
     ["env -S 'rm x'", "it runs text as a command: env -S"],
     ["env --split-string='rm x'", "it runs text as a command: env -S"],
-    ["sh -c 'rm x'", "it runs text as a command: sh -c"],
-    ["bash -lc x", "it runs text as a command: bash -c"],
-    ["command eval x", "it runs text as a command: eval"],
+    ["sh -c \"$X\"", "it runs text as a command: sh -c"],
+    ["bash -ic x", "it runs text as a command: bash -c"],
+    ["command eval \"$x\"", "it runs text as a command: eval"],
     ["alias ls=rm", "it changes how later commands run: alias"],
     ["unalias -a", "it changes how later commands run: unalias"],
     ["function f { rm x; }", "it changes how later commands run: function"],
@@ -204,16 +216,17 @@ test("programs that run text, and builtins that change later commands, make it u
   expect(why("env -i ls")).toBeNull()
 })
 
-test("what sudo, doas and find -exec run is read as any command is, so a shell string there makes it unreadable", () => {
+test("what sudo, doas and find -exec run is read as any command is, so a shell string there it can't read makes it unreadable", () => {
   for (const [line, reason] of [
-    ["find . -exec sh -c 'rm -rf x' \\;", "it runs text as a command: sh -c"],
+    ["find . -exec sh -c \"$C\" \\;", "it runs text as a command: sh -c"],
     ["find . -name y -execdir bash -c \"$C\" {} +", "it runs text as a command: bash -c"],
-    ["sudo sh -c 'rm -rf x'", "it runs text as a command: sh -c"],
+    ["sudo sh -c 'echo $(id)'", "it runs text as a command: sh -c"],
     ["doas -u u env -S 'rm x'", "it runs text as a command: env -S"],
-    ["sudo find . -exec sh -c 'rm x' \\;", "it runs text as a command: sh -c"],
+    ["sudo find . -exec zsh -c 'rm x' \\;", "it runs text as a command: zsh -c"],
     ["find . -exec $X \\;", "the program's name is expanded"],
   ])
     expect([line, why(line!)]).toEqual([line, reason])
+  each(["find . -exec sh -c 'rm -rf x' \\;", "sudo sh -c 'rm -rf x'"], why, null)
   expect(words("find . -exec sh -c 'rm -rf x' \\;")).toContainEqual(["rm", "-rf", "x"])
   expect(words("sudo sh -c 'rm -rf x'")).toContainEqual(["rm", "-rf", "x"])
   each(["find . -exec rm {} \\;", "sudo -u root ls", "find . -ok cat {} ; -print"], why, null)
@@ -225,13 +238,13 @@ test("builtins that run text or evaluate a subscript, a shell fed its commands, 
   for (const [line, reason] of [
     ["let 'a[$(rm -rf x)]=1'", "it has an arithmetic expansion"],
     ["let x=1", "it has an arithmetic expansion"],
-    ["printf -v 'a[$(rm -rf x)]' %s y", "it names an array element, whose subscript bash evaluates"],
-    ["printf -va[0] %s y", "it names an array element, whose subscript bash evaluates"],
-    ["test -v 'a[$(rm -rf x)]'", "it names an array element, whose subscript bash evaluates"],
-    ["[ -v 'a[$(rm -rf x)]' ]", "it names an array element, whose subscript bash evaluates"],
-    ["read 'a[$(rm -rf x)]'", "it names an array element, whose subscript bash evaluates"],
-    ["getopts ab 'o[$(rm -rf x)]'", "it names an array element, whose subscript bash evaluates"],
-    ["wait -n -p 'p[$(rm -rf x)]'", "it names an array element, whose subscript bash evaluates"],
+    ["printf -v 'a[$(rm -rf x)]' %s y", "it has an array subscript bash evaluates"],
+    ["printf -va[0] %s y", "it has an array subscript bash evaluates"],
+    ["test -v 'a[$(rm -rf x)]'", "it has an array subscript bash evaluates"],
+    ["[ -v 'a[$(rm -rf x)]' ]", "it has an array subscript bash evaluates"],
+    ["read 'a[$(rm -rf x)]'", "it has an array subscript bash evaluates"],
+    ["getopts ab 'o[$(rm -rf x)]'", "it has an array subscript bash evaluates"],
+    ["wait -n -p 'p[$(rm -rf x)]'", "it has an array subscript bash evaluates"],
     ["compgen -C 'rm -rf x' w", "it runs text as a command: compgen"],
     ["compgen -F f w", "it runs text as a command: compgen"],
     ["mapfile -C 'rm -rf x' -c 1 arr", "it runs text as a command: mapfile -C"],
@@ -240,13 +253,13 @@ test("builtins that run text or evaluate a subscript, a shell fed its commands, 
     ["bash < script.sh", "it runs text as a command: bash from its input"],
     ["cat x | bash -s -- a", "it runs text as a command: bash from its input"],
     ["cat x | timeout 5 sh -", "it runs text as a command: sh from its input"],
-    ["PS1='$(rm -rf x)'", "it sets what the shell runs at its prompt"],
-    ["PS0=x ls", "it sets what the shell runs at its prompt"],
-    ["printf -v PS1 %s '$(rm -rf x)'", "it sets what the shell runs at its prompt"],
-    ["read -r PS4 < f", "it sets what the shell runs at its prompt"],
-    ["read -a PS1 <<< x", "it has a here-string"],
-    ["read -a PS1 < f", "it sets what the shell runs at its prompt"],
-    ["PROMPT_COMMAND='rm -rf x'", "it sets what the shell runs at its prompt"],
+    ["PS1='$(rm -rf x)'", "it sets what a shell runs at its prompt or start"],
+    ["PS0=x ls", "it sets what a shell runs at its prompt or start"],
+    ["printf -v PS1 %s '$(rm -rf x)'", "it sets what a shell runs at its prompt or start"],
+    ["read -r PS4 < f", "it sets what a shell runs at its prompt or start"],
+    ["read -a PS1 <<< x", "it sets what a shell runs at its prompt or start"],
+    ["read -a PS1 < f", "it sets what a shell runs at its prompt or start"],
+    ["PROMPT_COMMAND='rm -rf x'", "it sets what a shell runs at its prompt or start"],
   ])
     expect([line, why(line!)]).toEqual([line, reason])
   each(
@@ -257,20 +270,116 @@ test("builtins that run text or evaluate a subscript, a shell fed its commands, 
   )
 })
 
-test("reserved words make it unreadable", () => {
+test("a {name[subscript]} redirect makes it unreadable in every form: bash evaluates the subscript", () => {
+  // Bash runs the `$(…)` in the subscript even when it was quoted, while `echo` alone would read as read-only.
+  each(
+    ["echo {a['$(rm -rf x)']}>/dev/null", "cat {a['$(rm -rf x)']}</dev/null", "ls {a['$(rm -rf x)']}>&2",
+      "ls {a[x]}<>f", "ls {a[x]}>|f", "ls {a[x]}<&0", "ls {a[x]}>&-", "cat {a[x]}<<<y", "ls {a[x]}>>f", "ls {a[x]}&>f"],
+    why,
+    "it has an array subscript bash evaluates",
+  )
+  // A plain {name} redirect names no command: the shell keeps the descriptor's number in it.
+  expect(why("ls {fd}>/dev/null")).toBeNull()
+  expect(words("ls {fd}>/dev/null")).toEqual([["ls"]])
+  expect(words("echo {a}")).toEqual([["echo", "{a}"]])
+})
+
+test("more text bash runs that a line doesn't show as a command makes it unreadable", () => {
+  for (const [line, reason] of [
+    ["compgen -W '$(rm -rf x)' w", "it runs text as a command: compgen"],
+    ["env PS1='$(rm -rf x)' bash -i", "it sets what a shell runs at its prompt or start"],
+    ["env PROMPT_COMMAND='rm -rf x' bash -i", "it sets what a shell runs at its prompt or start"],
+    ["BASH_ENV='$(rm -rf x)' bash b.sh", "it sets what a shell runs at its prompt or start"],
+    ["ENV='$(rm -rf x)' sh -i", "it sets what a shell runs at its prompt or start"],
+    ["env -i BASH_ENV=b bash b.sh", "it sets what a shell runs at its prompt or start"],
+    ["OPTIND='a[$(rm -rf x)]'", "it has an array subscript bash evaluates"],
+    ["HISTCMD='a[$(rm -rf x)]'", "it has an array subscript bash evaluates"],
+    ["n='a[`rm -rf x`]'", "it has an array subscript bash evaluates"],
+    ["env n='a[${x}]' ls", "it has an array subscript bash evaluates"],
+    ["printf -v n %s 'a[$(rm -rf x)]'", "it has an array subscript bash evaluates"],
+    ["cat s | bash /dev/fd/0", "it runs text as a command: bash from its input"],
+    ["cat s | sh /dev/stdin", "it runs text as a command: sh from its input"],
+    ["cat s | bash /proc/self/fd/0", "it runs text as a command: bash from its input"],
+    ["echo 'rm -rf x' | ssh h bash", "on h: it runs text as a command: bash from its input"],
+    ["ssh h 'bash -s' < s", "on h: it runs text as a command: bash from its input"],
+    ["tcsh -c \"$X\"", "it runs text as a command: tcsh -c"],
+    ["csh -fc \"$X\"", "it runs text as a command: csh -c"],
+    ["mksh -c \"$X\"", "it runs text as a command: mksh -c"],
+    ["ash -c \"$X\"", "it runs text as a command: ash -c"],
+    ["rbash -c \"$X\"", "it runs text as a command: rbash -c"],
+    ["busybox sh -c \"$X\"", "it runs text as a command: sh -c"],
+    ["bash --norc -c \"$X\"", "it runs text as a command: bash -c"],
+    ["fish --command 'rm -rf x'", "it runs text as a command: fish -c"],
+    ["fish --command='rm -rf x'", "it runs text as a command: fish -c"],
+  ])
+    expect([line, why(line!)]).toEqual([line, reason])
+  each(
+    ["X=PS1", "X=PS1 ls", "X='[a]'", "X=a[1]", "X='$(x)'", "bash --norc x.sh", "bash --rcfile r x.sh",
+      "echo x | ssh h cat", "ssh h bash -c 'ls'", "busybox ls"],
+    why,
+    null,
+  )
+  for (const line of
+    ["tcsh -c 'rm -rf x'", "busybox sh -c 'rm -rf x'", "fish --command='rm -rf x'", "csh -c 'rm x; ls'"])
+    expect([line, words(line).some((w) => w[0] === "rm")]).toEqual([line, true])
+  expect(programOf(readCommand("busybox rm -rf x").parts[0]!)).toEqual(["rm", "-rf", "x"])
+})
+
+test("a literal sh -c or eval string the reader reads whole is read through: its commands, not the wrapper, are judged", () => {
+  for (const line of ["sh -c 'git status'", "bash -lc 'make test'", "dash -ec 'ls; ls'", "eval 'git status'",
+    'eval "r""m -rf x"', "timeout 5 sh -c 'ls'"])
+    expect([line, why(line)]).toEqual([line, null])
+  expect(words("sh -c 'git status'")).toEqual([["git", "status"], ["sh", "-c", "git status"]])
+  const through = (line: string) => readCommand(line).parts.map(passesThrough)
+  expect(through("sh -c 'git status'")).toEqual([false, true])
+  expect(through("eval 'ls; ls'")).toEqual([false, false, true])
+  expect(through("for f in a; do ls; done")).toEqual([true, false])
+  // A wrapper that could do more than run its string, or a string it can't read whole, stays unreadable.
+  for (const [line, reason] of [
+    ["sh -c \"$X\"", "it runs text as a command: sh -c"],
+    ["sh -c 'echo $(id)'", "it runs text as a command: sh -c"],
+    ["bash -i -c 'ls'", "it runs text as a command: bash -c"],
+    ["bash --login -c 'ls'", "it runs text as a command: bash -c"],
+    ["zsh -c 'ls'", "it runs text as a command: zsh -c"],
+    ["FOO=1 sh -c 'ls'", "it runs text as a command: sh -c"],
+    ["sh -c 'ls' > out", "it runs text as a command: sh -c"],
+    ["nohup sh -c 'ls'", "it runs text as a command: sh -c"],
+    ["/tmp/sh -c 'ls'", "it runs text as a command: sh -c"],
+    ["sh -c", "it runs text as a command: sh -c"],
+    // Its operands are the string's $0, $1, …, values a rule can't see in what the string runs.
+    ["sh -c 'git \"$1\" origin main' _ push", "it runs text as a command: sh -c"],
+    ["eval $x", "it runs text as a command: eval"],
+    ["eval 'ls; then'", "it runs text as a command: eval"],
+  ])
+    expect([line, why(line!)]).toEqual([line, reason])
+})
+
+test("[[, select and coproc make it unreadable, as does a keyword out of place or a compound left open", () => {
   for (const [line, word] of [
-    ["if true; then rm x; fi", "if"],
-    ["for f in *; do rm $f; done", "for"],
-    ["! ls", "!"],
-    ["while true; do ls; done", "while"],
-    ["until false; do ls; done", "until"],
-    ["case a in a) ls;; esac", "case"],
     ["select x in a; do ls; done", "select"],
     ["[[ -f x ]]", "[["],
+    ["coproc ls", "coproc"],
     ["ls; then", "then"],
+    ["ls; done", "done"],
+    ["if true; then ls", "if"],
+    ["while true; do ls", "while"],
+    ["for x in a; do ls; fi", "fi"],
+    ["case a in a) ls;; done", "done"],
+    ["if true; do ls; done", "do"],
   ])
     expect([line, why(line!)]).toEqual([line, `it uses a shell keyword: ${word}`])
   expect(why("echo if then fi")).toBeNull()
+})
+
+test("a balanced if, for, while, until or case reads as the commands in it", () => {
+  each(
+    ["if true; then rm x; elif false; then ls; else ls; fi", "for f in *; do rm $f; done", "! ls",
+      "while true; do ls; done", "until false; do ls; done", "case a in a) ls;; esac",
+      "for f in a b\ndo\n  if test -f $f; then cat $f; fi\ndone"],
+    why,
+    null,
+  )
+  expect(words("for f in a b; do rm $f; done")).toEqual([["for", "f", "in", "a", "b"], ["rm", "$f"]])
 })
 
 test("control characters make it unreadable", () => {
@@ -678,7 +787,9 @@ test("a deeply nested line is read without failing", () => {
   expect(why("( ".repeat(600) + "rm x" + " )".repeat(600))).toBe("it has a subshell or group")
   expect(why("(".repeat(600) + "rm x" + ")".repeat(600))).toBe("it has an arithmetic expansion")
   expect(words("$(".repeat(400) + "rm x" + ")".repeat(400))).toContainEqual(["rm", "x"])
-  expect(why("eval ".repeat(300) + "rm x")).toBe("it runs text as a command: eval")
+  expect(why("eval ".repeat(300) + "rm x")).toBeNull()
+  expect(words("eval ".repeat(300) + "rm x")).toContainEqual(["rm", "x"])
+  expect(why("eval ".repeat(1200) + "rm x")).toBe("it is nested too deeply")
 })
 
 test("a git push is plain only when it pushes named branches that aren't the default to a named remote", () => {
@@ -885,17 +996,9 @@ test("arithmetic and parameter expansions that can run commands make it unreadab
 test("the scanner fixtures read as unreadable or with their commands, so deny rules see them", () => {
   // Bash forms from the upstream TUI's shell scanner tests (MIT); THIRD_PARTY_NOTICES.md names the source.
   for (const line of [
-    "cat <<'EOF'\n$(not_a_command)\nEOF",
     "cat <<EOF\n$(printf hello)\nEOF",
-    "cat <<-EOF\n\thello\n\tEOF",
-    "cat <<EOF\nhello\nEOF\nprintf done",
     'cat <<< "$(printf hello)"',
-    "for file in a b; do printf '%s' \"$file\"; done",
     "for file in $(printf file); do printf '%s' \"$file\"; done",
-    'for file in a b; do if test -n "$file"; then printf \'%s\' "$file"; fi; done',
-    "while IFS= read -r file; do printf '%s' \"$file\"; done < input",
-    "until test -f ready; do sleep 1; done",
-    "if true; then if false; then printf no; else printf yes; fi; fi",
     "if true; then :; X=$(printf value); fi",
     'case "$target" in *.ts) printf typescript;; *) printf other;; esac',
     "greet() { printf hello; }; greet",
@@ -916,10 +1019,22 @@ test("the scanner fixtures read as unreadable or with their commands, so deny ru
     "x=$(printf 'a\\x5b\\x24\\x28touch pwn\\x29]'); echo $((x))",
     "x=$(echo 'a{$(touch pwn)]' | tr '{' '\\133'); (( x ))",
     "cat <<FIRST <<'SECOND'\n$(printf first)\nFIRST\n$(not_a_command)\nSECOND",
+  ])
+    expect([line, why(line) !== null]).toEqual([line, true])
+  // Here-documents and balanced compound commands read whole, every command in them listed.
+  for (const line of [
+    "cat <<'EOF'\n$(not_a_command)\nEOF",
+    "cat <<-EOF\n\thello\n\tEOF",
+    "cat <<EOF\nhello\nEOF\nprintf done",
+    "for file in a b; do printf '%s' \"$file\"; done",
+    'for file in a b; do if test -n "$file"; then printf \'%s\' "$file"; fi; done',
+    "while IFS= read -r file; do printf '%s' \"$file\"; done < input",
+    "until test -f ready; do sleep 1; done",
+    "if true; then if false; then printf no; else printf yes; fi; fi",
     "if cat <<'EOF' | grep -q hi; then echo ok; fi\nhi\nEOF",
     "true && git add -p file.rs <<< $'n\\ny\\n' >/dev/null",
   ])
-    expect([line, why(line) !== null]).toEqual([line, true])
+    expect([line, why(line)]).toEqual([line, null])
   for (const line of ["time git status", "time -p git status", "echo ${value:-default}", "echo ${value//before/after}",
     "printf '%s' $'line1\\nline2'", 'printf "%s" $"hello"', "F='$HOME/bin'; SIZE=4096; echo $SIZE"])
     expect([line, why(line)]).toEqual([line, null])
