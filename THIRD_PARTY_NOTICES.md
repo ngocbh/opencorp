@@ -108,39 +108,58 @@ license, the upstream paths and commit, and our paths.
   commit `df46f69` (2026-11-16).
 - **Ours:** `packages/tui/src/util/renderer.ts`, `packages/tui/test/util/renderer.test.ts`,
   `packages/tui/test/app-lifecycle.test.tsx`.
-- **What:** an open instrument's views. Ported:
+- **What:** an open instrument's views, in the session frame's one right pane. Ported:
+  - the session frame (`SessionFrame`): the right pane beside the session, a panel there before the sidebar, its width
+    dragged with the handle and kept on disk for every pane, a double click going back to half; full screen hiding the
+    session; focus moved by `pane.focus.left` and `pane.focus.right` on `<leader>left` and `<leader>right`, off in full
+    screen, and by a click, with the overlay that hands the session the keys on a click and passes the wheel to the
+    transcript; focus followed through `FOCUSED_RENDERABLE`; `terminal.close` and `terminal.select` as the pane's
+    close and picker keys, on `<leader>up` and `<leader>down`;
+  - the panel state (`createPanelState`) whole, with its tests: one panel at a time, split or full screen, full screen
+    forced under 108 columns (`SESSION_PANEL_SPLIT_MIN_WIDTH`) without losing the choice; its target is an instrument
+    of the session rather than a plugin's panel;
+  - the panel host: its interactivity scope, a click focusing it, the raised background docked and the base one full
+    screen; and the diff viewer's chrome, a header row and a footer whose hint is the focus key docked and the close
+    key full screen, and a full-screen toggle that is remembered only when it took effect;
+  - the pane resize and its handle, whole, with `clampSessionPaneWidth` and the resize's tests;
   - the terminal pane around OpenTUI's `EmbeddedTerminalRenderable`: its queue that writes bytes only once the
     terminal is at the size they were meant for, its throttled intermediate renders and its column of margin. Its
     WebSocket gives way to the office's screen read, `instrument.output` events and size route, and its palette is cut
     to the theme's text and background;
-  - the pane resize and its handle, whole, with `clampSessionPaneWidth`;
-  - from the session frame: the right pane beside the session, its width dragged with the handle; the overlay that
-    hands the session the keys on a click and passes the wheel to the transcript; focus followed through
-    `FOCUSED_RENDERABLE`;
-  - the interactivity provider that mutes the session while the pane has the keys, which the keymap's layers honour,
-    as its `createLayer` does, and the prompt honours too;
+  - the interactivity provider that mutes the side without the keys, which the keymap's layers honour, as its
+    `createLayer` does, and the prompt honours too;
   - the shell-output dialog's layout, for a pipes shell: the command, a note when earlier output is gone, and the
     output following its end with its escapes stripped;
   - `TextBoundary.tail`, which keeps a pipes shell's newest output without half a character, and its test's cases;
   - the terminal pane's key routing: a `key` intercept at priority 100 that hands every key but the leader, and the
     key after it, to the focused terminal's `handleKeyPress`, whose `onData` input bytes go to the shell;
-  - the session frame's `pane.focus.left` and `pane.focus.right`, on `<leader>left` and `<leader>right`, which move
-    the keys between the chat and the pane, the left one off in full screen.
+  - a subagent's user messages with their left border in its colour, as a Codex or Claude Code session's messages
+    take their speaker's.
 
-  The floating view is our own, as are the leader twice sending the leader key, the keys gathered a frame at a time
-  for the office's keys route, and a waiting shell opening itself.
-- **Upstream:** `packages/tui/src/component/terminal-pane.tsx`, `packages/tui/src/component/session-frame.tsx`,
-  `packages/tui/src/config/keybind.ts` (`pane.focus.left`, `pane.focus.right`),
+  Our own: a Codex or Claude Code session as a panel, the session route given its id; the box around the pane in its
+  driver's colour, bright with the keys and dim without, and the header saying who drives it; a pipes shell's `$`
+  lines in the employee's colour; `<leader>o` for full screen, which the diff's `f` can't be in a pane that takes
+  typing; the leader twice sending the leader key; the keys gathered a frame at a time for the office's keys route;
+  a waiting shell opening itself, and the keys dropped until Enter when a pane closes mid-line.
+- **Upstream:** `packages/tui/src/component/session-frame.tsx`, `packages/tui/src/context/panel.tsx`,
+  `packages/tui/src/component/panel-host.tsx`, `packages/tui/src/feature-plugins/system/diff-viewer.tsx` (its header
+  and footer, `diff.toggle_fullscreen`), `packages/tui/src/component/terminal-pane.tsx`,
+  `packages/tui/src/config/keybind.ts` (`pane.focus.left`, `pane.focus.right`, `terminal.close`, `terminal.select`),
   `packages/tui/src/context/interactivity.tsx`, `packages/tui/src/context/keymap.tsx` (`createLayer`),
   `packages/tui/src/ui/pane-resize.ts`, `packages/tui/src/ui/pane-resize-handle.tsx`, `packages/tui/src/ui/layout.ts`
-  (`clampSessionPaneWidth`), `packages/tui/src/component/dialog-shell-output.tsx`, `packages/util/src/text-boundary.ts`
-  and `packages/util/src/text-boundary.test.ts`, read at commit `df46f69` (2026-11-16).
-- **Ours:** `packages/tui/src/routes/session/terminal-pane.tsx`, `packages/tui/src/routes/session/instrument-view.tsx`,
-  `packages/tui/src/routes/session/keys.ts`, `packages/tui/src/config/keybind.ts`,
-  `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/context/interactivity.tsx`,
-  `packages/tui/src/keymap.tsx` (`useBindings`), `packages/tui/src/ui/pane-resize.ts`,
-  `packages/tui/src/ui/pane-resize-handle.tsx`, `packages/tui/src/util/text-boundary.ts`,
-  `packages/tui/test/util/text-boundary.test.ts`.
+  (`SESSION_PANEL_SPLIT_MIN_WIDTH`, `clampSessionPaneWidth`), `packages/tui/src/routes/session/index.tsx`
+  (`UserMessage`), `packages/tui/src/component/dialog-shell-output.tsx`, `packages/util/src/text-boundary.ts`,
+  `packages/util/src/text-boundary.test.ts`, `packages/tui/test/panel.test.ts` and
+  `packages/tui/test/ui/pane-resize.test.ts`, read at commit `df46f69` (2026-11-16), unchanged at `4332e24f`
+  (2026-11-21).
+- **Ours:** `packages/tui/src/component/session-frame.tsx`, `packages/tui/src/component/panel-host.tsx`,
+  `packages/tui/src/context/panel.tsx`, `packages/tui/src/ui/layout.ts`, `packages/tui/src/ui/pane-resize.ts`,
+  `packages/tui/src/ui/pane-resize-handle.tsx`, `packages/tui/src/routes/session/terminal-pane.tsx`,
+  `packages/tui/src/routes/session/instrument-view.tsx`, `packages/tui/src/routes/session/keys.ts`,
+  `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/config/keybind.ts`,
+  `packages/tui/src/context/interactivity.tsx`, `packages/tui/src/keymap.tsx` (`useBindings`),
+  `packages/tui/src/util/text-boundary.ts`, `packages/tui/test/util/text-boundary.test.ts`,
+  `packages/tui/test/context/panel.test.ts`, `packages/tui/test/ui/pane-resize.test.ts`.
 - **What:** an agent's terminal commands in the transcript take the fork's shell view (`$ <command>`, its output
   folded to 10 lines that a click expands, a spinner while it runs). From current upstream's shell view: the
   command takes the warning colour while the call waits on the owner, spins only while its shell still runs it, and
@@ -155,15 +174,15 @@ license, the upstream paths and commit, and our paths.
 - **What:** the composer picker and what goes with it, ported: `createComposerTabs` and its context; the picker in the
   prompt's place, its tabs switched by ←/→ and closed with Esc or Ctrl-C, the active tab's hints then `tabs ←/→`; the
   Subagents tab as our Sessions tab (the family from `sessionFamily`, ↑/↓, ↑ on the first row closing, Enter or a click
-  opening, ctrl+d interrupting, ctrl+a flipping between active and inactive, the current row tinted, five rows that
+  opening it in the right pane as the Terminals tab opens a terminal, the row the pane shows marked, ctrl+d interrupting, ctrl+a flipping between active and inactive, the current row tinted, five rows that
   scroll) and the Shell tab (its rows, keys and scroll); `busyTab`, the first tab with something running; the
   `session.child.first` command on ↓ that toggles it, or opens it on the tab a click names; the picker always shown in
   a child, its `onClose` going to the parent; `session.parent` on ↑; the prompt footer's count, with the picker's key
   in front and a click opening it; arrow keys shown as arrows; the prompt's ↑ and ↓ moving the cursor, then through the
   history, then falling through past its ends; and one draft per session across prompt remounts. Their tests come with
   them, the footer's as a frame test. Adapted: the rows and counts read the office's sessions and instruments; a
-  Sessions row is a Codex or Claude Code child session, marked Running, Idle or Ended; a shell opens in our instrument
-  view, and ctrl+d sends it Ctrl-C, as the office has no route to remove a shell; the Shell tab takes ctrl+a too; the
+  Sessions row is a Codex or Claude Code child session, marked Running, Idle or Ended; a shell opens in the right pane
+  too, and ctrl+d sends it Ctrl-C, as the office has no route to remove a shell; the Shell tab takes ctrl+a too; the
   picker shows in place of the prompt only in a child whose session ended, since a live or idle child keeps its prompt
   for the owner; the draft stash and the filters are one per TUI rather than per process; and the line under the
   prompt keeps its counts per kind and its failures. Scripts and Terminals aren't ported.
