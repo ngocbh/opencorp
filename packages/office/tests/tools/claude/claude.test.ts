@@ -159,7 +159,7 @@ test("a start runs claude in the folder with the employee's settings and folders
   await claude.close(2000)
 })
 
-test("a start's environment is the worker's with the fixed PATH, its own temp folder for TMPDIR and Claude Code's, and auto memory off", async () => {
+test("a start's environment is the worker's with the fixed PATH, its own temp folder for TMPDIR and Claude Code's, auto memory off and no background commands", async () => {
   const { root, tmp, fake, permission } = layout()
   const p = permission()
   const { claude, start } = proc(root, fake, p)
@@ -169,6 +169,8 @@ test("a start's environment is the worker's with the fixed PATH, its own temp fo
   const { PWD: _pwd, SHLVL: _shlvl, ...given } = env
   expect(given).toEqual({ ...BASE, ...start.env })
   expect(given).toMatchObject({ TMPDIR: tmp, CLAUDE_CODE_TMPDIR: tmp, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" })
+  // No command runs in the background, where it would outlive Esc and the turn.
+  expect(given.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe("1")
   expect(given.PATH).toBe(start.env.PATH)
   expect(given.PATH.split(":")).toContain(path.join(p.folders[0]!.path, "bin"))
   expect(Object.keys(given)).not.toContain("CLAUDE_CONFIG_DIR")

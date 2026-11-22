@@ -555,7 +555,9 @@ export class ClaudeSession {
   /** Esc: the messages waiting for Claude Code to start are dropped, unsent, and the transcript marks them; then,
    *  while a turn runs or a message sent waits for one, Claude Code is interrupted and cancels every message no turn
    *  has started (`cancel_queued`), so none of them runs after. A message sent but not yet taken up is cancelled, or
-   *  its turn is stopped as it starts, as Claude Code's docs give the interrupt. */
+   *  its turn is stopped as it starts, as Claude Code's docs give the interrupt. The interrupt also stops the command
+   *  the turn runs (O5: gone 17 ms after), so unlike Codex's nothing more is sent to end it; and no command runs in
+   *  the background (`claudeStart`'s environment), where it would outlive the turn. */
   async interrupt(): Promise<void> {
     if (this.over) return
     if (this.#unsent.size > 0) {
