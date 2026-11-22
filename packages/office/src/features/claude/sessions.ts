@@ -27,7 +27,13 @@ import {
   gitRootOf,
   harnessHomes,
 } from "../../runtime/sandbox/harness_profile.ts"
-import { fenceIn, freshFolder, harnessRoot, removeFolder, sweepTemp } from "../../runtime/sandbox/harness_temp.ts"
+import {
+  fenceIn,
+  freshFolder,
+  harnessRoot,
+  removeFolder,
+  sweepTemp,
+} from "../../runtime/sandbox/harness_temp.ts"
 import { type OfficePaths as SandboxOfficePaths, UnsafeProfile, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
 import { checkFolder } from "../../runtime/sessions/folder.ts"
 import { employeePermission } from "../../runtime/sessions/permission.ts"
@@ -42,10 +48,17 @@ import {
   ClaudeMissing,
   ClaudeProcess,
   ClaudeStartError,
+  READ_ONLY_FIX,
+  SOCAT_MISSING,
+  ClaudeSandboxUnavailable,
   claudeSession,
   nativeClaude,
+  readOnlyFails,
+  socatNeeded,
+  toolsBeyond,
 } from "../../tools/claude/claude.ts"
 import { markClaudeInterrupted } from "../../tools/claude/instrument.ts"
+import { prepareSocat } from "../../tools/claude/socat.ts"
 import { type Msg, nameOf } from "../../tools/claude/stream.ts"
 import { Translator } from "../../tools/claude/translate.ts"
 import type { HarnessEvent } from "../../tools/harness/adapter.ts"
@@ -81,6 +94,12 @@ export type ClaudeSessionsOptions = {
   stopWaitMs?: number
   /** Where warnings go (default `console.error`). */
   log?: (line: string) => void
+  /** The platform Claude Code's sandbox runs on (default `process.platform`). */
+  platform?: NodeJS.Platform
+  /** The socat to run in place of the one the daemon pinned, or null for none; tests pass a stand-in's. */
+  socat?: string | null
+  /** The libraries a socat loads (default `lddLibraries`); tests pass what a stand-in's would. */
+  socatLibraries?: (file: string) => string[]
 }
 
 /** How long an idle session keeps its Claude Code: five minutes, as the upstream TUI's sessions do. */
@@ -116,6 +135,9 @@ export class ClaudeSessions {
   readonly #env: () => Record<string, string>
   readonly #environ: Record<string, string | undefined>
   readonly #tmpBase: string | undefined
+  readonly #platform: NodeJS.Platform
+  readonly #socat: string | undefined
+  readonly #libraries: ((file: string) => string[]) | undefined
   readonly #live = new Map<string, ClaudeSession>()
   #closed = false
 
@@ -126,6 +148,9 @@ export class ClaudeSessions {
     this.#env = options.env ?? (() => workerEnv(process.env))
     this.#environ = options.environ ?? process.env
     this.#tmpBase = options.tmpBase
+    this.#platform = options.platform ?? process.platform
+    this.#socat = options.socat === undefined ? office.tools.socat : (options.socat ?? undefined)
+    this.#libraries = options.socatLibraries
     this.idleMs = options.idleMs ?? IDLE_MS
     this.closeGraceMs = options.closeGraceMs ?? CLOSE_GRACE_MS
     this.stopWaitMs = options.stopWaitMs ?? STOP_WAIT_MS
@@ -299,15 +324,20 @@ export class ClaudeSessions {
 
   /** What one start of `live`'s Claude Code runs: the pinned `claude` (or the options'), checked as it will run
    *  (`checkClaudeInstall`), since it runs as the owner; the employee's permission over the session's folder, with a
-   *  fresh, private temp folder; the session's instructions; and its environment, the worker's with Claude Code's
-   *  fixed variables. A new session starts with its own id; a later start resumes it. Throws `ClaudeMissing` with no
-   *  Claude Code, and as the checks do. */
+   *  fresh, private temp folder, and on Linux the pinned socat, readied for its sandbox (`prepareSocat`: checked, run
+   *  once, and, outside the system folders, linked into `<root>/<session>.bin` with the folders it loads from read);
+   *  the session's instructions; and its environment, the worker's
+   *  with Claude Code's fixed variables. A new session starts with its own id; a later start resumes it. Throws
+   *  `ClaudeMissing` with no Claude Code, `ClaudeSandboxUnavailable` with no socat where the sandbox needs it, and as
+   *  the checks do. */
   async prepare(
     live: ClaudeSession,
     { resume }: { resume: boolean },
   ): Promise<{ command: string[]; env: Record<string, string>; instructions: string | null }> {
     const found = this.#claude ?? this.office.tools.claude
     if (found === undefined) throw new ClaudeMissing(MISSING)
+    const socat = socatNeeded(this.#platform) ? this.#socat : undefined
+    if (socatNeeded(this.#platform) && socat === undefined) throw new ClaudeSandboxUnavailable(`${SOCAT_MISSING}.`)
     const install = { ...nativeClaude(found), found }
     const root = this.root()
     const permission = await this.#permission(live.sessionId, {
@@ -322,7 +352,16 @@ export class ClaudeSessions {
           "owner turns it off in their person's harness_policy, or they use Codex for work that needs the network",
       )
     }
+    if (!permission.writable && readOnlyFails(this.#platform)) {
+      throw new UnsafeProfile(`@${live.person}'s folder is read-only to them, and ${READ_ONLY_FIX}`)
+    }
     checkClaudeInstall(permission, install)
+    if (socat !== undefined) {
+      const name = `${live.sessionId}.bin`
+      const prepared = prepareSocat(permission, socat, { root, name, libraries: this.#libraries, env: this.#env() })
+      if (prepared.programs !== null) permission.programs = prepared.programs
+      permission.programReads = prepared.reads
+    }
     const configDir = this.#environ.CLAUDE_CONFIG_DIR || path.join(this.office.guards.home ?? os.homedir(), ".claude")
     const id = live.claudeId
     const started = claudeSession(permission, {
@@ -364,11 +403,12 @@ export class ClaudeSessions {
     return proc
   }
 
-  /** Drops `live` once it finished, and its temp folder. */
+  /** Drops `live` once it finished, and its temp and programs folders. */
   dropped(live: ClaudeSession): void {
     if (this.#live.get(live.sessionId) === live) this.#live.delete(live.sessionId)
     try {
       removeFolder(this.root(), live.sessionId)
+      removeFolder(this.root(), `${live.sessionId}.bin`)
     } catch (error) {
       this.log(`claude session ${live.sessionId}: its temp folder wasn't removed (${nameOf(error)})`)
     }
@@ -393,7 +433,10 @@ export class ClaudeSessions {
    *  sessions with no live Claude Code here, and a doctor probe's whose process is gone. */
   #sweep(): void {
     try {
-      const ours = (name: string) => !this.#live.has(name) && this.store.getSession(name) !== undefined
+      const ours = (folder: string) => {
+        const name = folder.endsWith(".bin") ? folder.slice(0, -".bin".length) : folder
+        return !this.#live.has(name) && this.store.getSession(name) !== undefined
+      }
       sweepTemp(this.root(), ours, this.log)
     } catch (error) {
       this.log(`claude: the harness temp folder wasn't swept (${nameOf(error)})`)
@@ -554,7 +597,9 @@ export class ClaudeSession {
   /** Esc: the messages waiting for Claude Code to start are dropped, unsent, and the transcript marks them; then,
    *  while a turn runs or a message sent waits for one, Claude Code is interrupted and cancels every message no turn
    *  has started (`cancel_queued`), so none of them runs after. A message sent but not yet taken up is cancelled, or
-   *  its turn is stopped as it starts, as Claude Code's docs give the interrupt. */
+   *  its turn is stopped as it starts, as Claude Code's docs give the interrupt. The interrupt also stops the command
+   *  the turn runs (a real Claude Code's was gone 17 ms after), so unlike Codex's nothing more is sent to end it; and no command runs in
+   *  the background (`claudeStart`'s environment), where it would outlive the turn. */
   async interrupt(): Promise<void> {
     if (this.over) return
     if (this.#unsent.size > 0) {
@@ -643,9 +688,14 @@ export class ClaudeSession {
     return new HarnessError(409, "not_live", `Claude Code session ${this.sessionId} has ended`)
   }
 
-  /** Each line `proc` writes: how each message fares, then the line as transcript events. */
+  /** Each line `proc` writes: how each message fares, then the line as transcript events. A turn whose tools reach
+   *  beyond the office's allowlist stops the session before Claude Code acts. */
   line(proc: ClaudeProcess, msg: Msg): void {
     if (proc !== this.proc || this.#finished) return
+    if (msg.type === "system" && msg.subtype === "init") {
+      const beyond = toolsBeyond(msg)
+      if (beyond.length > 0) return void this.#beyond(beyond)
+    }
     if (msg.type === "command_lifecycle") {
       this.#lifecycle = true
       if ((msg.state === "completed" || msg.state === "cancelled") && typeof msg.command_uuid === "string") {
@@ -661,6 +711,23 @@ export class ClaudeSession {
     }
     this.translator.line(msg)
     this.#update()
+  }
+
+  /** Claude Code started a turn with tools beyond the allowlist (`--tools` didn't hold, as a newer Claude Code's may
+   *  not): it is stopped at once, before its first model call answers, and the session fails saying why. */
+  async #beyond(tools: string[]): Promise<void> {
+    if (this.#finished) return
+    const named = tools.join(", ")
+    this.#owner.log(`claude session ${this.sessionId}: Claude Code offered tools beyond the allowlist: ${named}`)
+    // Before anything else, and at once: no SIGTERM and wait, in which its first model call could answer.
+    void this.proc?.kill({ now: true })
+    this.translator.abort()
+    this.translator.error(
+      `Claude Code started with tools OpenCorp doesn't allow (${named}): they act on your account or outside your ` +
+        "employee's permission, so the session stopped before Claude Code used them. This Claude Code may be newer " +
+        "than OpenCorp knows; update OpenCorp, or use Codex.",
+    )
+    await this.finish("failed")
   }
 
   /** `proc` exited. Its own exit (a crash) has its group killed, marks the turn interrupted and says the next

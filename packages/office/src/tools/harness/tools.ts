@@ -135,14 +135,20 @@ export function toolSpecs(h: Harness): Record<ToolName, ToolSpec> {
 }
 
 /** `tool`'s arguments read, or why they can't be: an argument its parameters don't name, or one of the wrong kind. A
- *  null reads as left out: a worker hands each optional argument the model left out as null. A `wait` past two
- *  minutes is capped there. The session is named by `h.kind` (`codex`, `claude`). */
+ *  null reads as left out: a worker hands each optional argument the model left out as null. So does an empty text
+ *  for an optional text argument, which a model fills in for one it means to leave out. A `wait` past two minutes is
+ *  capped there. The session is named by `h.kind` (`codex`, `claude`). */
 export function parseArgs(h: Harness, tool: ToolName, args: Record<string, unknown>): Parsed | string {
   if (typeof args !== "object" || args === null) return `${tool} takes its arguments as an object`
-  const known = new Set(Object.keys(parameters(h)[tool].properties))
-  const unknown = Object.keys(args).find((key) => !known.has(key))
+  const { properties, required } = parameters(h)[tool]
+  // Own properties only: `in` would take an object's inherited names (constructor, toString) as parameters.
+  const unknown = Object.keys(args).find((key) => !Object.hasOwn(properties, key))
   if (unknown !== undefined) return `${tool} takes no argument ${JSON.stringify(unknown)}`
-  const given: Record<string, unknown> = Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null))
+  const leftOut = (key: string, value: unknown) =>
+    value === null || (value === "" && !(required as readonly string[]).includes(key))
+  const given: Record<string, unknown> = Object.fromEntries(
+    Object.entries(args).filter(([key, value]) => !leftOut(key, value)),
+  )
   const notText = (key: string) => `${key} must be text`
   if (tool !== "start" && typeof given[h.kind] !== "string") return notText(h.kind)
   const session = given[h.kind] as string
@@ -154,7 +160,7 @@ export function parseArgs(h: Harness, tool: ToolName, args: Record<string, unkno
     if (from !== undefined && !(typeof from === "number" && Number.isSafeInteger(from) && from >= 0)) {
       return "from is an offset from an earlier reply's next: a whole number, 0 or more"
     }
-    if (query !== undefined && (typeof query !== "string" || query === "")) return "query must be text to look for"
+    if (query !== undefined && typeof query !== "string") return "query must be text to look for"
     if (typeof trace !== "boolean") return "trace must be true or false"
     return { tool, session, from, query, trace, waitMs }
   }

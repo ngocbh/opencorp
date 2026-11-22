@@ -86,6 +86,8 @@ export type CodexSessionsOptions = {
   env?: () => Record<string, string>
   /** Where the harness temp folder is (`harnessTemp`; default `/tmp`); tests pass their own. */
   tmpBase?: string
+  /** The office's environment (default `process.env`), whose `CODEX_HOME` and `CLAUDE_CONFIG_DIR` are read. */
+  environ?: Record<string, string | undefined>
   closeGraceMs?: number
   stopWaitMs?: number
   endWaitMs?: number
@@ -113,6 +115,7 @@ export class CodexSessions implements SessionHarness {
   readonly #command: (() => string[]) | undefined
   readonly #env: () => Record<string, string>
   readonly #tmpBase: string | undefined
+  readonly #environ: Record<string, string | undefined>
   readonly #live = new Map<string, CodexSession>()
   /** Set by `closeAll`: no session starts after office stop. */
   #closed = false
@@ -126,6 +129,7 @@ export class CodexSessions implements SessionHarness {
     this.#command = options.command
     this.#env = options.env ?? (() => workerEnv(process.env))
     this.#tmpBase = options.tmpBase
+    this.#environ = options.environ ?? process.env
     this.closeGraceMs = options.closeGraceMs ?? CLOSE_GRACE_MS
     this.stopWaitMs = options.stopWaitMs ?? STOP_WAIT_MS
     this.endWaitMs = options.endWaitMs ?? END_WAIT_MS
@@ -552,7 +556,7 @@ export class CodexSessions implements SessionHarness {
       gitRoot: gitRootOf(live.cwd),
       tmpdir: freshFolder(root, live.sessionId),
       fence: fenceIn(root),
-      harnessHomes: harnessHomes(process.env),
+      harnessHomes: harnessHomes(this.#environ),
     })
     const { install } = nativeCodex(command[0]!)
     checkCodexInstall(permission, { run: command[0]!, install })
@@ -659,6 +663,7 @@ export class CodexSessions implements SessionHarness {
       onNotification: (method, params) => live.notified(proc, method, params),
       onRequest: (id, method, params) => live.requested(proc, id, method, params),
       onExit: (p) => live.exited(p),
+      environ: this.#environ,
       logLine: this.log,
       track: (pid) => {
         // A 0 start time never matches a process, so the reaper never signals such a row.

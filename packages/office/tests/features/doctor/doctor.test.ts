@@ -1658,11 +1658,16 @@ test("checks give the codex check the offices recorded service mode", async () =
 })
 
 /** The fake Claude Code as `claude` in `<dir>/fake/bin`, only the user's to change, on `script` (2.1.325 and signed
- *  in unless it says otherwise). Returns the env to run it with, the fake, and the binary. */
+ *  in unless it says otherwise), with a stand-in socat in the owner's home (`<dir>/home/.local/bin`, as `probeHomes`
+ *  lays it out), on its PATH. Returns the env to run it with, the fake, the binary and the socat. */
 function fakeClaudeIn(dir: string, script: FakeClaudeScript = {}) {
   const fake = installFakeClaude(path.join(dir, "fake"), { version: "2.1.325", ...script })
   for (const p of [path.join(dir, "fake"), fake.bin]) fs.chmodSync(p, 0o755)
-  return { env: { PATH: `${fake.bin}:/usr/bin:/bin`, HOME: dir }, fake, claude: fake.claude }
+  const local = path.join(dir, "home/.local/bin")
+  fs.mkdirSync(local, { recursive: true, mode: 0o755 })
+  const socat = path.join(local, "socat")
+  fs.writeFileSync(socat, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  return { env: { PATH: `${fake.bin}:${local}:/usr/bin:/bin`, HOME: dir }, fake, claude: fake.claude, socat }
 }
 
 /** What doctor tells the owner to run to update Claude Code past the floor. */
@@ -1690,6 +1695,78 @@ test("claude at the floor and signed in, starting under an employee's permission
     status: "ok",
     detail: `2.1.325 (Claude Code) at ${claude}`,
   })
+})
+
+test("on Linux, claude warns of each employee who uses it with a folder they may only read, whose sessions are refused", async () => {
+  const { dir, office, base } = probeHomes()
+  const { env } = fakeClaudeIn(dir)
+  const check = await doctor.claudeCheck(env, {}, null, { office, base, readOnly: ["minh", "lan"], platform: "linux" })
+  expect(check.status).toBe("warn")
+  expect(check.detail).toContain("starts with its sandbox required")
+  expect(check.detail).toContain("@minh's and @lan's Claude Code sessions are refused")
+  expect(check.detail).toContain("workspace-write")
+  expect(check.detail).toContain("Codex")
+  // macOS's sandbox isn't known to fail there.
+  const mac = await doctor.claudeCheck(env, {}, null, { office, base, readOnly: ["minh"], platform: "darwin" })
+  expect(mac.status).toBe("ok")
+  // A start that fails, or no socat, still names them.
+  const other = probeHomes()
+  const failing = fakeClaudeIn(other.dir, { sandbox_unavailable: true })
+  const where = { office: other.office, base: other.base, readOnly: ["minh"], platform: "linux" as const }
+  const failed = await doctor.claudeCheck(failing.env, {}, null, where)
+  expect(failed.status).toBe("fail")
+  expect(failed.detail).toContain("sandbox can't start here")
+  expect(failed.detail).toContain("@minh's Claude Code sessions are refused")
+  fs.rmSync(failing.socat)
+  const noSocat = await doctor.claudeCheck(failing.env, {}, null, where)
+  expect(noSocat.detail).toContain("needs socat")
+  expect(noSocat.detail).toContain("@minh's Claude Code sessions are refused")
+})
+
+test("on Linux, claude fails without a socat for its sandbox, saying how to fix it; the start doctor tries runs with the office's", async () => {
+  const { dir, office, base } = probeHomes()
+  const { env, fake, socat } = fakeClaudeIn(dir, { needs_socat: true })
+  expect((await doctor.claudeCheck(env, {}, null, { office, base, platform: "linux" })).status).toBe("ok")
+  // The start found socat first on its PATH, in a folder of its own.
+  const start = fake.log().filter((e) => e.dir === "start")[1]!
+  const first = (start.env as Record<string, string>).PATH!.split(":")[0]!
+  expect(path.basename(first)).toBe("bin")
+  expect(first).not.toBe(fake.bin)
+  // The probe's folders go with it.
+  expect(fs.existsSync(first)).toBe(false)
+  fs.rmSync(socat)
+  const missing = await doctor.claudeCheck(env, {}, "systemd", { office, base, platform: "linux" })
+  expect(missing.status).toBe("fail")
+  expect(missing.detail).toContain("needs socat")
+  expect(missing.detail).toContain("OPENCORP_SOCAT_BIN")
+  const named = await doctor.claudeCheck(env, { OPENCORP_SOCAT_BIN: "/nowhere/socat" }, null, { office, base, platform: "linux" })
+  expect(named.status).toBe("fail")
+  expect(named.detail).toContain("OPENCORP_SOCAT_BIN names /nowhere/socat")
+  // One that doesn't run says so.
+  fs.writeFileSync(socat, "#!/bin/sh\necho 'cannot open shared object file' >&2\nexit 127\n", {
+    mode: 0o755,
+  })
+  const broken = await doctor.claudeCheck(env, {}, null, { office, base, platform: "linux" })
+  expect(broken.status).toBe("fail")
+  expect(broken.detail).toContain("doesn't run (cannot open shared object file)")
+  // macOS's sandbox needs none.
+  const mac = probeHomes()
+  const plain = fakeClaudeIn(mac.dir)
+  fs.rmSync(plain.socat)
+  const check = await doctor.claudeCheck(plain.env, {}, null, { office: mac.office, base: mac.base, platform: "darwin" })
+  expect(check.status).toBe("ok")
+})
+
+test("doctor names the employees who use Claude Code with a read-only folder, from the company's people", () => {
+  const repo = {
+    people: new Map([
+      ["minh", { harnesses: ["composer", "claude"], harness_policy: { sandbox: "read-only", network: false } }],
+      ["lan", { harnesses: ["claude"], harness_policy: null }],
+      ["tuan", { harnesses: ["claude"], harness_policy: { sandbox: "workspace-write", network: false } }],
+      ["vy", { harnesses: ["codex"], harness_policy: { sandbox: "read-only", network: false } }],
+    ]),
+  }
+  expect(doctor.readOnlyClaude(repo as never)).toEqual(["lan", "minh"])
 })
 
 test("claude missing, or an opencorp claude bin the office can't find, is a warning saying what to do", async () => {

@@ -1,5 +1,6 @@
-/** Claude Code's lines as the office's transcript: real lines from the fixture (`tests/fixtures/claude/stream.jsonl`,
- *  from the upstream TUI's recordings), through the translator, as message, part and turn events. */
+/** Claude Code's lines as the office's transcript: real lines from the fixtures (`tests/fixtures/claude/stream.jsonl`,
+ *  from the upstream TUI's recordings, and `stream-2.1.330.jsonl`, a real 2.1.330's), through the translator, as message, part and
+ *  turn events. */
 import fs from "node:fs"
 import { fileURLToPath } from "node:url"
 import { expect, test } from "bun:test"
@@ -198,4 +199,62 @@ test("messages Esc dropped before any turn took them end with the marker, in a m
   t.line({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Again." }] } })
   const opened = events.filter((e) => e.type === "message" && e.message.role === "assistant")
   expect(opened).toHaveLength(2)
+})
+
+/** The 2.1.330 lines of recorded run `name` (`f1`, `e1`), in the order Claude Code wrote them. */
+function run(name: string): Obj[] {
+  const file = fileURLToPath(new URL("../../fixtures/claude/stream-2.1.330.jsonl", import.meta.url))
+  return fs
+    .readFileSync(file, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((text) => JSON.parse(text) as Obj)
+    .filter((entry) => entry.source.startsWith(`${name}.`))
+    .map((entry) => entry.message)
+}
+
+test("2.1.330's turns read as recorded: two interrupted mid-command, the message one left queued its own turn, and the lines the office doesn't read left to the caller", () => {
+  const { t, events } = translator()
+  const unread = new Set<string>()
+  for (const msg of run("f1")) {
+    if (!t.line(msg)) unread.add(msg.type === "system" ? `system/${msg.subtype}` : msg.type)
+  }
+  expect([...unread].sort()).toEqual([
+    "command_lifecycle",
+    "control_response",
+    "rate_limit_event",
+    "system/task_notification",
+    "system/task_started",
+  ])
+  expect(t.turn).toBeNull()
+  expect(brief(events).filter((e) => e.startsWith("turn_") || e.startsWith("text:"))).toEqual([
+    "turn_started",
+    `text:${INTERRUPTED_TEXT.trimStart()}`,
+    "turn_completed",
+    "turn_started",
+    `text:${INTERRUPTED_TEXT.trimStart()}`,
+    "turn_completed",
+    "turn_started",
+    "text:PAPAYA",
+    "turn_completed",
+  ])
+  // The command each interrupt stopped shows as rejected, and no turn shows a failure.
+  const tools = events.flatMap((e) => (e.type === "part" && e.part.type === "tool" ? [e.part] : []))
+  expect(tools.filter((p) => p.state !== "running").map((p) => p.state)).toEqual(["error", "error"])
+  expect(events.some((e) => e.type === "message" && e.message.parts.some((p) => p.type === "error"))).toBe(false)
+})
+
+test("2.1.330's thinking, its refusals with nobody to ask and its thinking-token counts read without a failure", () => {
+  const { t, events } = translator()
+  for (const msg of run("e1")) t.line(msg)
+  expect(t.turn).toBeNull()
+  const kinds = brief(events)
+  expect(kinds.slice(0, 2)).toEqual(["model:claude-sonnet-5-5", "turn_started"])
+  expect(kinds.at(-1)).toBe("turn_completed")
+  // Thinking isn't shown; each call is, with its result.
+  const tools = events.flatMap((e) => (e.type === "part" && e.part.type === "tool" ? [e.part] : []))
+  const calls = new Set(tools.map((p) => p.call_id))
+  expect(calls.size).toBe(7)
+  expect(tools.filter((p) => p.state === "running")).toHaveLength(7)
+  expect(events.some((e) => e.type === "message" && e.message.parts.some((p) => p.type === "error"))).toBe(false)
 })

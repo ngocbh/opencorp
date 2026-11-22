@@ -39,17 +39,18 @@ function tracked(store: Store): void {
 }
 
 /** An office whose minh may use Claude Code (plus `files`), and its `ClaudeSessions` running the fake (2.1.325 and
- *  `script`) with a fixed environment and a temp owner's home; `options` replace the sessions' others. `lines` gets
+ *  `script`) with a fixed environment, a temp owner's home and a stand-in socat; `options` replace the sessions'
+ *  others. `lines` gets
  *  the sessions' log lines, `events` every live event the bus got. Call inside a test: the office's stop closes the
  *  sessions before the store closes, and every Claude Code still running is then killed. */
 export function makeClaude({
   files = {},
   script = {},
+  home = tempDir(),
   ...options
-}: { files?: Record<string, unknown>; script?: FakeClaudeScript } & ClaudeSessionsOptions = {}) {
-  const home = tempDir()
+}: { files?: Record<string, unknown>; script?: FakeClaudeScript; home?: string } & ClaudeSessionsOptions = {}) {
   const tmpBase = tempDir()
-  fs.mkdirSync(path.join(home, ".claude"))
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
   const office = makeOffice({ files: { ...CLAUDE_PERSON, ...files }, guards: { home } })
   const store = office.store
   tracked(store)
@@ -61,8 +62,14 @@ export function makeClaude({
   })
   const lines: string[] = []
   const fake = installFakeClaude(path.join(tempDir(), "fake"), { version: "2.1.325", ...script })
+  // In the owner's home, as one installed for the user is: a folder of /tmp outside it would hold sockets.
+  const local = path.join(home, ".local/opencorp-test/bin")
+  fs.mkdirSync(local, { recursive: true, mode: 0o755 })
+  const socat = path.join(local, "socat")
+  fs.writeFileSync(socat, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
   const sessions = new ClaudeSessions(office, {
     claude: fake.claude,
+    socat,
     env: () => ({ PATH: "/usr/bin:/bin", HOME: home }),
     environ: {},
     tmpBase,

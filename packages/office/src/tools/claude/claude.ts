@@ -8,8 +8,9 @@
  *  it would otherwise run as the owner outside that sandbox is off: no settings file loads (`--setting-sources=`, so
  *  no hooks, plugins, MCP servers, skills or CLAUDE.md from the owner's or the project's settings), no MCP server but
  *  the ones the command line names (`--strict-mcp-config`, and it names none), no plugin directory, and hooks off in
- *  the flag settings. It asks nothing (`--permission-mode=acceptEdits` with the sandbox's auto-allow, and
- *  `--permission-prompts=none`): what would ask is refused, and so is any request it sends the office. */
+ *  the flag settings. Only the tools the office allows are on (`--tools`, `CLAUDE_TOOLS`). It asks nothing
+ *  (`--permission-mode=acceptEdits` with the sandbox's auto-allow, and `--permission-prompts=none`): what would ask
+ *  is refused, and so is any request it sends the office. */
 import { type ChildProcess, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import fs from "node:fs"
@@ -25,6 +26,41 @@ import { type Msg, StreamJson, isObj, nameOf } from "./stream.ts"
  *  under an `allowRead` inside a `denyRead`, as an employee's permission lays it out. */
 export const CLAUDE_FLOOR = "2.1.325"
 
+/** The only tools Claude Code has in an employee's session (`--tools`): its file tools, Bash, and ToolSearch, which
+ *  loads only from that list. The rest are off: they act on the owner's claude.ai account (RemoteTrigger, DesignSync,
+ *  PushNotification, and the skills that drive them), reach outside the sandbox (Monitor's WebSocket), keep running
+ *  after the turn (Task, Workflow, the Cron tools, ScheduleWakeup), or have nothing to act on with no background tasks
+ *  (TaskStop). */
+export const CLAUDE_TOOLS = ["Bash", "Read", "Edit", "Write", "NotebookEdit", "Glob", "Grep", "ToolSearch"] as const
+
+/** Whether Claude Code can't run commands in a folder its employee may only read on `platform`: on Linux its sandbox
+ *  makes a `.gitconfig` in the working folder for each command, which a read-only folder refuses, so every Bash
+ *  command fails (`bwrap: Can't create file at <folder>/.gitconfig: Read-only file system`). macOS's isn't known
+ *  to. */
+// Claude Code's bug, https://github.com/anthropics/claude-code/issues/111621, is why a read-only folder is refused on
+// Linux. Before removing the refusal, check that the issue is fixed in the floor (`CLAUDE_FLOOR`) and that a Bash
+// command runs in a read-only folder under an employee's start on Linux.
+export function readOnlyFails(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "linux"
+}
+
+/** What to do about it, for an employee who uses Claude Code with a folder they may only read. */
+export const READ_ONLY_FIX =
+  "on Linux Claude Code's sandbox fails every command in a folder its employee may only read; the owner makes their " +
+  "harness_policy sandbox workspace-write, or they use Codex for read-only work"
+
+/** Whether Claude Code's sandbox needs socat on `platform`: on Linux it bridges the sandbox's network through it, and
+ *  refuses to start without it ("socat not installed"). */
+export function socatNeeded(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "linux"
+}
+
+/** What to do when the office found no socat. */
+export const SOCAT_MISSING =
+  "Claude Code's sandbox needs socat on Linux, and the office didn't find it (on its PATH when it started, or as " +
+  "OPENCORP_SOCAT_BIN): install socat (for example `sudo apt-get install socat`, or `sudo dnf install socat`), or " +
+  "point OPENCORP_SOCAT_BIN at one, then restart the office and run `opencorp doctor`"
+
 /** How the office talks to Claude Code: stream-json both ways, every message written out. */
 export const STREAM_ARGS = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"] as const
 
@@ -39,13 +75,18 @@ const CONTROL_TIMEOUT_MS = 30_000
 const TERM_WAIT_MS = 3_000
 /** Milliseconds a killed Claude Code has to be seen exiting. */
 const EXIT_WAIT_MS = 5_000
+/** The `startup_failure_reason` of the `result` Claude Code writes in place of `initialize`'s answer when its sandbox
+ *  can't run and `failIfUnavailable` stops the start; it then waits on stdin, answering nothing. */
+const SANDBOX_UNAVAILABLE = "sandbox_required_unavailable"
+/** What a Claude Code that writes no `startup_failure_reason` (older than 2.1.330 may not) says on stderr when its
+ *  sandbox stops the start, in its docs' words and 2.1.330's: required but unavailable, refusing to start without
+ *  it, required but failed to initialize, or Ubuntu's AppArmor stopping bubblewrap. */
+const SANDBOX_SAID =
+  /^Error: sandbox required but unavailable\b|Refusing to start without a working sandbox|Sandbox is required but failed to initialize|AppArmor .*stops bubblewrap/im
+/** How often a start reads its own stderr for `SANDBOX_SAID`, in milliseconds. */
+const SAID_POLL_MS = 200
 /** The most of a start's own output read to tell why it failed. */
 const REASON_BYTES = 64 * 1024
-/** What Claude Code writes when its sandbox can't run, as its docs give the messages: required but failed to
- *  initialize, or stopped being available; Ubuntu's AppArmor stopping bubblewrap; and bubblewrap's own failures. The
- *  message for a start that `failIfUnavailable` stops isn't documented, and is taken to name the setting (O5 records
- *  it). */
-const SANDBOX_FAILED = /failIfUnavailable|Sandbox is required|stops bubblewrap|^bwrap: /m
 const STOPPED = "Claude Code was stopped before it started."
 const UPDATE =
   "update it with `claude update` (or `brew upgrade claude-code`, or " +
@@ -53,6 +94,16 @@ const UPDATE =
 /** What a tool's permission request is told: nobody answers here. */
 const DENIED =
   "Nobody can approve this here: this session runs only what the employee's permission allows. Don't ask again."
+
+/** Claude Code stopped its own start, as a `result` naming `startup_failure_reason` says. */
+class StartupFailure extends Error {
+  override name = "StartupFailure"
+
+  constructor(readonly reason: string) {
+    // The reason is Claude Code's identifier: only its word characters are kept.
+    super(`it stopped its start (${reason.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 60) || "no reason given"})`)
+  }
+}
 
 /** Claude Code couldn't be run, didn't start, or refused the start. The message says what went wrong and what to
  *  do; it never holds Claude Code's own output, which stays in the session's log. */
@@ -137,6 +188,7 @@ export function claudeArgs(
     "--strict-mcp-config",
     "--permission-mode=acceptEdits",
     "--permission-prompts=none",
+    `--tools=${CLAUDE_TOOLS.join(",")}`,
     "--settings",
     JSON.stringify(start.settings),
     ...start.addDirs.map((dir) => `--add-dir=${dir}`),
@@ -170,6 +222,14 @@ export function claudeSession(
   const instructions = text === null ? null : writeInstructions(start.env.TMPDIR!, "opencorp", text)
   const args = claudeArgs(start, { ...rest, ...(instructions === null ? {} : { instructions }) })
   return { command: [claude, ...args], env: start.env, instructions }
+}
+
+/** The tools a turn's `system`/`init` line lists beyond `CLAUDE_TOOLS`, MCP tools among them; a list that isn't
+ *  one counts as one such tool, since what it holds can't be checked. Empty when the session has only those. */
+export function toolsBeyond(init: Msg): string[] {
+  if (!Array.isArray(init.tools)) return ["(its tools, which it didn't list)"]
+  const allowed = new Set<unknown>(CLAUDE_TOOLS)
+  return init.tools.filter((tool) => !allowed.has(tool)).map((tool) => String(tool).slice(0, 100))
 }
 
 /** Whether `initialize`'s `account` (Claude Code's `AccountInfo`) has a sign-in: a token from a login, or an API
@@ -240,6 +300,8 @@ export class ClaudeProcess {
   #logStart = 0
   #killed = false
   #killing: Promise<void> | null = null
+  /** Rejects the start with the reason a `result` gave for stopping it, until `initialize` is answered. */
+  #stopsStart: ((reason: string) => void) | null = null
 
   constructor(options: ClaudeProcessOptions) {
     this.#options = options
@@ -264,9 +326,10 @@ export class ClaudeProcess {
   /** Spawns, tracks, and sends `initialize` (registering no hook, and sending no message, so no model call runs);
    *  resolves with its answer once Claude Code is at least `CLAUDE_FLOOR` and signed in.
    *
-   *  Rejects with `ClaudeStartError`: `ClaudeTooOld`, `ClaudeSignedOut`, `ClaudeSandboxUnavailable` when it exits
-   *  first saying its sandbox can't start, and otherwise words that say to run `opencorp doctor` and name the log; an
-   *  error from `track` is rethrown as is. Nothing is left running or tracked. A process killed first never spawns. */
+   *  Rejects with `ClaudeStartError`: `ClaudeTooOld`, `ClaudeSignedOut`, `ClaudeSandboxUnavailable` at once when a
+   *  `result` in place of `initialize`'s answer says its sandbox stops the start (`startup_failure_reason`), or, from
+   *  a Claude Code that writes no such result, its stderr does in its docs' words, and
+   *  otherwise words that say to run `opencorp doctor` and name the log; an error from `track` is rethrown as is. Nothing is left running or tracked. A process killed first never spawns. */
   async start(): Promise<Msg> {
     const { command, cwd, log } = this.#options
     fs.mkdirSync(path.dirname(log), { recursive: true })
@@ -301,22 +364,42 @@ export class ClaudeProcess {
       throw error
     }
     const options = this.#options
+    const stopped = new Promise<never>((_, reject) => {
+      this.#stopsStart = (reason) => reject(new StartupFailure(reason))
+    })
+    stopped.catch(() => {}) // rejected only while the start waits on it
     const stream = (this.stream = new StreamJson(proc.stdin!, proc.stdout!, {
-      onMessage: (msg) => options.onMessage(msg),
+      onMessage: (msg) => {
+        if (this.#stopsStart !== null && msg.type === "result" && typeof msg.startup_failure_reason === "string") {
+          return this.#stopsStart(msg.startup_failure_reason)
+        }
+        options.onMessage(msg)
+      },
       onRequest: (id, request) => this.#refuse(id, request),
       onClosed: () => void this.#closed(),
       kill: () => this.#signal(),
       log: this.#log,
     }))
     stream.start()
+    // A Claude Code with no startup_failure_reason says why only on stderr, and may then wait, as one with it does.
+    const watch = setInterval(() => {
+      if (SANDBOX_SAID.test(this.#startOutput())) this.#stopsStart?.(SANDBOX_UNAVAILABLE)
+    }, SAID_POLL_MS)
     let init: Msg
     try {
-      init = await stream.request("initialize", {}, { timeout: START_TIMEOUT_MS })
+      init = await Promise.race([stream.request("initialize", {}, { timeout: START_TIMEOUT_MS }), stopped])
     } catch (error) {
-      const stopped = this.closing // an office stop killed it mid-start
+      const killed = this.closing // an office stop killed it mid-start
       await this.kill()
-      if (stopped) throw new ClaudeStartError(STOPPED, { cause: error })
+      if (killed) throw new ClaudeStartError(STOPPED, { cause: error })
+      // One that exited first may not have been read yet.
+      if (!(error instanceof StartupFailure) && SANDBOX_SAID.test(this.#startOutput())) {
+        throw this.#startError(new StartupFailure(SANDBOX_UNAVAILABLE))
+      }
       throw this.#startError(error as Error)
+    } finally {
+      clearInterval(watch)
+      this.#stopsStart = null
     }
     const version = typeof init.claude_code_version === "string" ? init.claude_code_version : null
     if (version === null || olderThan(version)) {
@@ -371,12 +454,14 @@ export class ClaudeProcess {
   }
 
   /** Stops it: SIGTERM first, on which Claude Code ends its running commands' process trees and exits, then the
-   *  whole group killed, and its own `track` cleanup run.
+   *  whole group killed, and its own `track` cleanup run. With `now`, the group is killed at once, for a Claude Code
+   *  that must not take another step.
    *
    *  Safe more than once and before `start`: a process killed first never spawns. Every call resolves when the first
    *  one's work is done; it never rejects. */
-  kill(): Promise<void> {
+  kill({ now = false }: { now?: boolean } = {}): Promise<void> {
     this.closing = true
+    if (now) this.#signal()
     return (this.#killing ??= this.#killOnce())
   }
 
@@ -393,11 +478,12 @@ export class ClaudeProcess {
     sent.catch(() => this.#log("claude: couldn't answer a request: Claude Code's stdin is closed"))
   }
 
-  /** The error for a Claude Code that failed or died while starting: its sandbox, when what it wrote since this start
-   *  says so, or else what went wrong, to run `opencorp doctor`, and where its output is. */
+  /** The error for a Claude Code that failed or died while starting: its sandbox, when its result's
+   *  `startup_failure_reason` (or, with none, its stderr: `SANDBOX_SAID`) says so, another reason named, or else what
+   *  went wrong; each says to run `opencorp doctor` and where its output is. */
   #startError(error: Error): ClaudeStartError {
     const { log } = this.#options
-    if (SANDBOX_FAILED.test(this.#startOutput())) {
+    if (error instanceof StartupFailure && error.reason === SANDBOX_UNAVAILABLE) {
       return new ClaudeSandboxUnavailable(
         "Claude Code's sandbox can't start on this machine, and Claude Code runs here only inside it, since it holds " +
           "your employee's commands to their permission. On Linux, install bubblewrap and socat (for example " +

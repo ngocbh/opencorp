@@ -16,6 +16,23 @@ test("the model names a session by the harness's kind, and the reply names it so
   expect(reply).toEqual({ claude: "claude 2", status: "idle", output: [], next: 0, more: false })
 })
 
+test("an empty optional text reads as left out, as a null does; a required one is still refused", () => {
+  expect(parseArgs(H, "history", { claude: "claude 1", query: "", trace: true })).toEqual({
+    tool: "history", session: "claude 1", from: undefined, query: undefined, trace: true, waitMs: 60_000,
+  })
+  expect(parseArgs(H, "history", { claude: "claude 1", query: null })).toMatchObject({ query: undefined })
+  expect(parseArgs(H, "send", { claude: "", message: "More." })).toEqual({
+    tool: "send", session: "", message: "More.", waitMs: 60_000,
+  })
+  expect(parseArgs(H, "start", { message: "" })).toBe("message must be text to tell Claude Code")
+})
+
+test("an argument named after an inherited property, such as constructor or toString, is no argument a tool takes", () => {
+  for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+    expect(parseArgs(H, "stop", JSON.parse(`{"claude": "claude 1", "${name}": "x"}`))).toBe(`stop takes no argument "${name}"`)
+  }
+})
+
 test("the descriptions name the harness, its sessions and what its trace holds", () => {
   const specs = toolSpecs(H)
   expect(specs.start.description).toContain("Start a Claude Code session")

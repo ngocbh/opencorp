@@ -28,7 +28,7 @@ test("an argument a tool doesn't take, or one of the wrong kind, says why", () =
   expect(parseArgs("send", { message: "Hi." })).toBe("codex must be text")
   expect(parseArgs("send", { codex: "codex 1", message: "  " })).toBe("message must be text to tell Codex")
   expect(parseArgs("history", { codex: "codex 1", from: -1 })).toContain("from is an offset")
-  expect(parseArgs("history", { codex: "codex 1", query: "" })).toBe("query must be text to look for")
+  expect(parseArgs("history", { codex: "codex 1", query: 7 })).toBe("query must be text to look for")
   expect(parseArgs("send", { codex: "codex 1", message: "Hi.", wait: "soon" })).toContain("wait is a number")
 })
 

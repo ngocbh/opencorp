@@ -8,9 +8,16 @@ import {
   checkClaudeInstall,
   claudeStart,
 } from "../../runtime/sandbox/harness_profile.ts"
-import { fenceIn, freshFolder, harnessRoot, removeFolder, sweepTemp } from "../../runtime/sandbox/harness_temp.ts"
+import {
+  fenceIn,
+  freshFolder,
+  harnessRoot,
+  removeFolder,
+  sweepTemp,
+} from "../../runtime/sandbox/harness_temp.ts"
 import { UnsafeProfile } from "../../runtime/sandbox/policy.ts"
 import { ClaudeProcess, claudeArgs } from "./claude.ts"
+import { prepareSocat } from "./socat.ts"
 
 /** Milliseconds the probe's Claude Code has to exit once its stdin closes. */
 const PROBE_GRACE_MS = 2_000
@@ -30,6 +37,9 @@ export type ProbeOptions = {
   base?: string
   /** Folders others may write: every person's writable listed folders, and live sessions' folders. */
   othersWritable?: readonly string[]
+  /** The socat Claude Code's sandbox runs, where it needs one: readied as a session's start readies it
+   *  (`prepareSocat`), its link in the probe's own `bin`. */
+  socat?: string
 }
 
 /** Starts Claude Code as an employee's session starts it, under the permission's settings, in a read-only folder with
@@ -68,6 +78,11 @@ export async function probeStart(options: ProbeOptions): Promise<{ error: Error 
       othersWritable: options.othersWritable ?? [],
     }
     checkClaudeInstall(p, options.claude)
+    if (options.socat !== undefined) {
+      const prepared = prepareSocat(p, options.socat, { root: dir, name: "bin", env: options.env })
+      if (prepared.programs !== null) p.programs = prepared.programs
+      p.programReads = prepared.reads
+    }
     const start = claudeStart(p)
     proc = new ClaudeProcess({
       command: [options.claude.run, ...claudeArgs(start, { persist: false })],

@@ -49,6 +49,12 @@ export interface EmployeePermission {
   /** Folders others may write (other people's writable listings, and live sessions' folders): none of them goes on
    *  this one's PATH. */
   othersWritable?: readonly string[]
+  /** A private folder of the programs the office lets the harness's sandbox run (`programsFolder`: Claude Code's
+   *  socat), first on its PATH and readable, never writable, in its sandbox. */
+  programs?: string
+  /** The folders those programs run from and load libraries from, each checked as a program's install folder is:
+   *  readable in the sandbox where a deny would hide them, and only those exact folders. */
+  programReads?: readonly string[]
 }
 
 /** The system folders that start every harness PATH. Both harnesses run `git`, `rg` and (Codex, on Linux) `bwrap`
@@ -60,17 +66,23 @@ const SYSTEM_PATH: readonly string[] = [
   "/sbin",
   ...(process.platform === "darwin" ? ["/opt/homebrew/bin"] : []),
 ]
+/** The system folders that start every harness PATH. */
+export function systemPath(): string[] {
+  return [...SYSTEM_PATH]
+}
+
 /** Where the owner's own Unix sockets and temp files live: tmux's, ssh-agent's, D-Bus's (`/run/user/<uid>`), other
  *  Claude Code sessions' inboxes. Claude Code's Bash sandbox reads everything but `denyRead`, and on Linux the seccomp
- *  filter that blocks a Unix socket is optional (no setting requires it, and doctor can't see it without a model
- *  call: O5 checks it), so a command that can read a socket there can connect to it and act as the owner. So they
+ *  filter that blocks a Unix socket is optional (no setting requires it, doctor can't see it without a model call, and
+ *  whether it is in place is unverified with a real Claude Code), so a command that can read a socket there can
+ *  connect to it and act as the owner. So they
  *  are all denied, but what a listed folder covers; the session's folder and temp folder (`allowRead`) are re-opened
  *  inside them. macOS's per-user temp folders are under `/var/folders`.
  *
  *  - When the network may be on, `/run/systemd/resolve` must be re-allowed: `/etc/resolv.conf` often links to its
  *    stub, the local DNS resolver.
- *  - O5 confirms that the temp folder, an `allowRead` under the `/tmp` deny, works, and that the sandbox's proxy
- *    bridge puts its sockets in the session's temp folder (its `TMPDIR`), not in `/tmp`. */
+ *  - Unverified with a real Claude Code: that the temp folder, an `allowRead` under the `/tmp` deny, works, and that
+ *    the sandbox's proxy bridge puts its sockets in the session's temp folder (its `TMPDIR`), not in `/tmp`. */
 const SOCKET_ROOTS: readonly string[] = [
   "/tmp",
   "/var/tmp",
@@ -120,6 +132,10 @@ interface Checked {
   held: Kept[]
   /** The harness PATH. */
   path: string
+  /** `programs`, resolved. */
+  programs: string | null
+  /** `programReads`, resolved. */
+  programReads: string[]
 }
 
 /** A path kept read-only, and whether it is a folder (Claude Code's edit deny then covers what is in it). */
@@ -214,6 +230,7 @@ export function claudeStart(p: EmployeePermission): {
   const sockets = [...new Set(SOCKET_ROOTS.filter((p) => fs.existsSync(p)).map((p) => realPath(p)))].filter(
     (root) => !covered(root),
   )
+  const denyRead = [...(covered(c.home) ? [] : [c.home]), ...sockets, ...c.denied]
   const settings = {
     sandbox: {
       enabled: true,
@@ -221,8 +238,15 @@ export function claudeStart(p: EmployeePermission): {
       allowUnsandboxedCommands: false,
       autoAllowBashIfSandboxed: true,
       filesystem: {
-        denyRead: [...(covered(c.home) ? [] : [c.home]), ...sockets, ...c.denied],
-        allowRead: [c.workspace, c.tmpdir, ...c.folders.map((folder) => folder.path)],
+        denyRead,
+        allowRead: [
+          c.workspace,
+          c.tmpdir,
+          ...c.folders.map((folder) => folder.path),
+          ...(c.programs ? [c.programs] : []),
+          // Only those a deny would hide: the rest are read already.
+          ...c.programReads.filter((dir) => denyRead.some((denied) => within(dir, denied))),
+        ],
         allowWrite: [...(c.writable ? [c.workspace] : []), c.tmpdir, ...writable],
         denyWrite: [
           ...(c.writable ? [] : [c.workspace]),
@@ -254,12 +278,19 @@ export function claudeStart(p: EmployeePermission): {
     // The session still binds an inbox socket (only bare mode doesn't, and it skips the login); this drops what
     // arrives there, from the owner's other sessions or the employee's commands, undelivered.
     crossSessionInbound: "refuse",
+    // No background sessions or agent view (Claude Code's docs, agent-view): their supervisor's socket folder is
+    // /tmp/cc-daemon-<uid>/<hash of the config folder>, one per config folder, so the owner's and every employee's
+    // sessions would share one supervisor.
+    disableAgentView: true,
   }
   const env = {
     PATH: c.path,
     TMPDIR: c.tmpdir,
     CLAUDE_CODE_TMPDIR: c.tmpdir,
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    // No Bash command, subagent or timed-out command goes to the background (Claude Code's docs, env-vars): Esc stops
+    // the command a turn runs (a real one's was gone 17 ms after), but one in the background outlived Esc and the turn.
+    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
   }
   return { settings, addDirs: c.folders.map((folder) => folder.path), env }
 }
@@ -351,6 +382,11 @@ function checked(p: EmployeePermission): Checked {
     ...harnessHomes.map((dir) => ({ path: dir, folder: true })),
   ])
   const others = (p.othersWritable ?? []).map((dir) => realPath(dir))
+  const programs = p.programs === undefined ? null : programsOf(p.programs, [...writable, ...others], officeHome)
+  const sockets = SOCKET_ROOTS.filter((root) => fs.existsSync(root)).map((root) => realPath(root))
+  const programReads = (p.programReads ?? []).map((dir) =>
+    readFolder(dir, [...writable, ...others], [home, officeHome, ...byName], sockets),
+  )
   const all = [workspace, tmpdir, fence, home, ...folders.map((f) => f.path), ...denied, ...held.map((h) => h.path)]
   for (const resolved of all) {
     if (PATTERN.test(resolved)) throw new UnsafeProfile(`the harness would read ${resolved} as a pattern`)
@@ -369,8 +405,64 @@ function checked(p: EmployeePermission): Checked {
     others,
     kept: keptPaths(workspace, gitRoot, writable),
     held,
-    path: pathOf(folders, [...writable, ...others]),
+    path: [...(programs === null ? [] : [programs]), pathOf(folders, [...writable, ...others])].join(":"),
+    programs,
+    programReads: [...new Set(programReads)],
   }
+}
+
+/** `dir`, a folder a program runs or loads libraries from, resolved: refused (`UnsafeProfile`) unless it is a folder
+ *  others than the user can't write, in and holding none of `offLimits` (what the harness or others may write), in
+ *  and holding none of `kept` but the home (the home, the office's home and the folders denied by name), and holding
+ *  no socket root (`SOCKET_ROOTS`, `sockets`) nor in one but within the home, so that re-opening it opens no more
+ *  than that folder: none of the owner's sockets. */
+function readFolder(dir: string, offLimits: readonly string[], kept: readonly string[], sockets: readonly string[]): string {
+  const what = `the folder ${JSON.stringify(dir)}, which a program the harness runs loads from,`
+  if (!path.isAbsolute(dir) || dir.includes("\0")) throw new UnsafeProfile(`${what} isn't absolute`)
+  const visited: string[] = []
+  const real = realPath(dir, visited)
+  if (!fs.statSync(real, { throwIfNoEntry: false })?.isDirectory()) throw new UnsafeProfile(`${what} isn't a folder`)
+  for (const root of offLimits) {
+    const through = [real, ...visited].find((p) => within(p, root)) ?? (within(root, real) ? root : undefined)
+    if (through !== undefined) throw new UnsafeProfile(`${what} is writable by the employee or others: ${through}`)
+  }
+  if (openToOthers(real)) throw new UnsafeProfile(`${what} can be changed: others than the user may write ${real}`)
+  const holds = kept.find((k) => within(k, real))
+  if (holds !== undefined) throw new UnsafeProfile(`${what} holds ${holds}, which the harness may not read`)
+  const inside = kept.slice(1).find((k) => within(real, k))
+  if (inside !== undefined) throw new UnsafeProfile(`${what} lies in ${inside}, which the harness may not read`)
+  const home = kept[0]!
+  const socket = sockets.find((root) => within(root, real) || (within(real, root) && !within(real, home)))
+  if (socket !== undefined) throw new UnsafeProfile(`${what} is or lies in ${socket}, where the owner's sockets are`)
+  if (PATTERN.test(real)) throw new UnsafeProfile(`the harness would read ${real} as a pattern`)
+  return real
+}
+
+/** `programs` resolved, if it is a folder (not a link), the user's and private, outside `offLimits` (what the harness
+ *  or others may write) and the office's home, holding only files others than the user can't write; else
+ *  `UnsafeProfile`. */
+function programsOf(programs: string, offLimits: readonly string[], officeHome: string): string {
+  const what = `the harness's programs folder ${programs}`
+  if (!path.isAbsolute(programs) || programs.includes("\0") || programs.includes(":")) {
+    throw new UnsafeProfile(`${what} isn't an absolute path PATH can hold`)
+  }
+  const stat = fs.lstatSync(programs, { throwIfNoEntry: false })
+  if (stat === undefined || stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new UnsafeProfile(`${what} isn't a folder (a link is refused)`)
+  }
+  if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) throw new UnsafeProfile(`${what} isn't private`)
+  const real = realPath(programs)
+  const inside = [...offLimits, officeHome].find((root) => within(real, root) || within(root, real))
+  if (inside !== undefined) throw new UnsafeProfile(`${what} lies in or holds ${inside}`)
+  for (const name of fs.readdirSync(real)) {
+    // A link names the real file of a program that was checked; its own folder can't be written, so it stays.
+    const file = fs.statSync(path.join(real, name), { throwIfNoEntry: false })
+    if (!file?.isFile() || (file.mode & 0o022) !== 0) {
+      throw new UnsafeProfile(`${what} holds ${name}, which isn't a file only the user may change`)
+    }
+  }
+  if (PATTERN.test(real)) throw new UnsafeProfile(`the harness would read ${real} as a pattern`)
+  return real
 }
 
 /** The paths of the writable ones of `folders`. */
@@ -511,6 +603,7 @@ interface Named {
 
 const CODEX: Named = { run: "the Codex the office runs", folder: "Codex's install folder" }
 const CLAUDE: Named = { run: "the Claude Code the office runs", folder: "Claude Code's install folder" }
+const SOCAT: Named = { run: "the socat Claude Code's sandbox runs", folder: "socat's folder" }
 
 /** Throws `UnsafeProfile` unless Codex as the office runs it can't be changed by anyone but the user: `run`, the file
  *  the office spawns, and `install`, the folder Codex's sandboxed commands run it from (`nativeCodex`). Neither, nor a
@@ -529,6 +622,15 @@ export function checkCodexInstall(p: EmployeePermission, install: HarnessInstall
  *  this comes before it runs. Throws as `checkPermission` does too. */
 export function checkClaudeInstall(p: EmployeePermission, install: HarnessInstall): void {
   checkInstall(p, install, CLAUDE)
+}
+
+/** The real file of the socat the office found (`found`), once checked: throws `UnsafeProfile` unless neither can be
+ *  changed by anyone but the user, as `checkClaudeInstall` checks Claude Code, since Claude Code runs it as the owner,
+ *  outside its sandbox. Copy the file it returns, not `found`, which a link could repoint meanwhile. */
+export function checkSocatInstall(p: EmployeePermission, found: string): string {
+  const run = realPath(found)
+  checkInstall(p, { run, install: path.dirname(run), found }, SOCAT)
+  return run
 }
 
 /** What runs a harness: the file the office spawns, the folder it is installed in, and, when given, the path found on

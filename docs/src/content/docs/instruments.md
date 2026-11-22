@@ -33,12 +33,15 @@ to Claude Code if it lists claude.
 - **Sessions.** The line under the prompt counts their Codex and Claude Code sessions. "Open an instrument…" in the
   command list (ctrl+p), or ctrl+x down, opens one as a chat of its own, where you watch the harness work and write
   to it too; ctrl+x up goes back. A chat has at most four live sessions of each harness.
-- **Two speakers.** The harness reads each message with its author and is told your word wins: your employee reads
-  what you told it with its next answer, and can't interrupt or stop a turn you started. A message you or your
-  employee send while Claude Code works joins its turn once its running tool calls finish.
-- **Esc.** Esc in your employee's chat stops your employee and the harness turn they were waiting on, and so does
-  their run stopping (the cost cap, say); Esc in the session stops the harness's turn. Either Esc on a Claude Code
-  turn also cancels every message it hasn't started, so none of them runs after.
+- **Two speakers.** The session shows who sent each message, and the harness reads each one with its author and is
+  told your word wins: your employee reads what you told it with its next answer, and can't interrupt or stop a turn
+  you started. A message you or your employee send while Claude Code works joins its turn once its running tool calls
+  finish.
+- **Esc.** Esc in your employee's chat stops your employee and the harness turn they were waiting on, and so does their
+  run stopping (the cost cap, say); Esc in the session stops the harness's turn. Either Esc on a Codex turn also stops
+  the commands that turn started and hadn't finished, which would otherwise go on after it; one an earlier turn left
+  running goes on until the session ends. Either Esc on a Claude Code turn stops the command it runs (Claude Code runs
+  none in the background there) and cancels every message it hasn't started, so none of them runs after.
 - **Idle and the end.** A Claude Code session left idle for five minutes stops Claude Code, and the next message
   resumes the same conversation; so does the next message after Claude Code exits on its own, whose turn is marked
   interrupted. Ending the chat ends its shells, their commands and its harness sessions. Restarting the office ends
@@ -79,13 +82,18 @@ the listed folders.
 back to Codex. In your employee's Codex threads your MCP servers, hooks, `notify`, apps and plugins are off, and so
 is web search when the network is off, and your `~/.codex/config.toml` is left as it is.
 
-**Claude Code** asks you nothing either: what its permission doesn't allow is refused. Neither your Claude Code
-settings nor the project's load: your hooks, plugins, MCP servers, skills, permission rules and default model don't
-apply there, and auto memory is off. Only a `/login` sign-in reaches it: an API key in your shell or your
-settings doesn't. OpenCorp passes it your `~/.claude/CLAUDE.md` and the project's `CLAUDE.md` (at the folder and at
-its repository's root, or its `AGENTS.md` when there's none) as text; an `@` import in them isn't followed. It
-doesn't take messages from your other Claude Code sessions, and can't message or list them. Claude Code doesn't hold
-commands to a network that's on, so an employee whose permission turns it on can't start it.
+**Claude Code** asks you nothing either: what its permission doesn't allow is refused. Its only tools are its file
+tools, Bash and ToolSearch: none that acts on your claude.ai account (routines, Claude Design, push notifications),
+reaches outside its sandbox or runs on after the turn. A Claude Code that offers more is stopped before it uses them.
+Neither your Claude Code settings nor the project's load: your hooks, plugins, MCP servers, skills, permission rules and
+default model don't apply there, and auto memory, background sessions and agent view are off. Only a `/login` sign-in
+reaches it: an API key in your shell or your settings doesn't. OpenCorp passes it your `~/.claude/CLAUDE.md` and the
+project's `CLAUDE.md` (at the folder and at its repository's root, or its `AGENTS.md` when there's none) as text; an `@`
+import in them isn't followed. It doesn't take messages from your other Claude Code sessions, and can't message or list
+them. Claude Code doesn't hold commands to a network that's on, so an employee whose permission turns it on can't start
+it. On Linux its sandbox fails every command in a folder your employee may only read, so an employee whose
+`harness_policy` keeps the folder read-only can't start it either: make it `workspace-write`, or have them use Codex.
+`opencorp doctor` names them.
 
 A project you've trusted in Codex (Codex asks the first time you run it there) loads its own `.codex/config.toml`,
 whose MCP servers and hooks would run as you, outside your employee's permission. So your employee's Codex session
@@ -149,6 +157,15 @@ folders of tools you run yourself read-only: `~/.cargo` read-only, `~/miniconda3
 - **Project config.** Only the `.codex/`, `.agents/` and `.claude/` at the top of the project folder and its
   repository's root are read-only; ones in folders below aren't. Codex's check for a trusted project runs when a
   session starts, so a project you trust while a session runs there isn't checked until one starts again.
+- **Placeholders on Linux.** Codex's sandbox holds a missing `.claude` or `.mcp.json` read-only by mounting an empty
+  file there (a missing `.codex`, `.agents` or `.git`, an empty folder). So `git status` in your employee's Codex
+  session lists `.claude` and `.mcp.json` as untracked though they aren't in your project; `.git` is read-only there,
+  so nothing can commit them. On your side the empty files exist only while one of their commands runs, and go when
+  it ends: don't `git add -A` in the project then.
 - **The sandbox must run.** Each harness holds the permission with its own sandbox: bubblewrap in a user namespace on
-  Linux, Seatbelt on macOS. Claude Code doesn't start without it ([Check and run](/check-and-run/)). On macOS, how
-  either sandbox holds an employee's permission is unchecked.
+  Linux, Seatbelt on macOS. Claude Code doesn't start without it ([Check and run](/check-and-run/)). On Linux its
+  sandbox also needs `socat`, which it runs inside: the office gives it the one it found when it started, as it is in a
+  system folder, or else through a link in a folder of the session's own that its commands can't change, first on their
+  `PATH`, with that socat's folder and the folders its libraries load from readable to them. A socat that doesn't run,
+  or that loads from a folder your employee or anyone else could change, isn't used. On macOS, how either sandbox holds
+  an employee's permission is unchecked.

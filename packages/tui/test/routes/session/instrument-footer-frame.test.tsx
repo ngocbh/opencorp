@@ -87,6 +87,38 @@ test("a Codex session the chat drives opens from the instrument list as its own 
   }
 })
 
+test("in a Codex session the chat drives, each message says who sent it, and the prompt says the owner writes", async () => {
+  const { office: fake, chat, children } = office()
+  const child = children[0]!
+  fake.state.messages[child.id] = [
+    { id: "u1", session_id: child.id, role: "user", author: "minh",
+      parts: [{ id: "u1p", type: "text", text: "Fix the build." }], created_at: AT },
+    { id: "u2", session_id: child.id, role: "user", author: "ngocbh",
+      parts: [{ id: "u2p", type: "text", text: "Use the staging database." }], created_at: AT },
+    { id: "a1", session_id: child.id, role: "assistant", author: null,
+      parts: [{ id: "a1p", type: "text", text: "Using staging." }], created_at: AT },
+  ]
+  const app = await bootFrame(createStub(fake), { sessionID: chat.id }, { width: 120, height: 40 })
+  try {
+    await app.until((f) => f.includes("@minh auto ·") && f.includes("1 Codex session"))
+    // The chat itself has one speaker to the employee: its messages carry no label.
+    expect(app.frame()).not.toContain("(owner)")
+    await leaderArrow(app, "down")
+    const f = await app.until((f) => f.includes("Using staging.") && f.includes("driven by @minh"))
+    const lines = f.split("\n")
+    const at = (text: string) => lines.findIndex((line) => line.includes(text))
+    // Each message's sender is on the line above it.
+    expect(lines[at("Fix the build.") - 1]).toMatch(/┃\s+@minh\s*$/)
+    expect(lines[at("Use the staging database.") - 1]).toMatch(/┃\s+Ngoc Bui \(owner\)\s*$/)
+    // The owner types here, not the employee who drives it.
+    expect(f).toMatch(/@ngocbh · CEO · gpt|@ngocbh · CEO · Codex/)
+    expect(f).not.toMatch(/@minh · Software engineer/)
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
+
 test("<leader>down opens the chat's first Codex session, and Next and Prev move round them", async () => {
   const { office: fake, chat } = office(2)
   const app = await bootFrame(createStub(fake), { sessionID: chat.id }, { width: 120, height: 30 })

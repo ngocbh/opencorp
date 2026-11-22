@@ -134,6 +134,8 @@ test("a start runs claude in the folder with the employee's settings and folders
     "--strict-mcp-config",
     "--permission-mode=acceptEdits",
     "--permission-prompts=none",
+    // Only these: the rest act on the owner's account, outside the sandbox, or after the turn.
+    "--tools=Bash,Read,Edit,Write,NotebookEdit,Glob,Grep,ToolSearch",
     "--settings",
     JSON.stringify(start.settings),
     `--add-dir=${cargo}`,
@@ -157,7 +159,7 @@ test("a start runs claude in the folder with the employee's settings and folders
   await claude.close(2000)
 })
 
-test("a start's environment is the worker's with the fixed PATH, its own temp folder for TMPDIR and Claude Code's, and auto memory off", async () => {
+test("a start's environment is the worker's with the fixed PATH, its own temp folder for TMPDIR and Claude Code's, auto memory off and no background commands", async () => {
   const { root, tmp, fake, permission } = layout()
   const p = permission()
   const { claude, start } = proc(root, fake, p)
@@ -167,6 +169,8 @@ test("a start's environment is the worker's with the fixed PATH, its own temp fo
   const { PWD: _pwd, SHLVL: _shlvl, ...given } = env
   expect(given).toEqual({ ...BASE, ...start.env })
   expect(given).toMatchObject({ TMPDIR: tmp, CLAUDE_CODE_TMPDIR: tmp, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" })
+  // No command runs in the background, where it would outlive Esc and the turn.
+  expect(given.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe("1")
   expect(given.PATH).toBe(start.env.PATH)
   expect(given.PATH.split(":")).toContain(path.join(p.folders[0]!.path, "bin"))
   expect(Object.keys(given)).not.toContain("CLAUDE_CONFIG_DIR")
@@ -286,13 +290,16 @@ test("a claude older than the floor, or one that says no version, is refused at 
   await claude.close(2000)
 })
 
-test("a start that its sandbox stops says what to fix and where Claude Code's output is, and holds none of that output", async () => {
+test("a start that its sandbox stops, as its result's startup_failure_reason says, fails at once saying what to fix and where Claude Code's output is, and holds none of that output", async () => {
   const { root, fake, permission } = layout({ sandbox_unavailable: true })
   const log = path.join(root, "claude.log")
   // An earlier start's output in the same log isn't this start's reason.
   fs.writeFileSync(log, "an earlier run\n", { mode: 0o600 })
   const { claude } = proc(root, fake, permission())
+  const t0 = Date.now()
   const e = await rejection(claude.start())
+  // Claude Code writes the result and answers initialize never: the start doesn't wait for its timeout.
+  expect(Date.now() - t0).toBeLessThan(10_000)
   expect(e).toBeInstanceOf(ClaudeSandboxUnavailable)
   expect(e).toBeInstanceOf(ClaudeStartError)
   expect(e.message).toContain("sandbox")
@@ -303,32 +310,56 @@ test("a start that its sandbox stops says what to fix and where Claude Code's ou
   expect(fs.readFileSync(log, "utf8")).toContain("failIfUnavailable")
   expect(claude.alive).toBe(false)
 
-  // Each failure Claude Code's docs name for a sandbox that can't run is the sandbox's.
+  // Another reason the field gives is named.
   const dies = layout({ turns: [] })
   const broken = path.join(dies.root, "broken")
-  for (const said of [
-    "Sandbox is required but failed to initialize: bwrap missing. Restart to retry.",
-    "Sandbox is required (sandbox.failIfUnavailable) and stopped being available in this session: socat",
-    "Ubuntu's AppArmor restriction on user namespaces stops bubblewrap here",
-    "bwrap: setting up uid map: Permission denied",
+  const result = (reason: string) =>
+    JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, startup_failure_reason: reason })
+  fs.writeFileSync(broken, `#!/bin/sh\necho '${result("config_invalid")}'\nexec sleep 60\n`, { mode: 0o700 })
+  const other = proc(root, dies.fake, dies.permission(), { command: [broken] })
+  const named = await rejection(other.claude.start())
+  expect(named).toBeInstanceOf(ClaudeStartError)
+  expect(named).not.toBeInstanceOf(ClaudeSandboxUnavailable)
+  expect(named.message).toContain("config_invalid")
+  expect(named.message).toContain(log)
+
+  // A Claude Code older than the field says so only on stderr, in words its docs give: it gets the same advice, at
+  // once, whether it exits or waits.
+  for (const [said, then] of [
+    ["Error: sandbox required but unavailable: sandbox is enabled but dependencies are missing: socat not installed", "exec sleep 60"],
+    ["Refusing to start without a working sandbox (see sandbox.failIfUnavailable).", "exit 1"],
+    ["Sandbox is required but failed to initialize: bwrap missing. Restart to retry.", "exec sleep 60"],
+    ["Ubuntu's AppArmor restriction on user namespaces stops bubblewrap here", "exit 1"],
   ]) {
-    fs.writeFileSync(broken, `#!/bin/sh\necho '${said.replaceAll("'", "")}' >&2\nexit 1\n`, { mode: 0o700 })
-    const stopped = proc(root, dies.fake, dies.permission(), { command: [broken] })
-    expect(await rejection(stopped.claude.start()), said).toBeInstanceOf(ClaudeSandboxUnavailable)
+    fs.writeFileSync(broken, `#!/bin/sh\necho '${said.replaceAll("'", "")}' >&2\n${then}\n`, { mode: 0o700 })
+    const old = proc(root, dies.fake, dies.permission(), { command: [broken] })
+    const t1 = Date.now()
+    expect(await rejection(old.claude.start()), said).toBeInstanceOf(ClaudeSandboxUnavailable)
+    expect(Date.now() - t1, said).toBeLessThan(10_000)
   }
-  // A start that dies for another reason isn't the sandbox's, though its output says "sandbox".
-  fs.writeFileSync(log, "the sandbox was fine last time\n", { mode: 0o600 })
+  // Other words aren't the sandbox's, though they say "sandbox", nor are an earlier start's.
+  fs.writeFileSync(log, "Refusing to start without a working sandbox, last time\n", { mode: 0o600 })
   fs.writeFileSync(broken, "#!/bin/sh\necho 'no luck: invalid sandbox.network setting' >&2\nexit 1\n", {
     mode: 0o700,
   })
-  const other = proc(root, dies.fake, dies.permission(), { command: [broken] })
-  const died = await rejection(other.claude.start())
+  const other2 = proc(root, dies.fake, dies.permission(), { command: [broken] })
+  const died = await rejection(other2.claude.start())
   expect(died).toBeInstanceOf(ClaudeStartError)
   expect(died).not.toBeInstanceOf(ClaudeSandboxUnavailable)
   expect(died.message).toContain("opencorp doctor")
   expect(died.message).toContain(log)
   expect(died.message).not.toContain("no luck")
-  expect(died.message).not.toContain("bubblewrap")
+})
+
+test("a kill now kills the group with no SIGTERM first, and later kills wait on it", async () => {
+  const { root, fake, permission } = layout()
+  const { claude } = proc(root, fake, permission())
+  await claude.start()
+  const t0 = Date.now()
+  await Promise.all([claude.kill({ now: true }), claude.kill()])
+  expect(Date.now() - t0).toBeLessThan(2_000)
+  expect(claude.proc!.signalCode).toBe("SIGKILL")
+  expect(claude.alive).toBe(false)
 })
 
 test("a command that cant be run says to run opencorp doctor and leaves nothing", async () => {

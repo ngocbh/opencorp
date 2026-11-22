@@ -20,7 +20,7 @@ import { fenceIn, freshFolder, removeFolder, sweepTemp } from "../../../src/runt
 import { instructions } from "../../../src/runtime/sessions/speakers.ts"
 import { type EmployeePermission, codexThread, harnessPath } from "../../../src/runtime/sandbox/harness_profile.ts"
 import { UnsafeProfile } from "../../../src/runtime/sandbox/policy.ts"
-import { CodexProcess, nativeCodex, threadLoad } from "../../../src/tools/codex/codex.ts"
+import { APP_SERVER_ARGS, CodexProcess, nativeCodex, threadLoad } from "../../../src/tools/codex/codex.ts"
 import { RpcError } from "../../../src/tools/codex/rpc.ts"
 import { isGone, tempDir, waitFor } from "../../helpers.ts"
 import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
@@ -489,6 +489,55 @@ test.skipIf(NO_CODEX)(
     }
     // Doctor names the project.
     expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [path.join(ws, ".codex")] })
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
+  "a trusted home whose .codex is Codex's own home is no project config, to doctor or to a session there; another home's is",
+  async () => {
+    const { root, options } = realHome()
+    const { home } = options
+    const own = path.join(home, ".codex")
+    fs.mkdirSync(own)
+    // The owner trusts their whole home, and works in a repository at its top.
+    const config = `model_provider = "local"\n\n[model_providers.local]\nname = "local"\nbase_url = "http://127.0.0.1:9/v1"\n\n[projects."${home}"]\ntrust_level = "trusted"\n`
+    fs.writeFileSync(path.join(own, "config.toml"), config)
+    const init = spawnSync("git", ["init", "-q", home], { env: { PATH: "/usr/bin:/bin", HOME: home } })
+    expect(init.status).toBe(0)
+    const link = path.join(root, "codex-link")
+    fs.symlinkSync(own, link)
+    // Codex's home by default (~/.codex), named, and named through a link: Codex skips its own home as a project.
+    for (const environ of [{}, { CODEX_HOME: own }, { CODEX_HOME: link }]) {
+      expect(await threadProbe({ ...options, environ })).toEqual({ failed: null, projectConfigs: [] })
+      const ws = path.join(home, "proj")
+      fs.mkdirSync(ws, { recursive: true })
+      const proc = new CodexProcess({
+        command: [options.codex.run, ...APP_SERVER_ARGS],
+        cwd: ws,
+        env: { HOME: home, PATH: "/usr/bin:/bin" },
+        log: path.join(root, "codex.log"),
+        onNotification() {},
+        onRequest: (id) => void proc.rpc?.replyError(id, -32601, "no").catch(() => {}),
+        onExit() {},
+        environ,
+        logLine() {},
+      })
+      try {
+        await proc.start()
+        expect(await ownerConfig(proc.rpc!, ws)).toEqual({ mcpServers: [] })
+      } finally {
+        await proc.close(2000)
+      }
+    }
+    // With CODEX_HOME elsewhere (a scratch one, say), the home's .codex is a trusted project's own config.
+    const elsewhere = path.join(root, "elsewhere")
+    fs.mkdirSync(elsewhere)
+    fs.writeFileSync(path.join(elsewhere, "config.toml"), config)
+    expect(await threadProbe({ ...options, environ: { CODEX_HOME: elsewhere } })).toEqual({
+      failed: null,
+      projectConfigs: [own],
+    })
   },
   120_000,
 )

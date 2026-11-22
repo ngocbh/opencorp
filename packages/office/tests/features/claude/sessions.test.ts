@@ -3,14 +3,15 @@
  *  sent as `next`, Esc, the end, the idle stop and the resume, a crash, a start that can't, and an office restart. */
 import fs from "node:fs"
 import path from "node:path"
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { ClaudeSessions } from "../../../src/features/claude/sessions.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
+import { ClaudeProcess } from "../../../src/tools/claude/claude.ts"
 import { CLAUDE, readClaudeRecord } from "../../../src/tools/claude/instrument.ts"
 import { HarnessRecord } from "../../../src/tools/harness/record.ts"
 import { person } from "../../company/helpers.ts"
 import { startTime } from "../../../src/util/proc.ts"
-import { isGone, waitFor } from "../../helpers.ts"
+import { isGone, tempDir, waitFor } from "../../helpers.ts"
 import { type Claude, Heard, allGone, chatOf, label, makeClaude } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -173,6 +174,29 @@ test("a start whose sandbox can't run fails the session and says what to fix", a
   expect(heard.states).toEqual([])
 })
 
+test("on Linux, an employee whose folder is read-only is refused Claude Code, saying why and what to use; on macOS it starts", async () => {
+  const readOnly = {
+    "people/minh/person.yaml": person("minh", {
+      harnesses: ["composer", "claude"],
+      harness_policy: { sandbox: "read-only", network: false },
+    }),
+  }
+  const h = makeClaude({ files: readOnly, platform: "linux" })
+  const chat = await chatOf(h)
+  const id = "01JA1H0000000000000000CA04"
+  const error = await h.sessions.startInstrument(chat, id, { observer: new Heard(), label, owner: "ngocbh" }).catch((e) => e)
+  expect(error).toMatchObject({ status: 422, code: "start_failed" })
+  expect(error.message).toContain("read-only")
+  expect(error.message).toContain("workspace-write")
+  expect(error.message).toContain("Codex")
+  expect(status(h, id)).toBe("failed")
+  expect(starts(h)).toEqual([])
+
+  const mac = makeClaude({ files: readOnly, platform: "darwin" })
+  const { session } = await started(mac)
+  expect(session.status).toBe("idle")
+})
+
 test("an employee who doesn't use the claude harness is refused, and no session is made", async () => {
   const h = makeClaude({ files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"] }) } })
   const chat = await chatOf(h)
@@ -201,12 +225,14 @@ test("an office stop ends every session, and a restart ends what a crash left li
   const dir = h.sessions.recordDir(chat.id, left.id)
   new HarnessRecord(CLAUDE, dir, { id: left.id, name: "claude 2", driver: "minh", chat: chat.id, started: left.created_at })
   fs.mkdirSync(path.join(h.sessions.root(), left.id))
+  fs.mkdirSync(path.join(h.sessions.root(), `${left.id}.bin`))
   // The next start's sessions.
   const restarted = new ClaudeSessions(h.office, { claude: h.fake.claude, environ: {}, tmpBase: h.tmpBase, log: () => {} })
   await restarted.restore()
   expect(status(h, left.id)).toBe("ended")
   expect(readClaudeRecord(dir)!.state).toBe("interrupted")
   expect(fs.existsSync(path.join(h.sessions.root(), left.id))).toBe(false)
+  expect(fs.existsSync(path.join(h.sessions.root(), `${left.id}.bin`))).toBe(false)
 })
 
 test("Esc right after a send interrupts the turn before it runs, cancelling the message", async () => {
@@ -310,4 +336,109 @@ test("an end while Claude Code resumes for a message stops that start and ends t
   expect(resumed.gone()).toBe(true)
   expect(await sending).toMatchObject({ status: 409 })
   expect(wrote(h, "Never.")).toBe(false)
+})
+
+test("a Claude Code whose first turn lists a tool outside the office's allowlist is stopped before it acts, and the session fails saying why", async () => {
+  const h = makeClaude()
+  // The model's first call takes a moment, as a real one does: the stop comes before it.
+  h.fake.set({ tools_added: ["RemoteTrigger"], turns: [[{ sleep: 2 }, { tool: "Bash", input: { command: "touch acted" } }]] })
+  const { heard, id } = await started(h)
+  const [leader] = leaders(h)
+  // Killed at once, with no SIGTERM and wait first.
+  const kills = spyOn(ClaudeProcess.prototype, "kill")
+  onTestFinished(() => kills.mockRestore())
+  await h.sessions.prompt(id, "Go.", { by: "minh" }).catch(() => {})
+  await waitFor(() => kills.mock.calls.length > 0, { what: "the kill" })
+  expect(kills.mock.calls[0]).toEqual([{ now: true }])
+  await waitFor(() => status(h, id) === "failed", { what: "the session to fail" })
+  expect(processOf(leader!).gone()).toBe(true)
+  expect(fs.existsSync(path.join(h.workspace, "acted"))).toBe(false)
+  expect(heard.states.at(-1)).toBe("failed")
+  const errors = heard.events.flatMap((e) =>
+    e.type === "message" ? e.message.parts.flatMap((p) => (p.type === "error" ? [p.message] : [])) : [],
+  )
+  expect(errors.at(-1)).toContain("RemoteTrigger")
+  expect(errors.at(-1)).toContain("act on your account or outside your employee's permission")
+})
+
+test("on Linux, the office's own socat, linked alone into a private folder first on the harness PATH, with the folders it loads from read, is what Claude Code's sandbox finds; with none, the start is refused saying how to fix it", async () => {
+  // A stand-in for socat installed as conda-forge lays one out: <prefix>/bin/socat -> socat1, loading $ORIGIN/../lib.
+  // In the owner's home, as conda-forge installs one for the user.
+  const home = tempDir()
+  const prefix = path.join(home, ".local/opt/socat")
+  const [bin, lib] = [path.join(prefix, "bin"), path.join(prefix, "lib")]
+  for (const dir of [bin, lib]) fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
+  fs.writeFileSync(path.join(bin, "socat1"), "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  fs.writeFileSync(path.join(bin, "other-tool"), "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  fs.symlinkSync("socat1", path.join(bin, "socat"))
+  fs.writeFileSync(path.join(lib, "libssl.so.3"), "", { mode: 0o644 })
+  const libraries = () => [path.join(bin, "../lib/libssl.so.3")]
+  const h = makeClaude({
+    home,
+    script: { needs_socat: true },
+    socat: path.join(bin, "socat"),
+    socatLibraries: libraries,
+    platform: "linux",
+  })
+  const { id } = await started(h)
+  const env = starts(h)[0]!.env as Record<string, string>
+  const [first, ...rest] = env.PATH!.split(":")
+  expect(first).toBe(path.join(h.sessions.root(), `${id}.bin`))
+  expect(rest).not.toContain(bin)
+  expect(fs.readdirSync(first!)).toEqual(["socat"])
+  expect(fs.readlinkSync(path.join(first!, "socat"))).toBe(fs.realpathSync(path.join(bin, "socat1")))
+  // Claude Code's sandbox reads the link's folder, socat's own and its libraries', and writes none of them.
+  const sandbox = (starts(h)[0]!.flags!.settings as Record<string, any>).sandbox.filesystem
+  const real = (dir: string) => fs.realpathSync(dir)
+  for (const dir of [first!, real(bin), real(lib)]) expect(sandbox.allowRead).toContain(dir)
+  expect(sandbox.allowRead).not.toContain(real(prefix))
+  for (const dir of [first!, real(bin), real(lib)]) expect(sandbox.allowWrite).not.toContain(dir)
+  await h.sessions.end(id)
+  await waitFor(() => !fs.existsSync(first!), { what: "the folder to go with the session" })
+
+  const none = makeClaude({ script: { needs_socat: true }, socat: null, platform: "linux" })
+  const chat = await chatOf(none)
+  const error = await none.sessions
+    .startInstrument(chat, "01JA1H0000000000000000CA05", { observer: new Heard(), label, owner: "ngocbh" })
+    .catch((e) => e)
+  expect(error).toMatchObject({ status: 422, code: "start_failed" })
+  expect(error.message).toContain("socat")
+  expect(error.message).toContain("OPENCORP_SOCAT_BIN")
+  expect(starts(none)).toEqual([])
+  // On macOS, Claude Code's sandbox needs none.
+  const mac = makeClaude({ platform: "darwin" })
+  expect((await started(mac)).session.status).toBe("idle")
+})
+
+test("a socat others could change isn't run for Claude Code", async () => {
+  const dir = tempDir()
+  fs.chmodSync(dir, 0o777)
+  const socat = path.join(dir, "socat")
+  fs.writeFileSync(socat, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  const h = makeClaude({ script: { needs_socat: true }, socat, platform: "linux" })
+  const chat = await chatOf(h)
+  const error = await h.sessions
+    .startInstrument(chat, "01JA1H0000000000000000CA06", { observer: new Heard(), label, owner: "ngocbh" })
+    .catch((e) => e)
+  expect(error).toMatchObject({ status: 422, code: "start_failed" })
+  expect(error.message).toContain("socat")
+  expect(error.message).toContain("others than the user may write")
+  expect(starts(h)).toEqual([])
+})
+
+test("a socat that doesn't run is refused before Claude Code starts, saying so", async () => {
+  const home = tempDir()
+  const dir = path.join(home, ".local/bin")
+  fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
+  const socat = path.join(dir, "socat")
+  fs.writeFileSync(socat, "#!/bin/sh\necho 'error while loading shared libraries: libssl.so.3' >&2\nexit 127\n", { mode: 0o755 })
+  const h = makeClaude({ home, script: { needs_socat: true }, socat, platform: "linux" })
+  const chat = await chatOf(h)
+  const error = await h.sessions
+    .startInstrument(chat, "01JA1H0000000000000000CA07", { observer: new Heard(), label, owner: "ngocbh" })
+    .catch((e) => e)
+  expect(error).toMatchObject({ status: 422, code: "start_failed" })
+  expect(error.message).toContain("doesn't run")
+  expect(error.message).toContain("libssl.so.3")
+  expect(starts(h)).toEqual([])
 })

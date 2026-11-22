@@ -3,7 +3,7 @@
  *  owner's messages to Codex reach the employee's next reply; on the fake app-server. */
 import fs from "node:fs"
 import path from "node:path"
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { EmployeeCodex } from "../../../src/features/chat/codex.ts"
 import { speakers } from "../../../src/runtime/sessions/speakers.ts"
 import { loadRepo } from "../../../src/company/loader.ts"
@@ -11,7 +11,8 @@ import { readCodexRecord } from "../../../src/tools/codex/record.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
 import { person } from "../../company/helpers.ts"
 import { session as sessionRow } from "../../runtime/store/helpers.ts"
-import { waitFor } from "../../helpers.ts"
+import { sameProcess, startTime } from "../../../src/util/proc.ts"
+import { isGone, waitFor } from "../../helpers.ts"
 import { fakeLlm, makeHarness, PRICES } from "./helpers.ts"
 import { type Codex, allGone, makeCodex, status } from "../codex/helpers.ts"
 
@@ -93,6 +94,19 @@ test("close ends every Codex session of the chat and takes its listing out; the 
   await waitFor(() => readCodexRecord(dir)?.state === "ended", { what: "the record's end" })
 })
 
+test("the employee's interrupt stops Codex's turn and the command it runs", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("a1", "Started."), [fc.commandStarted("c1", "make", { processId: "p1" }), { spawn: 300, process: "p1" }, { sleep: 30 }]])
+  const { call } = await employee(h)
+  await call("start", { message: "Look around." })
+  expect((await call("send", { codex: "codex 1", message: "Run the long check.", wait: 0 })).status).toBe("running")
+  const command = await running(h)
+  const reply = await call("interrupt", { codex: "codex 1" })
+  expect(reply.status).toBe("idle")
+  expect(h.fake.calls("thread/backgroundTerminals/terminate")).toEqual([{ threadId: "thr_1", processId: "p1" }])
+  await waitFor(command.gone, { what: "Codex's command to stop" })
+})
+
 test("an employee who doesn't use the codex harness is told so, and no session starts", async () => {
   const h = makeCodex({ files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer"] }) } })
   const { chat, call } = await employee(h)
@@ -107,16 +121,19 @@ test("Esc in the chat reaches a running Codex turn through the call's interrupt,
   const fake = await fakeLlm()
   fake.script({ tool_calls: [{ name: "codex_start", arguments: { message: "Fix the build.", wait: 120 } }] })
   const h = await makeHarness(fake, { codex: true })
-  h.codex!.fake.script([[...fc.agentMessage("a1", "Reading the build files."), { sleep: 30 }]])
+  h.codex!.fake.script([[...fc.agentMessage("a1", "Reading the build files."), fc.commandStarted("c1", "make", { processId: "p1" }), { spawn: 300, process: "p1" }, { sleep: 30 }]])
   const s = await h.harness.startSession("minh", h.folder, { openedBy: "ngocbh" })
   await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's first turn" })
   await h.harness.prompt(s.id, "Hand the build to Codex.", { by: "ngocbh" })
   const listed = await waitFor(() => h.office.instruments.list(s.id).find((i) => i.status === "running"), {
     what: "Codex's turn",
   })
-  await waitFor(() => h.codex!.fake.messages("out").some((m) => m.method === "item/completed"), { what: "Codex's words" })
+  const command = await running(h.codex!)
   await h.harness.interrupt(s.id)
   await waitFor(() => h.codex!.fake.calls("turn/interrupt").length === 1, { what: "Codex's interrupt" })
+  // The command the turn ran stops with it.
+  await waitFor(command.gone, { what: "Codex's command to stop" })
+  expect(h.codex!.fake.calls("thread/backgroundTerminals/terminate")).toEqual([{ threadId: "thr_1", processId: "p1" }])
   await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's turn to end" })
   const log = fs.readFileSync(path.join(h.office.paths.runs, h.store.getSession(s.id)!.run_ids.at(-1)!, "log.jsonl"), "utf8")
   // The call's own reply, with what Codex said before the interrupt, is what the run recorded.
@@ -134,11 +151,23 @@ async function codexTurn(o: { usage?: { prompt_tokens: number; completion_tokens
   const call = { name: "codex_start", arguments: { message: "Fix the build.", wait: 120 } }
   fake.script({ tool_calls: [call], ...(o.usage ? { usage: o.usage } : {}) }, { content: "spare" })
   const h = await makeHarness(fake, { codex: true, ...(o.usage ? { prices: PRICES } : {}) })
-  h.codex!.fake.script([[...fc.agentMessage("a1", "Reading the build files."), { sleep: 30 }]])
+  h.codex!.fake.script([[...fc.agentMessage("a1", "Reading the build files."), fc.commandStarted("c1", "make", { processId: "p1" }), { spawn: 300, process: "p1" }, { sleep: 30 }]])
   const s = await h.harness.startSession("minh", h.folder, { openedBy: "ngocbh" })
   await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's first turn" })
   await h.harness.prompt(s.id, "Hand the build to Codex.", { by: "ngocbh" })
   return { fake, h, s }
+}
+
+/** The command Codex's turn runs (the fake's first `spawn`), once it runs; `gone` once it has stopped. */
+async function running(codex: Codex): Promise<{ gone: () => boolean }> {
+  const [pid] = await waitFor(() => (codex.fake.spawned().length > 0 ? codex.fake.spawned() : undefined), {
+    what: "Codex's command",
+  })
+  const started = startTime(pid!)
+  onTestFinished(() => {
+    if (started !== null && sameProcess(pid!, started)) process.kill(pid!, "SIGKILL")
+  })
+  return { gone: () => isGone(pid!, started) }
 }
 
 /** Whether the chat's Codex session runs no turn: interrupted, or never sent its message. */
@@ -150,9 +179,11 @@ function noTurnRuns(h: Awaited<ReturnType<typeof codexTurn>>["h"], chat: string)
 test("a worker that dies while the employee waits on Codex stops the Codex turn it started", async () => {
   const { h, s } = await codexTurn()
   await waitFor(() => h.office.instruments.list(s.id).find((i) => i.status === "running"), { what: "Codex's turn" })
+  const command = await running(h.codex!)
   h.registry.get(s.id)!.kill()
   await waitFor(() => h.codex!.fake.calls("turn/interrupt").length === 1, { what: "Codex's interrupt" })
   await waitFor(() => noTurnRuns(h, s.id), { what: "the turn's end" })
+  await waitFor(command.gone, { what: "Codex's command to stop" })
 })
 
 test("a cost-cap stop while the employee waits on Codex stops the Codex turn, so it spends nothing more", async () => {

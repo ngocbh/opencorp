@@ -18,6 +18,7 @@ const OPENCORP = path.join(CHECKOUT, "packages/cli/bin/opencorp")
 const DROPPED = new Set([
   "OPENCORP_CODEX_BIN",
   "OPENCORP_CLAUDE_BIN",
+  "OPENCORP_SOCAT_BIN",
   "CLAUDE_CONFIG_DIR",
   "SSH_CONNECTION",
   "SSH_CLIENT",

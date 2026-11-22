@@ -19,16 +19,20 @@
  *    `wait`;
  *  - `{"wait_reply": n}` waits for the reply to request `n`; `{"resolve": n}` sends `serverRequest/resolved`;
  *  - `{"sleep": seconds}`; `{"exit": code}` dies at once; `{"end": "completed" | "failed", "error": {...}}`;
- *  - `{"spawn": seconds}` starts `sleep <seconds>` in the fake's process group, as a command Codex runs would be, and
- *    logs its pid as `{"dir": "spawn", "pid": n}`.
+ *  - `{"spawn": seconds, "process"?: id}` starts `sleep <seconds>` in the fake's process group, as a command Codex runs
+ *    would be, and logs its pid as `{"dir": "spawn", "pid": n, "process": id}`. As Codex's commands do, it runs on
+ *    once its turn ends or is interrupted, until `thread/backgroundTerminals/terminate` names its `process`,
+ *    `thread/backgroundTerminals/clean`, or the group's kill.
  *
  *  `"{thread}"`, `"{turn}"` and `"{cwd}"` in params are filled in. `turn/start` during a turn is a steer and answers
  *  with the running turn. `turn/interrupt` stops the steps, completes the turn `interrupted`, and then resolves the
  *  requests of the turn still waiting (a request whose `turnId` is null outlives it); with `interrupt_hangs` it gets
- *  no answer and the turn runs on. Every message read or written
+ *  no answer and the turn runs on. `thread/backgroundTerminals/terminate` kills the command a `spawn` started as that
+ *  `processId` and answers `{terminated}`; `thread/backgroundTerminals/clean` kills every one that still runs, as
+ *  Codex ends a thread's commands. Every message read or written
  *  is appended to `--log` as `{"dir": "in"|"out", "msg"}`. Stdin EOF exits 0. The builders below make steps whose
  *  messages match the pinned Codex schema. */
-import { spawn } from "node:child_process"
+import { type ChildProcess, spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import readline from "node:readline"
@@ -37,6 +41,11 @@ import readline from "node:readline"
 type Obj = Record<string, any>
 
 export const THREAD = { id: "thr_fake", model: "gpt-fake-codex" }
+
+/** Whether `child` hasn't exited. */
+function running(child: ChildProcess): boolean {
+  return child.exitCode === null && child.signalCode === null
+}
 
 /** Python's truth value of a JSON value: an empty object or list is false too. */
 function truthy(value: unknown): boolean {
@@ -73,6 +82,8 @@ export class Fake {
   private count = 0
   private dying = false
   private wakers: (() => void)[] = []
+  /** The commands `spawn` started, which the thread's clean kills, by the process id each was given, if any. */
+  private commands: { child: ChildProcess; process: string | null }[] = []
 
   constructor(
     readonly script: Obj,
@@ -206,6 +217,16 @@ export class Fake {
       this.changed()
       return
     }
+    if (method === "thread/backgroundTerminals/clean") {
+      for (const { child } of this.commands) if (running(child)) child.kill("SIGKILL")
+      this.commands = []
+      return this.reply(requestId, {})
+    }
+    if (method === "thread/backgroundTerminals/terminate") {
+      const found = this.commands.find((c) => c.process === params.processId && running(c.child))
+      found?.child.kill("SIGKILL")
+      return this.reply(requestId, { terminated: found !== undefined })
+    }
     if (method === "fake/wait") {
       await sleep(params.seconds ?? 0)
       return this.reply(requestId, {})
@@ -272,7 +293,9 @@ export class Fake {
         // Without a listener a failed spawn would crash the whole fake; Python lost only the turn thread.
         child.on("error", () => {})
         child.unref()
-        this.writeLog({ dir: "spawn", pid: child.pid })
+        const process: string | null = step.process ?? null
+        this.commands.push({ child, process })
+        this.writeLog({ dir: "spawn", pid: child.pid, process })
       } else if ("exit" in step) return this.die(step.exit)
       else if ("end" in step) {
         status = step.end
@@ -341,14 +364,15 @@ export function command(
     status = "completed",
     exitCode = 0,
     output = "",
-  }: { status?: string; exitCode?: number | null; output?: string | null } = {},
+    processId = null,
+  }: { status?: string; exitCode?: number | null; output?: string | null; processId?: string | null } = {},
 ): Obj[] {
   const base = {
     type: "commandExecution",
     id: itemId,
     command: cmd,
     cwd: "{cwd}",
-    processId: null,
+    processId,
     commandActions: [],
     aggregatedOutput: null,
     exitCode: null,
@@ -358,8 +382,9 @@ export function command(
   return [itemNote("item/started", { ...base, status: "inProgress" }), itemNote("item/completed", done)]
 }
 
-export function commandStarted(itemId: string, cmd: string): Obj {
-  return command(itemId, cmd)[0]!
+/** A command's `item/started`; `processId` is the id Codex gives the process it runs (`thread/backgroundTerminals`). */
+export function commandStarted(itemId: string, cmd: string, { processId = null }: { processId?: string | null } = {}): Obj {
+  return command(itemId, cmd, { processId })[0]!
 }
 
 export function commandApproval(requestId: number, itemId: string, cmd: string, { wait = true } = {}): Obj {

@@ -14,7 +14,7 @@ import { loadProvider, type Provider, ProviderError } from "../../models/provide
 import { CompanyGit, CompanyGitError } from "../../company/git.ts"
 import type { RepoIssue } from "../../company/issues.ts"
 import { lint } from "../../company/lint.ts"
-import { loadRepo } from "../../company/loader.ts"
+import { type CompanyRepo, loadRepo } from "../../company/loader.ts"
 import { companyState, missingFiles } from "../../company/template.ts"
 import { CodexMissing, codexCommand, nativeCodex } from "../../tools/codex/codex.ts"
 import {
@@ -23,14 +23,19 @@ import {
   ClaudeSandboxUnavailable,
   ClaudeSignedOut,
   ClaudeStartError,
+  READ_ONLY_FIX,
+  SOCAT_MISSING,
   claudeCommand,
   nativeClaude,
   olderThan,
+  readOnlyFails,
+  socatNeeded,
 } from "../../tools/claude/claude.ts"
 import { probeStart } from "../../tools/claude/probe.ts"
+import { SocatUnusable } from "../../tools/claude/socat.ts"
 import { type Probed, threadProbe } from "../codex/thread.ts"
 import { writableFolders } from "../../runtime/sessions/permission.ts"
-import { checkHarnessBinary } from "../../runtime/sandbox/harness_profile.ts"
+import { type HarnessInstall, checkHarnessBinary } from "../../runtime/sandbox/harness_profile.ts"
 import { SANDBOX_FIX } from "../../tools/terminal/terminal.ts"
 import { selfCommand, tuiAssetRoot } from "../../platform.ts"
 import {
@@ -748,12 +753,27 @@ export async function codexCheck(
  *
  * `environ` is the office's environment: its `OPENCORP_CLAUDE_BIN` picks the binary and its `CLAUDE_CONFIG_DIR` joins
  * `env`, as they do for a session. `mode` is the office's recorded service mode, which decides how a fix reaches it.
+ * On a `platform` where Claude Code can't run in a read-only folder, the line names the employees in `readOnly`
+ * (`readOnlyClaude`), whose sessions are refused: a start that works warns, and one that fails says so too. Where its sandbox needs socat (Linux), the start runs
+ * with the one the office finds (`OPENCORP_SOCAT_BIN` in `environ`, else `socat` on `env`'s PATH), and none fails.
  */
 export async function claudeCheck(
   env: Record<string, string>,
   environ: Env,
   mode: string | null = null,
-  { timeoutMs = 30_000, office, base }: { timeoutMs?: number; office?: CodexOffice; base?: string } = {},
+  {
+    timeoutMs = 30_000,
+    office,
+    base,
+    readOnly = [],
+    platform = process.platform,
+  }: {
+    timeoutMs?: number
+    office?: CodexOffice
+    base?: string
+    readOnly?: readonly string[]
+    platform?: NodeJS.Platform
+  } = {},
 ): Promise<Check> {
   let found: string
   try {
@@ -804,10 +824,45 @@ export async function claudeCheck(
     return { name: "claude", status: "fail", detail }
   }
   if (office === undefined) return { name: "claude", status: "ok", detail: named }
+  const started = await claudeStarts(named, env, environ, mode, { claude, office, base, platform })
+  if (readOnly.length === 0 || !readOnlyFails(platform)) return started
+  const whose = readOnly.map((handle) => `@${handle}'s`)
+  const names = whose.length === 1 ? whose[0] : `${whose.slice(0, -1).join(", ")} and ${whose.at(-1)}`
+  const refused = `${names} Claude Code sessions are refused: ${READ_ONLY_FIX}`
+  if (started.status === "ok") return { name: "claude", status: "warn", detail: `${started.detail}, but ${refused}` }
+  return { ...started, detail: `${started.detail}; and ${refused}` }
+}
+
+/** The part of `claudeCheck` that starts Claude Code, `named` (its version and path), under an employee's permission,
+ *  with the office's socat where its sandbox needs one. */
+async function claudeStarts(
+  named: string,
+  env: Record<string, string>,
+  environ: Env,
+  mode: string | null,
+  {
+    claude,
+    office,
+    base,
+    platform,
+  }: { claude: HarnessInstall; office: CodexOffice; base?: string; platform: NodeJS.Platform },
+): Promise<Check> {
   const cant = `${named} can't start under an employee's permission`
+  let socat: string | undefined
+  if (socatNeeded(platform)) {
+    const override = environ.OPENCORP_SOCAT_BIN
+    socat = which(override || "socat", env.PATH) ?? undefined
+    if (socat === undefined) {
+      const detail = override
+        ? `${cant}: OPENCORP_SOCAT_BIN names ${override}, which isn't an executable the office can find; fix or unset ` +
+          `it, then ${changeLands(mode)}`
+        : `${cant}: ${SOCAT_MISSING.replace("restart the office and run `opencorp doctor`", changeLands(mode))}`
+      return { name: "claude", status: "fail", detail }
+    }
+  }
   let probed: { error: Error | null; log: string }
   try {
-    probed = await probeStart({ claude, env, environ, ...office, base })
+    probed = await probeStart({ claude, env, environ, ...office, base, ...(socat === undefined ? {} : { socat }) })
   } catch (error) {
     // Its folders under /tmp couldn't be made or removed, or the binary is gone.
     return { name: "claude", status: "fail", detail: `${cant}: doctor can't try one: ${messageOf(error)}` }
@@ -824,6 +879,7 @@ export async function claudeCheck(
     const detail = `${named} is signed out; run \`claude\` in a terminal and sign in with /login`
     return { name: "claude", status: "warn", detail }
   }
+  if (error instanceof SocatUnusable) return { name: "claude", status: "fail", detail: `${cant}: ${error.message}` }
   if (error instanceof ClaudeSandboxUnavailable) {
     const detail =
       `${cant}: its sandbox can't start here (on Linux, install bubblewrap and socat, and allow unprivileged user ` +
@@ -1194,12 +1250,13 @@ export interface CheckOptions {
     mode: string | null,
     options: { office: CodexOffice },
   ) => Promise<Check>
-  /** The Claude Code check, given the same (default `claudeCheck`). */
+  /** The Claude Code check, given the same and the employees who use it with a read-only folder (default
+   *  `claudeCheck`). */
   claude?: (
     env: Record<string, string>,
     environ: Env,
     mode: string | null,
-    options: { office: CodexOffice },
+    options: { office: CodexOffice; readOnly: readonly string[] },
   ) => Promise<Check>
   /** The shell's environment (default `process.env`). */
   environ?: Env
@@ -1369,8 +1426,23 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   const others = othersWritable(paths, host.userHome, store?.status !== "fail")
   const homes = { home: host.userHome, officeHome: paths.home, othersWritable: others }
   found.push(await codex(workerEnv(run.env), run.env, service.recordedMode(run), { office: homes }))
-  found.push(await claude(workerEnv(run.env), run.env, service.recordedMode(run), { office: homes }))
+  let readOnly: string[] = []
+  try {
+    if (fs.existsSync(paths.company)) readOnly = readOnlyClaude(loadRepo(paths.company))
+  } catch {
+    // The company check says why it doesn't load.
+  }
+  found.push(await claude(workerEnv(run.env), run.env, service.recordedMode(run), { office: homes, readOnly }))
   return found
+}
+
+/** The employees in `repo` who use Claude Code with a folder they may only read (no `harness_policy`, or its sandbox
+ *  not `workspace-write`), by handle. */
+export function readOnlyClaude(repo: Pick<CompanyRepo, "people">): string[] {
+  return [...repo.people]
+    .filter(([, person]) => person.harnesses.includes("claude") && person.harness_policy?.sandbox !== "workspace-write")
+    .map(([handle]) => handle)
+    .sort()
 }
 
 /** Every person's writable listed folders in the company's working tree, and, when `storeReadable`, the folders of

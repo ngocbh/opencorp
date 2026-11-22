@@ -53,6 +53,18 @@ export function freshFolder(root: string, name: string): string {
   return dir
 }
 
+/** `<root>/<name>` made fresh (`freshFolder`), holding a link to each of `programs` (its name, and the real file that
+ *  was checked): a harness's sandbox runs them from there, where its commands can't change them, rather than from the
+ *  folders they were found in, whose other programs it may not run. A link, not a copy, so a program finds what it
+ *  loads beside its real file (`$ORIGIN`). */
+export function programsFolder(root: string, name: string, programs: Readonly<Record<string, string>>): string {
+  const dir = freshFolder(root, name)
+  for (const [program, checked] of Object.entries(programs)) {
+    fs.symlinkSync(checked, path.join(dir, inRoot(dir, program).slice(dir.length + 1)))
+  }
+  return dir
+}
+
 /** Removes `<root>/<name>` and what is in it, if it is there. */
 export function removeFolder(root: string, name: string): void {
   removeTree(inRoot(root, name))
