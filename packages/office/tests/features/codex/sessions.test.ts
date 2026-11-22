@@ -123,7 +123,7 @@ test.each([
   [
     "no codex",
     // An agent built from minh's file, since the kind check comes first.
-    { "people/ava/person.yaml": person("minh", { handle: "ava", name: "Ava", harnesses: ["yian"] }) },
+    { "people/ava/person.yaml": person("minh", { handle: "ava", name: "Ava", tools: ["yian"] }) },
     (h: Codex) => ["ava", h.workspace],
     422,
     "unsupported_harness",
@@ -318,7 +318,7 @@ test("a session's employee permission comes from their person at the session's p
   ]
   const policy = { sandbox: "workspace-write", network: true, folders, mcp_servers: ["github"] }
   const h = makeCodex({
-    files: { "people/minh/person.yaml": person("minh", { harnesses: ["yian", "codex"], harness_policy: policy }) },
+    files: { "people/minh/person.yaml": person("minh", { tools: ["yian", "codex"], harness_policy: policy }) },
   })
   const home = fs.realpathSync(tempDir())
   fs.mkdirSync(path.join(home, "tools"))
@@ -347,7 +347,7 @@ test("a session's employee permission comes from their person at the session's p
 test("a session whose employee may use an MCP server starts it in the office's empty MCP folder of the session, removed at its end and swept after a crash", async () => {
   const policy = { sandbox: "workspace-write", mcp_servers: ["github"] }
   const h = makeCodex({
-    files: { "people/minh/person.yaml": person("minh", { harnesses: ["yian", "codex"], harness_policy: policy }) },
+    files: { "people/minh/person.yaml": person("minh", { tools: ["yian", "codex"], harness_policy: policy }) },
   })
   h.fake.script([], { mcp_servers: { github: { command: "gh-mcp" }, docs: { command: "docs-mcp" } } })
   const sid = await start(h, h.workspace)
@@ -368,9 +368,9 @@ test("a session whose employee may use an MCP server starts it in the office's e
 })
 
 test("a session's employee permission keeps what others may write since, and live sessions' folders, off its PATH", async () => {
-  const tools = { harness_policy: { folders: [{ path: "~/tools", access: "read" }] } }
+  const listing = { harness_policy: { folders: [{ path: "~/tools", access: "read" }] } }
   const h = makeCodex({
-    files: { "people/minh/person.yaml": person("minh", { harnesses: ["yian", "codex"], ...tools }) },
+    files: { "people/minh/person.yaml": person("minh", { tools: ["yian", "codex"], ...listing }) },
   })
   const home = fs.realpathSync(tempDir())
   fs.mkdirSync(path.join(home, "tools/bin"), { recursive: true })

@@ -27,9 +27,9 @@ export function pickerRows(input: {
 export type Harness = "yian" | "codex"
 const OPENABLE: readonly Harness[] = ["yian", "codex"]
 
-/** The harnesses a chat with `person` can run on here: their `harnesses` list (yian when empty), in its order. */
+/** The harnesses a chat with `person` can run on here: their `tools` list (yian when empty), in its order. */
 export function harnessesOf(person: Person): Harness[] {
-  const listed = person.harnesses?.length ? person.harnesses : ["yian"]
+  const listed = person.tools?.length ? person.tools : ["yian"]
   return listed.filter((h): h is Harness => (OPENABLE as readonly string[]).includes(h))
 }
 

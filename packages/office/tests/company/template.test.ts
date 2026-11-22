@@ -485,7 +485,7 @@ test("every template flow loads and lints on ts yian", async () => {
     manager: "ngocbh",
     main: "../../shared/flows/chat.yaml",
     sops: [{ flow: "../../shared/flows/side_chat.yaml" }, { flow: "../../shared/flows/profile_manager.yaml" }],
-    harnesses: ["yian"],
+    tools: ["yian"],
   }
   fs.writeFileSync(path.join(root, "people", "minh", "person.yaml"), writeYaml(minh))
   fs.writeFileSync(path.join(root, "people", "minh", "memory", "profile.md"), "# Minh, Engineer\n")

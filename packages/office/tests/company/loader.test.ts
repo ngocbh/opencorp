@@ -38,7 +38,7 @@ test("chat flow fixture loads", async () => {
 })
 
 test("missing person names a person file that doesnt load", () => {
-  const broken = loadRepo(makeCompany({ "people/minh/person.yaml": "harnesses: [yian\n" }))
+  const broken = loadRepo(makeCompany({ "people/minh/person.yaml": "tools: [yian\n" }))
   expect(missingPerson(broken, "minh")).toBe("@minh's person.yaml doesn't load; run `opencorp doctor`")
   const misplaced = loadRepo(makeCompany({ "people/minh/person.yaml": person("minh", { handle: "ava" }) }))
   expect(codes(misplaced)).toContain("people/minh/person.yaml person.dir_mismatch")
@@ -49,7 +49,7 @@ test("missing person names a person file that doesnt load", () => {
 })
 
 test("person file broken matches only the exact person file path", () => {
-  const broken = loadRepo(makeCompany({ "people/minh/person.yaml": "harnesses: [yian\n" }))
+  const broken = loadRepo(makeCompany({ "people/minh/person.yaml": "tools: [yian\n" }))
   expect(personFileBroken(broken.errors, "minh")).toBe(true)
   expect(personFileBroken(loadRepo(makeCompany()).errors, "minh")).toBe(false)
   expect(personFileBroken(broken.errors, "nobody")).toBe(false)
@@ -77,6 +77,19 @@ test("a person with a reserved handle doesn't load, whatever its folder's case",
     "@office can't be a person: the handle is reserved for the office itself",
   )
   expect([repo.people.has("office"), repo.people.has("yian"), repo.people.has("minh")]).toEqual([false, false, true])
+})
+
+test("a person file under the old names is refused with the new ones", () => {
+  const cases = [
+    [{ harnesses: ["codex"] }, "`harnesses` was renamed `tools`"],
+    [{ tools: ["composer", "codex"] }, "`composer` was renamed `yian`"],
+    [{ harnesses: ["composer"] }, "`harnesses` was renamed `tools`; `composer` was renamed `yian`"],
+  ] as const
+  for (const [changes, message] of cases) {
+    const repo = loadRepo(makeCompany({ "people/minh/person.yaml": person("minh", changes) }))
+    expect(repo.errors).toEqual([{ path: "people/minh/person.yaml", code: "repo.schema", message, severity: "error" }])
+    expect(repo.people.has("minh")).toBe(false)
+  }
 })
 
 test("handle must match directory", () => {

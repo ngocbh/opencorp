@@ -16,7 +16,7 @@ import { isGone, tempDir, waitFor } from "../../helpers.ts"
 import { session as sessionRow } from "../../runtime/store/helpers.ts"
 
 /** minh, allowed the yian and Claude Code harnesses. */
-export const CLAUDE_PERSON = { "people/minh/person.yaml": person("minh", { harnesses: ["yian", "claude"] }) }
+export const CLAUDE_PERSON = { "people/minh/person.yaml": person("minh", { tools: ["yian", "claude"] }) }
 
 /** Every Claude Code any test of a file recorded, for `allGone`. */
 const spawned: { pid: number; started: number | null }[] = []

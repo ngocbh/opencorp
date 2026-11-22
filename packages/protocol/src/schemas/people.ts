@@ -22,7 +22,7 @@ export const Person = z.strictObject({
   skills: z.array(z.string()).default(() => []),
   /** The harnesses this person's chats may run on: `yian` (their own chat, on the Yian engine), `codex` and
    *  `claude`. Empty means `yian` alone. */
-  harnesses: z.array(z.enum(["yian", "codex", "claude"])).default(() => []),
+  tools: z.array(z.enum(["yian", "codex", "claude"])).default(() => []),
   harness_policy: HarnessPolicy.nullable().default(null),
   routines: z.array(Routine).default(() => []),
   provider_policy: z.string().default("default"),

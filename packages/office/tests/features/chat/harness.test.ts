@@ -746,8 +746,8 @@ test("a session records the resolved folder", async () => {
   expect(h.store.workedFolders("minh").map((f) => f.cwd)).toEqual([real])
 })
 
-test("a person with no harnesses list chats on yian", async () => {
-  const h = await makeHarness(await fakeLlm(), { files: { "people/minh/person.yaml": person("minh", { harnesses: [] }) } })
+test("a person with no tools list chats on yian", async () => {
+  const h = await makeHarness(await fakeLlm(), { files: { "people/minh/person.yaml": person("minh", { tools: [] }) } })
   expect((await start(h)).harness).toBe("yian")
 })
 
@@ -875,7 +875,7 @@ test("a codex chat is stored then handed to the codex sessions", async () => {
 })
 
 test("yian needs a person who uses it", async () => {
-  const files = { "people/minh/person.yaml": person("minh", { harnesses: ["codex"] }) }
+  const files = { "people/minh/person.yaml": person("minh", { tools: ["codex"] }) }
   const h = await makeHarness(await fakeLlm(), { codex: true, files })
   const error = await rejection(h.harness.startSession("minh", h.folder))
   // A 422 says which field failed, never its value.
@@ -894,7 +894,7 @@ test("codex needs the codex sessions", async () => {
 })
 
 test("codex needs a person who uses it", async () => {
-  // minh's harnesses: [yian]
+  // minh's tools: [yian]
   const h = await makeHarness(await fakeLlm(), { codex: true, files: { "people/minh/person.yaml": person("minh") } })
   const error = await rejection(h.harness.startSession("minh", h.folder, { harness: "codex" }))
   expect([error.status, error.code]).toEqual([422, "unsupported_harness"])

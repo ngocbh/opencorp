@@ -32,8 +32,8 @@ test("an unknown --person falls through; with no agents the first person is pick
 })
 
 test("a harness pick holds for the person it names; anyone else starts on their first harness", () => {
-  const minh = { handle: "minh", kind: "agent", harnesses: ["yian", "codex"] } as Person
-  const lan = { handle: "lan", kind: "agent", harnesses: ["yian", "codex"] } as Person
+  const minh = { handle: "minh", kind: "agent", tools: ["yian", "codex"] } as Person
+  const lan = { handle: "lan", kind: "agent", tools: ["yian", "codex"] } as Person
   const [current, setCurrent] = createSignal<Person | undefined>(minh)
   const harness = createHarnessPick(current)
   expect(harness.current()).toBe("yian")

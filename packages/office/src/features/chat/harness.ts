@@ -394,7 +394,7 @@ export class ChatHarness implements SessionHarness {
       store,
       mode: () => store.getSession(session.id)?.mode ?? session.mode,
     })
-    const harnesses = repo.people.get(session.person)?.harnesses ?? []
+    const listed = repo.people.get(session.person)?.tools ?? []
     const instrument = {
       chat: session,
       folder: this.office.paths.sessionDir(session.id),
@@ -403,11 +403,11 @@ export class ChatHarness implements SessionHarness {
     }
     const { codex: codexes, claude: claudes } = this.office
     const codex =
-      codexes !== undefined && harnesses.includes("codex")
+      codexes !== undefined && listed.includes("codex")
         ? new EmployeeCodex({ ...instrument, sessions: codexes })
         : undefined
     const claude =
-      claudes !== undefined && harnesses.includes("claude")
+      claudes !== undefined && listed.includes("claude")
         ? new EmployeeClaude({ ...instrument, sessions: claudes })
         : undefined
     return mainSpec({ store, git, repo, session, workspace, terminal, codex, claude, monitor, carried })
@@ -841,8 +841,8 @@ export class ChatHarness implements SessionHarness {
     if (person === undefined) throw new HarnessError(404, "not_found", missingPerson(repo, handle))
     if (person.kind !== "agent" || !person.main) throw notAnAgent()
     // An empty list is the schema's default: the yian harness alone.
-    const harnesses = person.harnesses.length ? person.harnesses : ["yian"]
-    if (!harnesses.includes("yian"))
+    const tools = person.tools.length ? person.tools : ["yian"]
+    if (!tools.includes("yian"))
       throw new HarnessError(422, "unsupported_harness", "the person doesn't use the yian harness")
     const real = checkFolder(this.office, cwd, this.log)
     return { head, repo, person, cwd: real, ...(await this.choose(person, connection, model)) }

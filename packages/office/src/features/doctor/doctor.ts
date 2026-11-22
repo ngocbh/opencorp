@@ -674,7 +674,7 @@ export interface CodexOffice {
  * load fails, and so does one whose sandbox can't run a command, with no model turn run), and a warning for each
  * trusted project whose own config Codex would load.
  * Missing, signed out, or a `login status` that fails otherwise (shown by the first line it printed) is a warning, not
- * a failure: only people with `codex` in `harnesses` need it. A `codex` that won't run, doesn't answer within
+ * a failure: only people with `codex` in `tools` need it. A `codex` that won't run, doesn't answer within
  * `timeoutMs`, is older than the floor or whose version can't be read fails.
  *
  * `environ` is the office's environment: its `OPENCORP_CODEX_BIN` picks the binary and its `CODEX_HOME` joins `env`,
@@ -803,7 +803,7 @@ export function mcpCheck(
     if (allowed.length === 0) continue
     const servers = allowed.map((name) => {
       for (const [harness, names] of [["codex", defined.codex], ["claude", defined.claude]] as const) {
-        if (person.harnesses.includes(harness) && names !== null && !names.includes(name)) missing = true
+        if (person.tools.includes(harness) && names !== null && !names.includes(name)) missing = true
       }
       return `${name} (Codex: ${state(defined.codex, name)}, Claude Code: ${state(defined.claude, name)})`
     })
@@ -1530,7 +1530,7 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
  *  not `workspace-write`), by handle. */
 export function readOnlyClaude(repo: Pick<CompanyRepo, "people">): string[] {
   return [...repo.people]
-    .filter(([, person]) => person.harnesses.includes("claude") && person.harness_policy?.sandbox !== "workspace-write")
+    .filter(([, person]) => person.tools.includes("claude") && person.harness_policy?.sandbox !== "workspace-write")
     .map(([handle]) => handle)
     .sort()
 }

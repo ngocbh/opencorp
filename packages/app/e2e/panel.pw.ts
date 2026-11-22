@@ -14,7 +14,7 @@ const panel = (page: import("@playwright/test").Page, name: string) => page.getB
 test("clicking a person opens their panel: summary, manager and reports, groups", async ({ page }) => {
   await page.getByRole("treeitem", { name: /Lead/ }).click()
   await expect(panel(page, "Lead")).toContainText("@lead · agent · Tech lead")
-  await expect(panel(page, "Lead").getByRole("term")).toHaveText(["Home office", "Harnesses", "Model"])
+  await expect(panel(page, "Lead").getByRole("term")).toHaveText(["Home office", "Tools", "Model"])
   await expect(panel(page, "Lead").getByRole("definition")).toHaveText(["mac", "yian", "the office's default"])
   await expect(panel(page, "Lead").getByRole("button", { name: "Ngoc" })).toBeVisible()
   await expect(panel(page, "Lead").getByRole("list", { name: "Reports" }).getByRole("listitem")).toHaveText(["Kai", "Minh"])

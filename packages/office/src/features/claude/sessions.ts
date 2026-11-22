@@ -256,11 +256,11 @@ export class ClaudeSessions {
     const repo = loadRepo(await this.office.git.pin(chat.repo_commit))
     const person = repo.people.get(chat.person)
     if (person === undefined) throw new HarnessError(404, "not_found", missingPerson(repo, chat.person))
-    if (!person.harnesses.includes("claude")) {
+    if (!person.tools.includes("claude")) {
       throw new HarnessError(
         422,
         "unsupported_harness",
-        `@${chat.person} doesn't use the claude harness: the owner adds claude to their person's harnesses`,
+        `@${chat.person} doesn't use the claude harness: the owner adds claude to their person's tools`,
       )
     }
   }

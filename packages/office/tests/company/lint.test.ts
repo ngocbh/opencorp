@@ -384,7 +384,7 @@ test("the template flows pass lint", async () => {
   const agent = {
     handle: "minh", name: "Minh", kind: "agent", title: "Engineer", manager: "ngocbh",
     main: "../../shared/flows/chat.yaml", sops: [{ flow: "../../shared/flows/drive_harness.yaml" }],
-    harnesses: ["yian", "codex", "claude"],
+    tools: ["yian", "codex", "claude"],
   }
   fs.mkdirSync(path.join(root, "people/minh/memory"), { recursive: true })
   fs.writeFileSync(path.join(root, "people/minh/person.yaml"), writeYaml(agent))
@@ -477,10 +477,18 @@ test("an agent that grants no instrument group needs no steer inbox", async () =
   expect(await codes(withSop(sopFlow("[workspace, terminal]", { steered: false })))).toEqual(new Set())
 })
 
-/** A company whose minh, using `harnesses`, runs `flow` as an SOP and as a routine. */
-function driving(flow: string, harnesses: string[]): string {
+test("lint refuses a person file under the old names, naming the new ones", async () => {
+  const root = makeCompany({ "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"] }) })
+  const found = (await lint(loadRepo(root))).filter((issue) => issue.path === "people/minh/person.yaml")
+  expect(found.map((issue) => [issue.code, issue.severity, issue.message])).toEqual([
+    ["repo.schema", "error", "`harnesses` was renamed `tools`; `composer` was renamed `yian`"],
+  ])
+})
+
+/** A company whose minh, using `tools`, runs `flow` as an SOP and as a routine. */
+function driving(flow: string, tools: string[]): string {
   const ref = "../../shared/flows/drive.yaml"
-  const minh = person("minh", { sops: [{ flow: ref }], routines: [{ name: "daily", flow: ref }], harnesses })
+  const minh = person("minh", { sops: [{ flow: ref }], routines: [{ name: "daily", flow: ref }], tools })
   return makeCompany({ "shared/flows/drive.yaml": flow, "people/minh/person.yaml": minh })
 }
 
@@ -493,7 +501,7 @@ test("an SOP or routine that drives only harnesses its person doesn't use is a l
       "people/minh/person.yaml",
       "warning",
       "../../shared/flows/drive.yaml drives codex, but @minh doesn't use the codex harness, so it gets no codex"
-        + " tools and can't start a session; add codex to harnesses",
+        + " tools and can't start a session; add codex to tools",
     ]),
   )
   expect(await withCode(driving(sopFlow("[codex]", { steered: true }), ["yian", "codex"]), "person.harness_not_used"))
@@ -505,10 +513,10 @@ test("an SOP that drives either harness is a lint warning only for a person who 
   const [issue] = await withCode(driving(sop, ["yian"]), "person.harness_not_used")
   expect(issue!.message).toBe(
     "../../shared/flows/drive.yaml drives codex or claude, but @minh uses neither harness, so it gets neither's tools"
-      + " and can't start a session; add the one it should drive to harnesses",
+      + " and can't start a session; add the one it should drive to tools",
   )
-  for (const harnesses of [["yian", "codex"], ["claude"]]) {
-    expect(await lint(loadRepo(driving(sop, harnesses)))).toEqual([])
+  for (const tools of [["yian", "codex"], ["claude"]]) {
+    expect(await lint(loadRepo(driving(sop, tools)))).toEqual([])
   }
 })
 

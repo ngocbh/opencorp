@@ -65,9 +65,9 @@ describe.skipIf(!TMUX)("the owner and an employee both write to Claude Code, in 
     const company = path.join(office.home, "company")
     const file = path.join(company, "people", "minh", "person.yaml")
     const yaml = fs.readFileSync(file, "utf8")
-    const harnesses = /^harnesses:.*(?:\n[ \t]*-.*)*$/m
-    expect(yaml).toMatch(harnesses)
-    fs.writeFileSync(file, yaml.replace(harnesses, "harnesses: [yian, claude]"))
+    const tools = /^tools:.*(?:\n[ \t]*-.*)*$/m
+    expect(yaml).toMatch(tools)
+    fs.writeFileSync(file, yaml.replace(tools, "tools: [yian, claude]"))
     const identity = ["-c", "user.name=Ngoc", "-c", "user.email=ngoc@example.com"]
     execFileSync("git", ["-C", company, ...identity, "commit", "-qam", "people: minh uses Claude Code"], {
       env: { PATH: "/usr/bin:/bin", HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },

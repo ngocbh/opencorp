@@ -8,7 +8,7 @@ setDefaultTimeout(30_000)
 
 /** A person file for `handle` of `kind` reporting to `manager`. */
 function someone(handle: string, manager: string | null, kind = "human"): Record<string, unknown> {
-  const extra = kind === "agent" ? { main: "../../shared/flows/chat.yaml", harnesses: ["yian"] } : {}
+  const extra = kind === "agent" ? { main: "../../shared/flows/chat.yaml", tools: ["yian"] } : {}
   return { handle, name: handle, kind, title: "R", manager, ...extra }
 }
 

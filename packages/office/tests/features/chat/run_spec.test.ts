@@ -36,7 +36,7 @@ const MINH = {
   title: "Engineer",
   manager: "ngocbh",
   main: "../../shared/flows/chat.yaml",
-  harnesses: ["yian"],
+  tools: ["yian"],
   skills: ["deploy"],
 }
 

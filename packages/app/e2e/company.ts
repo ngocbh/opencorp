@@ -24,7 +24,7 @@ export type Data = {
 
 export const person = (handle: string, name: string, kind: Person["kind"], title: string, manager: string | null,
   groups: string[] = []): Person =>
-  ({ handle, name, kind, title, manager, groups, devices: [], password_hash: null, home_office: "mac", harnesses: ["yian"] })
+  ({ handle, name, kind, title, manager, groups, devices: [], password_hash: null, home_office: "mac", tools: ["yian"] })
 
 /** A session with every key the office serves, its defaults included. */
 export const session = (id: string, who: string, status: Session["status"], over: Partial<Session> = {}): Session =>

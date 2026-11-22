@@ -74,6 +74,15 @@ test("files that dont parse become issues without quoting them", async () => {
   expect(view.people.map((p) => p.handle)).not.toContain("ann")
 })
 
+test("a person file under the old names is an issue naming the new ones", async () => {
+  const g = gitOf(makeCompany({ "people/minh/person.yaml": person("minh", { harnesses: ["composer"] }) }))
+  const view = await loadCompanyAt(g, await g.head())
+  expect(view.issues.map((i) => [i.path, i.code, i.message])).toEqual([
+    ["people/minh/person.yaml", "repo.schema", "`harnesses` was renamed `tools`; `composer` was renamed `yian`"],
+  ])
+  expect(view.people.map((p) => p.handle)).toEqual(["ngocbh"])
+})
+
 test("a deeply nested file is an issue and the rest still loads", async () => {
   const g = gitOf(makeCompany({ "groups/deep.yaml": "[".repeat(100_000) + "]".repeat(100_000) }))
   const view = await loadCompanyAt(g, await g.head())

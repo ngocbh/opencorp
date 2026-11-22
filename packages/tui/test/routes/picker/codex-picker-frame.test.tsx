@@ -26,7 +26,7 @@ function lastPickOn() {
 /** The fake office, with minh using Codex as well as yian. */
 function codexOffice() {
   const s = seed()
-  s.people = s.people.map((p) => (p.handle === "minh" ? { ...p, harnesses: ["yian", "codex"] } : p))
+  s.people = s.people.map((p) => (p.handle === "minh" ? { ...p, tools: ["yian", "codex"] } : p))
   return createFakeOffice({ seed: s })
 }
 
