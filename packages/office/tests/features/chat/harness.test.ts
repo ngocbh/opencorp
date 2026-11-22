@@ -1428,8 +1428,16 @@ test("the model key appears in no frame event or office file", async () => {
   for (const root of [h.office.paths.home, h.folder]) {
     for (const rel of fs.readdirSync(root, { recursive: true }) as string[]) {
       const file = path.join(root, rel)
-      if (file === keys || !fs.statSync(file).isFile()) continue
-      if (fs.readFileSync(file).includes(SENTINEL)) leaks.push(`file ${rel}`)
+      // A file can go between the listing and its read, as the runs index's SQLite journal does.
+      let content: Buffer
+      try {
+        if (file === keys || !fs.statSync(file).isFile()) continue
+        content = fs.readFileSync(file)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
+        throw error
+      }
+      if (content.includes(SENTINEL)) leaks.push(`file ${rel}`)
     }
   }
   if (hasKey(hooked)) leaks.push("hook")
