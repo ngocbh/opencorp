@@ -1692,6 +1692,32 @@ test("claude at the floor and signed in, starting under an employee's permission
   })
 })
 
+test("on Linux, claude warns of each employee who uses it with a folder they may only read, whose sessions are refused", async () => {
+  const { dir, office, base } = probeHomes()
+  const { env } = fakeClaudeIn(dir)
+  const check = await doctor.claudeCheck(env, {}, null, { office, base, readOnly: ["minh", "lan"], platform: "linux" })
+  expect(check.status).toBe("warn")
+  expect(check.detail).toContain("starts with its sandbox required")
+  expect(check.detail).toContain("@minh's and @lan's Claude Code sessions are refused")
+  expect(check.detail).toContain("workspace-write")
+  expect(check.detail).toContain("Codex")
+  // macOS's sandbox isn't known to fail there.
+  const mac = await doctor.claudeCheck(env, {}, null, { office, base, readOnly: ["minh"], platform: "darwin" })
+  expect(mac.status).toBe("ok")
+})
+
+test("doctor names the employees who use Claude Code with a read-only folder, from the company's people", () => {
+  const repo = {
+    people: new Map([
+      ["minh", { harnesses: ["composer", "claude"], harness_policy: { sandbox: "read-only", network: false } }],
+      ["lan", { harnesses: ["claude"], harness_policy: null }],
+      ["tuan", { harnesses: ["claude"], harness_policy: { sandbox: "workspace-write", network: false } }],
+      ["vy", { harnesses: ["codex"], harness_policy: { sandbox: "read-only", network: false } }],
+    ]),
+  }
+  expect(doctor.readOnlyClaude(repo as never)).toEqual(["lan", "minh"])
+})
+
 test("claude missing, or an opencorp claude bin the office can't find, is a warning saying what to do", async () => {
   const missing = await doctor.claudeCheck({ PATH: path.join(tempDir(), "nowhere") }, {})
   expect(missing.status).toBe("warn")

@@ -173,6 +173,29 @@ test("a start whose sandbox can't run fails the session and says what to fix", a
   expect(heard.states).toEqual([])
 })
 
+test("on Linux, an employee whose folder is read-only is refused Claude Code, saying why and what to use; on macOS it starts", async () => {
+  const readOnly = {
+    "people/minh/person.yaml": person("minh", {
+      harnesses: ["composer", "claude"],
+      harness_policy: { sandbox: "read-only", network: false },
+    }),
+  }
+  const h = makeClaude({ files: readOnly, platform: "linux" })
+  const chat = await chatOf(h)
+  const id = "01JA1H0000000000000000CA04"
+  const error = await h.sessions.startInstrument(chat, id, { observer: new Heard(), label, owner: "ngocbh" }).catch((e) => e)
+  expect(error).toMatchObject({ status: 422, code: "start_failed" })
+  expect(error.message).toContain("read-only")
+  expect(error.message).toContain("workspace-write")
+  expect(error.message).toContain("Codex")
+  expect(status(h, id)).toBe("failed")
+  expect(starts(h)).toEqual([])
+
+  const mac = makeClaude({ files: readOnly, platform: "darwin" })
+  const { session } = await started(mac)
+  expect(session.status).toBe("idle")
+})
+
 test("an employee who doesn't use the claude harness is refused, and no session is made", async () => {
   const h = makeClaude({ files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"] }) } })
   const chat = await chatOf(h)

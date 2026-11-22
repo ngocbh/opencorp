@@ -42,6 +42,19 @@ export const CLAUDE_TOOLS = [
   "ToolSearch",
 ] as const
 
+/** Whether Claude Code can't run commands in a folder its employee may only read on `platform`: on Linux its sandbox
+ *  makes a `.gitconfig` in the working folder for each command, which a read-only folder refuses, so every Bash
+ *  command fails (`bwrap: Can't create file at <folder>/.gitconfig: Read-only file system`, O5). macOS's isn't known
+ *  to. */
+export function readOnlyFails(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "linux"
+}
+
+/** What to do about it, for an employee who uses Claude Code with a folder they may only read. */
+export const READ_ONLY_FIX =
+  "on Linux Claude Code's sandbox fails every command in a folder its employee may only read; the owner makes their " +
+  "harness_policy sandbox workspace-write, or they use Codex for read-only work"
+
 /** How the office talks to Claude Code: stream-json both ways, every message written out. */
 export const STREAM_ARGS = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"] as const
 

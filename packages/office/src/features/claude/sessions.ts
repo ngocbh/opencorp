@@ -42,8 +42,10 @@ import {
   ClaudeMissing,
   ClaudeProcess,
   ClaudeStartError,
+  READ_ONLY_FIX,
   claudeSession,
   nativeClaude,
+  readOnlyFails,
   toolsBeyond,
 } from "../../tools/claude/claude.ts"
 import { markClaudeInterrupted } from "../../tools/claude/instrument.ts"
@@ -82,6 +84,8 @@ export type ClaudeSessionsOptions = {
   stopWaitMs?: number
   /** Where warnings go (default `console.error`). */
   log?: (line: string) => void
+  /** The platform Claude Code's sandbox runs on (default `process.platform`). */
+  platform?: NodeJS.Platform
 }
 
 /** How long an idle session keeps its Claude Code: five minutes, as the upstream TUI's sessions do. */
@@ -117,6 +121,7 @@ export class ClaudeSessions {
   readonly #env: () => Record<string, string>
   readonly #environ: Record<string, string | undefined>
   readonly #tmpBase: string | undefined
+  readonly #platform: NodeJS.Platform
   readonly #live = new Map<string, ClaudeSession>()
   #closed = false
 
@@ -127,6 +132,7 @@ export class ClaudeSessions {
     this.#env = options.env ?? (() => workerEnv(process.env))
     this.#environ = options.environ ?? process.env
     this.#tmpBase = options.tmpBase
+    this.#platform = options.platform ?? process.platform
     this.idleMs = options.idleMs ?? IDLE_MS
     this.closeGraceMs = options.closeGraceMs ?? CLOSE_GRACE_MS
     this.stopWaitMs = options.stopWaitMs ?? STOP_WAIT_MS
@@ -322,6 +328,9 @@ export class ClaudeSessions {
         `@${live.person}'s permission turns the network on, which Claude Code can't hold to a list of hosts yet; the ` +
           "owner turns it off in their person's harness_policy, or they use Codex for work that needs the network",
       )
+    }
+    if (!permission.writable && readOnlyFails(this.#platform)) {
+      throw new UnsafeProfile(`@${live.person}'s folder is read-only to them, and ${READ_ONLY_FIX}`)
     }
     checkClaudeInstall(permission, install)
     const configDir = this.#environ.CLAUDE_CONFIG_DIR || path.join(this.office.guards.home ?? os.homedir(), ".claude")
