@@ -169,8 +169,8 @@ token can.
 - **Claude Code** gets each allowed server's definition from your user-scope servers (`claude mcp add --scope user`,
   kept in `~/.claude.json`, or in `CLAUDE_CONFIG_DIR`). OpenCorp hands Claude Code only those, in a file in that
   office folder, removed when Claude Code stops; nothing else loads, a project's `.mcp.json` and your local-scope
-  servers included. It starts each program through `sh`, which moves to the office's folder first, and runs a
-  `headersHelper` there too. Their tools, and Claude Code's two tools that read servers' resources, run without
+  servers included. It starts each program through `sh`, which moves to the office's folder first and keeps from it
+  the socket and token of the session's inbox, and runs a `headersHelper` the same way. Their tools run without
   asking, as Claude Code asks nobody there.
 - **Names.** A name is letters, digits, `-` and `_`, with no `__`, as your harness config names the server. A server
   only one harness defines loads only there.

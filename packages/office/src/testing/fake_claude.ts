@@ -22,8 +22,9 @@
  *    `--append-system-prompt-file` (read whole at the start, logged as `appended`; one it can't read stops the start,
  *    its wording unrecorded), `--mcp-config` (each a JSON file of `mcpServers`, read whole at the start and logged as
  *    `mcp`; one it can't read, or a JSON string in its place, as for `--append-system-prompt-file`; each program
- *    server, unrecorded, run once at the start as Claude Code starts it, in the fake's own folder with its env added,
- *    and waited on for at most 5 s, so a stand-in can say where it started), as `--flag v` or
+ *    server, unrecorded, run once at the start as Claude Code starts it, in the fake's own folder, with its env and
+ *    the variables a real 2.1.330 passed a server (`serverEnv`, stand-in values) added, and waited on for at most
+ *    5 s, so a stand-in can say where it started and what it got), as `--flag v` or
  *    `--flag=v`, and the bare `--strict-mcp-config`, `--verbose`,
  *    `--dangerously-skip-permissions` and `--no-session-persistence` (no session kept). Any other flag, and any
  *    argument that is no flag's value, isn't modelled. Settings that enable the sandbox with `failIfUnavailable`
@@ -1655,17 +1656,31 @@ function main(state: string, argv: string[]): void {
   if (stopped)
     process.stderr.write(`\nError: ${reason[0]!.toLowerCase()}${reason.slice(1)}\n  Refusing to start without a working sandbox (see sandbox.failIfUnavailable).\n`)
   const servers = [...new Set(mcp.flatMap((config) => Object.keys(config.servers)))]
-  for (const config of mcp) for (const definition of Object.values(config.servers)) startServer(definition, cwd)
+  for (const config of mcp) for (const definition of Object.values(config.servers)) startServer(definition, cwd, id)
   new Fake(state, script, flags, policy, mode, id, stopped ? reason : null, servers).serve()
 }
 
+/** Some of the variables a real Claude Code 2.1.330 passed an MCP server (a real check recorded their names), with
+ *  stand-in values: its session's inbox socket and token, and the folder its children leave notes in, among them. */
+function serverEnv(cwd: string, sessionId: string): Record<string, string> {
+  return {
+    CLAUDECODE: "1",
+    CLAUDE_CODE_SESSION_ID: sessionId,
+    CLAUDE_CODE_MESSAGING_SOCKET: path.join(cwd, ".fake-inbox.sock"),
+    CLAUDE_CODE_MESSAGING_TOKEN: "fake-messaging-token",
+    CLAUDE_CODE_CHILD_NOTES_DIR: path.join(cwd, ".fake-notes"),
+    CLAUDE_PROJECT_DIR: cwd,
+  }
+}
+
 /** Runs a program server's command (`type` none or `stdio`) once, as Claude Code starts it: in `cwd`, the fake's own
- *  folder, with the fake's environment and its `env`; waited on for at most 5 s. One reached by URL starts nothing. */
-function startServer(definition: Obj, cwd: string): void {
+ *  folder, with the fake's environment, `serverEnv` and its `env`; waited on for at most 5 s. One reached by URL
+ *  starts nothing. */
+function startServer(definition: Obj, cwd: string, sessionId: string): void {
   if ((definition.type ?? "stdio") !== "stdio" || typeof definition.command !== "string") return
   const args = Array.isArray(definition.args) ? definition.args.map(String) : []
   const { [NO_CACHE]: _, ...env } = process.env
-  const added = definition.env ?? {}
+  const added = { ...serverEnv(cwd, sessionId), ...(definition.env ?? {}) }
   spawnSync(definition.command, args, { cwd, env: { ...env, ...added }, stdio: "ignore", timeout: 5_000 })
 }
 

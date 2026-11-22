@@ -113,6 +113,47 @@ test("a server Claude Code starts as a program starts in the folder given, throu
   expect(startIn({ args: ["x"] }, cwd)).toBeNull()
 })
 
+/** What Claude Code 2.1.330 passed down to an MCP server, as a real check recorded the names. */
+const PASSED = {
+  CLAUDECODE: "1",
+  CLAUDE_CODE_SESSION_ID: "s1",
+  CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/cc/inbox.sock",
+  CLAUDE_CODE_MESSAGING_TOKEN: "decoy-messaging-token",
+  CLAUDE_CODE_CHILD_NOTES_DIR: "/tmp/cc/notes",
+  CLAUDE_PROJECT_DIR: "/w",
+}
+
+/** The names of the variables a command sees, run with `env` in `cwd`. */
+function namesSeen(command: string, args: readonly string[], env: Record<string, string>, cwd: string): string[] {
+  const ran = spawnSync(command, args, { cwd, env: { PATH: "/usr/bin:/bin", ...env }, encoding: "utf8" })
+  return ran.stdout.split("\n").filter(Boolean).map((line) => line.split("=")[0]!)
+}
+
+test("a server, and a headers helper, never get the session's inbox socket, its token or its notes folder; the rest of their env stays", () => {
+  const root = fs.realpathSync(tempDir())
+  const cwd = path.join(root, "cwd")
+  fs.mkdirSync(cwd)
+  const stripped = ["CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_CHILD_NOTES_DIR"]
+  type Program = { command: string; args: string[] }
+  const program = startIn({ command: "sh", args: ["-c", "env"], env: { O5_TOKEN: "t" } }, cwd) as Program
+  const seen = namesSeen(program.command, program.args, { ...PASSED, O5_TOKEN: "t" }, root)
+  for (const name of stripped) expect(seen, name).not.toContain(name)
+  for (const name of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "O5_TOKEN"]) {
+    expect(seen, name).toContain(name)
+  }
+  const http = { type: "http", url: "https://e.example", headersHelper: "env" }
+  const helped = startIn(http, cwd) as { headersHelper: string }
+  const helper = namesSeen("/bin/sh", ["-c", helped.headersHelper], PASSED, root)
+  for (const name of stripped) expect(helper, name).not.toContain(name)
+  expect(helper).toContain("CLAUDE_PROJECT_DIR")
+  // One the server's own definition sets is its own, and stays.
+  const mine = { command: "sh", args: ["-c", "env"], env: { CLAUDE_CODE_CHILD_NOTES_DIR: "mine" } }
+  const own = startIn(mine, cwd) as Program
+  const kept = namesSeen(own.command, own.args, { ...PASSED, CLAUDE_CODE_CHILD_NOTES_DIR: "mine" }, root)
+  expect(kept).toContain("CLAUDE_CODE_CHILD_NOTES_DIR")
+  expect(kept).not.toContain("CLAUDE_CODE_MESSAGING_TOKEN")
+})
+
 test("a server Claude Code reaches by URL is left as it is, but the headers helper it runs starts in the folder given", () => {
   const root = fs.realpathSync(tempDir())
   const cwd = path.join(root, "o's cwd")

@@ -788,7 +788,10 @@ test("an --mcp-config file's servers are read at the start and started in the fa
   expect(verdicts(lines)).toEqual(["ran", "ran"])
   expect(await allowed.close()).toBe(0)
   expect(fs.readFileSync(path.join(dir, "pwd"), "utf8").trim()).toBe(fs.realpathSync(work))
-  expect(fs.readFileSync(path.join(dir, "names"), "utf8").split("\n")).toContain("O5_TOKEN")
+  // With the variables Claude Code passes a server down, its session's inbox among them.
+  const names = fs.readFileSync(path.join(dir, "names"), "utf8").split("\n")
+  for (const name of ["O5_TOKEN", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_PROJECT_DIR"])
+    expect(names, name).toContain(name)
   expect(fake.log().filter((e) => e.dir === "start").at(-1)!.mcp).toEqual([{ path: config, servers }])
   // With no allow rule, nothing approves it here.
   const asked = new Claude(fake, base, work)

@@ -125,6 +125,11 @@ test("an employee allowed an MCP server gets only its definition, in a 0600 file
   expect(fs.readFileSync(path.join(logs, "pwd"), "utf8").trim()).toBe(path.join(folder, "cwd"))
   const names = fs.readFileSync(path.join(logs, "names"), "utf8").split("\n")
   expect(names).toContain("GITHUB_TOKEN")
+  // Claude Code passes its session's inbox socket and token down; the server never gets them.
+  for (const name of ["CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_CHILD_NOTES_DIR"]) {
+    expect(names, name).not.toContain(name)
+  }
+  expect(names).toContain("CLAUDE_PROJECT_DIR")
   expect(fs.readFileSync(path.join(logs, "names"), "utf8")).not.toContain("ghp_decoy-token")
   // Beside the session's temp folder, which its commands may read and write, and closed to them by name.
   expect(file.startsWith(start!.env!.TMPDIR + "/")).toBe(false)

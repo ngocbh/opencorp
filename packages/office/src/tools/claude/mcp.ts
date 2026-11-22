@@ -10,7 +10,8 @@
  *  Claude Code starts a server in its own working folder, the employee's, where a launcher (npx's `node_modules` and
  *  `.npmrc`, uvx's `pyproject.toml`, python's `sys.path`) would load what the employee planted, and runs the server
  *  as the owner, outside the sandbox. Its definitions take no folder, so each program starts through `sh`, which
- *  first moves to the office's empty folder (`startIn`). */
+ *  first moves to the office's empty folder (`startIn`). Claude Code also passes a server its session's inbox socket
+ *  and token, through which a server could message the session, and `sh` drops them (`SESSION_VARIABLES`). */
 import fs from "node:fs"
 import path from "node:path"
 import { MCP_SERVER_NAME } from "../../company/naming.ts"
@@ -76,25 +77,47 @@ export function mcpServersOf(
   return { servers, missing }
 }
 
-/** The script `sh` runs before a server's own command: into the folder given (its first argument), or no start. It
- *  holds no `${…}`, which Claude Code would expand. */
-const START = 'cd -- "$1" || exit 1; shift; exec "$@"'
+/** What Claude Code passes down to an MCP server that belongs to its session, not to the server: its inbox socket
+ *  and the token to post there, and the folder where its children leave it notes (2.1.330 passed these, as a real
+ *  check recorded). Ids such as `CLAUDE_CODE_SESSION_ID`, and `CLAUDE_PROJECT_DIR`, which its docs give servers,
+ *  stay. */
+export const SESSION_VARIABLES = [
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
+  "CLAUDE_CODE_CHILD_NOTES_DIR",
+]
 
-/** `definition` as it starts in `cwd`, not in Claude Code's own working folder: a program (`stdio`, or no `type`)
- *  through `/bin/sh` with `START`, its own command, arguments and env as they were; one reached by URL (`http`,
- *  `sse`) as it is, but the `headersHelper` command Claude Code runs for it through a shell moving there first. Null
- *  for a program with no command, or a kind OpenCorp doesn't know. */
+/** The `unset` of the `SESSION_VARIABLES` that `env` (a definition's own) doesn't set, as a shell command line. */
+function unsetSession(env: unknown): string {
+  const own = isObject(env) ? env : {}
+  return `unset ${SESSION_VARIABLES.filter((name) => !Object.hasOwn(own, name)).join(" ")}`.trimEnd()
+}
+
+/** The script `sh` runs before a server's own command: into the folder given (its first argument), or no start;
+ *  then the session's own variables dropped (`unset`, its own command line). It holds no `${…}`, which Claude Code
+ *  would expand. */
+function start(unset: string): string {
+  return `cd -- "$1" || exit 1; shift; ${unset === "unset" ? "" : `${unset}; `}exec "$@"`
+}
+
+/** `definition` as it starts in `cwd`, not in Claude Code's own working folder, and without the `SESSION_VARIABLES`
+ *  its own env doesn't set: a program (`stdio`, or no `type`) through `/bin/sh` with `start`'s script, its own
+ *  command, arguments and env as they were; one reached by URL (`http`, `sse`) as it is, but the `headersHelper`
+ *  command Claude Code runs for it through a shell doing the same first. Null for a program with no command, or a kind
+ *  OpenCorp doesn't know. */
 export function startIn(definition: Record<string, unknown>, cwd: string): Record<string, unknown> | null {
   const type = definition.type ?? "stdio"
   if (type === "stdio") {
     if (typeof definition.command !== "string") return null
     const args = Array.isArray(definition.args) ? definition.args : []
-    return { ...definition, command: "/bin/sh", args: ["-c", START, "opencorp-mcp", cwd, definition.command, ...args] }
+    const script = start(unsetSession(definition.env))
+    return { ...definition, command: "/bin/sh", args: ["-c", script, "opencorp-mcp", cwd, definition.command, ...args] }
   }
   if (type !== "http" && type !== "sse") return null
   if (definition.headersHelper === undefined) return { ...definition }
   if (typeof definition.headersHelper !== "string") return null
-  return { ...definition, headersHelper: `cd -- ${shellQuote(cwd)} || exit 1\n${definition.headersHelper}` }
+  const moved = `cd -- ${shellQuote(cwd)} || exit 1\n${unsetSession(undefined)}\n`
+  return { ...definition, headersHelper: moved + definition.headersHelper }
 }
 
 /** `text` as one word to a POSIX shell. */
