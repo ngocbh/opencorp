@@ -82,8 +82,17 @@ const TERM_WAIT_MS = 3_000
 /** Milliseconds a killed Claude Code has to be seen exiting. */
 const EXIT_WAIT_MS = 5_000
 /** The `startup_failure_reason` of the `result` Claude Code writes in place of `initialize`'s answer when its sandbox
- *  can't run and `failIfUnavailable` stops the start (O5); it then waits on stdin, answering nothing. */
+ *  can't run and `failIfUnavailable` stops the start; it then waits on stdin, answering nothing. */
 const SANDBOX_UNAVAILABLE = "sandbox_required_unavailable"
+/** What a Claude Code that writes no `startup_failure_reason` (older than 2.1.330 may not) says on stderr when its
+ *  sandbox stops the start, in its docs' words and 2.1.330's: required but unavailable, refusing to start without
+ *  it, required but failed to initialize, or Ubuntu's AppArmor stopping bubblewrap. */
+const SANDBOX_SAID =
+  /^Error: sandbox required but unavailable\b|Refusing to start without a working sandbox|Sandbox is required but failed to initialize|AppArmor .*stops bubblewrap/im
+/** How often a start reads its own stderr for `SANDBOX_SAID`, in milliseconds. */
+const SAID_POLL_MS = 200
+/** The most of a start's own output read to tell why it failed. */
+const REASON_BYTES = 64 * 1024
 const STOPPED = "Claude Code was stopped before it started."
 const UPDATE =
   "update it with `claude update` (or `brew upgrade claude-code`, or " +
@@ -293,6 +302,8 @@ export class ClaudeProcess {
   readonly #log: (line: string) => void
   #exited: Promise<void> = Promise.resolve()
   #untrack: (() => void) | null = null
+  /** The log's size when this start opened it: what Claude Code wrote since is this start's own. */
+  #logStart = 0
   #killed = false
   #killing: Promise<void> | null = null
   /** Rejects the start with the reason a `result` gave for stopping it, until `initialize` is answered. */
@@ -322,7 +333,8 @@ export class ClaudeProcess {
    *  resolves with its answer once Claude Code is at least `CLAUDE_FLOOR` and signed in.
    *
    *  Rejects with `ClaudeStartError`: `ClaudeTooOld`, `ClaudeSignedOut`, `ClaudeSandboxUnavailable` at once when a
-   *  `result` in place of `initialize`'s answer says its sandbox stops the start (`startup_failure_reason`), and
+   *  `result` in place of `initialize`'s answer says its sandbox stops the start (`startup_failure_reason`), or, from
+   *  a Claude Code that writes no such result, its stderr does in its docs' words, and
    *  otherwise words that say to run `opencorp doctor` and name the log; an error from `track` is rethrown as is. Nothing is left running or tracked. A process killed first never spawns. */
   async start(): Promise<Msg> {
     const { command, cwd, log } = this.#options
@@ -333,6 +345,7 @@ export class ClaudeProcess {
     try {
       const { O_WRONLY, O_APPEND, O_CREAT, O_NOFOLLOW } = fs.constants
       fd = fs.openSync(log, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
+      this.#logStart = fs.fstatSync(fd).size
       proc = spawn(command[0]!, command.slice(1), { cwd, env: this.env, detached: true, stdio: ["pipe", "pipe", fd] })
     } catch (error) {
       this.#forget()
@@ -374,6 +387,10 @@ export class ClaudeProcess {
       log: this.#log,
     }))
     stream.start()
+    // A Claude Code with no startup_failure_reason says why only on stderr, and may then wait, as one with it does.
+    const watch = setInterval(() => {
+      if (SANDBOX_SAID.test(this.#startOutput())) this.#stopsStart?.(SANDBOX_UNAVAILABLE)
+    }, SAID_POLL_MS)
     let init: Msg
     try {
       init = await Promise.race([stream.request("initialize", {}, { timeout: START_TIMEOUT_MS }), stopped])
@@ -381,8 +398,13 @@ export class ClaudeProcess {
       const killed = this.closing // an office stop killed it mid-start
       await this.kill()
       if (killed) throw new ClaudeStartError(STOPPED, { cause: error })
+      // One that exited first may not have been read yet.
+      if (!(error instanceof StartupFailure) && SANDBOX_SAID.test(this.#startOutput())) {
+        throw this.#startError(new StartupFailure(SANDBOX_UNAVAILABLE))
+      }
       throw this.#startError(error as Error)
     } finally {
+      clearInterval(watch)
       this.#stopsStart = null
     }
     const version = typeof init.claude_code_version === "string" ? init.claude_code_version : null
@@ -463,8 +485,8 @@ export class ClaudeProcess {
   }
 
   /** The error for a Claude Code that failed or died while starting: its sandbox, when its result's
-   *  `startup_failure_reason` says so, another reason named, or else what went wrong; each says to run `opencorp
-   *  doctor` and where its output is. */
+   *  `startup_failure_reason` (or, with none, its stderr: `SANDBOX_SAID`) says so, another reason named, or else what
+   *  went wrong; each says to run `opencorp doctor` and where its output is. */
   #startError(error: Error): ClaudeStartError {
     const { log } = this.#options
     if (error instanceof StartupFailure && error.reason === SANDBOX_UNAVAILABLE) {
@@ -481,6 +503,24 @@ export class ClaudeProcess {
         `${log}.`,
       { cause: error },
     )
+  }
+
+  /** What Claude Code wrote to its log since this start opened it, up to 64 KiB; "" when it can't be read. */
+  #startOutput(): string {
+    let fd: number | undefined
+    try {
+      fd = fs.openSync(this.#options.log, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      const stat = fs.fstatSync(fd)
+      if (!stat.isFile()) return ""
+      const length = Math.min(Math.max(0, stat.size - this.#logStart), REASON_BYTES)
+      const buffer = Buffer.alloc(length)
+      const read = fs.readSync(fd, buffer, 0, length, this.#logStart)
+      return buffer.subarray(0, read).toString("utf8")
+    } catch {
+      return ""
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd)
+    }
   }
 
   #cantStart(error: unknown): ClaudeStartError {
