@@ -86,7 +86,9 @@ the listed folders.
 
 **Codex** asks you nothing: every command and file edit runs at once inside that permission, and one it refuses goes
 back to Codex. In your employee's Codex threads your MCP servers, hooks, `notify`, apps and plugins are off, and so
-is web search when the network is off, and your `~/.codex/config.toml` is left as it is.
+is web search when the network is off, and your `~/.codex/config.toml` is left as it is. An MCP server you add while
+a session runs would start at its next turn, so the session takes no message until you remove it or start a new
+session, which turns it off.
 
 **Claude Code** asks you nothing either: what its permission doesn't allow is refused. Its only tools are its file
 tools, Bash and ToolSearch: none that acts on your claude.ai account (routines, Claude Design, push notifications),

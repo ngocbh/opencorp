@@ -8,8 +8,8 @@
  *  "config_read_error": {...}, "mcp_status_error": {...}, "stderr": "...", "turns": [[step, ...], ...]}`; `load_exit`
  *  dies with `code` on `thread/start` or `thread/resume`, before answering, and `load_answer`'s keys replace its
  *  answer's. `config/read` answers the owner's config with `mcp_servers` and `projects` (none by default) and, asked
- *  for a `cwd`'s layers, the project layers `project_layers` gives that cwd, read from the script file as it is then,
- *  so a test can trust a project while the fake runs. `mcpServerStatus/list` lists the
+ *  for a `cwd`'s layers, the project layers `project_layers` gives that cwd, all read from the script file as it is
+ *  then, so a test can change the owner's config while the fake runs. `mcpServerStatus/list` lists the
  *  servers, each disabled when the thread's config
  *  turned it off, and fails as Codex does when the thread's config defines a permission profile but no
  *  `default_permissions`. Each `turn/start` that starts a turn takes the next list of steps (an unscripted turn just
@@ -89,7 +89,7 @@ export class Fake {
   constructor(
     readonly script: Obj,
     readonly log: string | null,
-    /** The script's file, which `config/read` reads `project_layers` from again; null for a built-in scenario. */
+    /** The script's file, which `config/read` reads the owner's config from again; null for a built-in scenario. */
     private readonly scriptFile: string | null = null,
   ) {
     this.thread = { ...(truthy(script.thread) ? script.thread : THREAD) }
@@ -196,9 +196,9 @@ export class Fake {
     }
     if (method === "config/read") {
       if (truthy(this.script.config_read_error)) return this.reply(requestId, undefined, this.script.config_read_error)
-      const config = { mcp_servers: this.script.mcp_servers ?? {}, projects: this.script.projects ?? {} }
-      if (!params.includeLayers) return this.reply(requestId, { config, origins: {} })
       const now = this.scriptFile ? JSON.parse(fs.readFileSync(this.scriptFile, "utf8")) : this.script
+      const config = { mcp_servers: now.mcp_servers ?? {}, projects: now.projects ?? {} }
+      if (!params.includeLayers) return this.reply(requestId, { config, origins: {} })
       const projects: Obj[] = (params.cwd && now.project_layers?.[params.cwd]) || []
       const layers: Obj[] = projects.map((layer) => ({
         name: { type: "project", dotCodexFolder: layer.dotCodexFolder },
