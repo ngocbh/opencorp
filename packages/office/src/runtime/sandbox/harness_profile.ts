@@ -3,10 +3,12 @@
  *
  *  OpenCorp puts no sandbox of its own around a harness. The harness runs as the owner, with its own login and
  *  config; its sandbox holds its commands (and Codex's file edits) to the employee's permission. What a harness would
- *  otherwise run as the owner outside that sandbox is turned off: hooks, `notify`, apps, plugins and MCP servers; the
- *  folder's own project config stays untrusted, unless the owner's config already trusts it (the load then refuses). */
+ *  otherwise run as the owner outside that sandbox is turned off: hooks, `notify`, apps, plugins and MCP servers (but
+ *  those the owner allows the employee); the folder's own project config stays untrusted, unless the owner's config
+ *  already trusts it (the load then refuses). */
 import fs from "node:fs"
 import path from "node:path"
+import { MCP_CWD } from "./harness_temp.ts"
 import {
   checkClearOf,
   checkWorkspace,
@@ -39,6 +41,9 @@ export interface EmployeePermission {
   fence: string
   /** The person's extra folders (`harness_policy.folders`; empty until then), each mounted as given. */
   folders: readonly { path: string; access: "read" | "write" }[]
+  /** The owner's MCP servers the person may use, by name (`harness_policy.mcp_servers`, plain names only): each runs
+   *  as the owner, outside this permission. Every other server stays off. */
+  allowedMcp?: readonly string[]
   /** The owner's home and `<OPENCORP_HOME>`, denied by name except where a listed folder covers them. */
   home: string
   officeHome: string
@@ -55,6 +60,14 @@ export interface EmployeePermission {
   /** The folders those programs run from and load libraries from, each checked as a program's install folder is:
    *  readable in the sandbox where a deny would hide them, and only those exact folders. */
   programReads?: readonly string[]
+  /** The office's MCP folder for this start (`mcpFolder`, in the office's home; 0700, the user's, not a link): the
+   *  servers the employee may use start in its empty `cwd` folder, never in the employee's, and Claude Code reads
+   *  their definitions, which can hold the owner's tokens, from a file in it. Denied by name, and refused if it lies in
+   *  or holds a folder the employee may read. */
+  mcpHome?: string
+  /** The harnesses' private folder under `/tmp` (`/tmp/opencorp-<uid>`), which holds every session's temp folder and
+   *  the programs its sandbox runs: no listed folder may hold it or lie in it. */
+  tempRoot?: string
 }
 
 /** The system folders that start every harness PATH. Both harnesses run `git`, `rg` and (Codex, on Linux) `bwrap`
@@ -136,6 +149,8 @@ interface Checked {
   programs: string | null
   /** `programReads`, resolved. */
   programReads: string[]
+  /** `mcpHome`, resolved. */
+  mcpHome: string | null
 }
 
 /** A path kept read-only, and whether it is a folder (Claude Code's edit deny then covers what is in it). */
@@ -151,11 +166,19 @@ interface Kept {
  *
  *  `install` is the folder Codex is installed in (the one holding the `bin` of its resolved binary): its sandboxed
  *  commands run Codex's own binary, so the profile reads it, and it is refused if the employee can write it.
- *  `mcpServers` are the owner's MCP servers (`mcpServersOff`). Throws as `checkPermission` does. */
+ *  `mcpServers` are the owner's MCP servers: each but those `p` allows is turned off (`mcpServersOff`). Of those
+ *  allowed, each that Codex starts as a program (`stdio`, as against one it reaches by URL, where Codex takes no
+ *  folder) starts in the office's empty folder (`mcpCwd`), never the employee's, where a launcher (npx, uvx, python)
+ *  would load what they planted. Throws as `checkPermission` does, and when such a server needs that folder but `p`
+ *  has none. */
 export function codexThread(
   p: EmployeePermission,
   id: string,
-  { install, mcpServers = [] }: { install: string; mcpServers?: readonly string[] },
+  {
+    install,
+    mcpServers = [],
+    stdio = [],
+  }: { install: string; mcpServers?: readonly string[]; stdio?: readonly string[] },
 ): { permissions: string; config: Record<string, unknown> } {
   // A `:` name is one of Codex's built-in profiles.
   if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`a Codex profile id is letters, digits, - and _; got ${id}`)
@@ -193,7 +216,16 @@ export function codexThread(
     features: { hooks: false, apps: false, plugins: false, memories: false, skill_mcp_dependency_install: false },
     notify: [],
   }
-  if (mcpServers.length > 0) config.mcp_servers = mcpServersOff(mcpServers)
+  // An allowed server keeps what the owner's config sets for it but where it starts; a project's own servers never
+  // load (the load refuses a project config Codex would read).
+  const allowed = new Set(p.allowedMcp ?? [])
+  const started = mcpServers.filter((name) => allowed.has(name) && stdio.includes(name))
+  const servers: Record<string, unknown> = mcpServersOff(mcpServers.filter((name) => !allowed.has(name)))
+  if (started.length > 0) {
+    const cwd = mcpCwd(p)
+    for (const name of started) servers[name] = { cwd }
+  }
+  if (Object.keys(servers).length > 0) config.mcp_servers = servers
   // Codex's own web search reaches the web from the harness, outside the sandbox.
   if (!c.network) config.web_search = "disabled"
   return { permissions: id, config }
@@ -230,7 +262,7 @@ export function claudeStart(p: EmployeePermission): {
   const sockets = [...new Set(SOCKET_ROOTS.filter((p) => fs.existsSync(p)).map((p) => realPath(p)))].filter(
     (root) => !covered(root),
   )
-  const denyRead = [...(covered(c.home) ? [] : [c.home]), ...sockets, ...c.denied]
+  const denyRead = [...(covered(c.home) ? [] : [c.home]), ...sockets, ...c.denied, ...(c.mcpHome ? [c.mcpHome] : [])]
   const settings = {
     sandbox: {
       enabled: true,
@@ -266,6 +298,7 @@ export function claudeStart(p: EmployeePermission): {
         ...readOnly.flatMap((folder) => rules("Edit", folder, true)),
         ...[...c.kept, ...c.held].flatMap((kept) => rules("Edit", kept.path, kept.folder)),
         ...mirrored.flatMap((denied) => rules("Read", denied, true)),
+        ...(c.mcpHome ? rules("Read", c.mcpHome, true) : []),
         // Both reach the web from Claude Code itself, outside its sandbox.
         "WebFetch",
         "WebSearch",
@@ -341,6 +374,8 @@ function checked(p: EmployeePermission): Checked {
     ...p.folders.map((folder): [string, string] => ["listed folder", folder.path]),
     ...(p.harnessHomes ?? []).map((dir): [string, string] => ["harness's config folder", dir]),
     ...(p.othersWritable ?? []).map((dir): [string, string] => ["other person's writable folder", dir]),
+    ...(p.mcpHome === undefined ? [] : ([["MCP folder", p.mcpHome]] as [string, string][])),
+    ...(p.tempRoot === undefined ? [] : ([["private folder under /tmp", p.tempRoot]] as [string, string][])),
   ]
   for (const [what, given] of named) {
     if (given.includes("\0")) {
@@ -360,6 +395,14 @@ function checked(p: EmployeePermission): Checked {
   const tmpdir = privateFolder(p.tmpdir, officeHome)
   const fence = fenceFile(p.fence, officeHome)
   const folders = listedFolders(p, workspace, tmpdir)
+  if (p.tempRoot !== undefined) {
+    const top = realPath(p.tempRoot)
+    const near = folders.find((folder) => within(folder.path, top) || within(top, folder.path))
+    if (near !== undefined) {
+      const why = "the harnesses' private folder under /tmp, which holds every session's temp folder"
+      throw new UnsafeProfile(`the listed folder ${near.path} holds or lies in ${top}, ${why}`)
+    }
+  }
   const writable = [...(p.writable ? [workspace] : []), tmpdir, ...writableOf(folders)]
   checkReached(p.workspace, [tmpdir, ...writableOf(folders)])
   const readOnly = [...(p.writable ? [] : [workspace]), ...readOnlyOf(folders)]
@@ -387,7 +430,10 @@ function checked(p: EmployeePermission): Checked {
   const programReads = (p.programReads ?? []).map((dir) =>
     readFolder(dir, [...writable, ...others], [home, officeHome, ...byName], sockets),
   )
+  const readable = [workspace, tmpdir, ...folders.map((f) => f.path), ...(programs === null ? [] : [programs])]
+  const mcpHome = p.mcpHome === undefined ? null : mcpFolderOf(p.mcpHome, [...readable, ...programReads])
   const all = [workspace, tmpdir, fence, home, ...folders.map((f) => f.path), ...denied, ...held.map((h) => h.path)]
+  if (mcpHome !== null) all.push(mcpHome)
   for (const resolved of all) {
     if (PATTERN.test(resolved)) throw new UnsafeProfile(`the harness would read ${resolved} as a pattern`)
   }
@@ -408,6 +454,7 @@ function checked(p: EmployeePermission): Checked {
     path: [...(programs === null ? [] : [programs]), pathOf(folders, [...writable, ...others])].join(":"),
     programs,
     programReads: [...new Set(programReads)],
+    mcpHome,
   }
 }
 
@@ -436,6 +483,43 @@ function readFolder(dir: string, offLimits: readonly string[], kept: readonly st
   if (socket !== undefined) throw new UnsafeProfile(`${what} is or lies in ${socket}, where the owner's sockets are`)
   if (PATTERN.test(real)) throw new UnsafeProfile(`the harness would read ${real} as a pattern`)
   return real
+}
+
+/** `mcpHome` resolved, if it and its `cwd` are folders (not links), the user's and private (0700), its `cwd` empty,
+ *  and it neither in nor holding any of `readable` (the folders the harness's commands may read); else
+ *  `UnsafeProfile`. */
+function mcpFolderOf(mcpHome: string, readable: readonly string[]): string {
+  const what = `the harness's MCP folder ${mcpHome}`
+  if (!privateDirectory(mcpHome)) {
+    const stat = fs.lstatSync(mcpHome, { throwIfNoEntry: false })
+    if (stat === undefined || stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new UnsafeProfile(`${what} isn't a folder (a link is refused)`)
+    }
+    throw new UnsafeProfile(`${what} isn't private`)
+  }
+  const real = realPath(mcpHome)
+  const near = readable.find((dir) => within(real, dir) || within(dir, real))
+  if (near !== undefined) throw new UnsafeProfile(`${what} lies in or holds ${near}, which the employee may read`)
+  const cwd = path.join(real, MCP_CWD)
+  if (!privateDirectory(cwd) || fs.readdirSync(cwd).length > 0) {
+    throw new UnsafeProfile(`the folder its MCP servers start in isn't an empty private folder: ${cwd}`)
+  }
+  return real
+}
+
+/** Whether `dir` is a folder, not a link, the user's and private (0700). */
+function privateDirectory(dir: string): boolean {
+  const stat = fs.lstatSync(dir, { throwIfNoEntry: false })
+  if (stat === undefined || stat.isSymbolicLink() || !stat.isDirectory()) return false
+  return stat.uid === process.getuid?.() && (stat.mode & 0o077) === 0
+}
+
+/** Where `p`'s MCP servers start (`mcpHome`'s `cwd`, resolved); throws `UnsafeProfile` as `checkPermission` does,
+ *  and an error when `p` has no MCP folder. */
+export function mcpCwd(p: EmployeePermission): string {
+  const home = checked(p).mcpHome
+  if (home === null) throw new Error("an employee's allowed MCP servers need the office's MCP folder to start in")
+  return path.join(home, MCP_CWD)
 }
 
 /** `programs` resolved, if it is a folder (not a link), the user's and private, outside `offLimits` (what the harness

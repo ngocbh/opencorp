@@ -20,7 +20,12 @@
  *    `--permission-prompt-tool`, `--permission-prompts` (`host` or `none`), `--model`, `--settings` (JSON, or a JSON
  *    file), `--setting-sources`, `--tools`, `--allowedTools`, `--disallowedTools`, `--add-dir`, `--append-system-prompt` and
  *    `--append-system-prompt-file` (read whole at the start, logged as `appended`; one it can't read stops the start,
- *    its wording unrecorded), as `--flag v` or `--flag=v`, and the bare `--strict-mcp-config`, `--verbose`,
+ *    its wording unrecorded), `--mcp-config` (each a JSON file of `mcpServers`, read whole at the start and logged as
+ *    `mcp`; one it can't read, or a JSON string in its place, as for `--append-system-prompt-file`; each program
+ *    server, unrecorded, run once at the start as Claude Code starts it, in the fake's own folder, with its env and
+ *    the variables a real 2.1.330 passed a server (`serverEnv`, stand-in values) added, and waited on for at most
+ *    5 s, so a stand-in can say where it started and what it got), as `--flag v` or
+ *    `--flag=v`, and the bare `--strict-mcp-config`, `--verbose`,
  *    `--dangerously-skip-permissions` and `--no-session-persistence` (no session kept). Any other flag, and any
  *    argument that is no flag's value, isn't modelled. Settings that enable the sandbox with `failIfUnavailable`
  *    stop the start where it can't run (the script's `sandbox_unavailable`, or its `needs_socat` with no `socat` on
@@ -32,8 +37,11 @@
  *    modelled: no recording of 2.1.330 holds them, and the office registers none.
  *  - **Its tools.** `system`/`init` lists them as recorded: `--tools`' names (`""` none, `default` the default set),
  *    else the default set (`Task` first, then the rest by name), less each tool a bare deny rule names, plus the
- *    script's `tools_added` (as a Claude Code that adds tools of its own would). A tool step for a tool not listed gets
- *    the recorded `No such tool available` error.
+ *    script's `tools_added` (as a Claude Code that adds tools of its own would), and, unrecorded, as Claude Code's docs
+ *    give them, `mcp__<server>__<tool>` for each tool the script's `mcp_tools` gives a server an `--mcp-config` file
+ *    loads, and `ListMcpResourcesTool` and `ReadMcpResourceTool` once one loads, `--tools` not reaching them. Its
+ *    `mcp_servers` lists those servers, each `connected` (unrecorded). A tool step for a tool not listed gets the
+ *    recorded `No such tool available` error.
  *  - **A turn.** A `user` line, when no turn runs, starts one: the line's
  *    `command_lifecycle` queued and started (a line with no `uuid` gets none), `system`/`init`, the script's next turn
  *    of steps, then `completed` for the lines that joined, the `result`, and `completed` for the first line. A
@@ -63,9 +71,9 @@
  *       `rmdir`, `mv` and `cp`, on paths inside the working folders (the fake's, `--add-dir`'s and
  *       `permissions.additionalDirectories`), not `.git` or `.claude`, and not a `touch` with an option or a glob;
  *    5. the allow rules, from `--allowedTools` and `permissions.allow`, and what needs no approval: a read (`Read`,
- *       `Glob`, `Grep`, `LS`) inside the working folders, and the docs' read-only commands (`ls`, `cat`, `echo`, …,
- *       `git status`); a compound command runs when each of its commands does, and a redirect's file is checked as a
- *       write or a read;
+ *       `Glob`, `Grep`, `LS`) inside the working folders, `ListMcpResourcesTool` and `ReadMcpResourceTool`, and the
+ *       docs' read-only commands (`ls`, `cat`, `echo`, …, `git status`); a compound command runs when each of its
+ *       commands does, and a redirect's file is checked as a write or a read;
  *    6. else, unless the mode is `dontAsk`, with `--permission-prompt-tool stdio` the host gets `can_use_tool` and
  *       answers `{behavior: "allow", updatedInput?}` or `{behavior: "deny", message}`; anything else is refused, as
  *       a headless Claude Code with no way to ask: with `--permission-prompts none` as recorded, a
@@ -99,7 +107,7 @@
  *  It writes no `status`, `rate_limit_event`, `stream_event`, `thinking_tokens`, `task_started`, `task_updated`,
  *  `task_notification` or `background_tasks_changed` lines, nor thinking blocks, which real Claude Code writes too:
  *  the office reads none of them (its tests feed it the recorded ones). */
-import { type ChildProcess, spawn } from "node:child_process"
+import { type ChildProcess, spawn, spawnSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
@@ -132,6 +140,8 @@ export interface FakeClaudeScript {
   needs_socat?: boolean
   /** Tools `system`/`init` lists whatever `--tools` and the deny rules say. */
   tools_added?: string[]
+  /** The tools each MCP server has, by server: listed for each server an `--mcp-config` file loads. */
+  mcp_tools?: Record<string, string[]>
   /** Seconds `initialize` waits before its answer, as a Claude Code slow to start. */
   slow_start?: number
   /** Seconds the run stays open after stdin ends, as background work keeps Claude Code open. */
@@ -150,6 +160,8 @@ export interface FakeClaudeLogEntry {
   argv?: string[]
   /** What `--append-system-prompt-file` held at the start. */
   appended?: string
+  /** Each `--mcp-config` file read at the start, and the servers it defined. */
+  mcp?: { path: string; servers: Obj }[]
   cwd?: string
   env?: Record<string, string>
   flags?: Obj
@@ -229,14 +241,16 @@ const VALUED = new Set([
   "add-dir",
   "append-system-prompt",
   "append-system-prompt-file",
+  "mcp-config",
   "permission-prompts",
   "input-format",
   "output-format",
 ])
 const BARE = new Set(["strict-mcp-config", "verbose", "dangerously-skip-permissions", "no-session-persistence"])
-const REPEATED = new Set(["allowedTools", "disallowedTools", "add-dir"])
+const REPEATED = new Set(["allowedTools", "disallowedTools", "add-dir", "mcp-config"])
 
-/** The flags the fake reads, by name; `allowedTools`, `disallowedTools` and `add-dir` as lists of the values given.
+/** The flags the fake reads, by name; `allowedTools`, `disallowedTools`, `add-dir` and `mcp-config` as lists of the
+ *  values given.
  *  `Unmodelled` for any other flag, and for an argument that is no flag's value. */
 function parseFlags(argv: readonly string[]): Obj {
   const flags: Obj = {}
@@ -300,6 +314,8 @@ const DEFAULT_TOOLS = [
   "Workflow", "Write",
 ]
 const READS = new Set(["Read", "Glob", "Grep", "LS"])
+/** The tools that read MCP servers' resources, which need no approval (Claude Code's docs, tools-reference). */
+const MCP_RESOURCE_READS = new Set(["ListMcpResourcesTool", "ReadMcpResourceTool"])
 const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"])
 const INIT_CAPABILITIES = ["interrupt_receipt_v1", "interrupt_cancel_queued_v1", "msg_lifecycle_v1", "ui_surface_v1"]
 const MESSAGE_USAGE = {
@@ -669,6 +685,7 @@ class Policy {
     if (tool === "Bash") return subs().every((sub, _, all) => this.approved(sub, all, mode)) ? "allow" : "ask"
     if (this.allowed(tool, target)) return "allow"
     if (READS.has(tool) && !outside) return "allow"
+    if (MCP_RESOURCE_READS.has(tool)) return "allow"
     if (mode === "acceptEdits" && EDITS.has(tool) && target !== undefined && this.editable(target)) return "allow"
     return "ask"
   }
@@ -844,6 +861,8 @@ class Fake {
   readonly sessionFile: string
   /** What `system`/`init` lists. */
   readonly tools: string[]
+  /** The MCP servers the `--mcp-config` files loaded, by name. */
+  readonly mcpServers: string[]
   /** Why the sandbox stops the start, when it does: `initialize` then gets this as a result, and no answer. */
   readonly startupFailure: string | null
   turn: Turn | null = null
@@ -865,7 +884,9 @@ class Fake {
     public mode: string,
     readonly sessionId: string,
     startupFailure: string | null = null,
+    mcpServers: string[] = [],
   ) {
+    this.mcpServers = mcpServers
     this.startupFailure = startupFailure
     this.version = script.version ?? VERSION
     const models = script.models ?? MODELS
@@ -877,7 +898,13 @@ class Fake {
     const base =
       named === undefined || named === "default" ? DEFAULT_TOOLS : splitRules(String(named)).filter((t) => t !== "")
     const listed = new Set([...base.filter((t) => !policy.removes(t)), ...(script.tools_added ?? [])])
-    this.tools = [...listed].sort((a, b) => (a === "Task" ? -1 : b === "Task" ? 1 : a < b ? -1 : a > b ? 1 : 0))
+    const resources = mcpServers.length > 0 ? ["ListMcpResourcesTool", "ReadMcpResourceTool"] : []
+    const mcp = [
+      ...resources,
+      ...mcpServers.flatMap((server) => (script.mcp_tools?.[server] ?? []).map((t) => `mcp__${server}__${t}`)),
+    ]
+    const sorted = [...listed].sort((a, b) => (a === "Task" ? -1 : b === "Task" ? 1 : a < b ? -1 : a > b ? 1 : 0))
+    this.tools = [...sorted, ...mcp.filter((t) => !policy.removes(t))]
   }
 
   log(entry: Obj): void {
@@ -1303,7 +1330,7 @@ class Fake {
       cwd: this.cwd,
       session_id: this.sessionId,
       tools: this.tools,
-      mcp_servers: [],
+      mcp_servers: this.mcpServers.map((name) => ({ name, status: "connected" })),
       model: this.model,
       permissionMode: this.mode,
       slash_commands: [],
@@ -1571,10 +1598,32 @@ function main(state: string, argv: string[]): void {
       appended = undefined
     }
   }
+  const mcp: { path: string; servers: Obj }[] = []
+  let unreadMcp: string | null = null
+  for (const value of flags["mcp-config"] ?? []) {
+    if (String(value).trimStart().startsWith("{")) {
+      log({ pid: process.pid, dir: "start", argv, cwd, env, flags: {} })
+      log({ pid: process.pid, dir: "unmodelled", what: "an --mcp-config JSON string" })
+      return quit(FAKE_CLAUDE_UNMODELLED, "fake claude: not modelled: an --mcp-config JSON string")
+    }
+    const servers = readSettings(String(value), cwd)?.mcpServers
+    if (servers === null || typeof servers !== "object" || Array.isArray(servers)) unreadMcp ??= String(value)
+    else mcp.push({ path: path.resolve(cwd, String(value)), servers })
+  }
   const logged = { ...flags, ...(settings === null ? {} : { settings }) }
-  log({ pid: process.pid, dir: "start", argv, cwd, env, flags: logged, ...(appended === undefined ? {} : { appended }) })
+  log({
+    pid: process.pid,
+    dir: "start",
+    argv,
+    cwd,
+    env,
+    flags: logged,
+    ...(appended === undefined ? {} : { appended }),
+    ...(mcp.length === 0 ? {} : { mcp }),
+  })
   if (typeof file === "string" && appended === undefined)
     return quit(1, `fake claude: --append-system-prompt-file can't be read: ${file}`)
+  if (unreadMcp !== null) return quit(1, `fake claude: --mcp-config can't be read: ${unreadMcp}`)
   if (flags["input-format"] !== "stream-json" || flags["output-format"] !== "stream-json")
     return quit(2, "fake claude: runs only with --input-format stream-json --output-format stream-json")
   if (flags.settings !== undefined && settings === null)
@@ -1606,7 +1655,33 @@ function main(state: string, argv: string[]): void {
     return quit(1, `No conversation found with session ID: ${id}`)
   if (stopped)
     process.stderr.write(`\nError: ${reason[0]!.toLowerCase()}${reason.slice(1)}\n  Refusing to start without a working sandbox (see sandbox.failIfUnavailable).\n`)
-  new Fake(state, script, flags, policy, mode, id, stopped ? reason : null).serve()
+  const servers = [...new Set(mcp.flatMap((config) => Object.keys(config.servers)))]
+  for (const config of mcp) for (const definition of Object.values(config.servers)) startServer(definition, cwd, id)
+  new Fake(state, script, flags, policy, mode, id, stopped ? reason : null, servers).serve()
+}
+
+/** Some of the variables a real Claude Code 2.1.330 passed an MCP server (a real check recorded their names), with
+ *  stand-in values: its session's inbox socket and token, and the folder its children leave notes in, among them. */
+function serverEnv(cwd: string, sessionId: string): Record<string, string> {
+  return {
+    CLAUDECODE: "1",
+    CLAUDE_CODE_SESSION_ID: sessionId,
+    CLAUDE_CODE_MESSAGING_SOCKET: path.join(cwd, ".fake-inbox.sock"),
+    CLAUDE_CODE_MESSAGING_TOKEN: "fake-messaging-token",
+    CLAUDE_CODE_CHILD_NOTES_DIR: path.join(cwd, ".fake-notes"),
+    CLAUDE_PROJECT_DIR: cwd,
+  }
+}
+
+/** Runs a program server's command (`type` none or `stdio`) once, as Claude Code starts it: in `cwd`, the fake's own
+ *  folder, with the fake's environment, `serverEnv` and its `env`; waited on for at most 5 s. One reached by URL
+ *  starts nothing. */
+function startServer(definition: Obj, cwd: string, sessionId: string): void {
+  if ((definition.type ?? "stdio") !== "stdio" || typeof definition.command !== "string") return
+  const args = Array.isArray(definition.args) ? definition.args.map(String) : []
+  const { [NO_CACHE]: _, ...env } = process.env
+  const added = { ...serverEnv(cwd, sessionId), ...(definition.env ?? {}) }
+  spawnSync(definition.command, args, { cwd, env: { ...env, ...added }, stdio: "ignore", timeout: 5_000 })
 }
 
 /** Whether an executable `name` is in a folder of `PATH`. */

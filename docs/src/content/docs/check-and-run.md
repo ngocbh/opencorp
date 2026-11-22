@@ -23,6 +23,9 @@ Linux, install `bubblewrap` and `socat`. The office finds `socat` on its `PATH` 
 where `OPENCORP_SOCAT_BIN` points, and doctor fails when it finds none. Doctor runs no command in
 that sandbox, so one that starts but fails on a command shows only when your employee runs one.
 
+For each employee you allow MCP servers, doctor lists those servers and whether Codex and Claude Code define each,
+by name only, and warns when a harness the employee uses doesn't ([MCP servers](/instruments/#mcp-servers)).
+
 Codex and Claude Code run as you. Doctor fails, without running it, a Codex or Claude Code that
 someone else could change: one the group or others may write, or one in a folder an employee may
 write.

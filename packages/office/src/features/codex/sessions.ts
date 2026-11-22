@@ -47,7 +47,14 @@ import { instructions } from "../../runtime/sessions/speakers.ts"
 import type { ThreadEvents } from "../../tools/codex/instrument.ts"
 import { markInterrupted } from "../../tools/codex/record.ts"
 import { authoredText } from "@ngocbh/yian"
-import { fenceIn, freshFolder, removeFolder, sweepTemp } from "../../runtime/sandbox/harness_temp.ts"
+import {
+  fenceIn,
+  freshFolder,
+  mcpFolder,
+  mcpRoot,
+  removeFolder,
+  sweepTemp,
+} from "../../runtime/sandbox/harness_temp.ts"
 import { harnessTemp, threadEnv } from "./thread.ts"
 
 /** What a yian chat's session calls answer, until the chat harness serves them. */
@@ -575,30 +582,45 @@ export class CodexSessions implements SessionHarness {
     await this.hooks.notify("sessionEnded", updated)
   }
 
-  /** Removes what a crashed office left in the harness temp folder: the temp folder of each of this office's sessions
-   *  with no live app-server here (the next load makes a fresh one), and a doctor probe's whose process is gone. */
+  /** Removes what a crashed office left in the harness temp folder and the MCP folder: the folders of each of this
+   *  office's sessions with no live app-server here (the next load makes fresh ones), and a doctor probe's whose
+   *  process is gone. */
   #sweep(): void {
-    try {
-      const ours = (name: string) => !this.#live.has(name) && this.store.getSession(name) !== undefined
-      sweepTemp(harnessTemp(this.#tmpBase), ours, this.log)
-    } catch (error) {
-      this.log(`codex: the harness temp folder wasn't swept (${nameOf(error)})`)
+    const ours = (name: string) => !this.#live.has(name) && this.store.getSession(name) !== undefined
+    for (const [what, root] of [
+      ["temp", () => harnessTemp(this.#tmpBase)],
+      ["MCP", () => this.#mcpRoot()],
+    ] as const) {
+      try {
+        sweepTemp(root(), ours, this.log)
+      } catch (error) {
+        this.log(`codex: the harness ${what} folder wasn't swept (${nameOf(error)})`)
+      }
     }
   }
 
-  /** Removes session `sessionId`'s temp folder, once no app-server of it runs; a failure is logged, not thrown. */
+  /** Removes session `sessionId`'s temp and MCP folders, once no app-server of it runs; a failure is logged, not
+   *  thrown. */
   #dropTemp(sessionId: string): void {
     try {
       removeFolder(harnessTemp(this.#tmpBase), sessionId)
+      removeFolder(this.#mcpRoot(), sessionId)
     } catch (error) {
       this.log(`codex session ${sessionId}: its temp folder wasn't removed (${nameOf(error)})`)
     }
   }
 
+  /** Codex's MCP folder in the office's home (`<OPENCORP_HOME>/office/mcp/codex`): a folder per session whose employee
+   *  may use MCP servers, which start in its empty folder. */
+  #mcpRoot(): string {
+    return mcpRoot(this.office.paths.mcp, "codex")
+  }
+
   /** What one load of `live`'s thread runs (`Prepared`): the pinned Codex (its native binary, `nativeCodex`) or the
    *  test's command; the worker environment with the harness PATH and a fresh, private temp folder as TMPDIR
    *  (`/tmp/opencorp-<uid>/codex/<session>`); and the employee's permission over that folder, the fence beside it,
-   *  the folder's git root, and the harnesses' own config folders where the office's environment sets them apart.
+   *  the folder's git root, the harnesses' own config folders where the office's environment sets them apart, and,
+   *  when they may use MCP servers, a fresh MCP folder of the session's in the office's home, where those start.
    *  Codex as it will run is checked first (`checkCodexInstall`), since it runs as the owner. Throws `CodexMissing`
    *  with no Codex, and as the checks do. */
   async prepare(live: Pick<Launchable, "sessionId" | "cwd">): Promise<Prepared> {
@@ -612,7 +634,9 @@ export class CodexSessions implements SessionHarness {
       tmpdir: freshFolder(root, live.sessionId),
       fence: fenceIn(root),
       harnessHomes: harnessHomes(this.#environ),
+      tempRoot: path.dirname(root),
     })
+    if ((permission.allowedMcp ?? []).length > 0) permission.mcpHome = mcpFolder(this.#mcpRoot(), live.sessionId)
     const { install } = nativeCodex(command[0]!)
     checkCodexInstall(permission, { run: command[0]!, install })
     return { command, env: threadEnv(this.#env(), permission), permission, install }

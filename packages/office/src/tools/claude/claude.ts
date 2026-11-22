@@ -7,18 +7,20 @@
  *  (`claudeStart`), which its sandbox enforces on its commands, and its permission rules on its own file tools. What
  *  it would otherwise run as the owner outside that sandbox is off: no settings file loads (`--setting-sources=`, so
  *  no hooks, plugins, MCP servers, skills or CLAUDE.md from the owner's or the project's settings), no MCP server but
- *  the ones the command line names (`--strict-mcp-config`, and it names none), no plugin directory, and hooks off in
- *  the flag settings. Only the tools the office allows are on (`--tools`, `CLAUDE_TOOLS`). It asks nothing
+ *  the owner's ones its employee may use, from the file the command line names (`--strict-mcp-config`, `mcp.ts`), no
+ *  plugin directory, and hooks off in the flag settings. Only the tools the office allows are on (`--tools`,
+ *  `CLAUDE_TOOLS`), and those MCP servers' tools, which `--tools` doesn't reach. It asks nothing
  *  (`--permission-mode=acceptEdits` with the sandbox's auto-allow, and `--permission-prompts=none`): what would ask
  *  is refused, and so is any request it sends the office. */
 import { type ChildProcess, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
-import { type EmployeePermission, claudeStart } from "../../runtime/sandbox/harness_profile.ts"
+import { type EmployeePermission, claudeStart, mcpCwd } from "../../runtime/sandbox/harness_profile.ts"
 import { which } from "../../util/env.ts"
 import { killGroup } from "../../util/proc.ts"
 import { claudeInstructions, writeInstructions } from "./instructions.ts"
+import { mcpAllowRule, mcpServersOf, ownerMcpServers, writeMcpConfig } from "./mcp.ts"
 import { type Msg, StreamJson, isObj, nameOf } from "./stream.ts"
 
 /** The oldest Claude Code the office runs. 2.1.323 stops a start whose sandbox settings don't validate, rather than
@@ -32,6 +34,10 @@ export const CLAUDE_FLOOR = "2.1.325"
  *  after the turn (Task, Workflow, the Cron tools, ScheduleWakeup), or have nothing to act on with no background tasks
  *  (TaskStop). */
 export const CLAUDE_TOOLS = ["Bash", "Read", "Edit", "Write", "NotebookEdit", "Glob", "Grep", "ToolSearch"] as const
+
+/** Claude Code's own tools that list and read the resources of its MCP servers (Claude Code's docs, tools-reference):
+ *  a session has them when a server loads. */
+export const MCP_RESOURCE_TOOLS = ["ListMcpResourcesTool", "ReadMcpResourceTool"] as const
 
 /** Whether Claude Code can't run commands in a folder its employee may only read on `platform`: on Linux its sandbox
  *  makes a `.gitconfig` in the working folder for each command, which a read-only folder refuses, so every Bash
@@ -163,12 +169,17 @@ export function nativeClaude(claude: string): { run: string; install: string } {
   return { run: real, install: path.dirname(real) }
 }
 
+/** The MCP servers one start of Claude Code loads: the file holding their definitions (`writeMcpConfig`), or null
+ *  when it loads none, and their names. */
+export type McpLoad = { file: string | null; servers: readonly string[] }
+
 /** Claude Code's arguments for one session under an employee's permission (`claudeStart`'s `settings` and
- *  `addDirs`): no settings file, no MCP server but none, edits accepted with nothing asked, and the settings inline
+ *  `addDirs`): no settings file, no MCP server but `mcp`'s, edits accepted with nothing asked, and the settings inline
  *  (a settings file would sit where its commands could change it, and Claude Code applies a changed file at once).
  *  `sessionId` starts a session with that id, `resume` goes on with one; `model` overrides Claude Code's default;
  *  `persist: false` keeps no session on disk; `instructions` is a file of system prompt text to append
- *  (`writeInstructions`), the CLAUDE.md files no settings source loads. */
+ *  (`writeInstructions`), the CLAUDE.md files no settings source loads; `mcp` names the file of the MCP servers the
+ *  employee may use, whose tools the flag settings then allow, since nothing could approve them. */
 export function claudeArgs(
   start: { settings: Record<string, unknown>; addDirs: readonly string[] },
   {
@@ -177,20 +188,31 @@ export function claudeArgs(
     model,
     persist = true,
     instructions,
-  }: { sessionId?: string; resume?: string; model?: string; persist?: boolean; instructions?: string } = {},
+    mcp,
+  }: {
+    sessionId?: string
+    resume?: string
+    model?: string
+    persist?: boolean
+    instructions?: string
+    mcp?: McpLoad
+  } = {},
 ): string[] {
   if (sessionId !== undefined && resume !== undefined) {
     throw new Error("a Claude Code session is either new or resumed")
   }
+  const loads = mcp !== undefined && mcp.file !== null && mcp.servers.length > 0
+  const settings = loads ? allowing(start.settings, mcp.servers.map(mcpAllowRule)) : start.settings
   return [
     ...STREAM_ARGS,
     "--setting-sources=",
     "--strict-mcp-config",
+    ...(loads ? [`--mcp-config=${mcp.file}`] : []),
     "--permission-mode=acceptEdits",
     "--permission-prompts=none",
     `--tools=${CLAUDE_TOOLS.join(",")}`,
     "--settings",
-    JSON.stringify(start.settings),
+    JSON.stringify(settings),
     ...start.addDirs.map((dir) => `--add-dir=${dir}`),
     ...(sessionId === undefined ? [] : [`--session-id=${sessionId}`]),
     ...(resume === undefined ? [] : [`--resume=${resume}`]),
@@ -200,36 +222,81 @@ export function claudeArgs(
   ]
 }
 
+/** `settings` with `rules` added to its `permissions.allow`; `settings` itself is left as it is. */
+function allowing(settings: Record<string, unknown>, rules: readonly string[]): Record<string, unknown> {
+  const permissions = isObj(settings.permissions) ? settings.permissions : {}
+  const allow = Array.isArray(permissions.allow) ? permissions.allow : []
+  return { ...settings, permissions: { ...permissions, allow: [...allow, ...rules] } }
+}
+
 /** What a session under employee permission `p` runs: `claude`, with `claudeArgs` of `claudeStart(p)` and, when
  *  there are any, the office's own words for the session (`prompt`) and then the owner's and the project's
  *  instructions (`claudeInstructions`, from `configDir`, Claude Code's config folder), written to
  *  `opencorp.instructions.md` in the session's own temp folder (fresh, private and the user's, as `claudeStart`
  *  checked it; the file 0600) for `--append-system-prompt-file`; and its environment. The file goes when the temp
- *  folder does, and the process removes it once Claude Code exits (`instructions`). Throws as `claudeStart` does. */
+ *  folder does, and the process removes it once Claude Code exits (`instructions`).
+ *
+ *  The MCP servers `p` allows load from the owner's `.claude.json` (`claudeJson`), each one it defines, started in
+ *  the office's empty folder (`mcpCwd`, `startIn`): their definitions go in `opencorp.mcp.json` in `p.mcpHome`
+ *  (`writeMcpConfig`), which the process removes once Claude Code exits too; `mcp` names it and them, and the allowed
+ *  names that loaded nothing (not defined, of a kind that can't start there, or the file unread). Throws as
+ *  `claudeStart` does, and when `p` allows a server but has no `mcpHome`. */
 export function claudeSession(
   p: EmployeePermission,
   {
     claude,
     configDir,
+    claudeJson,
     prompt,
     ...rest
-  }: { claude: string; configDir: string; prompt?: string; sessionId?: string; resume?: string; model?: string },
-): { command: string[]; env: Record<string, string>; instructions: string | null } {
+  }: {
+    claude: string
+    configDir: string
+    claudeJson?: string
+    prompt?: string
+    sessionId?: string
+    resume?: string
+    model?: string
+  },
+): {
+  command: string[]
+  env: Record<string, string>
+  instructions: string | null
+  mcp: McpLoad & { missing: string[] }
+} {
   const start = claudeStart(p)
+  const allowed = p.allowedMcp ?? []
+  const cwd = allowed.length > 0 ? mcpCwd(p) : null
   const found = claudeInstructions({ configDir, workspace: p.workspace, gitRoot: p.gitRoot })
   const parts = [prompt === undefined ? null : `${prompt.trim()}\n`, found].filter((t): t is string => t !== null)
   const text = parts.length === 0 ? null : parts.join("\n")
   const instructions = text === null ? null : writeInstructions(start.env.TMPDIR!, "opencorp", text)
-  const args = claudeArgs(start, { ...rest, ...(instructions === null ? {} : { instructions }) })
-  return { command: [claude, ...args], env: start.env, instructions }
+  let mcp: McpLoad & { missing: string[] } = { file: null, servers: [], missing: [] }
+  if (cwd !== null) {
+    const picked = mcpServersOf(claudeJson === undefined ? null : ownerMcpServers(claudeJson), allowed, cwd)
+    const servers = Object.keys(picked.servers)
+    const file = servers.length === 0 ? null : writeMcpConfig(path.dirname(cwd), picked.servers)
+    mcp = { file, servers, missing: picked.missing }
+  }
+  const args = claudeArgs(start, { ...rest, ...(instructions === null ? {} : { instructions }), mcp })
+  return { command: [claude, ...args], env: start.env, instructions, mcp }
 }
 
-/** The tools a turn's `system`/`init` line lists beyond `CLAUDE_TOOLS`, MCP tools among them; a list that isn't
- *  one counts as one such tool, since what it holds can't be checked. Empty when the session has only those. */
-export function toolsBeyond(init: Msg): string[] {
+/** The tools a turn's `system`/`init` line lists beyond `CLAUDE_TOOLS`, and, when its start loaded MCP servers
+ *  (`servers`), beyond their tools and `MCP_RESOURCE_TOOLS`; other MCP tools among them. A tool is the server's whose
+ *  name, among `servers` and the servers the line lists (`mcp_servers`), is the longest that `mcp__<server>__` starts
+ *  it with. A list that isn't one counts as one such tool, since what it holds can't be checked. Empty when the
+ *  session has only those. */
+export function toolsBeyond(init: Msg, servers: readonly string[] = []): string[] {
   if (!Array.isArray(init.tools)) return ["(its tools, which it didn't list)"]
-  const allowed = new Set<unknown>(CLAUDE_TOOLS)
-  return init.tools.filter((tool) => !allowed.has(tool)).map((tool) => String(tool).slice(0, 100))
+  const allowed = new Set<unknown>([...CLAUDE_TOOLS, ...(servers.length > 0 ? MCP_RESOURCE_TOOLS : [])])
+  const listed = Array.isArray(init.mcp_servers) ? init.mcp_servers.map((s) => String(isObj(s) ? s.name : s)) : []
+  const known = [...new Set([...servers, ...listed])].sort((a, b) => b.length - a.length)
+  const serverOf = (tool: string) =>
+    known.find((name) => tool.startsWith(`mcp__${name}__`) && tool.length > `mcp__${name}__`.length)
+  return init.tools
+    .filter((tool) => !allowed.has(tool) && !(typeof tool === "string" && servers.includes(serverOf(tool) ?? "")))
+    .map((tool) => String(tool).slice(0, 100))
 }
 
 /** Whether `initialize`'s `account` (Claude Code's `AccountInfo`) has a sign-in: a token from a login, or an API
@@ -280,6 +347,8 @@ export type ClaudeProcessOptions = {
   track?: (pid: number) => () => void
   /** The instructions file its start wrote (`claudeSession`), removed once it exits, or when it never starts. */
   instructions?: string | null
+  /** The MCP servers its start loaded (`claudeSession`'s `mcp`): their file, removed as the instructions file is. */
+  mcp?: McpLoad | null
 }
 
 /** One Claude Code in its own process group, recorded for the start-up reaper through `track`.
@@ -570,14 +639,24 @@ export class ClaudeProcess {
     }
   }
 
-  /** Removes the instructions file, if this start had one. */
+  /** The MCP servers its start loaded, whose tools a turn may list. */
+  get mcpServers(): readonly string[] {
+    return this.#options.mcp?.servers ?? []
+  }
+
+  /** Removes the instructions file and the MCP servers' file, each if this start had one. */
   #forget(): void {
-    const file = this.#options.instructions
-    if (file === null || file === undefined) return
-    try {
-      fs.rmSync(file, { force: true })
-    } catch (error) {
-      this.#log(`claude: the instructions file wasn't removed (${nameOf(error)})`)
+    const files: [string, string | null | undefined][] = [
+      ["instructions", this.#options.instructions],
+      ["MCP servers'", this.#options.mcp?.file],
+    ]
+    for (const [what, file] of files) {
+      if (file === null || file === undefined) continue
+      try {
+        fs.rmSync(file, { force: true })
+      } catch (error) {
+        this.#log(`claude: the ${what} file wasn't removed (${nameOf(error)})`)
+      }
     }
   }
 

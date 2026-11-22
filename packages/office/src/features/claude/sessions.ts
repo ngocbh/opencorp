@@ -33,12 +33,14 @@ import {
   fenceIn,
   freshFolder,
   harnessRoot,
+  mcpFolder,
+  mcpRoot,
   removeFolder,
   sweepTemp,
 } from "../../runtime/sandbox/harness_temp.ts"
 import { type OfficePaths as SandboxOfficePaths, UnsafeProfile, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
 import { checkFolder } from "../../runtime/sessions/folder.ts"
-import { employeePermission } from "../../runtime/sessions/permission.ts"
+import { type HarnessThread, employeePermission } from "../../runtime/sessions/permission.ts"
 import { instructions } from "../../runtime/sessions/speakers.ts"
 import { HarnessError, continueFirst, notWaiting, resumable, writeState } from "../../runtime/sessions/state.ts"
 import { LIVE, type SessionRecord, type Store } from "../../runtime/store/store.ts"
@@ -60,6 +62,7 @@ import {
   toolsBeyond,
 } from "../../tools/claude/claude.ts"
 import { markClaudeInterrupted } from "../../tools/claude/instrument.ts"
+import { claudeJson } from "../../tools/claude/mcp.ts"
 import { prepareSocat } from "../../tools/claude/socat.ts"
 import { type Msg, nameOf } from "../../tools/claude/stream.ts"
 import { Translator } from "../../tools/claude/translate.ts"
@@ -114,6 +117,9 @@ const ENDED = "This Claude Code session has ended."
 const MISSING =
   "Claude Code isn't installed where the office can find it (on its PATH when it started). Install it " +
   "(https://code.claude.com/docs/en/setup), sign in by running `claude`, restart the office, then run `opencorp doctor`."
+
+/** What one start of a session's Claude Code runs (`ClaudeSessions.prepare`). */
+type Prepared = ReturnType<typeof claudeSession>
 
 /** What makes a Claude Code session an employee's instrument: what hears its events and states, how each message reads
  *  to Claude Code (its author's label around it), and what Claude Code is told of its speakers at each start. */
@@ -393,18 +399,24 @@ export class ClaudeSessions {
     return harnessRoot("claude", this.#tmpBase)
   }
 
+  /** Claude Code's MCP folder in the office's home (`<OPENCORP_HOME>/office/mcp/claude`), which holds a folder per
+   *  session whose employee may use MCP servers. */
+  mcpRoot(): string {
+    return mcpRoot(this.office.paths.mcp, "claude")
+  }
+
   /** What one start of `live`'s Claude Code runs: the pinned `claude` (or the options'), checked as it will run
    *  (`checkClaudeInstall`), since it runs as the owner; the employee's permission over the session's folder, with a
    *  fresh, private temp folder, and on Linux the pinned socat, readied for its sandbox (`prepareSocat`: checked, run
    *  once, and, outside the system folders, linked into `<root>/<session>.bin` with the folders it loads from read);
-   *  the session's instructions; and its environment, the worker's
-   *  with Claude Code's fixed variables. A new session starts with its own id; a later start resumes it. Throws
-   *  `ClaudeMissing` with no Claude Code, `ClaudeSandboxUnavailable` with no socat where the sandbox needs it, and as
-   *  the checks do. */
-  async prepare(
-    live: ClaudeSession,
-    { resume }: { resume: boolean },
-  ): Promise<{ command: string[]; env: Record<string, string>; instructions: string | null }> {
+   *  the owner's MCP servers the employee may use, from the owner's `.claude.json`, started in the empty folder of a
+   *  fresh MCP folder of the session's in the office's home (`mcpRoot`), which holds their definitions and which the
+   *  employee's commands can't read (their temp folder they can), and a log line naming each allowed server that
+   *  loads nothing; the session's instructions; and its environment, the
+   *  worker's with Claude Code's fixed variables. A new session starts with its own id; a later start resumes it.
+   *  Throws `ClaudeMissing` with no Claude Code, `ClaudeSandboxUnavailable` with no socat where the sandbox needs it,
+   *  and as the checks do. */
+  async prepare(live: ClaudeSession, { resume }: { resume: boolean }): Promise<Prepared> {
     const found = this.#claude ?? this.office.tools.claude
     if (found === undefined) throw new ClaudeMissing(MISSING)
     const socat = socatNeeded(this.#platform) ? this.#socat : undefined
@@ -416,6 +428,7 @@ export class ClaudeSessions {
       tmpdir: freshFolder(root, live.sessionId),
       fence: fenceIn(root),
       harnessHomes: harnessHomes(this.#environ),
+      tempRoot: path.dirname(root),
     })
     if (permission.network) {
       throw new UnsafeProfile(
@@ -433,23 +446,34 @@ export class ClaudeSessions {
       if (prepared.programs !== null) permission.programs = prepared.programs
       permission.programReads = prepared.reads
     }
-    const configDir = this.#environ.CLAUDE_CONFIG_DIR || path.join(this.office.guards.home ?? os.homedir(), ".claude")
+    if ((permission.allowedMcp ?? []).length > 0) permission.mcpHome = mcpFolder(this.mcpRoot(), live.sessionId)
+    const home = this.office.guards.home ?? os.homedir()
+    const configDir = this.#environ.CLAUDE_CONFIG_DIR || path.join(home, ".claude")
+    const config = claudeJson(this.#environ, home)
     const id = live.claudeId
     const started = claudeSession(permission, {
       claude: install.run,
       configDir,
+      claudeJson: config,
       prompt: live.instrument.instructions,
       ...(resume ? { resume: id } : { sessionId: id }),
     })
+    // Names only, each plain (`employeePermission` keeps no other): never a definition.
+    const { missing } = started.mcp
+    if (missing.length > 0) {
+      const one = missing.length === 1
+      const [servers, are, load] = one ? ["server", "isn't", "it doesn't"] : ["servers", "aren't", "they don't"]
+      this.log(
+        `claude session ${live.sessionId}: @${live.person}'s allowed MCP ${servers} ${missing.join(", ")} ${are} ` +
+          `defined in your Claude Code config (${config}), or that file can't be read, so ${load} load`,
+      )
+    }
     return { ...started, env: { ...this.#env(), ...started.env } }
   }
 
   /** A Claude Code for `live`, not started yet, running `command` in its folder, recorded for the start-up reaper once
    *  it spawns; its lines go to `live`. */
-  process(
-    live: ClaudeSession,
-    prepared: { command: string[]; env: Record<string, string>; instructions: string | null },
-  ): ClaudeProcess {
+  process(live: ClaudeSession, prepared: Prepared): ClaudeProcess {
     const runDir = this.office.paths.runDir(live.sessionId)
     const key = `harness:${live.sessionId}`
     const proc: ClaudeProcess = new ClaudeProcess({
@@ -459,6 +483,7 @@ export class ClaudeSessions {
       log: path.join(runDir, "claude.log"),
       environ: this.#environ,
       instructions: prepared.instructions,
+      mcp: prepared.mcp,
       onMessage: (msg) => live.line(proc, msg),
       onExit: (p) => live.exited(p),
       logLine: this.log,
@@ -474,12 +499,13 @@ export class ClaudeSessions {
     return proc
   }
 
-  /** Drops `live` once it finished, and its temp and programs folders. */
+  /** Drops `live` once it finished, and its temp, programs and MCP folders. */
   dropped(live: ClaudeSession): void {
     if (this.#live.get(live.sessionId) === live) this.#live.delete(live.sessionId)
     try {
       removeFolder(this.root(), live.sessionId)
       removeFolder(this.root(), `${live.sessionId}.bin`)
+      removeFolder(this.mcpRoot(), live.sessionId)
     } catch (error) {
       this.log(`claude session ${live.sessionId}: its temp folder wasn't removed (${nameOf(error)})`)
     }
@@ -487,10 +513,7 @@ export class ClaudeSessions {
 
   /** The session's employee's permission for one start in its folder, from the people at the session's pinned
    *  commit; what the people at head may write, and every live session's folder, stay off its PATH. */
-  async #permission(
-    sessionId: string,
-    thread: Pick<EmployeePermission, "gitRoot" | "tmpdir" | "fence" | "harnessHomes">,
-  ): Promise<EmployeePermission> {
+  async #permission(sessionId: string, thread: HarnessThread): Promise<EmployeePermission> {
     const session = this.store.getSession(sessionId)!
     const { git, guards, paths } = this.office
     const repo = loadRepo(await git.pin(session.repo_commit))
@@ -500,17 +523,22 @@ export class ClaudeSessions {
     return employeePermission(repo, session, thread, office, this.log, { repos: [head], workspaces })
   }
 
-  /** Removes what a crashed office left in the harness temp folder: the temp folder of each of this office's
-   *  sessions with no live Claude Code here, and a doctor probe's whose process is gone. */
+  /** Removes what a crashed office left in the harness temp folder and the MCP folder: the folders of each of this
+   *  office's sessions with no live Claude Code here, and a doctor probe's whose process is gone. */
   #sweep(): void {
-    try {
-      const ours = (folder: string) => {
-        const name = folder.endsWith(".bin") ? folder.slice(0, -".bin".length) : folder
-        return !this.#live.has(name) && this.store.getSession(name) !== undefined
+    const ours = (folder: string) => {
+      const name = folder.endsWith(".bin") ? folder.slice(0, -".bin".length) : folder
+      return !this.#live.has(name) && this.store.getSession(name) !== undefined
+    }
+    for (const [what, root] of [
+      ["temp", () => this.root()],
+      ["MCP", () => this.mcpRoot()],
+    ] as const) {
+      try {
+        sweepTemp(root(), ours, this.log)
+      } catch (error) {
+        this.log(`claude: the harness ${what} folder wasn't swept (${nameOf(error)})`)
       }
-      sweepTemp(this.root(), ours, this.log)
-    } catch (error) {
-      this.log(`claude: the harness temp folder wasn't swept (${nameOf(error)})`)
     }
   }
 
@@ -773,7 +801,7 @@ export class ClaudeSession {
   line(proc: ClaudeProcess, msg: Msg): void {
     if (proc !== this.proc || this.#finished) return
     if (msg.type === "system" && msg.subtype === "init") {
-      const beyond = toolsBeyond(msg)
+      const beyond = toolsBeyond(msg, proc.mcpServers)
       if (beyond.length > 0) return void this.#beyond(beyond)
     }
     if (msg.type === "command_lifecycle") {

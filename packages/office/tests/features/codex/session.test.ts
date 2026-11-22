@@ -282,6 +282,31 @@ test("an MCP server the owner adds while a session runs refuses the next turn, w
   await waitFor(() => h.fake.calls("turn/start").length === 2 && status(h, sid) === "idle", { what: "the third turn" })
 })
 
+test("a server the employee may use, added while a session runs, is fine if Codex reaches it by URL, and refuses the turn if Codex would start it as a program, which the load didn't place in the office's folder", async () => {
+  const policy = { sandbox: "workspace-write", mcp_servers: ["github", "web", "lint", "docs"] }
+  const h = makeCodex({
+    files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"], harness_policy: policy }) },
+  })
+  // At the load: github, a program the employee may use (placed), web, one reached by URL (left as it is), and
+  // other, which they may not use (off).
+  const servers = { github: { command: "gh-mcp" }, web: { url: "https://e.example/mcp" }, other: { command: "o" } }
+  h.fake.script([], { mcp_servers: servers })
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "first")
+  await waitFor(() => h.fake.calls("turn/start").length === 1 && status(h, sid) === "idle", { what: "the first turn" })
+  // Added since: docs, reached by URL and allowed, is fine.
+  h.fake.script([], { mcp_servers: { ...servers, docs: { url: "https://d.example/mcp" } } })
+  await h.sessions.prompt(sid, "second")
+  await waitFor(() => h.fake.calls("turn/start").length === 2 && status(h, sid) === "idle", { what: "the second turn" })
+  // lint, allowed but a program, would start in the employee's folder: refused, as one they may not use is.
+  for (const added of [{ lint: { command: "lint-mcp" } }, { extra: { url: "https://x.example/mcp" } }]) {
+    h.fake.script([], { mcp_servers: { ...servers, ...added } })
+    const e = await rejection(h.sessions.prompt(sid, "third"))
+    expect([e.status, e.code, e.message]).toEqual([409, "codex_refused", new McpServersAdded(Object.keys(added)).message])
+  }
+  expect(h.fake.calls("turn/start")).toHaveLength(2)
+})
+
 test("an office start sweeps the temp folders a crash left for its own sessions, and no other's", async () => {
   const h = makeCodex()
   const sid = await start(h, h.workspace)

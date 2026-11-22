@@ -16,7 +16,7 @@ import {
   threadEnv,
   threadProbe,
 } from "../../../src/features/codex/thread.ts"
-import { fenceIn, freshFolder, removeFolder, sweepTemp } from "../../../src/runtime/sandbox/harness_temp.ts"
+import { fenceIn, freshFolder, mcpFolder, removeFolder, sweepTemp } from "../../../src/runtime/sandbox/harness_temp.ts"
 import { instructions } from "../../../src/runtime/sessions/speakers.ts"
 import { type EmployeePermission, codexThread, harnessPath } from "../../../src/runtime/sandbox/harness_profile.ts"
 import { UnsafeProfile } from "../../../src/runtime/sandbox/policy.ts"
@@ -179,7 +179,41 @@ test("the load turns off exactly the MCP servers the owner's Codex config define
     expect(config.mcp_servers).toEqual({ docs: { enabled: false }, "a.b": { enabled: false } })
     expect(config.default_permissions).toBe("opencorp-S1")
     expect(config.permissions["opencorp-S1"].filesystem[p.fence]).toBe("deny")
-    expect(await ownerConfig(proc.rpc!, ws)).toEqual({ mcpServers: ["docs", "a.b"] })
+    // docs runs as a program; a.b is reached by URL.
+    expect(await ownerConfig(proc.rpc!, ws)).toEqual({ mcpServers: ["docs", "a.b"], stdio: ["docs"] })
+  } finally {
+    await proc.close(1000)
+  }
+})
+
+test("the load keeps on only the MCP servers the employee may use, each program among them started in the office's empty folder, and Codex runs only those", async () => {
+  const { root, ws, install, permission } = layout()
+  const servers = { github: { command: "gh-mcp" }, docs: { command: "docs-mcp" }, web: { url: "https://e.com/mcp" } }
+  const { proc, log } = await fakeServer(path.join(root, "fake"), { mcp_servers: servers })
+  try {
+    // A name the owner's config doesn't define allows nothing.
+    const mcpHome = mcpFolder(fs.realpathSync(tempDir()), "S1")
+    const p = permission({ allowedMcp: ["github", "linear", "web"], mcpHome })
+    const params = await employeeLoad(proc.rpc!, p, "opencorp-S1", install)
+    expect(calls(log, "config/read")).toEqual([{ cwd: ws, includeLayers: true }])
+    // web is reached by URL: Codex takes no folder for it.
+    expect((params.config as Record<string, unknown>).mcp_servers).toEqual({
+      github: { cwd: path.join(mcpHome, "cwd") },
+      docs: { enabled: false },
+    })
+    const loaded = (await proc.rpc!.request("thread/start", { ...params, ephemeral: true })) as { thread: { id: string } }
+    const listed = (await proc.rpc!.request("mcpServerStatus/list", { threadId: loaded.thread.id })) as {
+      data: { name: string; runtimeStatus: string }[]
+    }
+    expect(listed.data).toEqual([
+      { name: "github", runtimeStatus: "connected" },
+      { name: "docs", runtimeStatus: "disabled" },
+      { name: "web", runtimeStatus: "connected" },
+    ])
+    // Without the office's folder, an allowed program can't be placed, and the load refuses.
+    await expect(employeeLoad(proc.rpc!, permission({ allowedMcp: ["github"] }), "opencorp-S1", install)).rejects.toThrow(
+      /office's MCP folder/,
+    )
   } finally {
     await proc.close(1000)
   }
@@ -199,7 +233,7 @@ test("a project config codex would load, as the owner trusts the project, refuse
     expect(refused.message).toContain(path.join(dotCodex, "config.toml"))
     expect(refused.message).toContain("Untrust the project in your Codex config.toml")
     // Codex lists the project's config with why it won't load it: nothing of it runs.
-    expect(await ownerConfig(proc.rpc!, root)).toEqual({ mcpServers: [] })
+    expect(await ownerConfig(proc.rpc!, root)).toEqual({ mcpServers: [], stdio: [] })
   } finally {
     await proc.close(1000)
   }
@@ -275,7 +309,8 @@ function probeOptions(dir: string, home: string, script: object) {
 test("doctor's probe passes when a thread under an employee's permission loads and reloads its config", async () => {
   const { root, home } = layout()
   const options = probeOptions(path.join(root, "probe"), home, { mcp_servers: { docs: {} } })
-  expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [] })
+  // The names of the servers the owner's config defines, for doctor's MCP line.
+  expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [], mcpServers: ["docs"] })
   const log = path.join(root, "probe/rpc.jsonl")
   const [start] = calls(log, "thread/start") as Record<string, any>[]
   expect([start!.approvalPolicy, start!.ephemeral, start!.permissions]).toEqual(["never", true, "opencorp-doctor"])
@@ -294,6 +329,7 @@ test("doctor's probe says why a thread that starts can't be used", async () => {
   expect(await threadProbe(options)).toEqual({
     failed: { why: `mcpServerStatus/list failed: ${message}`, log: path.join(harnessTemp(options.base), "doctor-codex.log") },
     projectConfigs: [],
+    mcpServers: [],
   })
   expect(calls(path.join(root, "probe/rpc.jsonl"), "thread/start")).toHaveLength(1)
   const refused = probeOptions(path.join(root, "refused"), home, { load_exit: 3 })
@@ -333,7 +369,11 @@ test("doctor's probe names each trusted project whose own config codex would loa
     },
     project_layers: { [trusted]: [{ dotCodexFolder: path.join(trusted, ".codex") }], [plain]: [{ dotCodexFolder: path.join(plain, ".codex") }] },
   })
-  expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [path.join(trusted, ".codex")] })
+  expect(await threadProbe(options)).toEqual({
+    failed: null,
+    projectConfigs: [path.join(trusted, ".codex")],
+    mcpServers: [],
+  })
 })
 
 /** The real Codex the opt-in tests run, named by `OPENCORP_TEST_CODEX` (a wrapper, npm's launcher or the native
@@ -376,7 +416,7 @@ test.skipIf(NO_CODEX)(
   "a real codex takes the thread the office sends, keeps the owner's MCP server off and writes no config",
   async () => {
     const { codexHome, marker, config, options } = realHome()
-    expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [] })
+    expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [], mcpServers: ["probe"] })
     expect(fs.existsSync(marker)).toBe(false)
     expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).toBe(config)
   },
@@ -492,6 +532,49 @@ test.skipIf(NO_CODEX)(
 )
 
 test.skipIf(NO_CODEX)(
+  "a real codex runs the owner's MCP server the employee may use, in the office's empty folder with its own env, and keeps the other off",
+  async () => {
+    const real = realHome()
+    const { root, codexHome, marker, options } = real
+    // The stand-in logs where it started and the names of the variables it got, never their values.
+    const pwd = path.join(root, "allowed-pwd")
+    const names = path.join(root, "allowed-env-names")
+    const script = `pwd > ${pwd}.part; env | cut -d= -f1 | sort > ${names}; mv ${pwd}.part ${pwd}; exec sleep 3`
+    const config =
+      real.config +
+      `\n[mcp_servers.allowed]\ncommand = "sh"\nargs = ["-c", "${script}"]\nenv = { O5_DECOY_TOKEN = "decoy-value" }\n`
+    fs.writeFileSync(path.join(codexHome, "config.toml"), config)
+    const ws = path.join(real.root, "ws")
+    const { p, proc } = await realServer(real, ws)
+    p.allowedMcp = ["allowed"]
+    p.mcpHome = mcpFolder(fs.realpathSync(tempDir()), "real")
+    try {
+      await proc.start()
+      const params = await employeeLoad(proc.rpc!, p, "opencorp-real", options.codex.install)
+      const cwd = path.join(p.mcpHome, "cwd")
+      expect((params.config as Record<string, unknown>).mcp_servers).toEqual({
+        probe: { enabled: false },
+        allowed: { cwd },
+      })
+      const loaded = await proc.rpc!.request("thread/start", { ...params, ephemeral: true })
+      checkLoaded(loaded, "opencorp-real")
+      const threadId = (loaded as { thread: { id: string } }).thread.id
+      await proc.rpc!.request("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly" })
+      await waitFor(() => fs.existsSync(pwd), { timeout: 15_000, what: "the allowed MCP server" })
+      expect(fs.readFileSync(pwd, "utf8").trim()).toBe(cwd)
+      expect(fs.readFileSync(names, "utf8").split("\n")).toContain("O5_DECOY_TOKEN")
+      expect(fs.readFileSync(names, "utf8")).not.toContain("decoy-value")
+      await sleep(1000)
+      expect(fs.existsSync(marker)).toBe(false)
+    } finally {
+      await proc.close(2000)
+    }
+    expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).toBe(config)
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
   "in a folder the owner's real codex trusts, the project's own config would load, so the load is refused before any of it runs",
   async () => {
     const real = realHome()
@@ -523,7 +606,11 @@ test.skipIf(NO_CODEX)(
       await proc.close(2000)
     }
     // Doctor names the project.
-    expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [path.join(ws, ".codex")] })
+    expect(await threadProbe(options)).toEqual({
+      failed: null,
+      projectConfigs: [path.join(ws, ".codex")],
+      mcpServers: ["probe"],
+    })
   },
   120_000,
 )
@@ -544,7 +631,7 @@ test.skipIf(NO_CODEX)(
     fs.symlinkSync(own, link)
     // Codex's home by default (~/.codex), named, and named through a link: Codex skips its own home as a project.
     for (const environ of [{}, { CODEX_HOME: own }, { CODEX_HOME: link }]) {
-      expect(await threadProbe({ ...options, environ })).toEqual({ failed: null, projectConfigs: [] })
+      expect(await threadProbe({ ...options, environ })).toEqual({ failed: null, projectConfigs: [], mcpServers: [] })
       const ws = path.join(home, "proj")
       fs.mkdirSync(ws, { recursive: true })
       const proc = new CodexProcess({
@@ -560,7 +647,7 @@ test.skipIf(NO_CODEX)(
       })
       try {
         await proc.start()
-        expect(await ownerConfig(proc.rpc!, ws)).toEqual({ mcpServers: [] })
+        expect(await ownerConfig(proc.rpc!, ws)).toEqual({ mcpServers: [], stdio: [] })
       } finally {
         await proc.close(2000)
       }
@@ -572,6 +659,7 @@ test.skipIf(NO_CODEX)(
     expect(await threadProbe({ ...options, environ: { CODEX_HOME: elsewhere } })).toEqual({
       failed: null,
       projectConfigs: [own],
+      mcpServers: [],
     })
   },
   120_000,

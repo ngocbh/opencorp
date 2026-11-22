@@ -9,7 +9,7 @@ import { person } from "../../company/helpers.ts"
 import { CEO, ULID } from "../../server/helpers.ts"
 import { NO_GROUP, tempDir, unusableFolders, waitFor } from "../../helpers.ts"
 import { question, session } from "../../runtime/store/helpers.ts"
-import { type Codex, allGone, makeCodex, start, startSession, status, texts, turnRunning } from "./helpers.ts"
+import { type Codex, allGone, makeCodex, restarted, start, startSession, status, texts, turnRunning } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 afterAll(allGone)
@@ -316,7 +316,7 @@ test("a session's employee permission comes from their person at the session's p
     { path: "~/tools", access: "read" },
     { path: "~/gone", access: "write" },
   ]
-  const policy = { sandbox: "workspace-write", network: true, folders }
+  const policy = { sandbox: "workspace-write", network: true, folders, mcp_servers: ["github"] }
   const h = makeCodex({
     files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"], harness_policy: policy }) },
   })
@@ -339,8 +339,32 @@ test("a session's employee permission comes from their person at the session's p
     office: h.office.guards,
     // At head, minh's own writable listing too: a session of theirs started there may write it.
     othersWritable: [path.join(home, "gone")],
+    allowedMcp: ["github"],
   })
   expect(h.lines).toContain(`@minh's listed folder "~/gone" isn't there, so their harness mounts nothing for it`)
+})
+
+test("a session whose employee may use an MCP server starts it in the office's empty MCP folder of the session, removed at its end and swept after a crash", async () => {
+  const policy = { sandbox: "workspace-write", mcp_servers: ["github"] }
+  const h = makeCodex({
+    files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"], harness_policy: policy }) },
+  })
+  h.fake.script([], { mcp_servers: { github: { command: "gh-mcp" }, docs: { command: "docs-mcp" } } })
+  const sid = await start(h, h.workspace)
+  const folder = path.join(h.office.paths.mcp, "codex", sid)
+  const [load] = h.fake.calls("thread/start") as { config: { mcp_servers: unknown } }[]
+  expect(load!.config.mcp_servers).toEqual({ github: { cwd: path.join(folder, "cwd") }, docs: { enabled: false } })
+  expect(fs.statSync(folder).mode & 0o777).toBe(0o700)
+  expect(fs.readdirSync(path.join(folder, "cwd"))).toEqual([])
+  await h.sessions.end(sid)
+  await waitFor(() => status(h, sid) === "ended" && !fs.existsSync(folder), { what: "the end, and its folders gone" })
+  expect(fs.existsSync(path.join(h.tmpBase, `opencorp-${process.getuid!()}`, "codex", sid))).toBe(false)
+  // What a crash left: the next office's restore sweeps it.
+  const left = path.join(h.office.paths.mcp, "codex", sid)
+  fs.mkdirSync(path.join(left, "cwd"), { recursive: true })
+  const r = await restarted(h)
+  expect(fs.existsSync(left)).toBe(false)
+  expect(r.lines.join("\n")).not.toContain("wasn't swept")
 })
 
 test("a session's employee permission keeps what others may write since, and live sessions' folders, off its PATH", async () => {

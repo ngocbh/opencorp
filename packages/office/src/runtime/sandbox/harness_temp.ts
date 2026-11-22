@@ -1,6 +1,7 @@
 /** Each harness's private folder under `/tmp` (`/tmp/opencorp-<uid>/<harness>`): a fresh temp folder per session,
  *  never the employee shell's, which the harness's commands may write; the fence an employee's permission names; and
- *  the sweep of what a crash left there. */
+ *  the sweep of what a crash left there. Also each harness's MCP folder in the office's home
+ *  (`<OPENCORP_HOME>/office/mcp/<harness>`), with a folder per session for the MCP servers its employee may use. */
 import fs from "node:fs"
 import path from "node:path"
 import { UnsafeProfile } from "./policy.ts"
@@ -30,6 +31,28 @@ function privateDir(dir: string, uid: number): void {
   if (stat.uid !== uid) throw new UnsafeProfile(`${dir} isn't the user's`)
   if ((stat.mode & 0o077) !== 0) throw new UnsafeProfile(`${dir} isn't private (0700)`)
 }
+
+/** `<mcp>/<harness>`, where `mcp` is the office's MCP folder (`OfficePaths.mcp`): it holds a folder per session for
+ *  the MCP servers its employee may use (`mcpFolder`). Both levels are made 0700 when missing; `UnsafeProfile` when one
+ *  isn't the user's own private folder (a link is refused). */
+export function mcpRoot(mcp: string, harness: HarnessName): string {
+  const uid = process.getuid!()
+  const root = path.join(mcp, harness)
+  for (const dir of [mcp, root]) privateDir(dir, uid)
+  return root
+}
+
+/** `<root>/<name>` made fresh (`freshFolder`), holding the empty private folder `cwd`, where the MCP servers its
+ *  employee may use start (`MCP_CWD`). */
+export function mcpFolder(root: string, name: string): string {
+  const dir = freshFolder(root, name)
+  fs.mkdirSync(path.join(dir, MCP_CWD), { mode: 0o700 })
+  fs.chmodSync(path.join(dir, MCP_CWD), 0o700)
+  return dir
+}
+
+/** The folder in an MCP folder (`mcpFolder`) where its servers start. */
+export const MCP_CWD = "cwd"
 
 /** The fence in `root` (`harnessRoot`'s): an empty 0600 file, made unless something is there. The permission's check
  *  refuses anything else there. */

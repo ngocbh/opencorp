@@ -77,6 +77,86 @@ test("a start is the chat's child session, under the employee's permission, told
   expect(start!.flags!.settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true })
   expect(start!.flags!["setting-sources"]).toBe("")
   expect(start!.env!.TMPDIR).toBe(path.join(h.sessions.root(), session.id))
+  // No MCP server is allowed: none loads, and no MCP folder is made.
+  expect(start!.flags!["strict-mcp-config"]).toBe(true)
+  expect(start!.flags!["mcp-config"]).toBeUndefined()
+  expect(fs.existsSync(path.join(h.sessions.mcpRoot(), session.id))).toBe(false)
+})
+
+/** Commits minh's person file `file` to `h`'s company: its head moves on, the session's commit stays. */
+async function commitPerson(h: Claude, file: Record<string, unknown>): Promise<void> {
+  fs.writeFileSync(path.join(h.office.paths.company, "people/minh/person.yaml"), JSON.stringify(file))
+  await h.office.git.commit(["people/minh/person.yaml"], "minh")
+}
+
+/** The owner's user-scope MCP servers, two holding a token, as `.claude.json` keeps them. */
+const SERVERS = {
+  github: { type: "stdio", command: "gh-mcp", args: [], env: { GITHUB_TOKEN: "ghp_decoy-token" } },
+  docs: { type: "http", url: "https://docs.example/mcp", headers: { Authorization: "Bearer decoy-bearer" } },
+}
+const TOKENS = ["ghp_decoy-token", "decoy-bearer"]
+
+test("an employee allowed an MCP server gets only its definition, in a 0600 file in the office's MCP folder of the session, never on the command line or in a log; it starts in that folder's empty folder, not theirs; its tools run, the file goes when Claude Code stops, the folder with the session", async () => {
+  const home = tempDir()
+  // The stand-in logs where it started and the names of the variables it got, never their values.
+  const logs = fs.realpathSync(tempDir())
+  const script = `pwd > ${logs}/pwd; env | cut -d= -f1 | sort > ${logs}/names`
+  const github = { type: "stdio", command: "sh", args: ["-c", script], env: { GITHUB_TOKEN: "ghp_decoy-token" } }
+  fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ numStartups: 2, mcpServers: { ...SERVERS, github } }))
+  const policy = { sandbox: "workspace-write", network: false, mcp_servers: ["github", "linear"] }
+  const minh = person("minh", { harnesses: ["composer", "claude"], harness_policy: policy })
+  const call = { tool: "mcp__github__get_me", input: {}, result: "you are minh" }
+  const h = makeClaude({
+    home,
+    files: { "people/minh/person.yaml": minh },
+    idleMs: 300,
+    script: { mcp_tools: { github: ["get_me"], docs: ["search"] }, turns: [[call, { say: "You are minh." }]] },
+  })
+  const { heard, id } = await started(h)
+  const folder = path.join(h.office.paths.mcp, "claude", id)
+  const file = path.join(folder, "opencorp.mcp.json")
+  const [start] = starts(h)
+  expect(Object.keys(start!.mcp![0]!.servers)).toEqual(["github"])
+  expect(start!.mcp![0]!.path).toBe(file)
+  expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+  expect(fs.statSync(folder).mode & 0o777).toBe(0o700)
+  // Claude Code starts it in the session's folder; it moves to the office's empty folder first, its env as given.
+  expect(start!.cwd).toBe(h.workspace)
+  expect(fs.readFileSync(path.join(logs, "pwd"), "utf8").trim()).toBe(path.join(folder, "cwd"))
+  const names = fs.readFileSync(path.join(logs, "names"), "utf8").split("\n")
+  expect(names).toContain("GITHUB_TOKEN")
+  // Claude Code passes its session's inbox socket and token down; the server never gets them.
+  for (const name of ["CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_CHILD_NOTES_DIR"]) {
+    expect(names, name).not.toContain(name)
+  }
+  expect(names).toContain("CLAUDE_PROJECT_DIR")
+  expect(fs.readFileSync(path.join(logs, "names"), "utf8")).not.toContain("ghp_decoy-token")
+  // Beside the session's temp folder, which its commands may read and write, and closed to them by name.
+  expect(file.startsWith(start!.env!.TMPDIR + "/")).toBe(false)
+  expect(start!.flags!.settings.sandbox.filesystem.denyRead).toContain(folder)
+  expect(start!.flags!.settings.permissions.allow).toEqual(["mcp__github__*"])
+  for (const token of TOKENS) expect(start!.argv!.join("\n"), token).not.toContain(token)
+
+  await h.sessions.prompt(id, "Who am I?", { by: "minh" })
+  await waitFor(() => heard.said().includes("You are minh.") && status(h, id) === "idle", { what: "the turn" })
+  // The server's tool is the session's, not one beyond the allowlist, and it ran unasked.
+  const blocks = h.fake.log().flatMap((e) => (e.dir === "out" && e.msg?.type === "user" ? [e.msg.message.content[0]] : []))
+  expect(blocks.filter((b) => b?.type === "tool_result").map((b) => b.is_error ?? false)).toEqual([false])
+  expect(h.lines).toEqual([
+    `claude session ${id}: @minh's allowed MCP server linear isn't defined in your Claude Code config ` +
+      `(${path.join(home, ".claude.json")}), or that file can't be read, so it doesn't load`,
+  ])
+  const proc = h.sessions.get(id)!.proc!
+  await waitFor(() => !proc.alive, { what: "the idle stop" })
+  expect(fs.existsSync(file)).toBe(false)
+  expect(fs.existsSync(folder)).toBe(true)
+  await h.sessions.end(id)
+  expect(fs.existsSync(folder)).toBe(false)
+  const output = fs.readFileSync(path.join(h.office.paths.runDir(id), "claude.log"), "utf8")
+  for (const token of TOKENS) {
+    expect(output, token).not.toContain(token)
+    expect(h.lines.join("\n"), token).not.toContain(token)
+  }
 })
 
 test("each message goes inside its author's label as next, and a message mid-turn joins the turn", async () => {
@@ -229,6 +309,10 @@ test("an office stop ends every session, and a restart ends what a crash left li
   new HarnessRecord(CLAUDE, dir, { id: left.id, name: "claude 2", driver: "minh", chat: chat.id, started: left.created_at })
   fs.mkdirSync(path.join(h.sessions.root(), left.id))
   fs.mkdirSync(path.join(h.sessions.root(), `${left.id}.bin`))
+  fs.mkdirSync(path.join(h.sessions.mcpRoot(), left.id, "cwd"), { recursive: true })
+  fs.writeFileSync(path.join(h.sessions.mcpRoot(), left.id, "opencorp.mcp.json"), "{}")
+  // Another office's, or one that isn't a session's, stays.
+  fs.mkdirSync(path.join(h.sessions.mcpRoot(), "not-a-session"))
   // The next start's sessions.
   const restarted = new ClaudeSessions(h.office, { claude: h.fake.claude, environ: {}, tmpBase: h.tmpBase, log: () => {} })
   await restarted.restore()
@@ -236,6 +320,36 @@ test("an office stop ends every session, and a restart ends what a crash left li
   expect(readClaudeRecord(dir)!.state).toBe("interrupted")
   expect(fs.existsSync(path.join(h.sessions.root(), left.id))).toBe(false)
   expect(fs.existsSync(path.join(h.sessions.root(), `${left.id}.bin`))).toBe(false)
+  expect(fs.existsSync(path.join(h.sessions.mcpRoot(), left.id))).toBe(false)
+  expect(fs.existsSync(path.join(h.sessions.mcpRoot(), "not-a-session"))).toBe(true)
+})
+
+test("a server revoked at head no longer loads when the session resumes, though its commit allowed it", async () => {
+  const home = tempDir()
+  fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ mcpServers: SERVERS }))
+  const policy = (mcp_servers: string[]) => ({ sandbox: "workspace-write", network: false, mcp_servers })
+  const file = (mcp_servers: string[]) =>
+    person("minh", { harnesses: ["composer", "claude"], harness_policy: policy(mcp_servers) })
+  const h = makeClaude({
+    home,
+    files: { "people/minh/person.yaml": file(["github", "docs"]) },
+    idleMs: 200,
+    script: { turns: [[{ say: "One." }], [{ say: "Two." }]] },
+  })
+  const { heard, id } = await started(h)
+  expect(Object.keys(starts(h)[0]!.mcp![0]!.servers)).toEqual(["github", "docs"])
+  await h.sessions.prompt(id, "One.", { by: "minh" })
+  await waitFor(() => heard.said().includes("One.") && status(h, id) === "idle", { what: "the first turn" })
+  const first = h.sessions.get(id)!.proc!
+  await waitFor(() => !first.alive, { what: "the idle stop" })
+  // The owner revokes docs; the session's commit still allows it.
+  await commitPerson(h, file(["github"]))
+  await h.sessions.prompt(id, "Two.", { by: "minh" })
+  await waitFor(() => heard.said().includes("Two."), { what: "the resumed turn" })
+  const resumed = starts(h)[1]!
+  expect(resumed.flags!.resume).toBeDefined()
+  expect(Object.keys(resumed.mcp![0]!.servers)).toEqual(["github"])
+  expect(resumed.flags!.settings.permissions.allow).toEqual(["mcp__github__*"])
 })
 
 test("Esc right after a send interrupts the turn before it runs, cancelling the message", async () => {
@@ -469,6 +583,41 @@ test("after a restart, the chat's instrument continues its session with --resume
   // Its token counts go on from the first office's (the fake counts none of its own).
   await waitFor(() => status(r, id) === "idle", { what: "the turn's end" })
   expect(r.store.getSession(id)!.harness_usage).toEqual(counted)
+})
+
+test("after a restart, a continued session gets the MCP servers allowed at its commit and at head, in a fresh office folder they start in", async () => {
+  const home = tempDir()
+  const logs = fs.realpathSync(tempDir())
+  const github = { command: "sh", args: ["-c", `pwd >> ${logs}/pwd`] }
+  fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ mcpServers: { ...SERVERS, github } }))
+  const file = (mcp_servers: string[]) =>
+    person("minh", { harnesses: ["composer", "claude"], harness_policy: { sandbox: "workspace-write", mcp_servers } })
+  const h = makeClaude({
+    home,
+    files: { "people/minh/person.yaml": file(["github", "docs"]) },
+    script: { turns: [[{ say: "First." }], [{ say: "Second." }]] },
+  })
+  const { chat, heard, id, session } = await started(h)
+  await h.sessions.prompt(id, "One.", { by: "minh" })
+  await waitFor(() => heard.said().includes("First.") && status(h, id) === "idle", { what: "the first turn" })
+  await h.sessions.closeAll()
+  // The owner revokes docs while the office is down; the chat's commit still allows it.
+  await commitPerson(h, file(["github"]))
+  const r = reopened(h)
+  await r.sessions.restore()
+  expect(fs.existsSync(path.join(r.sessions.mcpRoot(), id))).toBe(false)
+  const again = new Heard()
+  await r.sessions.resumeInstrument(chat, id, session.harness_session_id!, { observer: again, label, owner: "ngocbh" })
+  const [, start] = starts(h)
+  expect(start!.flags!.resume).toBe(session.harness_session_id)
+  const folder = path.join(r.sessions.mcpRoot(), id)
+  expect(start!.mcp![0]!.path).toBe(path.join(folder, "opencorp.mcp.json"))
+  expect(Object.keys(start!.mcp![0]!.servers)).toEqual(["github"])
+  expect(start!.flags!.settings.permissions.allow).toEqual(["mcp__github__*"])
+  expect(fs.readFileSync(path.join(logs, "pwd"), "utf8").trim().split("\n")).toEqual([
+    path.join(folder, "cwd"),
+    path.join(folder, "cwd"),
+  ])
 })
 
 test("a continue is refused for a session that isn't the chat's, for one live here, and once the chat ended", async () => {

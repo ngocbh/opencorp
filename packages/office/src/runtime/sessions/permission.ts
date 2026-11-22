@@ -1,14 +1,16 @@
 /** An employee's permission for their harness, from their person: the session's folder writable or read-only and the
- *  network on or off as their `harness_policy` sets them, and the folders it lists, each mounted as listed. */
+ *  network on or off as their `harness_policy` sets them, the folders it lists, each mounted as listed, and the owner's
+ *  MCP servers it allows. */
 import fs from "node:fs"
 import path from "node:path"
 import type { HarnessPolicy } from "@opencorp/protocol"
 import type { CompanyRepo } from "../../company/loader.ts"
+import { MCP_SERVER_NAME } from "../../company/naming.ts"
 import type { EmployeePermission } from "../sandbox/harness_profile.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 
 /** What a harness's start makes for one thread, beside the session's folder; the rest comes from the person. */
-export type HarnessThread = Pick<EmployeePermission, "gitRoot" | "tmpdir" | "fence" | "harnessHomes">
+export type HarnessThread = Pick<EmployeePermission, "gitRoot" | "tmpdir" | "fence" | "harnessHomes" | "tempRoot">
 
 /** The owner's home (where `~/` points), `<OPENCORP_HOME>`, and the guards every workspace stays clear of. */
 export interface PermissionOffice {
@@ -24,8 +26,9 @@ export interface Others {
   workspaces?: readonly string[]
 }
 
-/** The permission of `session`'s person in `repo` for one harness thread in the session's folder: read-only and
- *  offline when they have no `harness_policy` (or aren't in `repo`), and their folders as `listedFolders` gives them.
+/** The permission of `session`'s person in `repo` for one harness thread in the session's folder: read-only, offline
+ *  and with no MCP server when they have no `harness_policy` (or aren't in `repo`), their folders as `listedFolders`
+ *  gives them, and the MCP servers they may use (`allowedMcp`: allowed in `repo` and in `others.repos`).
  *  What others may write stays off the harness PATH: every other person's writable folders in `repo`, everyone's in
  *  `others.repos` (this person's too, since a session of theirs started there may write them), and
  *  `others.workspaces`. */
@@ -58,7 +61,21 @@ export function employeePermission(
     officeHome: office.officeHome,
     office: office.guards,
     othersWritable: [...new Set([...othersWritable, ...(others.workspaces ?? [])])],
+    allowedMcp: allowedMcp(repo, others.repos ?? [], session.person),
   }
+}
+
+/** The MCP servers `handle` may use: each plain name (as lint has it) that their person allows in `repo`, the
+ *  session's commit, and in each of `others` (the company at head), so a revocation reaches the sessions started
+ *  before it; once each, in `repo`'s order. */
+function allowedMcp(
+  repo: Pick<CompanyRepo, "people">,
+  others: readonly Pick<CompanyRepo, "people">[],
+  handle: string,
+): string[] {
+  const allows = (r: Pick<CompanyRepo, "people">) => r.people.get(handle)?.harness_policy?.mcp_servers ?? []
+  const everywhere = (name: string) => others.every((r) => allows(r).includes(name))
+  return [...new Set(allows(repo).filter((name) => MCP_SERVER_NAME.test(name) && everywhere(name)))]
 }
 
 /** Every writable folder the people in `repo` list, `~/…` in `home`, as each person's harness may write them: what

@@ -761,6 +761,50 @@ test("--permission-prompts none asks the host nothing, --no-session-persistence 
   expect([missing.status, missing.stdout]).toEqual([1, ""])
 })
 
+test("an --mcp-config file's servers are read at the start and started in the fake's folder, their tools listed whatever --tools says, and run only where an allow rule names them", async () => {
+  const dir = tempDir()
+  const servers = {
+    github: { command: "sh", args: ["-c", `pwd > ${dir}/pwd; env | cut -d= -f1 > ${dir}/names`], env: { O5_TOKEN: "t" } },
+    web: { type: "http", url: "https://e.example/mcp" },
+  }
+  const step = { tool: "mcp__github__get_me", input: {}, result: "me" }
+  const list = { tool: "ListMcpResourcesTool", input: {}, result: "[]" }
+  const mcp_tools = { github: ["get_me"], docs: ["search"] }
+  const { fake, work } = fakeClaude({ mcp_tools, turns: [[step, list], [step, list]] })
+  const config = path.join(work, "mcp.json")
+  fs.writeFileSync(config, JSON.stringify({ mcpServers: servers }))
+  const allow = JSON.stringify({ permissions: { allow: ["mcp__github__*"] } })
+  const base = ["--strict-mcp-config", `--mcp-config=${config}`, "--tools=Bash", "--permission-prompts=none"]
+  const allowed = new Claude(fake, [...base, "--settings", allow], work)
+  allowed.send(user("Who am I?", "u-1"))
+  const lines = await allowed.turn()
+  const init = lines.find((m) => m.subtype === "init")!
+  expect(init.tools).toEqual(["Bash", "ListMcpResourcesTool", "ReadMcpResourceTool", "mcp__github__get_me"])
+  expect(init.mcp_servers).toEqual([
+    { name: "github", status: "connected" },
+    { name: "web", status: "connected" },
+  ])
+  // Reading the servers' resources needs no approval.
+  expect(verdicts(lines)).toEqual(["ran", "ran"])
+  expect(await allowed.close()).toBe(0)
+  expect(fs.readFileSync(path.join(dir, "pwd"), "utf8").trim()).toBe(fs.realpathSync(work))
+  // With the variables Claude Code passes a server down, its session's inbox among them.
+  const names = fs.readFileSync(path.join(dir, "names"), "utf8").split("\n")
+  for (const name of ["O5_TOKEN", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_PROJECT_DIR"])
+    expect(names, name).toContain(name)
+  expect(fake.log().filter((e) => e.dir === "start").at(-1)!.mcp).toEqual([{ path: config, servers }])
+  // With no allow rule, nothing approves it here.
+  const asked = new Claude(fake, base, work)
+  asked.send(user("Who am I?", "u-2"))
+  expect(verdicts(await asked.turn())).toEqual(["refused", "ran"])
+  expect(await asked.close()).toBe(0)
+  // A file that isn't there stops the start; a JSON string isn't modelled.
+  const missing = runOnce(fake, [...STREAM, `--mcp-config=${path.join(work, "none.json")}`], work)
+  expect([missing.status, missing.stdout]).toEqual([1, ""])
+  const inline = runOnce(fake, [...STREAM, "--mcp-config", JSON.stringify({ mcpServers: servers })], work)
+  expect(inline.status).toBe(FAKE_CLAUDE_UNMODELLED)
+})
+
 test("--resume goes on with the session's turns", async () => {
   const { fake, work } = fakeClaude({ turns: [[{ say: "one" }], [{ say: "two" }]] })
   const first = new Claude(fake, ["--session-id", "s-1"], work)

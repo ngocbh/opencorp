@@ -1,6 +1,6 @@
 /** What a Codex thread runs under beside its employee's permission: the private folder under `/tmp` holding each
  *  thread's temp folder and the fence, the app-server's PATH and TMPDIR, and the load that turns the owner's MCP
- *  servers off. Also doctor's probe of a thread that starts but can't be used. */
+ *  servers off but those the employee may use. Also doctor's probe of a thread that starts but can't be used. */
 import fs from "node:fs"
 import path from "node:path"
 import {
@@ -48,24 +48,25 @@ export class ProjectConfigLoads extends Error {
   }
 }
 
-/** MCP servers the owner's Codex config defines that a running thread's override, made at its load, doesn't turn off:
- *  added since, they would start as the owner at the next turn, which reloads the config. */
+/** MCP servers the owner's Codex config defines that a running thread's override, made at its load, doesn't name (turn
+ *  off, or start in the office's folder): added since, they would start as the owner at the next turn, which reloads
+ *  the config. */
 export class McpServersAdded extends Error {
   override name = "McpServersAdded"
 
   constructor(readonly servers: readonly string[]) {
     super(
-      `Your Codex config has MCP servers this session didn't turn off when it started (${servers.join(", ")}), and ` +
-        "they would run as you, outside your employee's permission. Remove them from your Codex config.toml, or " +
-        "end this session and start another, which turns them off, then send your message again.",
+      `Your Codex config has MCP servers this session didn't turn off, or start in the office's folder, when it ` +
+        `started (${servers.join(", ")}), and they would run as you, outside your employee's permission. Remove them ` +
+        "from your Codex config.toml, or end this session and start another, which does, then send your message again.",
     )
   }
 }
 
 /** The owner's Codex config as the app-server reads it for a thread in `cwd` (`config/read` with its layers; nothing
- *  is written): the MCP servers it defines. Throws `ProjectConfigLoads` when a project layer would load, and rejects as
- *  the request does. */
-export async function ownerConfig(rpc: JsonRpc, cwd: string): Promise<{ mcpServers: string[] }> {
+ *  is written): the MCP servers it defines, and those of them Codex starts as a program (`stdio`: a `command`, as
+ *  against a `url`). Throws `ProjectConfigLoads` when a project layer would load, and rejects as the request does. */
+export async function ownerConfig(rpc: JsonRpc, cwd: string): Promise<{ mcpServers: string[]; stdio: string[] }> {
   const read = (await rpc.request("config/read", { cwd, includeLayers: true }, { timeout: CONFIG_READ_MS })) as {
     config?: { mcp_servers?: unknown }
     layers?: { name?: { type?: unknown; dotCodexFolder?: unknown }; disabledReason?: unknown }[] | null
@@ -74,17 +75,18 @@ export async function ownerConfig(rpc: JsonRpc, cwd: string): Promise<{ mcpServe
   const loaded = (read?.layers ?? []).filter((layer) => layer.name?.type === "project" && !layer.disabledReason)
   if (loaded.length > 0) throw new ProjectConfigLoads(loaded.map((layer) => String(layer.name?.dotCodexFolder)))
   const servers = read?.config?.mcp_servers
-  const mcpServers = isRecord(servers) ? Object.keys(servers) : []
-  return { mcpServers }
+  const defined = isRecord(servers) ? Object.entries(servers) : []
+  const stdio = defined.filter(([, server]) => isRecord(server) && server.command !== undefined).map(([name]) => name)
+  return { mcpServers: defined.map(([name]) => name), stdio }
 }
 
 /** The `thread/start` (or `thread/resume`) params of a thread in `p.workspace` under `p`, with profile `id`: every MCP
- *  server the owner's config defines turned off (`ownerConfig`), and `install` read (`codexThread`). Rejects when the
- *  config can't be read, since a server left on would run as the owner; throws `ProjectConfigLoads`, and as
- *  `codexThread` does. */
+ *  server the owner's config defines (`ownerConfig`) turned off but those `p` allows, each of those Codex starts as a
+ *  program started in the office's empty folder, and `install` read (`codexThread`). Rejects when the config can't be
+ *  read, since a server left on would run as the owner; throws `ProjectConfigLoads`, and as `codexThread` does. */
 export async function employeeLoad(rpc: JsonRpc, p: EmployeePermission, id: string, install: string) {
-  const { mcpServers } = await ownerConfig(rpc, p.workspace)
-  return threadLoad(p.workspace, codexThread(p, id, { install, mcpServers }))
+  const { mcpServers, stdio } = await ownerConfig(rpc, p.workspace)
+  return threadLoad(p.workspace, codexThread(p, id, { install, mcpServers, stdio }))
 }
 
 /** Throws `UnsafeProfile` unless Codex's answer to a load (`thread/start`, `thread/resume`) says the thread runs as
@@ -118,9 +120,10 @@ export type ProbeOptions = {
   othersWritable?: readonly string[]
 }
 
-/** What `threadProbe` found: what failed and the log holding Codex's output, or null; and the projects the owner's
- *  Codex config trusts whose own config would load, where employees' Codex sessions are refused. */
-export type Probed = { failed: { why: string; log: string } | null; projectConfigs: string[] }
+/** What `threadProbe` found: what failed and the log holding Codex's output, or null; the projects the owner's Codex
+ *  config trusts whose own config would load, where employees' Codex sessions are refused; and the MCP servers the
+ *  owner's Codex config defines, by name (none when it failed before reading them). */
+export type Probed = { failed: { why: string; log: string } | null; projectConfigs: string[]; mcpServers: string[] }
 
 /** The most trusted projects the probe looks at. */
 const PROJECTS_MAX = 50
@@ -130,7 +133,7 @@ const PROJECTS_MAX = 50
  *  network, then lists the thread's MCP servers, which reloads its config as each turn does: a thread can start under
  *  a config no turn could load. Then, for each project the owner's Codex config trusts (up to 50), whether its own
  *  config would load. No model turn runs; the probe's folders are removed, and Codex's output stays in
- *  `doctor-codex.log` beside the fence. */
+ *  `doctor-codex.log` beside the fence. The MCP servers its load turned off are the owner's, named for doctor. */
 export async function threadProbe(options: ProbeOptions): Promise<Probed> {
   const root = harnessTemp(options.base)
   const name = `doctor-${process.pid}`
@@ -143,6 +146,7 @@ export async function threadProbe(options: ProbeOptions): Promise<Probed> {
   fs.rmSync(log, { force: true })
   let proc: CodexProcess | null = null
   let step = ""
+  let mcpServers: string[] = []
   try {
     const p: EmployeePermission = {
       workspace: ws,
@@ -175,7 +179,9 @@ export async function threadProbe(options: ProbeOptions): Promise<Probed> {
     const rpc = started.rpc!
     const timeout = options.timeoutMs
     step = "config/read"
-    const params = await employeeLoad(rpc, p, "opencorp-doctor", options.codex.install)
+    // As `employeeLoad` loads a session's thread, keeping the names the owner's config defines.
+    mcpServers = (await ownerConfig(rpc, ws)).mcpServers
+    const params = threadLoad(ws, codexThread(p, "opencorp-doctor", { install: options.codex.install, mcpServers }))
     step = "thread/start"
     const loaded = await rpc.request("thread/start", { ...params, ephemeral: true }, { timeout })
     checkLoaded(loaded, "opencorp-doctor")
@@ -183,9 +189,9 @@ export async function threadProbe(options: ProbeOptions): Promise<Probed> {
     const threadId = (loaded as { thread: { id: string } }).thread.id
     await rpc.request("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly" }, { timeout })
     step = "config/read"
-    return { failed: null, projectConfigs: await projectConfigs(rpc) }
+    return { failed: null, projectConfigs: await projectConfigs(rpc), mcpServers }
   } catch (error) {
-    return { failed: { why: probeFailure(error, step), log }, projectConfigs: [] }
+    return { failed: { why: probeFailure(error, step), log }, projectConfigs: [], mcpServers: [] }
   } finally {
     await proc?.close(PROBE_GRACE_MS)
     removeFolder(root, name)
