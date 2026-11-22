@@ -33,7 +33,7 @@
  *  none.
  *
  *  **Notes.** A host that takes them (`ended`) gets one note when a command whose reply said it runs on ends: its
- *  shell, the command, its exit and its last lines, keyed by the shell and the command's number there. None comes when
+ *  shell, the command, its exit and its last lines, fenced, keyed by the shell and the command's number there. None comes when
  *  the agent interrupted the command or closed its shell, when a read or type the agent was waiting on returned the
  *  end, or once the terminal has closed. A note leaves the agent's place in the view where it was. */
 import {
@@ -749,8 +749,8 @@ function runsOn(reply: Reply): boolean {
 }
 
 /** The note of `running`, which ended, in `entry`'s `shell`: a first line naming the shell, the command and how it
- *  ended; how long it ran; its last lines (`lastLines`) as the view shows them; and, when the agent hasn't read the
- *  output before them, where to read it from. */
+ *  ended; how long it ran; its last lines (`lastLines`) as the view shows them, fenced, so no line of the output reads
+ *  as the note's own; and, when the agent hasn't read the output before them, where to read it from. */
 function noteText(entry: Entry, shell: TerminalShell, running: Running): string {
   const { exit, stopped, duration } = running.end!
   const ended = exit !== null ? `ended, exit ${exit}` : `ended with no exit code: ${stopped}`
@@ -759,7 +759,8 @@ function noteText(entry: Entry, shell: TerminalShell, running: Running): string 
   const shownFrom = start + output.replace(/\n$/, "").length - lines.length
   const head = `${entry.name}: \`${oneLine(running.command)}\` ${ended}`
   const ran = `It ran for ${elapsed(duration)}.`
-  const body = lines === "" ? [`${ran} It printed nothing.`] : [`${ran} Its last lines:`, lines]
+  const fence = "`".repeat(Math.max(3, ...(lines.match(/`+/g) ?? []).map((run) => run.length + 1)))
+  const body = lines === "" ? [`${ran} It printed nothing.`] : [`${ran} Its last lines:`, fence, lines, fence]
   const unread = cursor < shownFrom
     ? [`[You haven't read its output before these lines: call terminal_read on ${entry.name} from ${cursor}.]`]
     : []

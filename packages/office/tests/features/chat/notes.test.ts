@@ -84,7 +84,9 @@ function asked(fake: Awaited<ReturnType<typeof fakeLlm>>, n: number, text: strin
 async function started(o: ChatOffice): Promise<{ actor: SessionActor; sid: string }> {
   const { actor, sid } = await startActor(o)
   await actor.prompt("build it")
-  await waitFor(() => texts(o, sid).includes("Started.") && status(o, sid) === "idle", { what: "the first reply" })
+  await waitFor(() => texts(o, sid).includes("Started.") && status(o, sid) === "idle" && !actor.hasWorker, {
+    what: "the first reply",
+  })
   return { actor, sid }
 }
 

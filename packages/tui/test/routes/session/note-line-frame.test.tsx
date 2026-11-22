@@ -15,8 +15,10 @@ const HEADING = "shell 1: `make test` ended, exit 2"
 const NOTE = [
   HEADING,
   "It ran for 4m12s. Its last lines:",
+  "```",
   "$ make test",
   "FAIL src/app.test.ts",
+  "```",
   "[You haven't read its output before these lines: call terminal_read on shell 1 from 120.]",
 ].join("\n")
 
