@@ -949,11 +949,16 @@ test("a subscription chat runs on its own sign in without a key", async () => {
 })
 
 test.each([
-  ["unpriced", {}, 0],
-  ["priced", { "gpt-sub": { input: 1, output: 2 } }, 3],
-] as const)("a subscriptions usage is free unless its file prices it [%s]", async (_case, prices, usd) => {
+  ["unpriced", {}, {}, DEFAULT_PRICE.input + DEFAULT_PRICE.output],
+  ["priced in its file", { "gpt-sub": { input: 1, output: 2 } }, {}, 3],
+  ["priced by a key", {}, { "gpt-sub": { input: 2, output: 4 } }, 6],
+] as const)("a subscription's usage counts what the API would charge, toward its cap only [%s]", async (_case, own, key, usd) => {
   const h = await makeHarness(await fakeLlm())
-  await subscribe(h, "chatgpt", prices)
+  if (Object.keys(key).length > 0) {
+    const file = path.join(h.office.connections.dir, "office.json")
+    await writePrivate(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), prices: key }))
+  }
+  await subscribe(h, "chatgpt", own)
   const workers = scriptedWorker(h)
   const s = await h.harness.startSession("minh", h.folder, { connection: "chatgpt" })
   modelCall(workers[0]!, "gpt-sub", 1_000_000, 1_000_000)
@@ -961,6 +966,30 @@ test.each([
   expect(model).toBe("gpt-sub")
   expect(price).toBeCloseTo(usd)
   expect(h.store.getSession(s.id)!.cost).toBeCloseTo(usd)
+  // The subscription itself pays nothing.
+  expect(h.store.listUsage(s.id).map((u) => u.subscription)).toEqual([true])
+  expect(h.store.costsSince("2000-01-01T00:00:00.000Z").people).toEqual({})
+})
+
+test("on a subscription over the cap, a note is held and no model call starts", async () => {
+  const o = await chatOffice(await fakeLlm())
+  await subscribe(o)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o, { connection: "chatgpt" })
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = workers[0]!
+  // A million tokens at the default price is $15, over the company's $5 cap.
+  modelCall(first, "gpt-sub", 1_000_000, 0)
+  await charged(o, sid)
+  first.handlers.result(first.worker, waitingResult(actor.runId!))
+  first.handlers.exited(first.worker, 0)
+  await waitFor(() => !actor.hasWorker && session(o, sid).capped, { what: "the session capped at rest" })
+  actor.note("shell 1: `make` ended, exit 0", "terminal:sh:1")
+  await waitFor(() => workers.length === 2, { what: "the note's job" })
+  // It only delivers: no model call may start over the cap.
+  expect(workers[1]!.job).toMatchObject({ kind: "advance", advance: false })
+  expect(workers[1]!.job.deliver).toMatchObject([{ op: "send", key: "terminal:sh:1" }])
 })
 
 test("a subscription run is recorded on it and resumed and learned from on the same sign in", async () => {
@@ -979,12 +1008,12 @@ test("a subscription run is recorded on it and resumed and learned from on the s
     ["chat", auth],
     ["advance", auth],
   ])
-  // Still free: a model its file doesn't price costs nothing on the retried run.
+  // Counted as the API would charge on the retried run too.
   modelCall(workers[1]!, "gpt-sub", 1_000_000, 0)
-  expect(await charged(h, s.id)).toEqual(["gpt-sub", 0])
+  expect(await charged(h, s.id)).toEqual(["gpt-sub", DEFAULT_PRICE.input])
 })
 
-test("a chat moved off a subscription pays for its unpriced models again", async () => {
+test("a chat moved off a subscription pays for its unpriced models", async () => {
   const fake = await fakeLlm()
   const h = await makeHarness(fake, { connections: { second: "stub-2" } })
   await subscribe(h)
@@ -993,7 +1022,7 @@ test("a chat moved off a subscription pays for its unpriced models again", async
   const s = await start(h, { connection: "chatgpt" })
   await h.harness.setModel(s.id, "second", "stub-2")
   expect(await tell(h, s.id, "b")).toBe("on two")
-  // stub-2 is priced nowhere: the key's default price, not the subscription's free one.
+  // stub-2 is priced nowhere: the key's default price, and the key pays it.
   const [model, usd] = await charged(h, s.id)
   expect(model).toBe("stub-2")
   expect(usd).toBeCloseTo(DEFAULT_PRICE.input / 10)

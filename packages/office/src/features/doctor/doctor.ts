@@ -9,7 +9,8 @@ import { VERSION } from "@opencorp/protocol/version"
 import { FileLockError, isLocked, openSqlite, type Sqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
 import { type Identity, IdentityUnreadable, identityPath, loadIdentity } from "../../runtime/auth/identity.ts"
 import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
-import { ConnectionFile, isSubscription } from "../../models/connections.ts"
+import { ConnectionFile, Connections, isSubscription } from "../../models/connections.ts"
+import { DEFAULT_PRICE } from "../../models/cost.ts"
 import { loadProvider, type Provider, ProviderError } from "../../models/provider.ts"
 import { CompanyGit, CompanyGitError } from "../../company/git.ts"
 import type { RepoIssue } from "../../company/issues.ts"
@@ -352,6 +353,40 @@ async function signInCheck(paths: OfficePaths): Promise<Check> {
     }
   }
   return { name: "provider", status: "ok", detail: "openai, ChatGPT subscription signed in" }
+}
+
+/** A warning naming each subscription connection whose model no connection's price list prices: a chat on it counts
+ *  toward its cost cap at the default price, so the cap may trip far sooner or later than the API's price would make
+ *  it. Null when there is none, or the connections can't be read (the provider and connections lines say why). */
+async function pricesCheck(paths: OfficePaths): Promise<Check | null> {
+  const connections = new Connections(paths.office, { log: () => {} })
+  const unpriced: string[] = []
+  try {
+    for (const name of await connections.names()) {
+      let conn: ConnectionFile
+      try {
+        conn = await connections.get(name)
+      } catch (error) {
+        if (error instanceof ProviderError) continue
+        throw error
+      }
+      const model = conn.llm_config?.model
+      if (conn.method !== "subscription" || typeof model !== "string") continue
+      if (!Object.hasOwn((await connections.capPrices(name)).prices, model)) unpriced.push(`${name}'s ${model}`)
+    }
+  } catch (error) {
+    if (error instanceof ProviderError || error instanceof FileLockError || errnoCode(error) !== undefined) return null
+    throw error
+  }
+  if (unpriced.length === 0) return null
+  const { input, output } = DEFAULT_PRICE
+  return {
+    name: "prices",
+    status: "warn",
+    detail:
+      `no connection lists a price for ${unpriced.join(", ")}, so a chat on it counts toward its cost cap at ` +
+      `$${input} in and $${output} out per million tokens; add its API price to a connection's prices`,
+  }
 }
 
 /** Whether office/connections and every file in it are private; null when there is no such folder. */
@@ -1361,6 +1396,8 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   found.push(await providerCheck(paths))
   const added = connectionsCheck(paths, lstat)
   if (added !== null) found.push(added)
+  const prices = await pricesCheck(paths)
+  if (prices !== null) found.push(prices)
   for (const [name, folder] of [
     ["runs", paths.runs],
     ["sessions", paths.sessions],

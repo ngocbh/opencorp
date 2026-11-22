@@ -467,7 +467,10 @@ export interface UsageRecord {
   sessionId: string
   runId: string
   model: string
+  /** The call's price; on a subscription, what the API would charge, which only the session's cost cap counts. */
   usd: number
+  /** Whether the call ran on a subscription, which pays nothing for it. */
+  subscription: boolean
 }
 
 /** A spawned process under its key, for the reaper. */
@@ -1476,21 +1479,22 @@ export class Store {
       }))
   }
 
-  /** Appends the price of one model call. */
-  recordUsage(usage: { sessionId: string; runId: string; model: string; usd: number }): UsageRecord {
+  /** Appends the price of one model call; `subscription` when it ran on one, which pays nothing for it. */
+  recordUsage(usage: { sessionId: string; runId: string; model: string; usd: number; subscription?: boolean }): UsageRecord {
     const at = now()
-    const { sessionId, runId, model, usd } = usage
+    const { sessionId, runId, model, usd, subscription = false } = usage
     const row = this.transaction((tx) =>
       tx.get(
-        "INSERT INTO usage (at, session_id, run_id, model, usd) VALUES (?, ?, ?, ?, ?) RETURNING id",
+        "INSERT INTO usage (at, session_id, run_id, model, usd, subscription) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
         at,
         sessionId,
         runId,
         model,
         usd,
+        subscription ? 1 : 0,
       ),
     )!
-    return { id: row.id as number, at, sessionId, runId, model, usd }
+    return { id: row.id as number, at, sessionId, runId, model, usd, subscription }
   }
 
   /** A session's usage rows in the order they were written. */
@@ -1505,16 +1509,18 @@ export class Store {
         runId: r.run_id as string,
         model: r.model as string,
         usd: r.usd as number,
+        subscription: r.subscription === 1,
       }))
   }
 
-  /** The summed price of a session's model calls. */
+  /** The summed price of a session's model calls, a subscription's at what the API would charge: its cost cap's. */
   sessionUsageUsd(sessionId: string): number {
     const row = this.db.prepare("SELECT COALESCE(SUM(usd), 0) AS usd FROM usage WHERE session_id = ?").get(sessionId)
     return row!.usd as number
   }
 
-  /** Spend per person since `since` (a Timestamp): priced usage, and harness sessions updated since then.
+  /** Spend per person since `since` (a Timestamp): priced usage, and harness sessions updated since then. A
+   *  subscription's model calls cost nothing, so they are left out.
    *
    *  Only composer sessions record priced usage; a Codex or Claude session's tokens aren't priced, so it is
    *  counted instead. `unpriced_sessions` counts harness sessions whose `updated_at` is at or after `since`,
@@ -1526,7 +1532,7 @@ export class Store {
     const priced = this.db
       .prepare(
         "SELECT s.person, SUM(u.usd) AS usd FROM usage u JOIN sessions s ON s.id = u.session_id " +
-          "WHERE u.at >= ? GROUP BY s.person",
+          "WHERE u.at >= ? AND u.subscription = 0 GROUP BY s.person",
       )
       .all(since)
     for (const r of priced) usd.set(r.person as string, r.usd as number)

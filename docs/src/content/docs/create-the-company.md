@@ -20,7 +20,9 @@ init takes five steps. It asks the first three on the terminal:
 1. Model: pick the provider (anthropic by default) and give its key, or leave it empty to use
    yian's own login. For OpenAI you can sign in to your ChatGPT subscription instead: init shows a
    link and a code to enter in a browser on any device, and keeps the sign-in in
-   `office/connections/office.auth.json`. The model is checked before it's saved, and the key or
+   `office/connections/office.auth.json`. A chat on the subscription costs you nothing, but its cost cap counts its
+   tokens at the API's price, as a connection's `prices` list it (or $15 in and $75 out per million tokens when none
+   does, which `opencorp doctor` warns about), so a chat that runs away still stops. The model is checked before it's saved, and the key or
    sign-in stays in the office, readable only by you. Before the chat, a model kept from an earlier
    run is checked again; if it doesn't answer, choose "Try again" or "Set up the model again".
 2. Password: it logs in your new devices.

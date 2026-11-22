@@ -25,11 +25,13 @@ test("without the connection list, costLabel can't tell a subscription and gives
   expect(costLabel({ cost_cap_usd: null, connection: "chatgpt" })).toBeUndefined()
 })
 
-test("on a subscription connection, costLabel says subscription, unpriced", () => {
-  expect(costLabel({ cost_cap_usd: null, connection: "chatgpt" }, list)).toBe("subscription, unpriced")
-  expect(costLabel({ cost: 0, cost_cap_usd: null, connection: "chatgpt" }, list)).toBe("$0.00 (subscription, unpriced)")
+test("on a subscription connection, costLabel says its cost is at API prices, which the subscription doesn't pay", () => {
+  expect(costLabel({ cost_cap_usd: null, connection: "chatgpt" }, list)).toBe("$0 on your subscription")
+  expect(costLabel({ cost: 1.2, cost_cap_usd: null, connection: "chatgpt" }, list)).toBe(
+    "≈$1.20 at API prices, $0 on your subscription",
+  )
   expect(costLabel({ cost: 0.4, cost_cap_usd: 5, connection: "chatgpt" }, list)).toBe(
-    "$0.40 of $5.00 (subscription, unpriced)",
+    "≈$0.40 of $5.00 at API prices, $0 on your subscription",
   )
 })
 

@@ -16,9 +16,10 @@ const tokens = (n: number) =>
   n < 1000 ? String(n) : n < 999_950 ? `${(n / 1000).toFixed(1)}k` : `${(n / 1_000_000).toFixed(1)}M`
 
 /**
- * The session's cost against its cap, as `$0.12` or `$0.12 of $5.00`. On a subscription connection in `list` it adds
- * `(subscription, unpriced)`: the office records that connection's tokens at $0. A Codex or Claude Code session runs
- * on the owner's own login for it, so it gives its token counts, unpriced.
+ * The session's cost against its cap, as `$0.12` or `$0.12 of $5.00`. On a subscription connection in `list` the
+ * office counts its tokens toward the cap at what the API would charge, and the subscription pays nothing, so it reads
+ * `≈$0.12 at API prices, $0 on your subscription`. A Codex or Claude Code session runs on the owner's own login for
+ * it, so it gives its token counts, unpriced.
  */
 export function costLabel(
   session: Pick<Session, "cost" | "cost_cap_usd" | "connection" | "model"> &
@@ -33,9 +34,10 @@ export function costLabel(
   }
   const { connection } = sessionModel(session, list)
   const subscription = list?.connections.find((c) => c.name === connection)?.method === "subscription"
-  if (session.cost === undefined) return subscription ? "subscription, unpriced" : undefined
+  const free = "$0 on your subscription"
+  if (session.cost === undefined) return subscription ? free : undefined
   const cost = session.cost_cap_usd == null ? usd(session.cost) : `${usd(session.cost)} of ${usd(session.cost_cap_usd)}`
-  return subscription ? `${cost} (subscription, unpriced)` : cost
+  return subscription ? `≈${cost} at API prices, ${free}` : cost
 }
 
 /** The session's person, folder, status, cost, and id. */

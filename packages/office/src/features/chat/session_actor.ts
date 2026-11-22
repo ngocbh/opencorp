@@ -73,7 +73,7 @@ import {
   runRecord,
   runSecrets,
 } from "../../models/connections.ts"
-import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "../../models/cost.ts"
+import { type CallUsage, callUsd, costCap } from "../../models/cost.ts"
 import type { Hooks } from "../../runtime/sessions/hooks.ts"
 import { type Price, type Provider, ProviderError } from "../../models/provider.ts"
 import { chatJob, type RunSpec } from "./run_spec.ts"
@@ -330,8 +330,9 @@ class WorkerRun {
   provider: Provider | null = null
   /** The connection and model (null: the connection's own) that resolved to `provider`. */
   ranOn: { name: string; model: string | null } | null = null
-  /** The price of a model call `provider` doesn't list. */
-  defaultPrice: Price = DEFAULT_PRICE
+  /** The prices its model calls count at toward the cost cap, by model (a model none lists is at `DEFAULT_PRICE`),
+   *  and whether its connection is a subscription, which pays nothing for them (`Connections.capPrices`). */
+  pricing: { prices: Readonly<Record<string, Price>>; subscription: boolean } = { prices: {}, subscription: false }
   /** Whether the cost cap stopped it. */
   capStopped = false
   /** Its job's deliveries, then each one sent to it. */
@@ -533,7 +534,7 @@ export class SessionActor implements LiveCalls {
       paths: ctx.paths,
       session: () => this.#session(),
       where: () => this.#where(),
-      charge: (runId, model, usd) => this.#chargeCheck(runId, model, usd),
+      charge: (runId, model, usd, subscription) => this.#chargeCheck(runId, model, usd, subscription),
       git: ctx.git,
       handle: session.person,
       log: (line) => this.#log(line),
@@ -1808,7 +1809,7 @@ export class SessionActor implements LiveCalls {
         keep: this.#keepMs() > 0,
       })
       if (run.kind === "chat") store.setRunConfig(runId, runRecord(name, model, provider))
-      const defaultPrice = await this.#defaultPrice(name)
+      const pricing = await this.#pricing(name, provider)
       const handlers = this.#handlers(run, ask, tools, spec.memories)
       // The office may have stopped during the awaits above.
       if (this.#closed) throw stopping()
@@ -1816,7 +1817,7 @@ export class SessionActor implements LiveCalls {
       // Read before the run starts, so a token its first call refreshes away is still scrubbed from its failure.
       runSecrets(provider)
       run.ranOn = { name, model }
-      run.defaultPrice = defaultPrice
+      run.pricing = pricing
       run.seed = seed
       run.worker = await this.#launch(job, handlers, provider.env)
       this.#startedWorker = true
@@ -1956,15 +1957,14 @@ export class SessionActor implements LiveCalls {
     return parked.worker.wait().then(() => {})
   }
 
-  /** The price of a model call connection `name`'s file doesn't list: none for a subscription, which already pays
-   *  for its calls. */
-  async #defaultPrice(name: string): Promise<Price> {
+  /** What connection `name`'s model calls count at toward the cost cap (`Connections.capPrices`); `provider`'s own
+   *  list, as a key's, when the connection was removed or broke since it resolved to `provider`. */
+  async #pricing(name: string, provider: Provider): Promise<WorkerRun["pricing"]> {
     try {
-      return (await this.#ctx.connections.get(name)).method === "subscription" ? ZERO_PRICE : DEFAULT_PRICE
+      return await this.#ctx.connections.capPrices(name)
     } catch (error) {
-      // Removed or broken since it resolved: the run still has what it resolved.
       if (!(error instanceof ProviderError)) throw error
-      return DEFAULT_PRICE
+      return { prices: provider.prices, subscription: false }
     }
   }
 
@@ -2416,17 +2416,18 @@ export class SessionActor implements LiveCalls {
       return
     }
     const model = typeof data.model === "string" ? data.model : null
-    const usd = callUsd(run.provider?.prices ?? {}, model, usage, { default: run.defaultPrice })
-    store.recordUsage({ sessionId: this.sessionId, runId: run.runId, model: model ?? "", usd })
+    const { prices, subscription } = run.pricing
+    const usd = callUsd(prices, model, usage)
+    store.recordUsage({ sessionId: this.sessionId, runId: run.runId, model: model ?? "", usd, subscription })
     store.updateSession(this.sessionId, { cost: store.sessionUsageUsd(this.sessionId) })
     this.#overCap()
   }
 
   /** Records `usd`, what Auto's check's run `runId` spent on `model`, as the session's, then acts on the cap as a
    *  model call's charge does. */
-  #chargeCheck(runId: string, model: string | null, usd: number): void {
+  #chargeCheck(runId: string, model: string | null, usd: number, subscription: boolean): void {
     const { store } = this.#ctx
-    store.recordUsage({ sessionId: this.sessionId, runId, model: model ?? "", usd })
+    store.recordUsage({ sessionId: this.sessionId, runId, model: model ?? "", usd, subscription })
     store.updateSession(this.sessionId, { cost: store.sessionUsageUsd(this.sessionId) })
     this.#post("a check's cost", () => this.#overCap())
   }

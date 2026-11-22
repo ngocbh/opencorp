@@ -107,9 +107,9 @@ test("every migration file is in the ladder", () => {
   for (const m of MIGRATIONS) expect(m.sql).toBe(fs.readFileSync(new URL(m.name, dir), "utf8"))
 })
 
-test("the office migrations bring a fresh database to version 10", () => {
+test("the office migrations bring a fresh database to version 11", () => {
   const db = open()
-  expect(migrate(db)).toBe(10)
+  expect(migrate(db)).toBe(11)
   const questions = db.prepare("PRAGMA table_info(questions)").all()
   expect(questions.map((c) => c.name)).toContain("call_id")
   const turns = db.prepare("PRAGMA table_info(sessions)").all().find((c) => c.name === "turns")
@@ -129,12 +129,22 @@ test("the office migrations bring a fresh database to version 10", () => {
   expect([approval?.type, approval?.dflt_value]).toEqual(["TEXT", null])
   const of = db.prepare("PRAGMA table_info(sessions)").all().find((c) => c.name === "instrument_of")
   expect([of?.type, of?.dflt_value]).toEqual(["TEXT", null])
+  const subscription = db.prepare("PRAGMA table_info(usage)").all().find((c) => c.name === "subscription")
+  expect([subscription?.type, subscription?.dflt_value, subscription?.notnull]).toEqual(["INTEGER", "0", 1])
+})
+
+test("a store at version 10 gets only the usage subscription migration, and its usage is billed", () => {
+  const db = open()
+  expect(migrate(db, MIGRATIONS.slice(0, 10))).toBe(10)
+  db.prepare("INSERT INTO usage (at, session_id, run_id, model, usd) VALUES ('t', 's1', 'r1', 'm', 0.5)").run()
+  expect(migrate(db)).toBe(11)
+  expect(db.prepare("SELECT usd, subscription FROM usage").all()).toEqual([{ usd: 0.5, subscription: 0 }])
 })
 
 test("a store already at version 6 gets only the runs started_at migration", () => {
   const db = open()
   expect(migrate(db, MIGRATIONS.slice(0, 6))).toBe(6)
-  expect(migrate(db)).toBe(10)
+  expect(migrate(db)).toBe(11)
   const runs = db.prepare("PRAGMA table_info(runs)").all().map((c) => c.name)
   expect(runs).toContain("started_at")
   const sessions = db.prepare("PRAGMA table_info(hq_sessions)").all().map((c) => c.name)
@@ -149,7 +159,7 @@ test("a store already at version 7 gets only the session mode migration, and its
     "INSERT INTO sessions (id, person, harness, office, cwd, repo_commit, status, kind, created_at, updated_at) " +
       "VALUES ('s1', 'minh', 'composer', 'mac', '/w', 'c0ffee', 'idle', 'main', ?, ?)",
   ).run(at, at)
-  expect(migrate(db)).toBe(10)
+  expect(migrate(db)).toBe(11)
   expect(db.prepare("SELECT id, mode FROM sessions").all()).toEqual([{ id: "s1", mode: "auto" }])
   const runs = db.prepare("PRAGMA table_info(runs)").all().map((c) => c.name)
   expect(runs).toContain("started_at")
@@ -167,7 +177,7 @@ test("a store at version 8 gets only the approval migration", () => {
     "INSERT INTO questions (id, session_id, run_id, source, asker, question, status, created_at, updated_at) " +
       "VALUES ('q1', 's1', 'run-1', 'ask_user', 'minh', 'Which db?', 'open', ?, ?)",
   ).run(at, at)
-  expect(migrate(db)).toBe(10)
+  expect(migrate(db)).toBe(11)
   expect(db.prepare("SELECT id, approval FROM questions").all()).toEqual([{ id: "q1", approval: null }])
   expect(db.prepare("PRAGMA table_info(sessions)").all().map((c) => c.name)).toContain("mode")
 })
@@ -180,6 +190,6 @@ test("a store at version 9 gets only the instrument_of migration, and its sessio
     "INSERT INTO sessions (id, person, harness, office, cwd, repo_commit, status, kind, created_at, updated_at) " +
       "VALUES ('s1', 'minh', 'composer', 'mac', '/w', 'c0ffee', 'idle', 'main', ?, ?)",
   ).run(at, at)
-  expect(migrate(db)).toBe(10)
+  expect(migrate(db)).toBe(11)
   expect(db.prepare("SELECT id, instrument_of FROM sessions").all()).toEqual([{ id: "s1", instrument_of: null }])
 })

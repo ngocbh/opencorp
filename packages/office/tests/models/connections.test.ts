@@ -85,6 +85,23 @@ async function raised(call: () => unknown): Promise<unknown> {
   throw new Error("expected an error")
 }
 
+test("the cost cap prices a subscription's models as the keys' price lists do, its own list first", async () => {
+  const office = { llm_config: { provider: "openai", model: "gpt-4o", api_key: SENTINEL } }
+  const c = new Connections(await officeDir(tempDir(), { ...office, prices: { "gpt-5.5": { input: 1, output: 8 } } }))
+  await c.put("second", apiKey({ prices: { "gpt-y": { input: 4, output: 5 }, "gpt-x": { input: 2, output: 3 } } }))
+  const own = { "gpt-x": { input: 9, output: 9 } }
+  await c.put("chatgpt", ConnectionFile.parse({ method: "subscription", llm_config: { provider: "openai" }, prices: own }))
+  expect(await c.capPrices("chatgpt")).toEqual({
+    subscription: true,
+    prices: { "gpt-5.5": { input: 1, output: 8 }, "gpt-x": { input: 9, output: 9 }, "gpt-y": { input: 4, output: 5 } },
+  })
+  // A key is priced by its own list alone.
+  expect(await c.capPrices("second")).toEqual({
+    subscription: false,
+    prices: { "gpt-y": { input: 4, output: 5 }, "gpt-x": { input: 2, output: 3 } },
+  })
+})
+
 test("office json is the office connection and the default", async () => {
   const c = new Connections(
     await officeDir(tempDir(), { llm_config: { provider: "anthropic", model: "claude-x", api_key: SENTINEL } }),
