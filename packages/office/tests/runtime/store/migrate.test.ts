@@ -131,6 +131,8 @@ test("the office migrations bring a fresh database to version 11", () => {
   expect([of?.type, of?.dflt_value]).toEqual(["TEXT", null])
   const subscription = db.prepare("PRAGMA table_info(usage)").all().find((c) => c.name === "subscription")
   expect([subscription?.type, subscription?.dflt_value, subscription?.notnull]).toEqual(["INTEGER", "0", 1])
+  const part = db.prepare("PRAGMA table_info(sessions)").all().find((c) => c.name === "subscription_cost")
+  expect([part?.type, part?.dflt_value, part?.notnull]).toEqual(["REAL", "0", 1])
 })
 
 test("a store at version 10 gets only the usage subscription migration, and its usage is billed", () => {

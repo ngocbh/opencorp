@@ -5,6 +5,7 @@ import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:t
 import { AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
 import { AUTH_FILE_ENV, ConnectionFile } from "../../../src/models/connections.ts"
 import { DEFAULT_PRICE } from "../../../src/models/cost.ts"
+import { ProviderError } from "../../../src/models/provider.ts"
 import { type Lister, TIMED_OUT, ownModels } from "../../../src/models/models.ts"
 import { type SessionActor, WOKEN_NOTE, refusedKey } from "../../../src/features/chat/session_actor.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
@@ -966,9 +967,24 @@ test.each([
   expect(model).toBe("gpt-sub")
   expect(price).toBeCloseTo(usd)
   expect(h.store.getSession(s.id)!.cost).toBeCloseTo(usd)
+  expect(h.store.getSession(s.id)!.subscription_cost).toBeCloseTo(usd)
   // The subscription itself pays nothing.
   expect(h.store.listUsage(s.id).map((u) => u.subscription)).toEqual([true])
   expect(h.store.costsSince("2000-01-01T00:00:00.000Z").people).toEqual({})
+})
+
+test("a subscription whose connection breaks as its run starts is still counted as one", async () => {
+  const h = await makeHarness(await fakeLlm())
+  await subscribe(h)
+  h.office.connections.capPrices = async () => {
+    throw new ProviderError("the connection can't be read")
+  }
+  const workers = scriptedWorker(h)
+  const s = await h.harness.startSession("minh", h.folder, { connection: "chatgpt" })
+  modelCall(workers[0]!, "gpt-sub", 1_000_000, 0)
+  expect(await charged(h, s.id)).toEqual(["gpt-sub", DEFAULT_PRICE.input])
+  expect(h.store.listUsage(s.id).map((u) => u.subscription)).toEqual([true])
+  expect(h.store.getSession(s.id)!.subscription_cost).toBeCloseTo(DEFAULT_PRICE.input)
 })
 
 test("on a subscription over the cap, a note is held and no model call starts", async () => {

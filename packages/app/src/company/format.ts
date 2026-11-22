@@ -6,6 +6,15 @@ export function costText(usd: number, unpriced: number) {
   return `$${usd.toFixed(2)}${unpriced > 0 ? ` +${unpriced} unpriced` : ""}`
 }
 
+/** A composer session's cost: "$0.42"; when part of it ran on a subscription (`subscription`, priced at what the API
+ *  would charge, which the subscription doesn't pay), "≈$1.20 at API prices, $0 on your subscription", or
+ *  "≈$1.50 at API prices, $0.30 paid" for the part a key paid. */
+export function sessionCost(usd: number, subscription: number) {
+  if (subscription <= 0) return costText(usd, 0)
+  const paid = usd - subscription
+  return `≈$${usd.toFixed(2)} at API prices, ${paid >= 0.005 ? `$${paid.toFixed(2)} paid` : "$0 on your subscription"}`
+}
+
 /** A person's cost for the window; "$0.00" for someone with no spend. */
 export const personCost = (c: PersonCost | undefined) => costText(c?.usd ?? 0, c?.unpriced_sessions ?? 0)
 

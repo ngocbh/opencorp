@@ -71,6 +71,7 @@ import {
   type Connections,
   configHash,
   runRecord,
+  runsOnSubscription,
   runSecrets,
 } from "../../models/connections.ts"
 import { type CallUsage, callUsd, costCap } from "../../models/cost.ts"
@@ -2021,13 +2022,13 @@ export class SessionActor implements LiveCalls {
   }
 
   /** What connection `name`'s model calls count at toward the cost cap (`Connections.capPrices`); `provider`'s own
-   *  list, as a key's, when the connection was removed or broke since it resolved to `provider`. */
+   *  list when the connection was removed or broke since it resolved to `provider`, a subscription still one. */
   async #pricing(name: string, provider: Provider): Promise<WorkerRun["pricing"]> {
     try {
       return await this.#ctx.connections.capPrices(name)
     } catch (error) {
       if (!(error instanceof ProviderError)) throw error
-      return { prices: provider.prices, subscription: false }
+      return { prices: provider.prices, subscription: runsOnSubscription(provider) }
     }
   }
 
@@ -2482,7 +2483,10 @@ export class SessionActor implements LiveCalls {
     const { prices, subscription } = run.pricing
     const usd = callUsd(prices, model, usage)
     store.recordUsage({ sessionId: this.sessionId, runId: run.runId, model: model ?? "", usd, subscription })
-    store.updateSession(this.sessionId, { cost: store.sessionUsageUsd(this.sessionId) })
+    store.updateSession(this.sessionId, {
+      cost: store.sessionUsageUsd(this.sessionId),
+      subscription_cost: store.sessionSubscriptionUsd(this.sessionId),
+    })
     this.#overCap()
   }
 
@@ -2491,7 +2495,10 @@ export class SessionActor implements LiveCalls {
   #chargeCheck(runId: string, model: string | null, usd: number, subscription: boolean): void {
     const { store } = this.#ctx
     store.recordUsage({ sessionId: this.sessionId, runId, model: model ?? "", usd, subscription })
-    store.updateSession(this.sessionId, { cost: store.sessionUsageUsd(this.sessionId) })
+    store.updateSession(this.sessionId, {
+      cost: store.sessionUsageUsd(this.sessionId),
+      subscription_cost: store.sessionSubscriptionUsd(this.sessionId),
+    })
     this.#post("a check's cost", () => this.#overCap())
   }
 

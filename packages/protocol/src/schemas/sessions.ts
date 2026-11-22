@@ -49,6 +49,11 @@ export const Session = z.strictObject({
   question_id: Ulid.nullable().default(null),
   seed: z.string().nullable().default(null),
   cost: z.number().min(0).default(0),
+  /**
+   * The part of `cost` its subscription's model calls make up: what the API would charge for their tokens, which the
+   * cost cap counts and the subscription doesn't pay. Clients show `cost` as at API prices when it is above 0.
+   */
+  subscription_cost: z.number().min(0).default(0),
   /** Null means company.defaults.cost_cap_usd. */
   cost_cap_usd: z.number().min(0).nullable().default(null),
   /**

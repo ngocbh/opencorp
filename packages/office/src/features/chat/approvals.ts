@@ -5,7 +5,7 @@ import path from "node:path"
 import { OFFICE, type RemoveRuleRequest, type RuleFileError } from "@opencorp/protocol"
 import { CompanyRepoBusy, type CompanyGit } from "../../company/git.ts"
 import { addRules, readRules, removeRule, type Rule as SavedRule, RulesRefused } from "../../company/rules.ts"
-import type { Connections } from "../../models/connections.ts"
+import { type Connections, runsOnSubscription } from "../../models/connections.ts"
 import { callUsd } from "../../models/cost.ts"
 import { type Price, ProviderError } from "../../models/provider.ts"
 import { Check, type CheckRecord, type CheckWorkers, inWorker } from "../../runtime/permissions/classifier.ts"
@@ -129,9 +129,9 @@ export class ChatApprovals {
     const model = async () => {
       const provider = await o.connections.resolve(OFFICE, null)
       this.#pricing = await o.connections.capPrices(OFFICE).catch((error: unknown) => {
-        // Broken since it resolved: its own list, as a key's.
+        // Broken since it resolved: its own list, a subscription still counted as one.
         if (!(error instanceof ProviderError)) throw error
-        return { prices: provider.prices, subscription: false }
+        return { prices: provider.prices, subscription: runsOnSubscription(provider) }
       })
       return { llm_config: provider.llm_config ?? {}, env: provider.env }
     }

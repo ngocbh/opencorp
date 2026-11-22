@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { ago, costText, describe, totalsText } from "../src/company/format"
+import { ago, costText, describe, sessionCost, totalsText } from "../src/company/format"
 
 test("a cost is dollars, plus +n unpriced for harness sessions", () => {
   expect(costText(0.42, 0)).toBe("$0.42")
@@ -29,4 +29,10 @@ test("a commit's age, in words", () => {
   expect(ago("2026-07-01T12:00:00Z", now)).toBe("3 months ago")
   expect(ago("2024-10-01T12:00:00Z", now)).toBe("2 years ago")
   expect(ago("2026-10-20T12:05:00Z", now)).toBe("just now") // a clock a little ahead
+})
+
+test("a session's cost on a subscription says it is at API prices, and what a key paid", () => {
+  expect(sessionCost(0.42, 0)).toBe("$0.42")
+  expect(sessionCost(1.2, 1.2)).toBe("≈$1.20 at API prices, $0 on your subscription")
+  expect(sessionCost(1.5, 1.2)).toBe("≈$1.50 at API prices, $0.30 paid")
 })

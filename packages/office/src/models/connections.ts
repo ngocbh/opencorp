@@ -118,6 +118,11 @@ export function isSubscription(provider: Provider): provider is ConnectionFile {
   return provider instanceof ConnectionFile && provider.method === "subscription"
 }
 
+/** Whether `provider`, as `Connections.resolve` gave it for a run, runs on a subscription: it carries its sign-in. */
+export function runsOnSubscription(provider: Provider): boolean {
+  return isSubscription(provider) || typeof provider.env[AUTH_FILE_ENV] === "string"
+}
+
 /** What a run was started on: its connection and model, and a hash of what they gave it; the values
  *  `Store.setRunConfig` keeps in the run's row. */
 export type RunRecord = {

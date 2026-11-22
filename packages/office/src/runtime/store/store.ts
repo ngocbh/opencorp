@@ -1519,6 +1519,14 @@ export class Store {
     return row!.usd as number
   }
 
+  /** The part of `sessionUsageUsd` a subscription's model calls make up, which no one paid. */
+  sessionSubscriptionUsd(sessionId: string): number {
+    const row = this.db
+      .prepare("SELECT COALESCE(SUM(usd), 0) AS usd FROM usage WHERE session_id = ? AND subscription = 1")
+      .get(sessionId)
+    return row!.usd as number
+  }
+
   /** Spend per person since `since` (a Timestamp): priced usage, and harness sessions updated since then. A
    *  subscription's model calls cost nothing, so they are left out.
    *

@@ -16,14 +16,15 @@ const tokens = (n: number) =>
   n < 1000 ? String(n) : n < 999_950 ? `${(n / 1000).toFixed(1)}k` : `${(n / 1_000_000).toFixed(1)}M`
 
 /**
- * The session's cost against its cap, as `$0.12` or `$0.12 of $5.00`. On a subscription connection in `list` the
- * office counts its tokens toward the cap at what the API would charge, and the subscription pays nothing, so it reads
- * `≈$0.12 at API prices, $0 on your subscription`. A Codex or Claude Code session runs on the owner's own login for
- * it, so it gives its token counts, unpriced.
+ * The session's cost against its cap, as `$0.12` or `$0.12 of $5.00`. The office counts a subscription's tokens toward
+ * the cap at what the API would charge, and the subscription pays nothing, so a cost that holds such a part
+ * (`subscription_cost`), or one on a subscription connection in `list`, reads `≈$0.12 at API prices, $0 on your
+ * subscription`, or `…, $0.04 paid` for the part a key paid. A Codex or Claude Code session runs on the owner's own
+ * login for it, so it gives its token counts, unpriced.
  */
 export function costLabel(
   session: Pick<Session, "cost" | "cost_cap_usd" | "connection" | "model"> &
-    Partial<Pick<Session, "harness" | "harness_usage">>,
+    Partial<Pick<Session, "harness" | "harness_usage" | "subscription_cost">>,
   list?: ConnectionList,
 ) {
   const harness = HARNESS_NAMES[session.harness ?? ""]
@@ -37,7 +38,10 @@ export function costLabel(
   const free = "$0 on your subscription"
   if (session.cost === undefined) return subscription ? free : undefined
   const cost = session.cost_cap_usd == null ? usd(session.cost) : `${usd(session.cost)} of ${usd(session.cost_cap_usd)}`
-  return subscription ? `≈${cost} at API prices, ${free}` : cost
+  const part = session.subscription_cost ?? 0
+  if (!subscription && part <= 0) return cost
+  const paid = session.cost - part
+  return `≈${cost} at API prices, ${part > 0 && paid >= 0.005 ? `${usd(paid)} paid` : free}`
 }
 
 /** The session's person, folder, status, cost, and id. */

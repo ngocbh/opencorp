@@ -35,6 +35,15 @@ test("on a subscription connection, costLabel says its cost is at API prices, wh
   )
 })
 
+test("a cost a subscription ran up is labelled without the connection list, and a key's part shows as paid", () => {
+  expect(costLabel({ cost: 1.2, subscription_cost: 1.2, cost_cap_usd: null, connection: "gone" })).toBe(
+    "≈$1.20 at API prices, $0 on your subscription",
+  )
+  expect(costLabel({ cost: 1.5, subscription_cost: 1.2, cost_cap_usd: 5, connection: "office" }, list)).toBe(
+    "≈$1.50 of $5.00 at API prices, $0.30 paid",
+  )
+})
+
 test("a Codex session shows Codex's model and its tokens as unpriced", () => {
   const codex = {
     harness: "codex",
