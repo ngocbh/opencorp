@@ -335,6 +335,17 @@ test("a start that its sandbox stops, as its result's startup_failure_reason say
   expect(died.message).not.toContain("failed to initialize")
 })
 
+test("a kill now kills the group with no SIGTERM first, and later kills wait on it", async () => {
+  const { root, fake, permission } = layout()
+  const { claude } = proc(root, fake, permission())
+  await claude.start()
+  const t0 = Date.now()
+  await Promise.all([claude.kill({ now: true }), claude.kill()])
+  expect(Date.now() - t0).toBeLessThan(2_000)
+  expect(claude.proc!.signalCode).toBe("SIGKILL")
+  expect(claude.alive).toBe(false)
+})
+
 test("a command that cant be run says to run opencorp doctor and leaves nothing", async () => {
   const { root, fake, permission } = layout()
   const notAProgram = path.join(root, "claude")

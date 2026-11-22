@@ -713,8 +713,8 @@ export class ClaudeSession {
     if (this.#finished) return
     const named = tools.join(", ")
     this.#owner.log(`claude session ${this.sessionId}: Claude Code offered tools beyond the allowlist: ${named}`)
-    // Before anything else: the stop comes first.
-    void this.proc?.kill()
+    // Before anything else, and at once: no SIGTERM and wait, in which its first model call could answer.
+    void this.proc?.kill({ now: true })
     this.translator.abort()
     this.translator.error(
       `Claude Code started with tools OpenCorp doesn't allow (${named}): they act on your account or outside your ` +

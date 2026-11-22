@@ -3,9 +3,10 @@
  *  sent as `next`, Esc, the end, the idle stop and the resume, a crash, a start that can't, and an office restart. */
 import fs from "node:fs"
 import path from "node:path"
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { ClaudeSessions } from "../../../src/features/claude/sessions.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
+import { ClaudeProcess } from "../../../src/tools/claude/claude.ts"
 import { CLAUDE, readClaudeRecord } from "../../../src/tools/claude/instrument.ts"
 import { HarnessRecord } from "../../../src/tools/harness/record.ts"
 import { person } from "../../company/helpers.ts"
@@ -343,7 +344,12 @@ test("a Claude Code whose first turn lists a tool outside the office's allowlist
   h.fake.set({ tools_added: ["RemoteTrigger"], turns: [[{ sleep: 2 }, { tool: "Bash", input: { command: "touch acted" } }]] })
   const { heard, id } = await started(h)
   const [leader] = leaders(h)
+  // Killed at once, with no SIGTERM and wait first.
+  const kills = spyOn(ClaudeProcess.prototype, "kill")
+  onTestFinished(() => kills.mockRestore())
   await h.sessions.prompt(id, "Go.", { by: "minh" }).catch(() => {})
+  await waitFor(() => kills.mock.calls.length > 0, { what: "the kill" })
+  expect(kills.mock.calls[0]).toEqual([{ now: true }])
   await waitFor(() => status(h, id) === "failed", { what: "the session to fail" })
   expect(processOf(leader!).gone()).toBe(true)
   expect(fs.existsSync(path.join(h.workspace, "acted"))).toBe(false)

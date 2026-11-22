@@ -438,12 +438,14 @@ export class ClaudeProcess {
   }
 
   /** Stops it: SIGTERM first, on which Claude Code ends its running commands' process trees and exits, then the
-   *  whole group killed, and its own `track` cleanup run.
+   *  whole group killed, and its own `track` cleanup run. With `now`, the group is killed at once, for a Claude Code
+   *  that must not take another step.
    *
    *  Safe more than once and before `start`: a process killed first never spawns. Every call resolves when the first
    *  one's work is done; it never rejects. */
-  kill(): Promise<void> {
+  kill({ now = false }: { now?: boolean } = {}): Promise<void> {
     this.closing = true
+    if (now) this.#signal()
     return (this.#killing ??= this.#killOnce())
   }
 
