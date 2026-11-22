@@ -16,6 +16,8 @@ export class OfficePaths {
   readonly sessions: string
   readonly memory: string
   readonly secrets: string
+  /** The harnesses' MCP folders: a folder per session for the MCP servers its employee may use. */
+  readonly mcp: string
 
   constructor(home: string) {
     this.home = home
@@ -30,6 +32,7 @@ export class OfficePaths {
     this.sessions = path.join(this.office, "sessions")
     this.memory = path.join(this.office, "memory")
     this.secrets = path.join(this.office, "secrets")
+    this.mcp = path.join(this.office, "mcp")
   }
 
   /** HQ's unix socket, in the office dir. */

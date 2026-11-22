@@ -761,8 +761,12 @@ test("--permission-prompts none asks the host nothing, --no-session-persistence 
   expect([missing.status, missing.stdout]).toEqual([1, ""])
 })
 
-test("an --mcp-config file's servers are read at the start, their tools listed whatever --tools says, and run only where an allow rule names them", async () => {
-  const servers = { github: { command: "gh-mcp", env: { GITHUB_TOKEN: "t" } } }
+test("an --mcp-config file's servers are read at the start and started in the fake's folder, their tools listed whatever --tools says, and run only where an allow rule names them", async () => {
+  const dir = tempDir()
+  const servers = {
+    github: { command: "sh", args: ["-c", `pwd > ${dir}/pwd; env | cut -d= -f1 > ${dir}/names`], env: { O5_TOKEN: "t" } },
+    web: { type: "http", url: "https://e.example/mcp" },
+  }
   const step = { tool: "mcp__github__get_me", input: {}, result: "me" }
   const { fake, work } = fakeClaude({ mcp_tools: { github: ["get_me"], docs: ["search"] }, turns: [[step], [step]] })
   const config = path.join(work, "mcp.json")
@@ -773,10 +777,15 @@ test("an --mcp-config file's servers are read at the start, their tools listed w
   allowed.send(user("Who am I?", "u-1"))
   const lines = await allowed.turn()
   const init = lines.find((m) => m.subtype === "init")!
-  expect(init.tools).toEqual(["Bash", "mcp__github__get_me"])
-  expect(init.mcp_servers).toEqual([{ name: "github", status: "connected" }])
+  expect(init.tools).toEqual(["Bash", "ListMcpResourcesTool", "ReadMcpResourceTool", "mcp__github__get_me"])
+  expect(init.mcp_servers).toEqual([
+    { name: "github", status: "connected" },
+    { name: "web", status: "connected" },
+  ])
   expect(verdicts(lines)).toEqual(["ran"])
   expect(await allowed.close()).toBe(0)
+  expect(fs.readFileSync(path.join(dir, "pwd"), "utf8").trim()).toBe(fs.realpathSync(work))
+  expect(fs.readFileSync(path.join(dir, "names"), "utf8").split("\n")).toContain("O5_TOKEN")
   expect(fake.log().filter((e) => e.dir === "start").at(-1)!.mcp).toEqual([{ path: config, servers }])
   // With no allow rule, nothing approves it here.
   const asked = new Claude(fake, base, work)

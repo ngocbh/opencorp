@@ -16,11 +16,11 @@ import { type ChildProcess, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
-import { type EmployeePermission, claudeStart } from "../../runtime/sandbox/harness_profile.ts"
+import { type EmployeePermission, claudeStart, mcpCwd } from "../../runtime/sandbox/harness_profile.ts"
 import { which } from "../../util/env.ts"
 import { killGroup } from "../../util/proc.ts"
 import { claudeInstructions, writeInstructions } from "./instructions.ts"
-import { mcpAllowRule, mcpServersOf, mcpTool, ownerMcpServers, writeMcpConfig } from "./mcp.ts"
+import { mcpAllowRule, mcpServersOf, ownerMcpServers, writeMcpConfig } from "./mcp.ts"
 import { type Msg, StreamJson, isObj, nameOf } from "./stream.ts"
 
 /** The oldest Claude Code the office runs. 2.1.323 stops a start whose sandbox settings don't validate, rather than
@@ -34,6 +34,10 @@ export const CLAUDE_FLOOR = "2.1.325"
  *  after the turn (Task, Workflow, the Cron tools, ScheduleWakeup), or have nothing to act on with no background tasks
  *  (TaskStop). */
 export const CLAUDE_TOOLS = ["Bash", "Read", "Edit", "Write", "NotebookEdit", "Glob", "Grep", "ToolSearch"] as const
+
+/** Claude Code's own tools that list and read the resources of its MCP servers (Claude Code's docs, tools-reference):
+ *  a session has them when a server loads. */
+export const MCP_RESOURCE_TOOLS = ["ListMcpResourcesTool", "ReadMcpResourceTool"] as const
 
 /** Whether Claude Code can't run commands in a folder its employee may only read on `platform`: on Linux its sandbox
  *  makes a `.gitconfig` in the working folder for each command, which a read-only folder refuses, so every Bash
@@ -232,10 +236,11 @@ function allowing(settings: Record<string, unknown>, rules: readonly string[]): 
  *  checked it; the file 0600) for `--append-system-prompt-file`; and its environment. The file goes when the temp
  *  folder does, and the process removes it once Claude Code exits (`instructions`).
  *
- *  The MCP servers `p` allows load from the owner's `.claude.json` (`claudeJson`), each one it defines: their
- *  definitions go in `opencorp.mcp.json` in `p.secrets` (`writeMcpConfig`), which the process removes once Claude Code
- *  exits too; `mcp` names it and them, and the allowed names that loaded nothing (not defined, or the file unread).
- *  Throws as `claudeStart` does, and when `p` allows a server but has no `secrets`. */
+ *  The MCP servers `p` allows load from the owner's `.claude.json` (`claudeJson`), each one it defines, started in
+ *  the office's empty folder (`mcpCwd`, `startIn`): their definitions go in `opencorp.mcp.json` in `p.mcpHome`
+ *  (`writeMcpConfig`), which the process removes once Claude Code exits too; `mcp` names it and them, and the allowed
+ *  names that loaded nothing (not defined, of a kind that can't start there, or the file unread). Throws as
+ *  `claudeStart` does, and when `p` allows a server but has no `mcpHome`. */
 export function claudeSession(
   p: EmployeePermission,
   {
@@ -261,32 +266,36 @@ export function claudeSession(
 } {
   const start = claudeStart(p)
   const allowed = p.allowedMcp ?? []
-  if (allowed.length > 0 && p.secrets === undefined) {
-    throw new Error("an employee's allowed MCP servers need a private folder for their definitions")
-  }
+  const cwd = allowed.length > 0 ? mcpCwd(p) : null
   const found = claudeInstructions({ configDir, workspace: p.workspace, gitRoot: p.gitRoot })
   const parts = [prompt === undefined ? null : `${prompt.trim()}\n`, found].filter((t): t is string => t !== null)
   const text = parts.length === 0 ? null : parts.join("\n")
   const instructions = text === null ? null : writeInstructions(start.env.TMPDIR!, "opencorp", text)
   let mcp: McpLoad & { missing: string[] } = { file: null, servers: [], missing: [] }
-  if (allowed.length > 0) {
-    const picked = mcpServersOf(claudeJson === undefined ? null : ownerMcpServers(claudeJson), allowed)
+  if (cwd !== null) {
+    const picked = mcpServersOf(claudeJson === undefined ? null : ownerMcpServers(claudeJson), allowed, cwd)
     const servers = Object.keys(picked.servers)
-    const file = servers.length === 0 ? null : writeMcpConfig(fs.realpathSync(p.secrets!), picked.servers)
+    const file = servers.length === 0 ? null : writeMcpConfig(path.dirname(cwd), picked.servers)
     mcp = { file, servers, missing: picked.missing }
   }
   const args = claudeArgs(start, { ...rest, ...(instructions === null ? {} : { instructions }), mcp })
   return { command: [claude, ...args], env: start.env, instructions, mcp }
 }
 
-/** The tools a turn's `system`/`init` line lists beyond `CLAUDE_TOOLS` and the tools of `servers` (the MCP servers
- *  its start loaded), other MCP tools among them; a list that isn't one counts as one such tool, since what it holds
- *  can't be checked. Empty when the session has only those. */
+/** The tools a turn's `system`/`init` line lists beyond `CLAUDE_TOOLS`, and, when its start loaded MCP servers
+ *  (`servers`), beyond their tools and `MCP_RESOURCE_TOOLS`; other MCP tools among them. A tool is the server's whose
+ *  name, among `servers` and the servers the line lists (`mcp_servers`), is the longest that `mcp__<server>__` starts
+ *  it with. A list that isn't one counts as one such tool, since what it holds can't be checked. Empty when the
+ *  session has only those. */
 export function toolsBeyond(init: Msg, servers: readonly string[] = []): string[] {
   if (!Array.isArray(init.tools)) return ["(its tools, which it didn't list)"]
-  const allowed = new Set<unknown>(CLAUDE_TOOLS)
+  const allowed = new Set<unknown>([...CLAUDE_TOOLS, ...(servers.length > 0 ? MCP_RESOURCE_TOOLS : [])])
+  const listed = Array.isArray(init.mcp_servers) ? init.mcp_servers.map((s) => String(isObj(s) ? s.name : s)) : []
+  const known = [...new Set([...servers, ...listed])].sort((a, b) => b.length - a.length)
+  const serverOf = (tool: string) =>
+    known.find((name) => tool.startsWith(`mcp__${name}__`) && tool.length > `mcp__${name}__`.length)
   return init.tools
-    .filter((tool) => !allowed.has(tool) && !(typeof tool === "string" && mcpTool(tool, servers)))
+    .filter((tool) => !allowed.has(tool) && !(typeof tool === "string" && servers.includes(serverOf(tool) ?? "")))
     .map((tool) => String(tool).slice(0, 100))
 }
 

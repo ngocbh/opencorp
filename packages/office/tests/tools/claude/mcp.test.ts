@@ -1,5 +1,6 @@
 /** The owner's MCP servers for Claude Code, read by name from `.claude.json`, and the 0600 file that hands an employee's
  *  start only those their person allows, which no argument and no log line ever holds. */
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
@@ -7,8 +8,8 @@ import {
   claudeJson,
   mcpAllowRule,
   mcpServersOf,
-  mcpTool,
   ownerMcpServers,
+  startIn,
   writeMcpConfig,
 } from "../../../src/tools/claude/mcp.ts"
 import { tempDir } from "../../helpers.ts"
@@ -59,11 +60,13 @@ test("the start's file holds only the allowed servers that are defined, under mc
   const root = fs.realpathSync(tempDir())
   const dir = path.join(root, "s1.mcp")
   fs.mkdirSync(dir, { mode: 0o700 })
-  const picked = mcpServersOf(SERVERS, ["github", "linear", "web"])
-  expect(picked).toEqual({ servers: { github: SERVERS.github, web: SERVERS.web }, missing: ["linear"] })
+  const cwd = path.join(dir, "cwd")
+  const picked = mcpServersOf(SERVERS, ["github", "linear", "web"], cwd)
+  const started = { github: startIn(SERVERS.github, cwd), web: startIn(SERVERS.web, cwd) }
+  expect(picked).toEqual({ servers: started, missing: ["linear"] })
   const file = writeMcpConfig(dir, picked.servers)
   expect(file).toBe(path.join(dir, "opencorp.mcp.json"))
-  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ mcpServers: { github: SERVERS.github, web: SERVERS.web } })
+  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ mcpServers: started })
   const stat = fs.statSync(file)
   expect([stat.mode & 0o777, stat.uid]).toEqual([0o600, process.getuid!()])
   // A link planted where the file goes is replaced, never written through.
@@ -77,22 +80,57 @@ test("the start's file holds only the allowed servers that are defined, under mc
 })
 
 test("a name that isn't plain picks nothing, even one the owner's config defines", () => {
-  const odd = { "my.server": { command: "x" }, "a b": { command: "y" }, ok: { command: "z" } }
-  expect(mcpServersOf(odd, ["my.server", "a b", "ok", "__proto__", "constructor"])).toEqual({
-    servers: { ok: odd.ok },
-    missing: ["my.server", "a b", "__proto__", "constructor"],
+  const odd = { "my.server": { command: "x" }, "a b": { command: "y" }, ok: { command: "z" }, "gh__x": { command: "w" } }
+  expect(mcpServersOf(odd, ["my.server", "a b", "ok", "gh__x", "__proto__", "constructor"], "/c")).toEqual({
+    servers: { ok: startIn(odd.ok, "/c") },
+    missing: ["my.server", "a b", "gh__x", "__proto__", "constructor"],
   })
-  expect(mcpServersOf(null, ["ok"])).toEqual({ servers: {}, missing: ["ok"] })
+  expect(mcpServersOf(null, ["ok"], "/c")).toEqual({ servers: {}, missing: ["ok"] })
 })
 
-test("an allowed server's tools are allowed by one rule each, and are its tools alone", () => {
+test("a server Claude Code starts as a program starts in the folder given, through sh, its own command, arguments and env as they were", () => {
+  const root = fs.realpathSync(tempDir())
+  const cwd = path.join(root, "o's cwd")
+  fs.mkdirSync(cwd)
+  const definition = { command: "sh", args: ["-c", 'pwd; echo "$1 ${O5}"', "x", "it's"], env: { O5: "set" }, timeout: 9 }
+  const started = startIn(definition, cwd) as { command: string; args: string[]; env: unknown; timeout: unknown }
+  expect(started.command).toBe("/bin/sh")
+  expect(started.args.slice(3)).toEqual([cwd, "sh", ...definition.args])
+  expect([started.env, started.timeout]).toEqual([definition.env, definition.timeout])
+  // The script itself holds no ${...}, which Claude Code would expand.
+  expect(started.args[1]).not.toContain("${")
+  // Run as Claude Code runs it: in the employee's folder, with the definition's env.
+  const ws = path.join(root, "ws")
+  fs.mkdirSync(ws)
+  const ran = spawnSync(started.command, started.args, { cwd: ws, env: { PATH: "/usr/bin:/bin", O5: "set" }, encoding: "utf8" })
+  expect(ran.stdout).toBe(`${cwd}\nit's set\n`)
+  // A folder that isn't there starts nothing, rather than starting in the employee's.
+  const gone = startIn(definition, path.join(root, "gone")) as { command: string; args: string[] }
+  const refused = spawnSync(gone.command, gone.args, { cwd: ws, encoding: "utf8" })
+  expect([refused.status !== 0, refused.stdout]).toEqual([true, ""])
+  // stdio is a program too; one with no command can't be started anywhere.
+  expect((startIn({ type: "stdio", command: "x" }, cwd) as { command: string }).command).toBe("/bin/sh")
+  expect(startIn({ args: ["x"] }, cwd)).toBeNull()
+})
+
+test("a server Claude Code reaches by URL is left as it is, but the headers helper it runs starts in the folder given", () => {
+  const root = fs.realpathSync(tempDir())
+  const cwd = path.join(root, "o's cwd")
+  fs.mkdirSync(cwd)
+  for (const type of ["http", "sse"]) {
+    const plain = { type, url: "https://e.example/mcp", headers: { A: "b" } }
+    expect(startIn(plain, cwd)).toEqual(plain)
+    const helped = startIn({ ...plain, headersHelper: "pwd; echo done" }, cwd) as { headersHelper: string }
+    const ws = path.join(root, `ws-${type}`)
+    fs.mkdirSync(ws)
+    const ran = spawnSync("/bin/sh", ["-c", helped.headersHelper], { cwd: ws, encoding: "utf8" })
+    expect(ran.stdout).toBe(`${cwd}\ndone\n`)
+  }
+  // A kind OpenCorp doesn't know isn't loaded.
+  expect(startIn({ type: "ws", url: "wss://e.example" }, cwd)).toBeNull()
+})
+
+test("an allowed server's tools are allowed by one rule each", () => {
   expect(mcpAllowRule("github")).toBe("mcp__github__*")
-  // Claude Code reads the short form of a name holding __ as another server's: the wildcard form takes it whole.
-  expect(mcpAllowRule("reports__v2")).toBe("mcp__reports__v2__*")
-  expect(mcpTool("mcp__github__create_issue", ["github"])).toBe(true)
-  expect(mcpTool("mcp__github__", ["github"])).toBe(false)
-  expect(mcpTool("mcp__githubx__create_issue", ["github"])).toBe(false)
-  expect(mcpTool("mcp__claude_ai_Gmail__send", ["github"])).toBe(false)
-  expect(mcpTool("Bash", ["github"])).toBe(false)
-  expect(mcpTool("mcp__github__create_issue", [])).toBe(false)
+  expect(mcpAllowRule("my_docs-2")).toBe("mcp__my_docs-2__*")
 })

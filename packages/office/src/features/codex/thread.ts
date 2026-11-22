@@ -63,9 +63,9 @@ export class McpServersAdded extends Error {
 }
 
 /** The owner's Codex config as the app-server reads it for a thread in `cwd` (`config/read` with its layers; nothing
- *  is written): the MCP servers it defines. Throws `ProjectConfigLoads` when a project layer would load, and rejects as
- *  the request does. */
-export async function ownerConfig(rpc: JsonRpc, cwd: string): Promise<{ mcpServers: string[] }> {
+ *  is written): the MCP servers it defines, and those of them Codex starts as a program (`stdio`: a `command`, as
+ *  against a `url`). Throws `ProjectConfigLoads` when a project layer would load, and rejects as the request does. */
+export async function ownerConfig(rpc: JsonRpc, cwd: string): Promise<{ mcpServers: string[]; stdio: string[] }> {
   const read = (await rpc.request("config/read", { cwd, includeLayers: true }, { timeout: CONFIG_READ_MS })) as {
     config?: { mcp_servers?: unknown }
     layers?: { name?: { type?: unknown; dotCodexFolder?: unknown }; disabledReason?: unknown }[] | null
@@ -74,18 +74,18 @@ export async function ownerConfig(rpc: JsonRpc, cwd: string): Promise<{ mcpServe
   const loaded = (read?.layers ?? []).filter((layer) => layer.name?.type === "project" && !layer.disabledReason)
   if (loaded.length > 0) throw new ProjectConfigLoads(loaded.map((layer) => String(layer.name?.dotCodexFolder)))
   const servers = read?.config?.mcp_servers
-  const mcpServers = isRecord(servers) ? Object.keys(servers) : []
-  return { mcpServers }
+  const defined = isRecord(servers) ? Object.entries(servers) : []
+  const stdio = defined.filter(([, server]) => isRecord(server) && server.command !== undefined).map(([name]) => name)
+  return { mcpServers: defined.map(([name]) => name), stdio }
 }
 
 /** The `thread/start` (or `thread/resume`) params of a thread in `p.workspace` under `p`, with profile `id`: every MCP
- *  server the owner's config defines (`ownerConfig`) turned off but those `p` allows, and `install` read
- *  (`codexThread`). Rejects when the
- *  config can't be read, since a server left on would run as the owner; throws `ProjectConfigLoads`, and as
- *  `codexThread` does. */
+ *  server the owner's config defines (`ownerConfig`) turned off but those `p` allows, each of those Codex starts as a
+ *  program started in the office's empty folder, and `install` read (`codexThread`). Rejects when the config can't be
+ *  read, since a server left on would run as the owner; throws `ProjectConfigLoads`, and as `codexThread` does. */
 export async function employeeLoad(rpc: JsonRpc, p: EmployeePermission, id: string, install: string) {
-  const { mcpServers } = await ownerConfig(rpc, p.workspace)
-  return threadLoad(p.workspace, codexThread(p, id, { install, mcpServers }))
+  const { mcpServers, stdio } = await ownerConfig(rpc, p.workspace)
+  return threadLoad(p.workspace, codexThread(p, id, { install, mcpServers, stdio }))
 }
 
 /** Throws `UnsafeProfile` unless Codex's answer to a load (`thread/start`, `thread/resume`) says the thread runs as

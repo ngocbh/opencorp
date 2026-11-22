@@ -10,7 +10,7 @@ import type { EmployeePermission } from "../sandbox/harness_profile.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 
 /** What a harness's start makes for one thread, beside the session's folder; the rest comes from the person. */
-export type HarnessThread = Pick<EmployeePermission, "gitRoot" | "tmpdir" | "fence" | "harnessHomes">
+export type HarnessThread = Pick<EmployeePermission, "gitRoot" | "tmpdir" | "fence" | "harnessHomes" | "tempRoot">
 
 /** The owner's home (where `~/` points), `<OPENCORP_HOME>`, and the guards every workspace stays clear of. */
 export interface PermissionOffice {

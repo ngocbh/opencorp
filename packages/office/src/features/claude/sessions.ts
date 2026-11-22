@@ -33,12 +33,14 @@ import {
   fenceIn,
   freshFolder,
   harnessRoot,
+  mcpFolder,
+  mcpRoot,
   removeFolder,
   sweepTemp,
 } from "../../runtime/sandbox/harness_temp.ts"
 import { type OfficePaths as SandboxOfficePaths, UnsafeProfile, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
 import { checkFolder } from "../../runtime/sessions/folder.ts"
-import { employeePermission } from "../../runtime/sessions/permission.ts"
+import { type HarnessThread, employeePermission } from "../../runtime/sessions/permission.ts"
 import { instructions } from "../../runtime/sessions/speakers.ts"
 import { HarnessError, continueFirst, notWaiting, resumable, writeState } from "../../runtime/sessions/state.ts"
 import { LIVE, type SessionRecord, type Store } from "../../runtime/store/store.ts"
@@ -397,13 +399,20 @@ export class ClaudeSessions {
     return harnessRoot("claude", this.#tmpBase)
   }
 
+  /** Claude Code's MCP folder in the office's home (`<OPENCORP_HOME>/office/mcp/claude`), which holds a folder per
+   *  session whose employee may use MCP servers. */
+  mcpRoot(): string {
+    return mcpRoot(this.office.paths.mcp, "claude")
+  }
+
   /** What one start of `live`'s Claude Code runs: the pinned `claude` (or the options'), checked as it will run
    *  (`checkClaudeInstall`), since it runs as the owner; the employee's permission over the session's folder, with a
    *  fresh, private temp folder, and on Linux the pinned socat, readied for its sandbox (`prepareSocat`: checked, run
    *  once, and, outside the system folders, linked into `<root>/<session>.bin` with the folders it loads from read);
-   *  the owner's MCP servers the employee may use, from the owner's `.claude.json`, their definitions in a fresh
-   *  private folder `<root>/<session>.mcp` that the employee's commands can't read (their temp folder they can), and
-   *  a log line naming each allowed server that loads nothing; the session's instructions; and its environment, the
+   *  the owner's MCP servers the employee may use, from the owner's `.claude.json`, started in the empty folder of a
+   *  fresh MCP folder of the session's in the office's home (`mcpRoot`), which holds their definitions and which the
+   *  employee's commands can't read (their temp folder they can), and a log line naming each allowed server that
+   *  loads nothing; the session's instructions; and its environment, the
    *  worker's with Claude Code's fixed variables. A new session starts with its own id; a later start resumes it.
    *  Throws `ClaudeMissing` with no Claude Code, `ClaudeSandboxUnavailable` with no socat where the sandbox needs it,
    *  and as the checks do. */
@@ -419,6 +428,7 @@ export class ClaudeSessions {
       tmpdir: freshFolder(root, live.sessionId),
       fence: fenceIn(root),
       harnessHomes: harnessHomes(this.#environ),
+      tempRoot: path.dirname(root),
     })
     if (permission.network) {
       throw new UnsafeProfile(
@@ -436,7 +446,7 @@ export class ClaudeSessions {
       if (prepared.programs !== null) permission.programs = prepared.programs
       permission.programReads = prepared.reads
     }
-    if ((permission.allowedMcp ?? []).length > 0) permission.secrets = freshFolder(root, `${live.sessionId}.mcp`)
+    if ((permission.allowedMcp ?? []).length > 0) permission.mcpHome = mcpFolder(this.mcpRoot(), live.sessionId)
     const home = this.office.guards.home ?? os.homedir()
     const configDir = this.#environ.CLAUDE_CONFIG_DIR || path.join(home, ".claude")
     const config = claudeJson(this.#environ, home)
@@ -489,13 +499,13 @@ export class ClaudeSessions {
     return proc
   }
 
-  /** Drops `live` once it finished, and its temp, programs and MCP servers' folders. */
+  /** Drops `live` once it finished, and its temp, programs and MCP folders. */
   dropped(live: ClaudeSession): void {
     if (this.#live.get(live.sessionId) === live) this.#live.delete(live.sessionId)
     try {
       removeFolder(this.root(), live.sessionId)
       removeFolder(this.root(), `${live.sessionId}.bin`)
-      removeFolder(this.root(), `${live.sessionId}.mcp`)
+      removeFolder(this.mcpRoot(), live.sessionId)
     } catch (error) {
       this.log(`claude session ${live.sessionId}: its temp folder wasn't removed (${nameOf(error)})`)
     }
@@ -503,10 +513,7 @@ export class ClaudeSessions {
 
   /** The session's employee's permission for one start in its folder, from the people at the session's pinned
    *  commit; what the people at head may write, and every live session's folder, stay off its PATH. */
-  async #permission(
-    sessionId: string,
-    thread: Pick<EmployeePermission, "gitRoot" | "tmpdir" | "fence" | "harnessHomes">,
-  ): Promise<EmployeePermission> {
+  async #permission(sessionId: string, thread: HarnessThread): Promise<EmployeePermission> {
     const session = this.store.getSession(sessionId)!
     const { git, guards, paths } = this.office
     const repo = loadRepo(await git.pin(session.repo_commit))
@@ -516,17 +523,22 @@ export class ClaudeSessions {
     return employeePermission(repo, session, thread, office, this.log, { repos: [head], workspaces })
   }
 
-  /** Removes what a crashed office left in the harness temp folder: the temp folder of each of this office's
-   *  sessions with no live Claude Code here, and a doctor probe's whose process is gone. */
+  /** Removes what a crashed office left in the harness temp folder and the MCP folder: the folders of each of this
+   *  office's sessions with no live Claude Code here, and a doctor probe's whose process is gone. */
   #sweep(): void {
-    try {
-      const ours = (folder: string) => {
-        const name = folder.replace(/\.(bin|mcp)$/, "")
-        return !this.#live.has(name) && this.store.getSession(name) !== undefined
+    const ours = (folder: string) => {
+      const name = folder.endsWith(".bin") ? folder.slice(0, -".bin".length) : folder
+      return !this.#live.has(name) && this.store.getSession(name) !== undefined
+    }
+    for (const [what, root] of [
+      ["temp", () => this.root()],
+      ["MCP", () => this.mcpRoot()],
+    ] as const) {
+      try {
+        sweepTemp(root(), ours, this.log)
+      } catch (error) {
+        this.log(`claude: the harness ${what} folder wasn't swept (${nameOf(error)})`)
       }
-      sweepTemp(this.root(), ours, this.log)
-    } catch (error) {
-      this.log(`claude: the harness temp folder wasn't swept (${nameOf(error)})`)
     }
   }
 

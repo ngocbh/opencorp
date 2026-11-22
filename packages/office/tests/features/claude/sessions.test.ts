@@ -77,11 +77,17 @@ test("a start is the chat's child session, under the employee's permission, told
   expect(start!.flags!.settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true })
   expect(start!.flags!["setting-sources"]).toBe("")
   expect(start!.env!.TMPDIR).toBe(path.join(h.sessions.root(), session.id))
-  // No MCP server is allowed: none loads, and no folder for their definitions is made.
+  // No MCP server is allowed: none loads, and no MCP folder is made.
   expect(start!.flags!["strict-mcp-config"]).toBe(true)
   expect(start!.flags!["mcp-config"]).toBeUndefined()
-  expect(fs.existsSync(path.join(h.sessions.root(), `${session.id}.mcp`))).toBe(false)
+  expect(fs.existsSync(path.join(h.sessions.mcpRoot(), session.id))).toBe(false)
 })
+
+/** Commits minh's person file `file` to `h`'s company: its head moves on, the session's commit stays. */
+async function commitPerson(h: Claude, file: Record<string, unknown>): Promise<void> {
+  fs.writeFileSync(path.join(h.office.paths.company, "people/minh/person.yaml"), JSON.stringify(file))
+  await h.office.git.commit(["people/minh/person.yaml"], "minh")
+}
 
 /** The owner's user-scope MCP servers, two holding a token, as `.claude.json` keeps them. */
 const SERVERS = {
@@ -90,9 +96,13 @@ const SERVERS = {
 }
 const TOKENS = ["ghp_decoy-token", "decoy-bearer"]
 
-test("an employee allowed an MCP server gets only its definition, in a 0600 file in a private folder their commands can't read, never on the command line or in a log; its tools run, the file goes when Claude Code stops, the folder with the session", async () => {
+test("an employee allowed an MCP server gets only its definition, in a 0600 file in the office's MCP folder of the session, never on the command line or in a log; it starts in that folder's empty folder, not theirs; its tools run, the file goes when Claude Code stops, the folder with the session", async () => {
   const home = tempDir()
-  fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ numStartups: 2, mcpServers: SERVERS }))
+  // The stand-in logs where it started and the names of the variables it got, never their values.
+  const logs = fs.realpathSync(tempDir())
+  const script = `pwd > ${logs}/pwd; env | cut -d= -f1 | sort > ${logs}/names`
+  const github = { type: "stdio", command: "sh", args: ["-c", script], env: { GITHUB_TOKEN: "ghp_decoy-token" } }
+  fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ numStartups: 2, mcpServers: { ...SERVERS, github } }))
   const policy = { sandbox: "workspace-write", network: false, mcp_servers: ["github", "linear"] }
   const minh = person("minh", { harnesses: ["composer", "claude"], harness_policy: policy })
   const call = { tool: "mcp__github__get_me", input: {}, result: "you are minh" }
@@ -103,12 +113,19 @@ test("an employee allowed an MCP server gets only its definition, in a 0600 file
     script: { mcp_tools: { github: ["get_me"], docs: ["search"] }, turns: [[call, { say: "You are minh." }]] },
   })
   const { heard, id } = await started(h)
-  const folder = path.join(h.sessions.root(), `${id}.mcp`)
+  const folder = path.join(h.office.paths.mcp, "claude", id)
   const file = path.join(folder, "opencorp.mcp.json")
   const [start] = starts(h)
-  expect(start!.mcp).toEqual([{ path: file, servers: { github: SERVERS.github } }])
+  expect(Object.keys(start!.mcp![0]!.servers)).toEqual(["github"])
+  expect(start!.mcp![0]!.path).toBe(file)
   expect(fs.statSync(file).mode & 0o777).toBe(0o600)
   expect(fs.statSync(folder).mode & 0o777).toBe(0o700)
+  // Claude Code starts it in the session's folder; it moves to the office's empty folder first, its env as given.
+  expect(start!.cwd).toBe(h.workspace)
+  expect(fs.readFileSync(path.join(logs, "pwd"), "utf8").trim()).toBe(path.join(folder, "cwd"))
+  const names = fs.readFileSync(path.join(logs, "names"), "utf8").split("\n")
+  expect(names).toContain("GITHUB_TOKEN")
+  expect(fs.readFileSync(path.join(logs, "names"), "utf8")).not.toContain("ghp_decoy-token")
   // Beside the session's temp folder, which its commands may read and write, and closed to them by name.
   expect(file.startsWith(start!.env!.TMPDIR + "/")).toBe(false)
   expect(start!.flags!.settings.sandbox.filesystem.denyRead).toContain(folder)
@@ -287,6 +304,10 @@ test("an office stop ends every session, and a restart ends what a crash left li
   new HarnessRecord(CLAUDE, dir, { id: left.id, name: "claude 2", driver: "minh", chat: chat.id, started: left.created_at })
   fs.mkdirSync(path.join(h.sessions.root(), left.id))
   fs.mkdirSync(path.join(h.sessions.root(), `${left.id}.bin`))
+  fs.mkdirSync(path.join(h.sessions.mcpRoot(), left.id, "cwd"), { recursive: true })
+  fs.writeFileSync(path.join(h.sessions.mcpRoot(), left.id, "opencorp.mcp.json"), "{}")
+  // Another office's, or one that isn't a session's, stays.
+  fs.mkdirSync(path.join(h.sessions.mcpRoot(), "not-a-session"))
   // The next start's sessions.
   const restarted = new ClaudeSessions(h.office, { claude: h.fake.claude, environ: {}, tmpBase: h.tmpBase, log: () => {} })
   await restarted.restore()
@@ -294,6 +315,36 @@ test("an office stop ends every session, and a restart ends what a crash left li
   expect(readClaudeRecord(dir)!.state).toBe("interrupted")
   expect(fs.existsSync(path.join(h.sessions.root(), left.id))).toBe(false)
   expect(fs.existsSync(path.join(h.sessions.root(), `${left.id}.bin`))).toBe(false)
+  expect(fs.existsSync(path.join(h.sessions.mcpRoot(), left.id))).toBe(false)
+  expect(fs.existsSync(path.join(h.sessions.mcpRoot(), "not-a-session"))).toBe(true)
+})
+
+test("a server revoked at head no longer loads when the session resumes, though its commit allowed it", async () => {
+  const home = tempDir()
+  fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ mcpServers: SERVERS }))
+  const policy = (mcp_servers: string[]) => ({ sandbox: "workspace-write", network: false, mcp_servers })
+  const file = (mcp_servers: string[]) =>
+    person("minh", { harnesses: ["composer", "claude"], harness_policy: policy(mcp_servers) })
+  const h = makeClaude({
+    home,
+    files: { "people/minh/person.yaml": file(["github", "docs"]) },
+    idleMs: 200,
+    script: { turns: [[{ say: "One." }], [{ say: "Two." }]] },
+  })
+  const { heard, id } = await started(h)
+  expect(Object.keys(starts(h)[0]!.mcp![0]!.servers)).toEqual(["github", "docs"])
+  await h.sessions.prompt(id, "One.", { by: "minh" })
+  await waitFor(() => heard.said().includes("One.") && status(h, id) === "idle", { what: "the first turn" })
+  const first = h.sessions.get(id)!.proc!
+  await waitFor(() => !first.alive, { what: "the idle stop" })
+  // The owner revokes docs; the session's commit still allows it.
+  await commitPerson(h, file(["github"]))
+  await h.sessions.prompt(id, "Two.", { by: "minh" })
+  await waitFor(() => heard.said().includes("Two."), { what: "the resumed turn" })
+  const resumed = starts(h)[1]!
+  expect(resumed.flags!.resume).toBeDefined()
+  expect(Object.keys(resumed.mcp![0]!.servers)).toEqual(["github"])
+  expect(resumed.flags!.settings.permissions.allow).toEqual(["mcp__github__*"])
 })
 
 test("Esc right after a send interrupts the turn before it runs, cancelling the message", async () => {

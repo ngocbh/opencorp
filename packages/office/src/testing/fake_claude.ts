@@ -21,7 +21,9 @@
  *    file), `--setting-sources`, `--tools`, `--allowedTools`, `--disallowedTools`, `--add-dir`, `--append-system-prompt` and
  *    `--append-system-prompt-file` (read whole at the start, logged as `appended`; one it can't read stops the start,
  *    its wording unrecorded), `--mcp-config` (each a JSON file of `mcpServers`, read whole at the start and logged as
- *    `mcp`; one it can't read, or a JSON string in its place, as for `--append-system-prompt-file`), as `--flag v` or
+ *    `mcp`; one it can't read, or a JSON string in its place, as for `--append-system-prompt-file`; each program
+ *    server, unrecorded, run once at the start as Claude Code starts it, in the fake's own folder with its env added,
+ *    and waited on for at most 5 s, so a stand-in can say where it started), as `--flag v` or
  *    `--flag=v`, and the bare `--strict-mcp-config`, `--verbose`,
  *    `--dangerously-skip-permissions` and `--no-session-persistence` (no session kept). Any other flag, and any
  *    argument that is no flag's value, isn't modelled. Settings that enable the sandbox with `failIfUnavailable`
@@ -36,8 +38,9 @@
  *    else the default set (`Task` first, then the rest by name), less each tool a bare deny rule names, plus the
  *    script's `tools_added` (as a Claude Code that adds tools of its own would), and, unrecorded, as Claude Code's docs
  *    give them, `mcp__<server>__<tool>` for each tool the script's `mcp_tools` gives a server an `--mcp-config` file
- *    loads, `--tools` not reaching them. Its `mcp_servers` lists those servers, each `connected` (unrecorded). A tool
- *    step for a tool not listed gets the recorded `No such tool available` error.
+ *    loads, and `ListMcpResourcesTool` and `ReadMcpResourceTool` once one loads, `--tools` not reaching them. Its
+ *    `mcp_servers` lists those servers, each `connected` (unrecorded). A tool step for a tool not listed gets the
+ *    recorded `No such tool available` error.
  *  - **A turn.** A `user` line, when no turn runs, starts one: the line's
  *    `command_lifecycle` queued and started (a line with no `uuid` gets none), `system`/`init`, the script's next turn
  *    of steps, then `completed` for the lines that joined, the `result`, and `completed` for the first line. A
@@ -103,7 +106,7 @@
  *  It writes no `status`, `rate_limit_event`, `stream_event`, `thinking_tokens`, `task_started`, `task_updated`,
  *  `task_notification` or `background_tasks_changed` lines, nor thinking blocks, which real Claude Code writes too:
  *  the office reads none of them (its tests feed it the recorded ones). */
-import { type ChildProcess, spawn } from "node:child_process"
+import { type ChildProcess, spawn, spawnSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
@@ -891,7 +894,11 @@ class Fake {
     const base =
       named === undefined || named === "default" ? DEFAULT_TOOLS : splitRules(String(named)).filter((t) => t !== "")
     const listed = new Set([...base.filter((t) => !policy.removes(t)), ...(script.tools_added ?? [])])
-    const mcp = mcpServers.flatMap((server) => (script.mcp_tools?.[server] ?? []).map((t) => `mcp__${server}__${t}`))
+    const resources = mcpServers.length > 0 ? ["ListMcpResourcesTool", "ReadMcpResourceTool"] : []
+    const mcp = [
+      ...resources,
+      ...mcpServers.flatMap((server) => (script.mcp_tools?.[server] ?? []).map((t) => `mcp__${server}__${t}`)),
+    ]
     const sorted = [...listed].sort((a, b) => (a === "Task" ? -1 : b === "Task" ? 1 : a < b ? -1 : a > b ? 1 : 0))
     this.tools = [...sorted, ...mcp.filter((t) => !policy.removes(t))]
   }
@@ -1645,7 +1652,18 @@ function main(state: string, argv: string[]): void {
   if (stopped)
     process.stderr.write(`\nError: ${reason[0]!.toLowerCase()}${reason.slice(1)}\n  Refusing to start without a working sandbox (see sandbox.failIfUnavailable).\n`)
   const servers = [...new Set(mcp.flatMap((config) => Object.keys(config.servers)))]
+  for (const config of mcp) for (const definition of Object.values(config.servers)) startServer(definition, cwd)
   new Fake(state, script, flags, policy, mode, id, stopped ? reason : null, servers).serve()
+}
+
+/** Runs a program server's command (`type` none or `stdio`) once, as Claude Code starts it: in `cwd`, the fake's own
+ *  folder, with the fake's environment and its `env`; waited on for at most 5 s. One reached by URL starts nothing. */
+function startServer(definition: Obj, cwd: string): void {
+  if ((definition.type ?? "stdio") !== "stdio" || typeof definition.command !== "string") return
+  const args = Array.isArray(definition.args) ? definition.args.map(String) : []
+  const { [NO_CACHE]: _, ...env } = process.env
+  const added = definition.env ?? {}
+  spawnSync(definition.command, args, { cwd, env: { ...env, ...added }, stdio: "ignore", timeout: 5_000 })
 }
 
 /** Whether an executable `name` is in a folder of `PATH`. */

@@ -19,6 +19,7 @@ import {
   harnessPath,
   mcpServersOff,
 } from "../../../src/runtime/sandbox/harness_profile.ts"
+import { mcpFolder } from "../../../src/runtime/sandbox/harness_temp.ts"
 import { UnsafeProfile, UnsafeWorkspace } from "../../../src/runtime/sandbox/policy.ts"
 import { nativeCodex } from "../../../src/tools/codex/codex.ts"
 import { tempDir } from "../../helpers.ts"
@@ -1269,24 +1270,24 @@ test("a programs folder goes first on the harness PATH and is read in Claude Cod
   }
 })
 
-test("the private folder holding a start's MCP definitions is closed to Claude Code's commands and file tools by name; one the employee may read, a link, or one others may open is refused", () => {
+test("the office's MCP folder of a start (its definitions, and the empty folder its servers start in) is closed to Claude Code's commands and file tools by name; one the employee may read, a link, one others may open, or one without its empty start folder is refused", () => {
   const { root, ws, tmp, permission } = layout()
-  const secrets = path.join(root, "s1.mcp")
-  fs.mkdirSync(secrets, { mode: 0o700 })
-  fs.chmodSync(secrets, 0o700)
-  const p = permission({ secrets })
+  const mcpHome = mcpFolder(root, "s1.mcp")
+  expect(fs.readdirSync(mcpHome)).toEqual(["cwd"])
+  expect(fs.statSync(path.join(mcpHome, "cwd")).mode & 0o777).toBe(0o700)
+  const p = permission({ mcpHome })
   const { settings } = claudeStart(p)
   const fsRules = (settings.sandbox as { filesystem: Record<string, string[]> }).filesystem
-  expect(fsRules.denyRead).toContain(secrets)
-  for (const key of ["allowRead", "allowWrite"]) expect(fsRules[key], key).not.toContain(secrets)
+  expect(fsRules.denyRead).toContain(mcpHome)
+  for (const key of ["allowRead", "allowWrite"]) expect(fsRules[key], key).not.toContain(mcpHome)
   expect((settings.permissions as { deny: string[] }).deny).toEqual(
-    expect.arrayContaining([`Read(/${secrets})`, `Read(/${secrets}/**)`]),
+    expect.arrayContaining([`Read(/${mcpHome})`, `Read(/${mcpHome}/**)`]),
   )
   // Nothing else of the start changes.
   const plain = claudeStart(permission())
   const without = (s: Record<string, any>): Record<string, unknown> => {
-    const denyRead = s.sandbox.filesystem.denyRead.filter((x: string) => x !== secrets)
-    const deny = s.permissions.deny.filter((x: string) => !x.includes(secrets))
+    const denyRead = s.sandbox.filesystem.denyRead.filter((x: string) => x !== mcpHome)
+    const deny = s.permissions.deny.filter((x: string) => !x.includes(mcpHome))
     return { ...s, sandbox: { ...s.sandbox, filesystem: { ...s.sandbox.filesystem, denyRead } }, permissions: { ...s.permissions, deny } }
   }
   expect(without(settings)).toEqual(plain.settings)
@@ -1301,17 +1302,53 @@ test("the private folder holding a start's MCP definitions is closed to Claude C
     [path.join(listed, "s.mcp"), [{ path: listed, access: "read" as const }], /may read/],
   ] as const) {
     fs.mkdirSync(inside, { mode: 0o700 })
-    expect(() => checkPermission(permission({ secrets: inside, folders })), inside).toThrow(why)
+    fs.mkdirSync(path.join(inside, "cwd"), { mode: 0o700 })
+    expect(() => checkPermission(permission({ mcpHome: inside, folders })), inside).toThrow(why)
     fs.rmSync(inside, { recursive: true })
   }
-  expect(() => checkPermission(permission({ secrets: root }))).toThrow(/may read/)
-  fs.chmodSync(secrets, 0o750)
+  expect(() => checkPermission(permission({ mcpHome: root }))).toThrow(/may read/)
+  fs.chmodSync(mcpHome, 0o750)
   expect(() => checkPermission(p)).toThrow(/isn't private/)
-  fs.chmodSync(secrets, 0o700)
+  fs.chmodSync(mcpHome, 0o700)
   const link = path.join(root, "s1-link")
-  fs.symlinkSync(secrets, link)
-  expect(() => checkPermission(permission({ secrets: link }))).toThrow(/a link is refused/)
-  expect(() => checkPermission(permission({ secrets: "rel/s.mcp" }))).toThrow(/isn't absolute/)
+  fs.symlinkSync(mcpHome, link)
+  expect(() => checkPermission(permission({ mcpHome: link }))).toThrow(/a link is refused/)
+  expect(() => checkPermission(permission({ mcpHome: "rel/s.mcp" }))).toThrow(/isn't absolute/)
+  // The folder its servers start in must be there, private, no link, and empty.
+  fs.writeFileSync(path.join(mcpHome, "cwd", "planted.py"), "")
+  expect(() => checkPermission(p)).toThrow(/start in isn't an empty private folder/)
+  fs.rmSync(path.join(mcpHome, "cwd"), { recursive: true })
+  expect(() => checkPermission(p)).toThrow(/start in isn't an empty private folder/)
+  fs.symlinkSync(ws, path.join(mcpHome, "cwd"))
+  expect(() => checkPermission(p)).toThrow(/start in isn't an empty private folder/)
+})
+
+test("an allowed MCP server Codex starts as a program starts in the office's empty folder, never the employee's; one it reaches by URL is left as it is", () => {
+  const { root, install, permission, thread } = layout()
+  const mcpHome = mcpFolder(root, "s1.mcp")
+  const defined = ["github", "docs", "web"]
+  const p = permission({ allowedMcp: ["github", "web"], mcpHome })
+  const { config } = codexThread(p, "opencorp-s1", { install, mcpServers: defined, stdio: ["github", "docs"] })
+  expect(config.mcp_servers).toEqual({ github: { cwd: path.join(mcpHome, "cwd") }, docs: { enabled: false } })
+  // Allowed servers that run as programs need the office's folder.
+  expect(() => thread(permission({ allowedMcp: ["github"] }), { mcpServers: defined })).not.toThrow()
+  expect(() =>
+    codexThread(permission({ allowedMcp: ["github"] }), "opencorp-s1", { install, mcpServers: defined, stdio: ["github"] }),
+  ).toThrow(/office's MCP folder/)
+})
+
+test("no listed folder may hold or lie in the harnesses' private folder under /tmp, which holds every session's temp folder", () => {
+  const { root, permission } = layout()
+  const top = path.join(root, "opencorp-top")
+  fs.mkdirSync(path.join(top, "claude", "other"), { recursive: true })
+  expect(() => checkPermission(permission({ tempRoot: top }))).not.toThrow()
+  for (const listed of [root, top, path.join(top, "claude", "other")]) {
+    const folders = [{ path: listed, access: "read" as const }]
+    expect(() => checkPermission(permission({ tempRoot: top, folders })), listed).toThrow(/private folder under \/tmp/)
+  }
+  const beside = path.join(root, "beside")
+  fs.mkdirSync(beside)
+  expect(() => checkPermission(permission({ tempRoot: top, folders: [{ path: beside, access: "write" }] }))).not.toThrow()
 })
 
 test("socat's check returns the real file it checked, which is what a session copies", () => {
