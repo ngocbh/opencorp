@@ -537,6 +537,25 @@ test("a secret prompt that ends while the owner is typing drops the rest of thei
   for (const text of [await t.view(), t.live(), record]) expect(text).not.toMatch(/hunt|er2/)
 })
 
+test("a cut-off that stops a secret prompt while the owner is typing drops the rest of their line too", async () => {
+  const t = await openShell()
+  const asked = await t.shell.run("stty -echo; read x; stty echo; echo after", 5000)
+  expect(asked).toMatchObject({ status: "waiting", waiting: "secret" })
+  t.shell.ownerKeys("hunt")
+  // The agent's call is cut off: its stop sends Ctrl-C, which ends the prompt under the owner's answer.
+  t.shell.stop()
+  await waitFor(() => t.shell.state().status === "idle", { timeout: 5000, what: "the stopped prompt" })
+  await waitFor(async () => (await t.view()).includes("press Enter"), { timeout: 5000, what: "the owner's note" })
+  // The rest of the password goes nowhere until the owner's Enter, never to the shell's prompt.
+  t.shell.ownerKeys("er2\r")
+  t.shell.ownerKeys("echo back\r")
+  const reply = await t.shell.read({ waitMs: 5000 })
+  expect(reply.output).toContain("echo back\nback\n")
+  await t.shell.close()
+  const record = fs.readFileSync(path.join(t.recordDir, "output.log"), "utf8")
+  for (const text of [await t.view(), t.live(), record]) expect(text).not.toMatch(/hunt|er2/)
+})
+
 test("a command can't redefine, shadow or unset how the shell ends a command", async () => {
   const t = await openShell()
   const forged =

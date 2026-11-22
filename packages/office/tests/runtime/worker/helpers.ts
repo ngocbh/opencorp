@@ -479,7 +479,8 @@ export interface TestWorker extends JobWorker {
 
 /**
  * Runs `job` in an in-process worker (`serve` over a channel pair) and reads its frames as the office's worker does:
- * requests are answered by `handlers` without waiting, notifications go to the handler of that name, and after
+ * requests are answered by `handlers` without waiting (`OfficeRequests`, so a `tool_interrupt` frame aborts the
+ * `interrupted` signal of the tool call it names), notifications go to the handler of that name, and after
  * `result` or `error` the office stops sending. A throwing notification handler doesn't end the read loop; `wait`
  * rethrows the first such error. Once the office read loop has ended and the worker's code is known, the office end
  * closes and `handlers.exited` runs; a `serve` that rejects is `EXIT_FAILED`. At test end the office end closes and
@@ -544,14 +545,15 @@ export async function inProcessWorker(
       return result
     },
   }
+  const requests = new OfficeRequests(office)
   const readLoop = async () => {
     try {
       for (;;) {
         const frame = await office.recv()
         const kind = frame.type
-        if (isRequest(kind)) {
-          void replyTo(office, frame, handlers, worker)
-        } else if (kind === "deliver_reply") {
+        // A request, answered in the background, or a tool interrupt.
+        if (requests.take(frame, handlers, worker)) continue
+        if (kind === "deliver_reply") {
           notify(() => handlers.deliverReply(worker, frame))
         } else if (kind === "event" || kind === "stream" || kind === "result" || kind === "error") {
           notify(() => handlers[kind](worker, frame))

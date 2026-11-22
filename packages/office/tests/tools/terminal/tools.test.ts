@@ -16,8 +16,8 @@ const REPLY =
   "The reply is one JSON object: `shell`; `status` (idle, running, waiting, ended or failed); `exit`; `waiting` " +
   '("secret" while a prompt waits for a password, passphrase or code, which only the owner types); `output`, the ' +
   "screen as it showed from where you last read; `next`, where to read on from; `more`, whether more output is " +
-  "ready past this page; `skipped`, when the start of what you asked to read is no longer kept; `note`, when the " +
-  "owner must act; `error`, why a shell failed; and `refused`, why nothing was done."
+  "ready past this page; `skipped`, when the start of what you asked to read is no longer kept; `note`, why `exit` " +
+  "is null or what the owner must do; `error`, why a shell failed; and `refused`, why nothing was done."
 const WAIT = { type: "number", minimum: 0, maximum: 120, description: "Seconds to wait for the command to end before replying: default 30, at most 120." }
 const WHY = { type: "string", description: "One line for the owner: what this finds out or does." }
 const SHELL = { type: "string", description: 'The shell, by name: "shell 1".' }

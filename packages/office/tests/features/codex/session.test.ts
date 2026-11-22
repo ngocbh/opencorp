@@ -1,4 +1,5 @@
 /** A Codex session the owner drives: load, turns, steers, interrupts, end, office stop. */
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
 import type { AddressInfo } from "node:net"
@@ -16,7 +17,7 @@ import type { HarnessEvent } from "../../../src/tools/harness/adapter.ts"
 import { APP_SERVER_ARGS, type CodexProcess, CodexStartError, nativeCodex } from "../../../src/tools/codex/codex.ts"
 import { JsonRpc, RpcClosed, RpcError } from "../../../src/tools/codex/rpc.ts"
 import type { CodexSession } from "../../../src/features/codex/session.ts"
-import { harnessTemp } from "../../../src/features/codex/thread.ts"
+import { McpServersAdded, ProjectConfigLoads, harnessTemp } from "../../../src/features/codex/thread.ts"
 import { harnessPath } from "../../../src/runtime/sandbox/harness_profile.ts"
 import { killGroup, sameProcess, startTime } from "../../../src/util/proc.ts"
 import { realPath } from "../../../src/runtime/sandbox/policy.ts"
@@ -238,6 +239,47 @@ test("a project config codex would load, as the owner trusts the project, refuse
   expect(shown).toContain(`Codex would load this project's own config (${path.join(cwd, ".codex/config.toml")})`)
   expect(shown).toContain("Untrust the project in your Codex config.toml")
   expect(h.fake.calls("thread/start")).toEqual([])
+})
+
+test("a project the owner trusts while a session runs there refuses the next turn as a refused load does, until untrusted", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  const cwd = fs.realpathSync(h.workspace)
+  await h.sessions.prompt(sid, "first")
+  await waitFor(() => h.fake.calls("turn/start").length === 1 && status(h, sid) === "idle", { what: "the first turn" })
+  // The owner trusts the project now, as Codex writes it the first time they run it there.
+  h.fake.script([], { project_layers: { [cwd]: [{ dotCodexFolder: path.join(cwd, ".codex") }] } })
+  const e = await rejection(h.sessions.prompt(sid, "second"))
+  expect(e).toBeInstanceOf(HarnessError)
+  expect([e.status, e.code]).toEqual([409, "codex_refused"])
+  expect(e.message).toBe(new ProjectConfigLoads([path.join(cwd, ".codex")]).message)
+  expect(h.fake.calls("turn/start")).toHaveLength(1)
+  expect(status(h, sid)).toBe("idle")
+  // Untrusted again, the next message starts a turn. Each turn's check reads the config again; no model runs for it.
+  h.fake.script([])
+  await h.sessions.prompt(sid, "third")
+  await waitFor(() => h.fake.calls("turn/start").length === 2 && status(h, sid) === "idle", { what: "the third turn" })
+  expect(h.fake.calls("config/read")).toEqual(Array(4).fill({ cwd, includeLayers: true }))
+})
+
+test("an MCP server the owner adds while a session runs refuses the next turn, which would start it as the owner", async () => {
+  const h = makeCodex()
+  h.fake.script([], { mcp_servers: { docs: { command: "docs-mcp" } } })
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "first")
+  await waitFor(() => h.fake.calls("turn/start").length === 1 && status(h, sid) === "idle", { what: "the first turn" })
+  // The load turned docs off; the owner adds lint since, which the thread's override doesn't name.
+  h.fake.script([], { mcp_servers: { docs: { command: "docs-mcp" }, lint: { command: "lint-mcp" } } })
+  const e = await rejection(h.sessions.prompt(sid, "second"))
+  expect([e.status, e.code]).toEqual([409, "codex_refused"])
+  expect(e.message).toBe(new McpServersAdded(["lint"]).message)
+  expect(e.message).toContain("lint")
+  expect(h.fake.calls("turn/start")).toHaveLength(1)
+  expect(status(h, sid)).toBe("idle")
+  // A server removed since the load is no harm: the next turn goes.
+  h.fake.script([], { mcp_servers: {} })
+  await h.sessions.prompt(sid, "third")
+  await waitFor(() => h.fake.calls("turn/start").length === 2 && status(h, sid) === "idle", { what: "the third turn" })
 })
 
 test("an office start sweeps the temp folders a crash left for its own sessions, and no other's", async () => {
@@ -1240,14 +1282,14 @@ async function realCodex(answers: Answer[]) {
   )
   const real = nativeCodex(CODEX)
   const options = { command: () => [real.run, ...APP_SERVER_ARGS], environ: { CODEX_HOME: codexHome } }
-  return { h: makeCodex(options), model, options }
+  return { h: makeCodex(options), model, options, codexHome }
 }
 
 /** A session on the real Codex (`realCodex`). */
 async function realSession(answers: Answer[]) {
-  const { h, model } = await realCodex(answers)
+  const { h, model, codexHome } = await realCodex(answers)
   const sid = await start(h, h.workspace)
-  return { h, sid, model }
+  return { h, sid, model, codexHome }
 }
 
 /** The process running `args`, once Codex holds it among the thread's terminals (an Esc before that drops it with
@@ -1346,6 +1388,43 @@ test.skipIf(NO_CODEX)(
     expect(r.store.getSession(id)!.harness_session_id).toBe(thread)
     // Only the restore's own word that it stopped: Codex took the thread back with no error.
     expect(errors(r, id)).toEqual(["The office restarted, so this Codex session stopped; its employee's next message continues it."])
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
+  "on a real codex, a project the owner trusts while a session runs there refuses the next message before any model call",
+  async () => {
+    const { h, sid, model, codexHome } = await realSession([])
+    const cwd = fs.realpathSync(h.workspace)
+    const marker = path.join(fs.realpathSync(tempDir()), "project-mcp-ran")
+    expect(spawnSync("git", ["init", "-q", cwd], { env: { PATH: "/usr/bin:/bin", HOME: h.home } }).status).toBe(0)
+    fs.mkdirSync(path.join(cwd, ".codex"))
+    const project = `[mcp_servers.project_probe]\ncommand = "sh"\nargs = ["-c", "touch ${marker}; exec sleep 3"]\n`
+    fs.writeFileSync(path.join(cwd, ".codex/config.toml"), project)
+    // As Codex itself writes it the first time the owner runs Codex there.
+    fs.appendFileSync(path.join(codexHome, "config.toml"), `\n[projects."${cwd}"]\ntrust_level = "trusted"\n`)
+    const e = await rejection(h.sessions.prompt(sid, "Hello."))
+    expect([e.code, e.message]).toEqual(["codex_refused", new ProjectConfigLoads([path.join(cwd, ".codex")]).message])
+    await sleep(1000)
+    expect(model.calls()).toBe(0)
+    expect(fs.existsSync(marker)).toBe(false)
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
+  "on a real codex, an MCP server the owner adds while a session runs refuses the next message before it starts",
+  async () => {
+    const { h, sid, model, codexHome } = await realSession([])
+    const marker = path.join(fs.realpathSync(tempDir()), "owner-mcp-ran")
+    const server = `\n[mcp_servers.added]\ncommand = "sh"\nargs = ["-c", "touch ${marker}; exec sleep 3"]\n`
+    fs.appendFileSync(path.join(codexHome, "config.toml"), server)
+    const e = await rejection(h.sessions.prompt(sid, "Hello."))
+    expect([e.code, e.message]).toEqual(["codex_refused", new McpServersAdded(["added"]).message])
+    await sleep(1000)
+    expect(model.calls()).toBe(0)
+    expect(fs.existsSync(marker)).toBe(false)
   },
   120_000,
 )

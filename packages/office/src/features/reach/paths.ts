@@ -56,6 +56,10 @@ export class ReachPaths {
   get wrapper(): string {
     return path.join(this.bin, "ssh")
   }
+  /** The wrapper the agent's sandbox mounts over the system's ssh on Linux, which runs the real ssh at `REAL_SSH`. */
+  get agentWrapper(): string {
+    return path.join(this.ssh, "agent-ssh")
+  }
   /** The exit statuses the wrapper records for the process `pid`'s children. */
   status(pid: number): string {
     return path.join(this.ssh, `status.${pid}`)

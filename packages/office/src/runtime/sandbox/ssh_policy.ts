@@ -9,7 +9,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { SYSTEM_DIRS } from "./bwrap.ts"
 import { existingDir, realPath, UnsafeProfile, within } from "./policy.ts"
-import { run } from "./run.ts"
+import { run, SAFE_PATH } from "./run.ts"
 import { SYSTEM_SUBPATHS } from "./seatbelt.ts"
 
 /** The host `sshFiles` asks about: one no config names, so only its `Host *` and defaults apply. */
@@ -23,6 +23,11 @@ const MAX_INCLUDE_DEPTH = 16
 const MAX_CONFIGS = 256
 /** How many entries a scan for hard links reads in one folder tree before it refuses. */
 const MAX_SCANNED = 10_000
+
+/** Where, on Linux, a call with a wrapper (`SshPolicyInit.wrapper`) sees the real ssh: the wrapper runs it there. */
+export const REAL_SSH = "/run/opencorp/ssh"
+/** The folders whose `ssh` the wrapper is mounted over: the shells' PATH and `command -p`'s. */
+const SSH_FOLDERS = [...SAFE_PATH.split(":"), "/usr/local/bin", "/bin", "/usr/bin"]
 
 /** What ssh reads a file `ssh -G` names as; `control` is the socket a master listens on (ControlPath). */
 export type SshFileKind = "identity" | "certificate" | "known_hosts" | "control"
@@ -55,6 +60,12 @@ export interface SshPolicyInit {
   /** Folders bound read-write whole: only a test's own folder, checked by its caller first, which holds its fake ssh
    *  and the state it writes. */
   readWrite?: readonly string[]
+  /** On Linux, an ssh wrapper in `hq/ssh` that runs the real ssh at `REAL_SSH`: mounted over `ssh`, over each `ssh`
+   *  in the system's PATH folders and over `wrapperOver`, so whatever path a command runs ssh by, it reaches the
+   *  wrapper. Seatbelt can't mount one path over another, so macOS has none. */
+  wrapper?: string
+  /** More paths to mount the wrapper over: the visit's own wrapper, first on the shells' PATH. */
+  wrapperOver?: readonly string[]
 }
 
 /** The access one SSH-only call gets: the network, the system as the workspace profile has it plus ssh's and
@@ -75,6 +86,9 @@ export class SshPolicy {
   readonly writable: readonly string[]
   /** Folders bound read-write whole: a test's own folder, and nothing else. */
   readonly readWrite: readonly string[]
+  /** On Linux with a wrapper, the files mounted last, each over its target: the real ssh at `REAL_SSH`, then the
+   *  wrapper over every ssh the call could run by path. Empty otherwise. */
+  readonly sshOver: readonly (readonly [source: string, target: string])[]
   /** The sockets the call may connect to, and do nothing else with: the agent's and a KCM's. */
   readonly sockets: readonly string[]
   /** The folders whose sockets the call may connect to, and do nothing else with: `~/.ssh`, then the owner's
@@ -290,6 +304,20 @@ export class SshPolicy {
       if (!lstat(real)?.isFile()) notes.push(`ssh ${init.ssh} is not bound: it is not a regular file`)
       else for (const p of programs) if (!mounted(p)) bound.push(p)
     }
+    const sshOver: [string, string][] = []
+    if (init.wrapper !== undefined && init.ssh !== undefined && process.platform === "linux") {
+      const wrapper = realPath(init.wrapper)
+      // In hq/ssh, which the call can't write; a link there would point it elsewhere.
+      if (!within(wrapper, hqSsh) || !lstat(wrapper)?.isFile()) {
+        throw new UnsafeProfile(`the SSH-only sandbox's ssh wrapper ${init.wrapper} is not a regular file in ${hqSsh}`)
+      }
+      const real = realPath(init.ssh)
+      const given = path.join(realPath(path.dirname(init.ssh)), path.basename(init.ssh))
+      const found = SSH_FOLDERS.map((dir) => path.join(dir, "ssh")).filter((p) => lstat(p) !== undefined)
+      const targets = [real, given, ...found.map((p) => realPath(p)), ...(init.wrapperOver ?? []).map((p) => realPath(p))]
+      sshOver.push([real, REAL_SSH])
+      for (const target of new Set(targets)) if (lstat(target)?.isFile()) sshOver.push([wrapper, target])
+    }
     const extras = (init.readOnly ?? []).map((p) => realPath(p))
     for (const p of extras) denied.check(p, "the extra path")
     const readWrite = (init.readWrite ?? []).map((p) => realPath(p))
@@ -318,6 +346,7 @@ export class SshPolicy {
     this.readOnly = [ssh, ...bound, hqSsh, ...extras]
     this.writable = [knownHosts, status, ...(ticket === null ? [] : [ticket])]
     this.readWrite = readWrite
+    this.sshOver = sshOver
     this.sockets = [agent, kcm].filter((p) => p !== null)
     this.socketFolders = [ssh, ...controlFolders]
     this.agentSocket = agent

@@ -134,6 +134,11 @@ export class PipeShell {
     if (data.includes("\x03")) this.call?.abort()
   }
 
+  /** Stops the running command for a call cut off, as the owner's Ctrl-C does. */
+  stop(): void {
+    this.call?.abort()
+  }
+
   /** Ends the shell, stopping a running command; resolves once its call has ended. */
   async close(): Promise<void> {
     if (this.closing || this.current.status === "failed") return await this.settled

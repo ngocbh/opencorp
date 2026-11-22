@@ -39,8 +39,21 @@ your username, paths, job lists).
   there. The agent sees the prompt as the screen shows it, never what you type at it.
 - **One login.** The agent's ssh uses a connection you have open to the cluster, with no password prompt.
   Without one, each separate ssh may ask you to log in. Connect from your own terminal first, or let the agent
-  log in once and type its commands into that shell. The agent's commands could end a connection of yours;
-  the mode asks first.
+  log in once and type its commands into that shell. The agent's commands could end a connection of yours; that
+  asks you first, in every mode.
+- **The agent's ssh** goes through OpenCorp's ssh wrapper, which reads OpenCorp's config for the agent: it rides a
+  connection you have open and never keeps one of its own (`ControlMaster no`).
+  - **On Linux** the sandbox puts the wrapper in place of every system ssh, so ssh goes through it however it is run:
+    by its path, through `command -p`, with another `PATH`, from a program such as `python`, and from `scp` and
+    `sftp`, which run ssh themselves. The wrapper passes that config and `ControlMaster=no` ahead of the agent's own
+    options, so theirs can't override it. The real ssh stays at `/run/opencorp/ssh` for the wrapper, and a command
+    could run it directly: a line naming that folder asks you first, in every mode, and running it gains nothing but
+    a login of its own, which asks you for any password or code as usual.
+  - **On macOS** the sandbox can't put one program in place of another, so only an ssh found on the shell's `PATH`
+    goes through the wrapper. OpenCorp's command check asks you first, in every mode, before ssh run by its path,
+    through `command -p` or an `env` that clears or sets `PATH`, and before a line that changes `PATH` or runs
+    `hash -p` (on Linux too). A program that runs ssh itself, `scp` and `sftp` included, isn't caught, and uses your
+    config as it is.
 - **Saving.** The agent shows you `reach.sh` and `notes.md` (how your cluster is reached, in plain words)
   with the risks of your setup on a card, which you read to the end before you choose. It asks in every
   mode. "Test it, then save it" runs the whole connection in OpenCorp's own connection shell, which the chat

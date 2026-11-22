@@ -146,6 +146,136 @@ test("a run whose reply is cut off stops its command, in a pipes shell and in a 
   readFake.end("make four", 0)
 })
 
+/** Plain PTY shells (`plainShells`) whose terminal logs, in order, what the shell writes to it (`data`) and what is
+ *  typed (`write`); `onWrite` sees each write once it has gone. */
+function loggedShells(dir: string, onWrite: (data: string) => void = () => {}) {
+  const log: { data?: string; write?: string }[] = []
+  const shells = plainShells(dir)
+  const start: typeof shells.start = (argv, io) => {
+    const onData = (chunk: Uint8Array) => {
+      log.push({ data: Buffer.from(chunk).toString("latin1") })
+      io.onData(chunk)
+    }
+    const pty = shells.start(argv, { ...io, onData })
+    return {
+      get pid() { return pty.pid },
+      get exited() { return pty.exited },
+      write: (data) => {
+        pty.write(data)
+        log.push({ write: String(data) })
+        onWrite(String(data))
+      },
+      resize: (cols, rows) => pty.resize(cols, rows),
+      modes: () => pty.modes(),
+      kill: (signal) => pty.kill(signal),
+      close: () => pty.close(),
+    }
+  }
+  return { shells: { ...shells, start }, log }
+}
+
+/** Where in `log` the first Ctrl-C was typed, and where the shell first said it read a command's line. */
+function ctrlCAfterStart(log: { data?: string; write?: string }[]): [number, number] {
+  const started = log.findIndex((e) => /opencorp-mark;[0-9a-f]+;start\x07/.test(e.data ?? ""))
+  return [log.findIndex((e) => e.write === "\x03"), started]
+}
+
+test("on a PTY, a cut-off's Ctrl-C and the agent's interrupt reach the shell once it has read the command's line", async () => {
+  // Cut off the moment the command's line is typed, before the shell can have read it.
+  const stop = new AbortController()
+  let logged!: ReturnType<typeof loggedShells>
+  const t = openTerminal({
+    perms: permissions().perms,
+    shells: (dir) => (logged = loggedShells(dir, (data) => data.includes("sleep 30.71") && stop.abort())).shells,
+  })
+  await t.call("run", { command: "true", why: "x" })
+  const cut = t.call("run", { command: "sleep 30.71", why: "x", wait: 60, shell: "shell 1" }, { signal: stop.signal })
+  expect(json(await cut)).toMatchObject({ status: "idle", exit: 130 })
+  const [ctrlC, started] = ctrlCAfterStart(logged.log)
+  expect(started).toBeGreaterThan(-1)
+  expect(ctrlC).toBeGreaterThan(started)
+  expect(await gone("30.71")).toBe(true)
+  // The agent's interrupt right after a reply that didn't wait.
+  logged.log.length = 0
+  const quick = await t.call("run", { command: "sleep 30.72", why: "x", wait: 0, shell: "shell 1" })
+  expect(json(quick)).toMatchObject({ status: "running" })
+  t.call("interrupt", { shell: "shell 1" })
+  await waitFor(() => t.terminal.shells()[0]!.state.status === "idle", { what: "the interrupted command's end" })
+  const [interrupted, read] = ctrlCAfterStart(logged.log)
+  expect(read).toBeGreaterThan(-1)
+  expect(interrupted).toBeGreaterThan(read)
+  expect(await gone("30.72")).toBe(true)
+})
+
+test("a reply whose exit is null says why in its note: still running, cut off, interrupted, stopped, or the shell gone", async () => {
+  let fake!: ReturnType<typeof fakePipes>
+  const t = openTerminal({
+    perms: permissions({ rules: [rule("allow", "command", "make *")] }).perms,
+    shells: (dir) => (fake = fakePipes(dir)).shells,
+  })
+  const note = (reply: unknown) => json(reply).note
+  const running = await t.call("run", { command: "make one", why: "x", wait: 0 })
+  expect(json(running)).toMatchObject({ status: "running", exit: null })
+  expect(note(running)).toBe("No exit yet: the command is still running.")
+  // An exit says it all: no note.
+  fake.end("make one", 2)
+  expect(json(await t.call("read", { shell: "shell 1", wait: 10 }))).toMatchObject({ status: "idle", exit: 2 })
+  expect(note(await t.call("read", { shell: "shell 1" }))).toBeUndefined()
+  // Cut off.
+  const stop = new AbortController()
+  const cut = t.call("run", { command: "make two", why: "x", wait: 60, shell: "shell 1" }, { signal: stop.signal })
+  await waitFor(() => fake.running().length === 1, { what: "the command" })
+  stop.abort()
+  expect(note(await cut)).toBe("No exit: the command was stopped because its call was cut off.")
+  // The agent's interrupt, and the owner's Ctrl-C.
+  const stopped = async (how: () => unknown, command: string) => {
+    await t.call("run", { command, why: "x", wait: 0, shell: "shell 1" })
+    await how()
+    await waitFor(() => fake.running().length === 0, { what: "the command's end" })
+    return note(await t.call("read", { shell: "shell 1" }))
+  }
+  expect(await stopped(() => t.call("interrupt", { shell: "shell 1" }), "make three")).toBe("No exit: you interrupted the command.")
+  const owner = () => t.terminal.shell(t.terminal.shells()[0]!.id)!.ownerKeys("\x03")
+  expect(await stopped(owner, "make four")).toBe(
+    "No exit: the owner stopped the command (Ctrl-C), or it couldn't run.",
+  )
+  // A shell that ends while its command runs.
+  await t.call("run", { command: "make five", why: "x", wait: 0, shell: "shell 1" })
+  expect(note(await t.call("close", { shell: "shell 1" }))).toBe("No exit: the shell ended while the command ran.")
+  // A PTY shell killed by a signal.
+  const pty = openTerminal({ perms: permissions().perms })
+  await pty.call("run", { command: "true", why: "x" })
+  expect(note(await pty.call("close", { shell: "shell 1" }))).toBe("No exit: the shell ended, closed or killed by a signal.")
+})
+
+test("a call ends on its interrupt too, so an Esc that came before the call reached the terminal still cuts it off", async () => {
+  let fake!: ReturnType<typeof fakePipes>
+  const t = openTerminal({
+    perms: permissions({ rules: [rule("allow", "command", "make *")] }).perms,
+    shells: (dir) => (fake = fakePipes(dir)).shells,
+  })
+  const tools = t.terminal.tools()
+  expect(json(await tools.run.call({ command: "make long", why: "x", wait: 0 }, { callId: "r/n/1/0" }))).toMatchObject({
+    status: "running",
+  })
+  // Esc's cut-off found no call: this read reaches the terminal after it, and only its interrupt says so.
+  t.terminal.interruptWaits()
+  const interrupt = new AbortController()
+  const read = tools.read.call({ shell: "shell 1", wait: 60 }, { callId: "r/n/2/0", interrupted: interrupt.signal })
+  interrupt.abort()
+  expect(json(await read)).toMatchObject({ shell: "shell 1", status: "running" })
+  // The command its run's reply said is running goes on.
+  expect(fake.running()).toEqual(["make long"])
+  // A run whose interrupt comes while it waits stops its command, as a cut-off does.
+  fake.end("make long", 0)
+  const stop = new AbortController()
+  const run = tools.run.call({ command: "make two", why: "x", wait: 60, shell: "shell 1" }, { callId: "r/n/3/0", interrupted: stop.signal })
+  await waitFor(() => fake.running().length === 1, { what: "the command" })
+  stop.abort()
+  expect(json(await run)).toMatchObject({ status: "idle", exit: null })
+  expect(fake.running()).toEqual([])
+})
+
 test("a command whose reply said running goes on when a later call is cut off", async () => {
   let fake!: ReturnType<typeof fakePipes>
   const t = openTerminal({

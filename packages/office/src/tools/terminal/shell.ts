@@ -7,8 +7,9 @@
  *  copy of the owner's keys and logs nothing. Only the echo of the line the host types for the agent is cut, with
  *  `$ <command>` in its place.
  *
- *  **Where a command ends.** The host types the agent's command as `eval '<command>'; \__oc_s <nonce> $?`, with a
- *  fresh nonce for each command. `__oc_s` sets `__oc_n` to the nonce and keeps the command's exit code; the
+ *  **Where a command ends.** The host types the agent's command as `\__oc_b <start>; eval '<command>'; \__oc_s
+ *  <nonce> $?`, with a fresh start token and nonce for each command. `__oc_b` prints a start marker with the start
+ *  token: the shell has read the line. `__oc_s` sets `__oc_n` to the nonce and keeps the command's exit code; the
  *  `PROMPT_COMMAND` the shell's set-up line installs then puts the terminal's line settings back as they were at the
  *  start, prints a marker (an OSC holding `__oc_n` and the exit code) and clears `__oc_n`. Only a marker with the
  *  command's nonce ends it.
@@ -19,7 +20,8 @@
  *    path and no builtin, so a command can't redefine, unset or shadow them.
  *  - The line settings come back before each marker, so a command's `stty eof ';'` can't split the next typed line.
  *  - `eval` takes a command whatever its syntax: one that doesn't parse fails and still ends.
- *  - A nonce the shell prints (with `set -x`, say) is neutralised in the views, even split across reads.
+ *  - A nonce or start token the shell prints (with `set -x`, say) is neutralised in the views, even split across
+ *    reads.
  *  - Each marker carries the shell's folder as the kernel has it (`pwd -P`, by path), not as `$PWD` says, for the
  *    gate (`cwd`). Only a marker with the agent's nonce sets it: after any other end, the owner's command or one a
  *    Ctrl-C stopped, the folder is unknown until the agent's next command ends. A command that can forge its end
@@ -36,6 +38,12 @@
  *
  *  **An unfinished line** the agent leaves when its command ends is killed (Ctrl-U), so neither the next command nor
  *  the owner's next line takes it on; a line the owner typed after it on the same line goes with it.
+ *
+ *  **Stopping the agent's command.** Its interrupt, and a cut-off call's stop, send Ctrl-C only once the start marker
+ *  says the shell has read the command's line: a Ctrl-C before that would make the terminal throw the unread line away,
+ *  so whether the command ran at all would depend on timing. A Ctrl-C that comes as the command starts can still be
+ *  dropped (bash ignores one that comes while it waits on a child that exits normally), so it goes again, up to three
+ *  times, while the command runs on. The owner's keys go straight to the terminal.
  *
  *  **Secret prompts.** While a command runs, the shell checks `ownerPrompt` after each output chunk and every 200 ms.
  *  At a secret prompt (a password, passphrase or code) it waits for the owner and refuses the agent's keys and its
@@ -138,11 +146,12 @@ const SETUP = {
     "set +B +m +o history; shopt -u expand_aliases; unalias -a; set +o emacs +o vi; PS1=; PS2=; " +
     `__oc_y=$(type -P stty); __oc_f=$(type -P printf); __oc_w=$(type -P pwd); __oc_t=$("$__oc_y" -g </dev/tty); ` +
     "readonly __oc_y __oc_f __oc_w __oc_t; " +
+    `__oc_b() { "$__oc_f" "\\033]633;opencorp-mark;%s;start\\007" "$1" >/dev/tty; }; ` +
     `__oc_s() { __oc_n=$1; /bin/sh -c 'exit "$1"' sh "$2"; }; ` +
     `__oc_p() { "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; ` +
     `"$__oc_f" "\\033]633;opencorp-mark;%s;%d;%s\\007" "$__oc_n" "$1" "$("$__oc_w" -P 2>/dev/null)" >/dev/tty; ` +
     "__oc_n=; }; " +
-    `readonly -f __oc_s __oc_p; PROMPT_COMMAND='__oc_p "$?"'; readonly PROMPT_COMMAND\n`,
+    `readonly -f __oc_b __oc_s __oc_p; PROMPT_COMMAND='__oc_p "$?"'; readonly PROMPT_COMMAND\n`,
   // sh's set may not know some of these options, and a special builtin's error would end the line, so each goes
   // last, alone and through `command`. A sh that is bash edits lines unless told not to. The marker's printf and pwd
   // run by path where they are found, so a command's function can't stand in for them.
@@ -160,6 +169,10 @@ const ARGV = { bash: ["/bin/bash", "--noprofile", "--norc", "--noediting", "-i"]
 const DROPPED = new Set(["ENV", "BASH_ENV", "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS"])
 
 const GUARD_MS = 200
+/** How long a Ctrl-C to the agent's command waits for its end before it goes again, and how many times it does: bash
+ *  drops a Ctrl-C that comes while it waits on a child that then exits normally, as at the command's start. */
+const CTRL_C_AGAIN_MS = 300
+const CTRL_C_AGAIN = 3
 const START_MS = 15_000
 const HANGUP_MS = 2_000
 /** The longest a reply waits, whatever it is asked. */
@@ -175,12 +188,13 @@ export function shellKind(choice?: "bash" | "sh"): "bash" | "sh" {
   return choice ?? (fs.existsSync("/bin/bash") ? "bash" : "sh")
 }
 
-/** The line the host types for the agent's `command` in a `kind` shell, with `nonce`. */
-function typedLine(command: string, nonce: string, kind: "bash" | "sh"): string {
+/** The line the host types for the agent's `command` in a `kind` shell, with `start` and `nonce`. */
+function typedLine(command: string, start: string, nonce: string, kind: "bash" | "sh"): string {
   const quoted = `'${command.replaceAll("'", "'\\''")}'`
   return kind === "bash"
-    ? `eval ${quoted}; \\__oc_s ${nonce} $?\n`
-    : `eval ${quoted}; __oc_r=$?; "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; "$__oc_f" ` +
+    ? `\\__oc_b ${start}; eval ${quoted}; \\__oc_s ${nonce} $?\n`
+    : `"$__oc_f" '\\033]633;opencorp-mark;%s;start\\007' ${start} >/dev/tty; eval ${quoted}; __oc_r=$?; ` +
+        `"$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; "$__oc_f" ` +
         `'\\033]633;opencorp-mark;%s;%d;%s\\007' ${nonce} "$__oc_r" "$("$__oc_w" -P 2>/dev/null)" >/dev/tty\n`
 }
 
@@ -221,6 +235,13 @@ export class PtyShell {
   private current: ShellState = { status: "starting", waiting: null, command: null, exit: null, error: null }
   /** The agent's running command's nonce. */
   private nonce: string | null = null
+  /** Its start token, and whether its start marker has come: the shell has read its line. */
+  private startToken: string | null = null
+  private begun = false
+  /** A Ctrl-C for it waits for its start marker. */
+  private stopWanted = false
+  /** The Ctrl-C to it that goes again if it hasn't ended. */
+  private again: ReturnType<typeof setTimeout> | undefined
   /** The owner's command runs: one they started at the prompt. */
   private ownerRunning = false
   /** A Ctrl-C reached the agent's command: the shell's prompt ends it, nonce or not. */
@@ -305,7 +326,8 @@ export class PtyShell {
     const why = this.runProblem(command)
     if (why !== null) return this.refusal(why)
     const nonce = randomBytes(NONCE_BYTES).toString("hex")
-    const typed = typedLine(command, nonce, this.kind)
+    const token = randomBytes(NONCE_BYTES).toString("hex")
+    const typed = typedLine(command, token, nonce, this.kind)
     try {
       this.host.record.command(command, this.host.driver)
     } catch (error) {
@@ -317,6 +339,8 @@ export class PtyShell {
     // From where the agent last read, so what came in between (the owner's command, say) is read once.
     const start = this.cursor
     this.nonce = nonce
+    this.startToken = token
+    this.begun = this.stopWanted = false
     this.interrupted = false
     this.echo = bytesOf(typed).replaceAll("\n", "\r\n")
     this.echoAt = 0
@@ -360,8 +384,38 @@ export class PtyShell {
     this.interrupted = true
     this.agentLine = ""
     this.agentDirty = false
-    this.write("\x03")
+    this.ctrlC()
     return this.reply(this.cursor)
+  }
+
+  /** Stops the agent's running command for a call cut off, as the owner's Ctrl-C would, whatever holds it (a secret
+   *  prompt, a line the owner is typing): Ctrl-C once the shell has read the command's line. Nothing when no command of
+   *  the agent's runs. What the shell keeps of the owner's keys stays: a secret prompt that ends under their answer
+   *  drops the rest of it until their Enter, so it never reaches the shell's prompt. */
+  stop(): void {
+    if (this.nonce === null) return
+    this.interrupted = true
+    this.agentLine = ""
+    this.agentDirty = false
+    this.ctrlC()
+  }
+
+  /** Ctrl-C to the agent's command now if the shell has read its line, else once its start marker comes. */
+  private ctrlC(): void {
+    if (this.begun) this.sendCtrlC(CTRL_C_AGAIN)
+    else this.stopWanted = true
+  }
+
+  /** Writes Ctrl-C, and again after `CTRL_C_AGAIN_MS`, `left` more times at most, while the same command of the
+   *  agent's runs, no secret prompt holds it and the owner isn't typing a line. */
+  private sendCtrlC(left: number): void {
+    this.write("\x03")
+    clearTimeout(this.again)
+    if (left === 0) return
+    const nonce = this.nonce
+    this.again = setTimeout(() => {
+      if (this.nonce === nonce && this.current.status === "running" && !this.ownerMidLine) this.sendCtrlC(left - 1)
+    }, CTRL_C_AGAIN_MS)
   }
 
   /** Writes the owner's keys to the PTY, straight to the running command. The shell keeps only whether the owner is
@@ -467,12 +521,14 @@ export class PtyShell {
   }
 
   /** Where the end of `text` may be cut short, to hold back for the next chunk: a marker's start, or the start of the
-   *  running command's nonce; -1 when it isn't. */
+   *  running command's nonce or start token; -1 when it isn't. */
   private holdFrom(text: string): number {
     const marker = heldFrom(text)
     if (marker >= 0 || this.nonce === null) return marker
-    for (let n = Math.min(this.nonce.length - 1, text.length); n > 0; n--) {
-      if (this.nonce.startsWith(text.slice(-n))) return text.length - n
+    for (const secret of [this.nonce, this.startToken ?? ""]) {
+      for (let n = Math.min(secret.length - 1, text.length); n > 0; n--) {
+        if (secret.startsWith(text.slice(-n))) return text.length - n
+      }
     }
     return -1
   }
@@ -513,15 +569,20 @@ export class PtyShell {
     return text.slice(0, start) + text.slice(at)
   }
 
-  /** `text` with the agent's command's nonce neutralised. */
+  /** `text` with the agent's command's nonce and start token neutralised. */
   private neutral(text: string): string {
-    return this.nonce !== null && text.includes(this.nonce) ? text.replaceAll(this.nonce, NONCE_SHOWN) : text
+    for (const secret of [this.nonce, this.startToken]) {
+      if (secret !== null && text.includes(secret)) text = text.replaceAll(secret, NONCE_SHOWN)
+    }
+    return text
   }
 
   /** A marker with `nonce`, `exitText` and the folder: the end of the agent's command when it holds its nonce (or
-   *  none, after a Ctrl-C), or of the owner's when it holds none. Any other is ignored. Only a marker with the nonce
-   *  sets the folder. */
+   *  none, after a Ctrl-C), or of the owner's when it holds none; with `start` for `exitText`, the start of the
+   *  agent's command when it holds its start token. Any other is ignored. Only a marker with the nonce sets the
+   *  folder. */
   private marker(nonce: string, exitText: string, folder: string | undefined): void {
+    if (exitText === "start") return this.begin(nonce)
     const exit = /^-?\d+$/.test(exitText) ? Number(exitText) : null
     if (nonce === "" && this.promptAfter) {
       // sh's prompt after the agent's line, which already ended it: never the end of a command started since.
@@ -542,10 +603,22 @@ export class PtyShell {
     this.set({ status: "idle", waiting: null, command: null, exit })
   }
 
-  /** Clears what a command held: its nonce, its echo, and the agent's unfinished line, which a kill (Ctrl-U) takes off
-   *  the terminal's line too, with any owner keys after it. */
+  /** The shell has read the agent's command's line, if `token` is its start token: a Ctrl-C that waited goes now. */
+  private begin(token: string): void {
+    if (this.nonce === null || token !== this.startToken || this.begun) return
+    this.begun = true
+    if (!this.stopWanted) return
+    this.stopWanted = false
+    this.sendCtrlC(CTRL_C_AGAIN)
+  }
+
+  /** Clears what a command held: its nonce and start, its echo, and the agent's unfinished line, which a kill (Ctrl-U)
+   *  takes off the terminal's line too, with any owner keys after it. */
   private settle(): void {
     this.nonce = null
+    this.startToken = null
+    this.begun = this.stopWanted = false
+    clearTimeout(this.again)
     this.ownerRunning = false
     this.interrupted = false
     this.echo = null
@@ -659,7 +732,8 @@ export class PtyShell {
   static commandProblem(command: string, kind: "bash" | "sh"): string | null {
     if (command.trim() === "") return "the command is empty"
     if (CONTROL.test(command)) return "a command can't hold a control character other than newline and tab"
-    const typed = typedLine(command, "0".repeat(2 * NONCE_BYTES), kind)
+    const zeros = "0".repeat(2 * NONCE_BYTES)
+    const typed = typedLine(command, zeros, zeros, kind)
     if (typed.split("\n").some((line) => Buffer.byteLength(line) > LINE_MAX)) return LONG_LINE
     return null
   }

@@ -8,8 +8,9 @@
  *  Messages are written once they settle, at the end of the turn that holds them. In the `.log` files a label is yian's
  *  author wrapper (`authoredText`), and every text the harness or a command wrote is escaped, so nothing in them poses
  *  as another speaker's message. The instrument reads the newest part of both back as entries (`Said`), each with the
- *  author the office knows, never one read from a text. The record scrubs nothing. Its files are private to the owner,
- *  in a folder of mode 0700.
+ *  author the office knows, never one read from a text. Memory, and the JSON lines a later office loads it from, keep a
+ *  huge entry's head and tail; the `.log` files keep all of it. The record scrubs nothing. Its files are private to the
+ *  owner, in a folder of mode 0700.
  *
  *  An office stop leaves a live session's record interrupted (`suspend`), and the next start marks one a crash left
  *  running so (`markRecordInterrupted`); the turn it cut off stays in meta.json. A later office goes on writing it once
@@ -59,8 +60,8 @@ export interface RecordFile extends RecordMeta {
 }
 
 /** One entry of the conversation or the trace: who said or did it (the author the office knows: the employee, the
- *  owner, or the harness by its kind), its text as written, and where it starts, counted in UTF-16 code units of every
- *  entry's text from the session's start. */
+ *  owner, or the harness by its kind), its text as memory keeps it (`Kept`), and where it starts, counted in UTF-16
+ *  code units of every earlier entry's text as kept, from the session's start. */
 export interface Said {
   readonly at: number
   readonly author: string
@@ -69,15 +70,21 @@ export interface Said {
 
 /** The most text of each of the conversation and the trace the record keeps in memory; the files keep all of it. */
 export const KEEP_CHARS = 1024 * 1024
+/** The most of one entry's text memory keeps: its head and its tail, each half of it. */
+export const ENTRY_CHARS = 256 * 1024
 
-/** The newest entries of a log, at most `KEEP_CHARS` of their text, and where the log ends. */
+/** The newest entries of a log, at most `KEEP_CHARS` of their text, and where the log ends. An entry over
+ *  `ENTRY_CHARS` keeps only its head and tail, with a marker saying how much is left out between them. */
 export class Kept {
   readonly entries: Said[] = []
-  /** Where the next entry starts: every entry's text so far. */
+  /** Where the next entry starts: every entry's text so far, as kept. */
   end = 0
   private kept = 0
 
-  constructor(private readonly keep = KEEP_CHARS) {}
+  constructor(
+    private readonly keep = KEEP_CHARS,
+    private readonly entryMax = ENTRY_CHARS,
+  ) {}
 
   /** The newest of `entries`, each starting where the one before ends, as a later office loads them back. */
   static restored(entries: readonly Said[], keep = KEEP_CHARS): Kept {
@@ -93,11 +100,14 @@ export class Kept {
     return kept
   }
 
-  push(author: string, text: string): void {
-    this.entries.push({ at: this.end, author, text })
-    this.end += text.length
-    this.kept += text.length
+  /** Keeps `text`, by `author`, as the newest entry (its head and tail when it is huge), and returns it as kept. */
+  push(author: string, text: string): string {
+    const kept = headAndTail(text, this.entryMax)
+    this.entries.push({ at: this.end, author, text: kept })
+    this.end += kept.length
+    this.kept += kept.length
     this.trim()
+    return kept
   }
 
   /** Where the first entry kept starts. */
@@ -106,10 +116,29 @@ export class Kept {
   }
 
   private trim(): void {
-    // The newest entry stays, however long.
+    // The newest entry stays, at its kept length.
     while (this.kept > this.keep && this.entries.length > 1) this.kept -= this.entries.shift()!.text.length
   }
 }
+
+/** `text`, or when it is over `max` its first and last `max / 2` code units with a marker between saying how many are
+ *  left out and how to get them; a cut never splits a surrogate pair. */
+function headAndTail(text: string, max: number): string {
+  if (text.length <= max) return text
+  const half = Math.floor(max / 2)
+  let head = half
+  let tail = text.length - half
+  if (isHigh(text.charCodeAt(head - 1))) head -= 1
+  if (isLow(text.charCodeAt(tail))) tail += 1
+  // The record's files keep them, but the employee can't read those: the harness can still give them.
+  const marker =
+    `[… ${tail - head} characters left out here: ask the session for the part you need, or to save it to a file in ` +
+    "the folder]"
+  return `${text.slice(0, head)}\n\n${marker}\n\n${text.slice(tail)}`
+}
+
+const isHigh = (unit: number) => unit >= 0xd800 && unit <= 0xdbff
+const isLow = (unit: number) => unit >= 0xdc00 && unit <= 0xdfff
 
 const META = "meta.json"
 /** A record's logs, and their entries as JSON lines. */
@@ -291,14 +320,14 @@ export class HarnessRecord {
     this.#push("trace", author, text, shown)
   }
 
-  /** Appends an entry to `log`: in memory, `shown` to its file, and the entry, with where it starts, to its JSON
-   *  lines. */
+  /** Appends an entry to `log`: in memory, `shown` to its file, and the entry as memory keeps it, with where it
+   *  starts, to its JSON lines, so a later office loads back what this one kept. */
   #push(log: Log, author: string, text: string, shown: string): void {
     const kept = this.#log(log)
     const at = kept.end
-    kept.push(author, text)
+    const said = kept.push(author, text)
     this.#write(log, `${shown}\n\n`)
-    this.#write(ENTRIES[log], `${JSON.stringify({ at, author, text })}\n`)
+    this.#write(ENTRIES[log], `${JSON.stringify({ at, author, text: said })}\n`)
   }
 
   /** Appends `text` to `key`'s file, opening it first if it isn't (an entries file a crash cut short goes on from a

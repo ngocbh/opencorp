@@ -14,9 +14,12 @@
  * reachable, it also asks before a program that reads file contents is given a path through an expansion, whose
  * value it can't see; in the workspace sandbox, which keeps the home out, such a read follows the usual rules and
  * the sandbox is the guard. Auto's check never judges a push, `sudo`, a local command for ssh (the wrapper's
- * `OPENCORP_SSH_CONFIG` among them), or a command that controls a shared ssh connection (`-O` but `check`, `-S`,
- * `ControlPath`, `ControlMaster`, and port forwards): the owner's own connections can be reached from the SSH-only
- * profile, `-O exit` would end one, and a forward added to one outlives the call.
+ * `OPENCORP_SSH_CONFIG` among them), an ssh the shell's PATH doesn't find (by path, `command -p`, or a PATH the part
+ * sets or clears), which skips a wrapper there, or a command that controls a shared ssh connection (`-O` but `check`,
+ * `-S`, `ControlPath`, `ControlMaster`, and port forwards): the owner's own connections can be reached from the
+ * SSH-only profile, `-O exit` would end one, and a forward added to one outlives the call. ssh behind `command`,
+ * `builtin`, `exec`, `env` and the other wrappers is ssh to every check. On the SSH-only profile, where an ssh wrapper
+ * comes first on PATH, neither does Auto's check judge a line that changes PATH or runs `hash -p` (`pathChange`).
  *
  * It can't know what a program does with its files, its config or its input: `git` runs hooks and programs its
  * config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host has
@@ -153,6 +156,9 @@ const PERMISSIONS = "it changes who may use files"
 const PUSHES = "it pushes to another repository"
 const COPIES = "it copies files to or from another machine"
 const LOCAL_SSH = "it runs a local command for ssh"
+const SSH_OFF_PATH = "it runs ssh without the shell's PATH lookup, so around any ssh wrapper on it"
+const SETS_PATH = "it changes the shell's PATH, which OpenCorp's ssh wrapper comes first on"
+const NAMES_REAL_SSH = "it names the real ssh that OpenCorp's ssh wrapper stands in for"
 const CONTROLS_SSH = "it controls a shared ssh connection"
 const NETWORK = "it connects to another machine"
 const FEEDS_SHELL = "it feeds a remote shell from its input"
@@ -245,6 +251,13 @@ const SSH_CONTROL_LETTERS = "SOLRD"
  *  value, `$NAME` or `${NAME}`, is left out; `${NAME:=x}` assigns, so it counts. */
 const SSH_VARIABLE =
   /(?:^|[^A-Za-z0-9_${]|\$\{(?=[A-Za-z_]+:?=))(?:-[A-Za-z]+)?(?:GIT_SSH_COMMAND|GIT_SSH|OPENCORP_SSH_CONFIG)(?![A-Za-z0-9_])/
+/** The builtins that set, export or unset a variable a word of theirs names. */
+const SETS_VARIABLE = set("export declare typeset readonly local unset read mapfile readarray printf getopts")
+/** A word that names PATH, as `SSH_VARIABLE` names ssh's variables: a plain read of its value is left out. */
+const PATH_VARIABLE = /(?:^|[^A-Za-z0-9_${]|\$\{(?=PATH:?=))(?:-[A-Za-z]+)?PATH(?![A-Za-z0-9_])/
+/** A word naming the folder where the SSH-only sandbox keeps the real ssh for its wrapper (`REAL_SSH`'s), or what is in
+ *  it, anywhere in the word: a path, an option's value, a script's text. */
+const REAL_SSH_FOLDER = /\/run\/opencorp(?![^/])/
 const SSH_LOCAL_KEYS = set("proxycommand localcommand permitlocalcommand knownhostscommand")
 const SSH_IDENTITY_KEYS = set("identityfile certificatefile")
 /** Programs that read only names and metadata, so a credential path given to them reads no secret. */
@@ -358,11 +371,15 @@ export function assignmentsOf(part: SimpleCommand): readonly string[] {
 }
 
 export function classify(part: SimpleCommand): Kind {
-  const { start, sets, wrappers } = unwrap(part)
+  const { start, sets, wrappers, offPath } = unwrap(part)
   const [prog = "", ...args] = part.words.slice(start)
   const name = base(prog)
   const remote = name === "ssh" ? remoteKind(part) : null
-  const risk = riskOf(part, prog, args, sets) ?? remote?.risk ?? null
+  // An ssh by path, or with a PATH of its own, isn't the one the shell's PATH finds first: a wrapper there is skipped.
+  // So may be one behind an env whose options the reader can't read.
+  const behindEnv = name === "env" && args.some((w) => base(w) === "ssh")
+  const skips = (name === "ssh" && (offPath || prog.includes("/"))) || behindEnv ? SSH_OFF_PATH : null
+  const risk = riskOf(part, prog, args, sets) ?? skips ?? remote?.risk ?? null
   // printf takes options only before its format, so only its first argument could become `-v`.
   const changes = part.expands.slice(start + 1, prog === "printf" ? start + 2 : undefined).some(Boolean)
   const check = CHECKED[prog]
@@ -550,8 +567,7 @@ export function lineCredential(
  *  `cd`; null when the reader can't know it (an expansion, `cd -`, `popd`, a `pushd` that rotates the stack, or a
  *  relative path from an unknown folder); false when `part` doesn't move. `CDPATH` isn't followed. */
 function folderAfter(part: SimpleCommand, cwd: string | null | undefined): string | null | undefined | false {
-  let { start } = unwrap(part)
-  if (part.words[start] === "builtin") start += 1
+  const { start } = unwrap(part)
   const name = part.words[start]
   if (name === "popd") return null
   if (name !== "cd" && name !== "chdir" && name !== "pushd") return false
@@ -636,7 +652,8 @@ export function innerParts(part: SimpleCommand): readonly SimpleCommand[] {
 /** Why Auto's check must never judge `part`, so every mode asks the owner and dontAsk refuses it: a push the
  *  reader can't call plain (any push, in a line it can't read), a program that runs as another user, a local
  *  command for ssh (`ProxyCommand`, `-F`, `scp -S`, `rsync -e`, `GIT_SSH_COMMAND`, `core.sshCommand`,
- *  `OPENCORP_SSH_CONFIG`), which on the SSH-only profile could send a key off the machine, or an ssh that controls a
+ *  `OPENCORP_SSH_CONFIG`), which on the SSH-only profile could send a key off the machine, an ssh the shell's PATH
+ *  doesn't find, which skips the wrapper there and logs in with the owner's config as it is, or an ssh that controls a
  *  shared connection (`-O` but `check`, `-S`, `ControlPath`, `ControlMaster`, `-L`, `-R`, `-D` and their options),
  *  which could end one of the owner's or leave a forward on it; here, under `find -exec` or over ssh. Null
  *  otherwise. */
@@ -645,11 +662,32 @@ export function ownerOnly(part: SimpleCommand, readable: boolean): string | null
   if (push) return push.asks ?? (readable ? null : PUSHES)
   if (OTHER_USERS.has(base(programOf(part)[0] ?? ""))) return OTHER_USER
   const risk = classify(part).risk
-  if (risk === LOCAL_SSH || risk === CONTROLS_SSH) return risk
+  if (risk === LOCAL_SSH || risk === CONTROLS_SSH || risk === SSH_OFF_PATH || risk === NAMES_REAL_SSH) return risk
   const host = sshOf(part)?.host
   for (const inner of innerParts(part)) {
     const found = ownerOnly(inner, readable)
     if (found) return host ? `on ${host}: ${found}` : found
+  }
+  return null
+}
+
+/** Why `part` may change which ssh the shell's later commands, or the program it runs, find on PATH: it sets,
+ *  exports or unsets PATH (a bare assignment, one for its program or `env`'s, `env -i`, `env -u PATH`, a builtin that
+ *  writes the variable, `${PATH:=…}`), looks its program up on another PATH (`command -p`), or runs `hash -p`; here,
+ *  under `sudo` or `find -exec`, but not in an ssh remote command, whose PATH is another machine's. Null otherwise. A
+ *  wrapper for ssh first on PATH holds only while PATH stays as the host set it. */
+export function pathChange(part: SimpleCommand): string | null {
+  const { start, offPath } = unwrap(part)
+  const [prog = "", ...args] = part.words.slice(start)
+  const name = base(prog)
+  const named = SETS_VARIABLE.has(name) && args.some((w) => PATH_VARIABLE.test(w))
+  const expanded = part.words.some((w) => /\$\{PATH:?=/.test(w))
+  const hashed = name === "hash" && args.slice(0, optionsEnd(args, "", [])).some((w) => /^-[A-Za-z]*p/.test(w))
+  if (offPath || named || expanded || hashed) return SETS_PATH
+  if (sshOf(part) !== null) return null
+  for (const inner of innerParts(part)) {
+    const found = pathChange(inner)
+    if (found !== null) return found
   }
   return null
 }
@@ -892,8 +930,10 @@ class Reader {
   }
 
   private complete(part: SimpleCommand): void {
-    const { start } = unwrap(part)
+    const { start, wrappers } = unwrap(part)
     const [prog, ...args] = part.words.slice(start)
+    // `builtin` runs what it names, which the reader reads; it still marks the line, as it does alone.
+    if (wrappers.includes("builtin")) this.mark(`${CHANGES}: builtin`)
     if (prog !== undefined) {
       const name = base(prog)
       if (prog !== "[" && (part.expands[start] || /[$*?[{}]/.test(prog) || prog.startsWith("~"))) this.mark(EXPANDED)
@@ -1180,11 +1220,13 @@ function readableParameter(body: string): boolean {
 
 // ---- Wrappers and options ----
 
-/** Where the program starts past wrappers, the variables they and the part set, and the wrappers. */
-function unwrap(part: SimpleCommand): { start: number; sets: string[]; wrappers: string[] } {
+/** Where the program starts past wrappers, the variables they and the part set, the wrappers, and whether the program
+ *  is looked up other than on the shell's PATH: through `command -p`'s default PATH, or a PATH set, cleared or unset. */
+function unwrap(part: SimpleCommand): { start: number; sets: string[]; wrappers: string[]; offPath: boolean } {
   const words = part.words
   const sets = [...part.assignments]
   const wrappers: string[] = []
+  let offPath = false
   let i = 0
   for (;;) {
     const name = words[i]
@@ -1193,13 +1235,21 @@ function unwrap(part: SimpleCommand): { start: number; sets: string[]; wrappers:
     if (skipped === null || skipped.next >= words.length) break
     wrappers.push(name)
     sets.push(...skipped.sets)
+    offPath ||= skipped.offPath
     i = skipped.next
   }
-  return { start: i, sets, wrappers }
+  offPath ||= sets.some((set) => /^PATH\+?=/.test(set))
+  return { start: i, sets, wrappers, offPath }
 }
 
-/** If `name` is a wrapper whose options from `i` on are all known, where its program starts and what it sets. */
-function skipWrapper(name: string, words: readonly string[], i: number): { next: number; sets: string[] } | null {
+/** If `name` is a wrapper whose options from `i` on are all known, where its program starts, what it sets, and whether
+ *  its options look the program up other than on the shell's PATH (`command -p`, `env -i`, `env -u PATH`). */
+function skipWrapper(
+  name: string,
+  words: readonly string[],
+  i: number,
+): { next: number; sets: string[]; offPath: boolean } | null {
+  const first = i
   const sets: string[] = []
   const options = (
     value: string,
@@ -1230,18 +1280,53 @@ function skipWrapper(name: string, words: readonly string[], i: number): { next:
   else if (name === "nohup") next = options("", [], [])
   else if (name === "time") next = options("", [], ["-p"])
   else if (name === "command") next = options("", [], ["-p"])
+  else if (name === "builtin") next = options("", [], [])
   else if (name === "stdbuf") next = options("ioe", ["--input", "--output", "--error"], [])
   else if (name === "timeout") {
     next = options("ks", ["--kill-after", "--signal"], ["--preserve-status", "--foreground", "-v", "--verbose"])
     if (next !== null) next++
-  } else if (name === "env")
-    next = options("u", ["--unset"], ["-i", "-", "--ignore-environment"], (w) => {
-      const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/.test(w)
-      if (assignment) sets.push(w)
-      return assignment
-    })
+  } else if (name === "env") return envOptions(words, i)
   else return null
-  return next === null ? null : { next, sets }
+  if (next === null) return null
+  return { next, sets, offPath: name === "command" && words.slice(first, next).includes("-p") }
+}
+
+/** `env`'s options and assignments from `i`: where its program starts, the variables it sets, and whether it clears
+ *  the environment or unsets PATH. Short flags combine (`-iu PATH`, `-0i`); `-u` and `-C` take the rest of their word
+ *  or the next one; assignments may follow `--`. Null for an option it doesn't know, `-S` among them (its string is
+ *  read as a command of its own). */
+function envOptions(words: readonly string[], i: number): { next: number; sets: string[]; offPath: boolean } | null {
+  const sets: string[] = []
+  let offPath = false
+  let options = true
+  for (; i < words.length; i++) {
+    const w = words[i]!
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) sets.push(w)
+    else if (!options || !w.startsWith("-")) break
+    else if (w === "--") options = false
+    else if (w === "-") offPath = true
+    else if (w.startsWith("--")) {
+      const [key, joined] = w.includes("=") ? [w.slice(0, w.indexOf("=")), w.slice(w.indexOf("=") + 1)] : [w, null]
+      if (key === "--ignore-environment") offPath = true
+      else if (key === "--unset" || key === "--chdir") {
+        const value = joined ?? words[++i]
+        if (value === undefined) return null
+        if (key === "--unset" && value === "PATH") offPath = true
+      } else if (key !== "--null" && key !== "--debug") return null
+    } else {
+      for (let k = 1; k < w.length; k++) {
+        const c = w[k]!
+        if (c === "i") offPath = true
+        else if (c === "u" || c === "C") {
+          const value = k + 1 < w.length ? w.slice(k + 1) : words[++i]
+          if (value === undefined) return null
+          if (c === "u" && value === "PATH") offPath = true
+          break
+        } else if (c !== "0" && c !== "v") return null
+      }
+    }
+  }
+  return { next: i, sets, offPath }
 }
 
 /** Where `env`'s `-S` (`--split-string`) string starts, or null when it has none. */
@@ -1331,6 +1416,7 @@ function riskOf(part: SimpleCommand, prog: string, args: readonly string[], sets
   const name = base(prog)
   // An exported variable of the shell's keeps its export when assigned, so a bare assignment counts too.
   if ([prog, ...args, ...sets].some(namesSshCommand)) return LOCAL_SSH
+  if ([prog, ...args, ...sets, ...part.writes, ...part.reads].some((w) => REAL_SSH_FOLDER.test(w))) return NAMES_REAL_SSH
   const own = programRisk(name, args, part) ?? FIXED_RISKS.get(name) ?? null
   if (own !== null) return own
   return part.writes.some((w) => w !== "/dev/null") ? WRITES : null

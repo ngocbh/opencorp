@@ -9,7 +9,7 @@ import { RpcClosed, RpcError, nameOf } from "../../tools/codex/rpc.ts"
 import type { ThreadEvents } from "../../tools/codex/instrument.ts"
 import { type Issued, NOT_AN_OPTION, NOT_A_NUMBER, TURNLESS, Translator, Unserved, Unshowable, declined } from "../../tools/codex/translate.ts"
 import type { CodexSessions } from "./sessions.ts"
-import { ProjectConfigLoads, checkLoaded, employeeLoad } from "./thread.ts"
+import { McpServersAdded, ProjectConfigLoads, checkLoaded, employeeLoad, ownerConfig } from "./thread.ts"
 
 /** Milliseconds office stop waits for the session to finish the job it is in. */
 export const STOP_WAIT_MS = 10_000
@@ -165,6 +165,8 @@ export class CodexSession {
   readonly #commands = new Map<string, Set<string>>()
   /** The turns an interrupt is stopping now, whose commands outlive their `turn/completed` until it reads them. */
   readonly #interrupting = new Set<string>()
+  /** The owner's MCP servers the thread's override turned off at its last load. */
+  #serversOff = new Set<string>()
 
   constructor(
     owner: CodexSessions,
@@ -480,12 +482,14 @@ export class CodexSession {
   async #load(resume: boolean): Promise<void> {
     let proc: CodexProcess
     let result: Loaded
+    let servers: string[] = []
     try {
       // Each load runs under the employee's permission as it is now, in a fresh temp folder.
       const prepared = await this.owner.prepare(this)
       proc = await this.owner.launch(this, prepared)
       const id = `opencorp-${this.sessionId}`
       const loaded = await employeeLoad(proc.rpc!, prepared.permission, id, prepared.install)
+      servers = Object.keys((loaded.config as { mcp_servers?: Record<string, unknown> }).mcp_servers ?? {})
       const params =
         this.instrument === null ? loaded : { ...loaded, developerInstructions: this.instrument.instructions }
       // The office never reads past turns, so a resume needn't send them.
@@ -512,6 +516,7 @@ export class CodexSession {
       return
     }
     this.process = proc
+    this.#serversOff = new Set(servers)
     this.#loaded = true
     this.threadId = result.thread.id
     this.store.updateSession(this.sessionId, { harness_session_id: this.threadId, harness_model: result.model ?? null })
@@ -576,11 +581,16 @@ export class CodexSession {
 
   /** `turn/start`: a new turn, or a steer of the running one (Codex decides; `turn/started` says which, and the
    *  answer naming a turn not seen yet says a new one started). `queued` when Codex had unloaded the thread: the
-   *  message waits for the reload. */
+   *  message waits for the reload. First the owner's config is read again for the folder (`ownerConfig`), as a load
+   *  reads it, since a turn reloads it: a project the owner trusted since the load refuses the message with the load's
+   *  words, and so does an MCP server the owner added since, which the thread's override doesn't turn off. */
   async #send(proc: CodexProcess, text: string, busy: boolean): Promise<"turn" | "steer" | "queued"> {
     this.#sending++
     this.#settle()
     try {
+      const { mcpServers } = await ownerConfig(proc.rpc!, this.cwd)
+      const added = mcpServers.filter((name) => !this.#serversOff.has(name))
+      if (added.length > 0) throw new McpServersAdded(added)
       const res = (await proc.rpc!.request("turn/start", { threadId: this.threadId, input: input(text) })) as Obj
       const named = typeof res?.turn?.id === "string" ? (res.turn.id as string) : null
       // A new turn, unless Codex steered a turn already seen (running, or ended meanwhile) or this one's turn/started
@@ -591,6 +601,9 @@ export class CodexSession {
       if (error instanceof RpcError && NOT_LOADED.test(error.rpcMessage)) {
         this.#reload(proc, text)
         return "queued"
+      }
+      if (error instanceof ProjectConfigLoads || error instanceof McpServersAdded) {
+        throw new HarnessError(409, "codex_refused", error.message)
       }
       if (error instanceof RpcError || error instanceof RpcClosed || isTimeout(error))
         throw new HarnessError(409, "codex_refused", `Codex didn't take the message: ${error.message}`)
