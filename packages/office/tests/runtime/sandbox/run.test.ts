@@ -229,6 +229,7 @@ test.skipIf(!sandboxAvailable())("quiet calls leave the others their output", as
 test.skipIf(process.platform !== "linux" || !sandboxAvailable())("a call sees no pipe of another call", async () => {
   const policy = makePolicy().make()
   let leader = 0
+  let copied = ""
   const stop = new AbortController()
   onTestFinished(() => stop.abort())
   const first = sh(policy, "cat; sleep 30", {
@@ -238,8 +239,10 @@ test.skipIf(process.platform !== "linux" || !sandboxAvailable())("a call sees no
       leader = pid
       return () => {}
     },
+    onOutput: (stream, chunk) => void (stream === "stdout" && (copied += chunk.toString())),
   })
-  await waitFor(() => leader, { timeout: 10_000, what: "the first call to start" })
+  // Until `cat` has copied its input, an abort would leave the first call's stdout empty.
+  await waitFor(() => leader && copied === "a", { timeout: 10_000, what: "the first call to copy its input" })
   const second = await sh(policy, "ls -l /proc/self/fd")
   const listing = second.stdout.toString()
   expect(second.exit, second.stderr.toString()).toBe(0)
