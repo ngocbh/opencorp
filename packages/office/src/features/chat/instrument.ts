@@ -1,21 +1,38 @@
 /** An employee's harness instrument: the sessions of one harness (Codex, Claude Code) a main chat's employee drives
  *  (`HarnessInstrument`), each the chat's own child session (its sessions' `startInstrument`), under the employee's
  *  permission, with the owner's word winning; each listed as the chat's instrument, with its record in the chat's
- *  `<kind>/<session id>/` folder. */
+ *  `<kind>/<session id>/` folder. After an office restart, a session the stop cut off continues on the employee's next
+ *  message, the same child session on the harness's own session (its sessions' `resumeInstrument`). */
 import path from "node:path"
 import type { Instruments } from "../../runtime/sessions/instruments.ts"
-import type { SessionRecord } from "../../runtime/store/store.ts"
-import { HarnessInstrument, type HarnessThread, type ThreadEvents } from "../../tools/harness/instrument.ts"
+import { HarnessError } from "../../runtime/sessions/state.ts"
+import type { SessionRecord, Store } from "../../runtime/store/store.ts"
+import {
+  HarnessInstrument,
+  HarnessStopping,
+  type HarnessThread,
+  type ThreadEvents,
+} from "../../tools/harness/instrument.ts"
 import type { Harness } from "../../tools/harness/tools.ts"
 import { checkFolder, makePrivateFolder } from "../../util/private_files.ts"
 
 /** The office's sessions of one harness, where each of a chat's instrument sessions runs. */
 export interface InstrumentSessions {
+  readonly store: Pick<Store, "getSession">
+  readonly log: (line: string) => void
   startInstrument(
     chat: SessionRecord,
     id: string,
     o: { observer: ThreadEvents; label: (author: string | null) => string; owner: string | null },
   ): Promise<unknown>
+  resumeInstrument(
+    chat: SessionRecord,
+    id: string,
+    harnessSessionId: string,
+    o: { observer: ThreadEvents; label: (author: string | null) => string; owner: string | null },
+  ): Promise<unknown>
+  /** Lets the owner's message to session `id`, which an office restart cut off, continue it through `resume`. */
+  resumable(id: string, resume: ((by: string | null) => Promise<void>) | null): void
   prompt(sessionId: string, text: string, options: { by: string | null }): Promise<unknown>
   interrupt(sessionId: string): Promise<void>
   end(sessionId: string): Promise<void>
@@ -47,22 +64,33 @@ export class EmployeeInstrument {
       driver,
       owner: speakers.owner,
       label: (author) => speakers.label(author),
-      open: async (id, _name, events): Promise<HarnessThread> => {
-        await sessions.startInstrument(chat, id, { observer: events, label: speakers.label, owner: speakers.owner })
+      open: async (id, _name, events, { resume } = {}): Promise<HarnessThread> => {
+        const of = { observer: events, label: speakers.label, owner: speakers.owner }
+        try {
+          if (resume === undefined) await sessions.startInstrument(chat, id, of)
+          else await sessions.resumeInstrument(chat, id, resume, of)
+        } catch (error) {
+          // The office is stopping: a session it was to continue waits for the next start.
+          if (error instanceof HarnessError && error.status === 503) throw new HarnessStopping(error.message)
+          throw error
+        }
         return {
           send: (text) => sessions.prompt(id, text, { by: driver }),
           interrupt: () => sessions.interrupt(id),
           stop: () => sessions.end(id),
+          harnessSessionId: () => sessions.store.getSession(id)?.harness_session_id ?? null,
         }
       },
-      recordDir: (id) => {
+      recordsDir: () => {
         const records = path.join(o.folder, harness.kind)
         for (const dir of [o.folder, records]) {
           makePrivateFolder(dir)
           checkFolder(dir, "folder")
         }
-        return path.join(records, id)
+        return records
       },
+      log: (line) => sessions.log(line),
+      resumable: (id, resume) => sessions.resumable(id, resume),
       list: (listing) => instruments.add(chat.id, listing),
       changed: (id) => instruments.updated(chat.id, id),
       remove: (id) => instruments.remove(chat.id, id),
@@ -80,8 +108,14 @@ export class EmployeeInstrument {
     this.#instrument.cutCalls()
   }
 
-  /** Ends every session of the chat and takes its listing out. */
+  /** The chat ended: ends every session of the chat, those an office restart left too, and takes its listing out. */
   close(): Promise<void> {
     return this.#instrument.close()
+  }
+
+  /** The office stops, having stopped the harness sessions: each live one's record waits for the next start to
+   *  continue it, and the listings go. */
+  suspend(): Promise<void> {
+    return this.#instrument.suspend()
   }
 }

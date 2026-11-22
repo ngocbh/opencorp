@@ -1,6 +1,6 @@
 /** A Codex session an employee's chat drives as its instrument: the chat's child session, under the employee's
- *  permission, with two speakers labelled for Codex, its events and states told to the instrument, and ended by an
- *  office restart; on the fake app-server. */
+ *  permission, with two speakers labelled for Codex, its events and states told to the instrument, ended by an office
+ *  restart, and continued on its thread by the chat's next instrument; on the fake app-server. */
 import fs from "node:fs"
 import path from "node:path"
 import { authoredText } from "@ngocbh/yian"
@@ -15,7 +15,7 @@ import * as fc from "../../../src/testing/fake_codex.ts"
 import { person } from "../../company/helpers.ts"
 import { session as sessionRow } from "../../runtime/store/helpers.ts"
 import { waitFor } from "../../helpers.ts"
-import { type Codex, allGone, makeCodex, requestsValid, restarted, status } from "./helpers.ts"
+import { type Codex, allGone, makeCodex, reopened, requestsValid, restarted, status } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 afterAll(allGone)
@@ -132,4 +132,64 @@ test("an ended instrument session can't be continued: only its employee starts a
   await h.sessions.end(child.id)
   await waitFor(() => status(h, child.id) === "ended", { what: "the end" })
   await expect(h.sessions.continueSession(child.id, { by: "ngocbh" })).rejects.toThrow("employee's instrument")
+})
+
+/** Continues `child`, `row`'s instrument session, on thread `thread` in `h`'s sessions, as the chat's next instrument
+ *  does after a restart. */
+async function resume(h: Codex, row: Awaited<ReturnType<typeof chat>>, id: string, thread = "thr_1", heard = observer()) {
+  const repo = loadRepo(await h.office.git.pin(row.repo_commit))
+  const said = speakers(repo, row)
+  const session = await h.sessions.resumeInstrument(row, id, thread, { observer: heard, label: said.label, owner: said.owner })
+  return { session, heard }
+}
+
+test("after a restart, the chat's instrument continues its session on its thread: the same child session, live again", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("a1", "On it."), fc.agentMessage("a2", "Back on it.")])
+  const row = await chat(h)
+  const { child, heard } = await instrument(h, row)
+  await waitFor(() => heard.states.includes("idle"), { what: "the thread to load" })
+  await h.sessions.prompt(child.id, "Fix the build.", { by: "minh" })
+  await waitFor(() => heard.states.at(-1) === "idle" && h.fake.calls("turn/start").length === 1, { what: "the turn" })
+  const r = await restarted(h)
+  expect(status(r, child.id)).toBe("ended")
+  const { session, heard: again } = await resume(r, row, child.id)
+  expect(session).toMatchObject({ id: child.id, status: "starting", instrument_of: row.id, harness_session_id: "thr_1" })
+  await r.sessions.prompt(child.id, "And the tests.", { by: "minh" })
+  await waitFor(() => again.states.at(-1) === "idle" && r.fake.calls("turn/start").length === 2, { what: "the turn" })
+  const [load] = r.fake.calls("thread/resume") as Record<string, any>[]
+  expect(load).toMatchObject({ threadId: "thr_1", approvalPolicy: "never", permissions: `opencorp-${child.id}`, cwd: row.cwd })
+  expect(load!.developerInstructions).toContain("the owner's word wins")
+  expect(status(r, child.id)).toBe("idle")
+  requestsValid(r.fake)
+})
+
+test("a session the chat continues before the restore reaches it is left live by the restore", async () => {
+  const h = makeCodex()
+  const row = await chat(h)
+  const { child, heard } = await instrument(h, row)
+  await waitFor(() => heard.states.includes("idle"), { what: "the thread to load" })
+  await h.sessions.closeAll()
+  const r = reopened(h)
+  await resume(r, row, child.id)
+  await r.sessions.restore()
+  await waitFor(() => status(r, child.id) === "idle", { what: "the resumed thread" })
+  expect(r.sessions.get(child.id)).toBeDefined()
+})
+
+test("a continue is refused for a session that isn't the chat's on that thread, for one live here, and once the chat ended", async () => {
+  const h = makeCodex()
+  const row = await chat(h)
+  const { child, heard } = await instrument(h, row)
+  await waitFor(() => heard.states.includes("idle"), { what: "the thread to load" })
+  await expect(resume(h, row, child.id)).rejects.toMatchObject({ status: 409, code: "live" })
+  const r = await restarted(h)
+  await expect(resume(r, row, child.id, "thr_other")).rejects.toMatchObject({ status: 409, code: "not_resumable" })
+  expect(r.lines.some((l) => l.includes(child.id) && l.includes("doesn't match"))).toBe(true)
+  const other = await chat(r)
+  await expect(resume(r, other, child.id)).rejects.toMatchObject({ code: "not_resumable" })
+  r.store.updateSession(row.id, { status: "ended" })
+  await expect(resume(r, row, child.id)).rejects.toMatchObject({ status: 409, code: "not_live" })
+  expect(r.fake.calls("thread/resume")).toEqual([])
+  expect(status(r, child.id)).toBe("ended")
 })

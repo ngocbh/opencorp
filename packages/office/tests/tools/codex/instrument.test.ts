@@ -1,5 +1,6 @@
 /** The Codex instrument: one chat's Codex sessions by name, two speakers labelled, waits that Esc interrupts, pages,
- *  history, the record, and the listing; on a scripted host, so no app-server runs. */
+ *  history, the record, the listing, and an office restart, after which the sessions go on from their records; on a
+ *  scripted host, so no app-server runs. */
 import fs from "node:fs"
 import path from "node:path"
 import type { Message, Part } from "@opencorp/protocol"
@@ -13,6 +14,7 @@ import {
   PAGE_CHARS,
   type ThreadEvents,
 } from "../../../src/tools/codex/instrument.ts"
+import { HarnessStopping } from "../../../src/tools/harness/instrument.ts"
 import { readCodexRecord } from "../../../src/tools/codex/record.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 
@@ -84,6 +86,10 @@ class Thread implements CodexThread {
       this.events.state("ended")
     })
   }
+
+  harnessSessionId(): string {
+    return `thr-${this.id}`
+  }
 }
 
 /** The host's stand-in: its threads, listings and their changes, and records in a temp folder. */
@@ -91,30 +97,54 @@ class Host implements CodexHost {
   readonly sessionId = CHAT
   readonly driver = "minh"
   readonly owner = OWNER
-  readonly root = tempDir()
   readonly threads: Thread[] = []
   readonly listed = new Map<string, CodexListing>()
   readonly removed: string[] = []
   changes = 0
+  /** Each session opened to resume one an earlier office left: its id, and the Codex thread it resumes. */
+  readonly resumes: { id: string; resume: string }[] = []
+  readonly lines: string[] = []
+  /** How a message continues each session an earlier office left, by its id, given who wrote it. */
+  readonly resumers = new Map<string, (by: string | null) => Promise<void>>()
   /** What `open` rejects with, when set; what it waits for before it opens, when set. */
   failOpen: Error | null = null
   hold: Promise<void> | null = null
+
+  constructor(readonly root = tempDir()) {}
 
   label(author: string | null): string {
     return author === OWNER || author === null ? "Ngoc (owner)" : `@${author}`
   }
 
-  async open(sessionId: string, _name: string, events: ThreadEvents): Promise<CodexThread> {
+  async open(sessionId: string, _name: string, events: ThreadEvents, o: { resume?: string } = {}): Promise<CodexThread> {
     if (this.failOpen) throw this.failOpen
     if (this.hold) await this.hold
+    if (this.failOpen) throw this.failOpen
+    if (o.resume !== undefined) this.resumes.push({ id: sessionId, resume: o.resume })
     const thread = new Thread(sessionId, events)
     this.threads.push(thread)
     events.state("idle")
     return thread
   }
 
+  recordsDir(): string {
+    const dir = path.join(this.root, "codex")
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    return dir
+  }
+
+  /** Where session `sessionId`'s record is. */
   recordDir(sessionId: string): string {
     return path.join(this.root, "codex", sessionId)
+  }
+
+  log(line: string): void {
+    this.lines.push(line)
+  }
+
+  resumable(sessionId: string, resume: ((by: string | null) => Promise<void>) | null): void {
+    if (resume === null) this.resumers.delete(sessionId)
+    else this.resumers.set(sessionId, resume)
   }
 
   list(instrument: CodexListing): void {
@@ -131,9 +161,9 @@ class Host implements CodexHost {
   }
 }
 
-/** An instrument over a fresh host, and its five tools. */
-function made() {
-  const host = new Host()
+/** An instrument over a fresh host (over `root`'s records when given), and its five tools. */
+function made(root?: string) {
+  const host = new Host(root)
   const codex = new CodexInstrument(host)
   const tools = codex.tools()
   const call = async (name: keyof typeof tools, args: Record<string, unknown>, options = {}) =>
@@ -434,4 +464,247 @@ test("close stops every session, cuts the waits and takes the listings out", asy
   expect(thread.stops).toBe(1)
   expect(m.host.removed).toEqual([thread.id])
   expect((await m.call("start", { message: "Again." })).refused).toContain("closed")
+})
+
+/** The office's stop and its next start: `m`'s sessions stop with the office, and a new instrument over the same
+ *  records takes the chat's next calls. */
+async function restarted(m: ReturnType<typeof made>) {
+  await m.codex.suspend()
+  return made(m.host.root)
+}
+
+/** An office crash and its next start: nothing of `m` stops or writes, and a new instrument takes the next calls. */
+function crashed(m: ReturnType<typeof made>) {
+  return made(m.host.root)
+}
+
+test("after a restart, send continues a session through the host's resume, from where the driver last read", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  thread.owner("Also update the changelog.")
+  thread.answer("Changelog updated.")
+  const r = await restarted(m)
+  // Listed, idle, but not resumed until someone writes to it.
+  expect(r.host.threads).toEqual([])
+  expect(r.host.listed.get(thread.id)!.info()).toMatchObject({ name: "codex 1", status: "idle" })
+  const sending = r.call("send", { codex: "codex 1", message: "Run the tests." })
+  const resumed = await waitFor(() => r.host.threads[0], { what: "the resumed session" })
+  expect(r.host.resumes).toEqual([{ id: thread.id, resume: `thr-${thread.id}` }])
+  await waitFor(() => resumed.busy, { what: "the turn" })
+  resumed.answer("Tests pass.")
+  const reply = await sending
+  expect(reply).toMatchObject({ codex: "codex 1", status: "idle" })
+  // What the owner said after the driver's last reply, then the resumed turn.
+  expect(said(reply)).toEqual([
+    ["Ngoc (owner)", "Also update the changelog."],
+    ["codex", "Changelog updated."],
+    ["@minh", "Run the tests."],
+    ["codex", "Tests pass."],
+  ])
+  const text = ["Fix the build.", "Fixed: the test passes.", "Also update the changelog.", "Changelog updated."]
+  expect(reply.next).toBe([...text, "Run the tests.", "Tests pass."].join("").length)
+  expect(r.host.listed.get(thread.id)!.info()).toMatchObject({ name: "codex 1", status: "idle" })
+  expect(readCodexRecord(r.host.recordDir(thread.id))).toMatchObject({ state: "running", harnessSessionId: `thr-${thread.id}` })
+  expect(fs.readFileSync(path.join(r.host.recordDir(thread.id), "conversation.log"), "utf8")).toContain("Tests pass.")
+})
+
+test("after a restart, history reads each session's record, an ended one's too, with where to read on", async () => {
+  const m = made()
+  await started(m)
+  await started(m, "Write the docs.", "Docs written.")
+  await m.call("stop", { codex: "codex 2" })
+  const r = await restarted(m)
+  const first = await r.call("history", { codex: "codex 1", from: 0 })
+  expect(first).toMatchObject({ codex: "codex 1", status: "idle", more: false })
+  expect(said(first)).toEqual([["@minh", "Fix the build."], ["codex", "Fixed: the test passes."]])
+  expect(first.note).toContain("restarted")
+  const second = await r.call("history", { codex: "codex 2", trace: true })
+  expect(second.status).toBe("ended")
+  expect(words(second)).toContain("Docs written.")
+  // Read from a reply's next, from before the restart: the offsets go on.
+  expect((await r.call("history", { codex: "codex 1", from: "Fix the build.".length })).output).toEqual([
+    { author: "codex", text: "Fixed: the test passes." },
+  ])
+  expect(r.host.threads).toEqual([])
+})
+
+test("names never repeat after a restart: the next session takes the next number", async () => {
+  const m = made()
+  await started(m)
+  await started(m, "Write the docs.", "Docs written.")
+  const r = await restarted(m)
+  expect((await started(r, "Another job.")).reply.codex).toBe("codex 3")
+  const listed = (await r.call("history", { codex: "codex 9" })).refused
+  expect(listed).toContain("codex 1, codex 2, codex 3")
+  // And again after an office crash.
+  const c = crashed(r)
+  expect((await started(c, "One more.")).reply.codex).toBe("codex 4")
+})
+
+test("a record whose meta doesn't load, or that isn't this chat's, is refused and logged; its name isn't taken again", async () => {
+  const m = made()
+  await started(m)
+  const { thread: second } = await started(m, "Write the docs.", "Docs written.")
+  const { thread: third } = await started(m, "Bump the version.", "Bumped.")
+  const r1 = await restarted(m)
+  fs.writeFileSync(path.join(r1.host.recordDir(second.id), "meta.json"), "{ not json")
+  const meta = path.join(r1.host.recordDir(third.id), "meta.json")
+  fs.writeFileSync(meta, JSON.stringify({ ...JSON.parse(fs.readFileSync(meta, "utf8")), chat: "01JA1H00000000000000000OTH" }))
+  const r = made(m.host.root)
+  expect((await r.call("history", { codex: "codex 2" })).refused).toContain("the sessions are codex 1;")
+  expect((await r.call("send", { codex: "codex 3", message: "Hi." })).refused).toContain("no Codex session")
+  expect(r.host.lines.join("\n")).toContain(second.id)
+  expect(r.host.lines.join("\n")).toContain(third.id)
+  expect(r.host.resumes).toEqual([])
+  expect((await started(r, "Another job.")).reply.codex).toBe("codex 4")
+})
+
+test("a turn the restart cut off is marked interrupted in the record, naming the owner who started it", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  thread.owner("Check the logs first.")
+  const r = await restarted(m)
+  const read = await r.call("history", { codex: "codex 1", from: 0 })
+  expect(read.status).toBe("idle")
+  expect(said(read).slice(0, 3)).toEqual([
+    ["@minh", "Fix the build."],
+    ["codex", "Fixed: the test passes."],
+    ["Ngoc (owner)", "Check the logs first."],
+  ])
+  const [author, marker] = said(read)[3]!
+  expect(author).toBe("codex")
+  expect(marker).toContain("[interrupted]")
+  expect(marker).toContain("a turn Ngoc (owner) started")
+  expect(said(read)).toHaveLength(4)
+  expect(readCodexRecord(r.host.recordDir(thread.id))).toMatchObject({ state: "interrupted" })
+  expect(readCodexRecord(r.host.recordDir(thread.id))!.turn).toBeUndefined()
+})
+
+test("a turn an office crash cut off is marked interrupted too, once", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  expect((await m.call("send", { codex: "codex 1", message: "Refactor it.", wait: 0 })).status).toBe("running")
+  expect(readCodexRecord(m.host.recordDir(thread.id))!.turn).toEqual({ by: "minh" })
+  const c = crashed(m)
+  const read = await c.call("history", { codex: "codex 1", from: "Fix the build.Fixed: the test passes.".length })
+  // The crash lost the turn's own messages; the record says the turn stopped, and whose it was.
+  expect(said(read)).toHaveLength(1)
+  expect(said(read)[0]![1]).toContain("a turn @minh started")
+  expect(readCodexRecord(c.host.recordDir(thread.id))!.state).toBe("interrupted")
+  const again = crashed(c)
+  expect(said(await again.call("history", { codex: "codex 1", from: 0 })).filter(([, t]) => t.includes("[interrupted]"))).toHaveLength(1)
+})
+
+test(`after a restart, the ${MAX_LIVE}-session cap counts only the sessions continued since`, async () => {
+  const m = made()
+  for (let i = 0; i < MAX_LIVE; i++) await started(m, `Job ${i}.`)
+  const r = await restarted(m)
+  expect((await started(r, "A new one.")).reply.codex).toBe(`codex ${MAX_LIVE + 1}`)
+  for (const n of [1, 2, 3]) {
+    const sending = r.call("send", { codex: `codex ${n}`, message: "Go on." })
+    const thread = await waitFor(() => r.host.threads[n], { what: "the resumed session" })
+    await waitFor(() => thread.busy, { what: "the turn" })
+    thread.answer("Went on.")
+    expect((await sending).status).toBe("idle")
+  }
+  const refused = await r.call("send", { codex: "codex 4", message: "Go on." })
+  expect(refused.refused).toContain(`${MAX_LIVE} live Codex sessions`)
+  expect(r.host.resumes).toHaveLength(3)
+})
+
+test("a chat that ends ends its restored sessions too: their records say so, and they never resume", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  const r = await restarted(m)
+  await r.codex.close()
+  expect(readCodexRecord(r.host.recordDir(thread.id))!.state).toBe("ended")
+  const again = made(m.host.root)
+  expect((await again.call("send", { codex: "codex 1", message: "Hi." })).refused).toContain("ended")
+  expect(said(await again.call("history", { codex: "codex 1", from: 0 }))).toHaveLength(2)
+  expect(again.host.resumes).toEqual([])
+})
+
+test("stop ends a restored session without resuming it", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  const r = await restarted(m)
+  const stopped = await r.call("stop", { codex: "codex 1" })
+  expect(stopped.status).toBe("ended")
+  expect(r.host.threads).toEqual([])
+  expect(readCodexRecord(r.host.recordDir(thread.id))!.state).toBe("ended")
+})
+
+test("a resume the host refuses fails the session, saying why", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  const r = await restarted(m)
+  r.host.failOpen = new Error("Codex refused to load the thread: no rollout found")
+  const reply = await r.call("send", { codex: "codex 1", message: "Go on." })
+  expect(reply).toMatchObject({ status: "failed", error: "Codex refused to load the thread: no rollout found" })
+  expect(readCodexRecord(r.host.recordDir(thread.id))!.state).toBe("failed")
+  expect(r.host.listed.get(thread.id)!.info()).toMatchObject({ status: "failed" })
+})
+
+test("an office stop while a session resumes leaves it to continue after the next start", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  const r = await restarted(m)
+  // The office's stop closes the harness sessions before the instrument hears of it.
+  r.host.failOpen = new HarnessStopping("the office is stopping")
+  const reply = await r.call("send", { codex: "codex 1", message: "Go on." })
+  expect(reply.refused).toContain("office is stopping")
+  expect(reply.status).toBe("idle")
+  expect(readCodexRecord(r.host.recordDir(thread.id))!.state).toBe("interrupted")
+  expect(r.host.listed.get(thread.id)!.info()).toMatchObject({ status: "idle" })
+  await r.codex.suspend()
+  const again = made(m.host.root)
+  expect((await again.call("history", { codex: "codex 1" })).note).toContain("restarted")
+})
+
+test("after a restart, each session is listed as its record left it: one to continue idle, a stopped one ended", async () => {
+  const m = made()
+  const { thread: first } = await started(m)
+  const { thread: second } = await started(m, "Write the docs.", "Docs written.")
+  await m.call("stop", { codex: "codex 2" })
+  const r = await restarted(m)
+  expect(r.host.listed.get(first.id)!.info()).toMatchObject({ name: "codex 1", status: "idle", created_at: expect.any(String) })
+  expect(r.host.listed.get(second.id)!.info()).toMatchObject({ name: "codex 2", status: "ended" })
+  expect([...r.host.resumers.keys()]).toEqual([first.id])
+})
+
+test("the owner's message to a restored session continues it through the host's resume, even past the live cap", async () => {
+  const m = made()
+  for (let i = 0; i < MAX_LIVE; i++) await started(m, `Job ${i}.`)
+  const r = await restarted(m)
+  for (let i = 0; i < MAX_LIVE; i++) await started(r, `New job ${i}.`)
+  const [id] = [...r.host.resumers.keys()]
+  // Anyone else's message continues nothing, and isn't let past the cap.
+  await expect(r.host.resumers.get(id!)!("lan")).rejects.toThrow("Ngoc (owner)")
+  await expect(r.host.resumers.get(id!)!(null)).rejects.toThrow("Ngoc (owner)")
+  expect(r.host.resumes).toEqual([])
+  await r.host.resumers.get(id!)!(OWNER)
+  expect(r.host.resumes).toEqual([{ id: id!, resume: `thr-${id}` }])
+  expect(r.host.listed.get(id!)!.info()).toMatchObject({ name: "codex 1", status: "idle" })
+  // It continued: no longer the owner's to wake, and the driver's next send goes straight to it.
+  expect(r.host.resumers.has(id!)).toBe(false)
+  const resumed = r.host.threads.at(-1)!
+  const sending = r.call("send", { codex: "codex 1", message: "And this." })
+  await waitFor(() => resumed.busy, { what: "the turn" })
+  resumed.answer("Done.")
+  expect((await sending).status).toBe("idle")
+  expect(r.host.resumes).toHaveLength(1)
+})
+
+test("a read position past a restored record's end is taken back to its end, so nothing new is hidden", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  await m.codex.suspend()
+  const meta = path.join(m.host.recordDir(thread.id), "meta.json")
+  fs.writeFileSync(meta, JSON.stringify({ ...JSON.parse(fs.readFileSync(meta, "utf8")), read: 99_999 }))
+  const r = made(m.host.root)
+  const sending = r.call("send", { codex: "codex 1", message: "Run the tests." })
+  const resumed = await waitFor(() => r.host.threads[0], { what: "the resumed session" })
+  await waitFor(() => resumed.busy, { what: "the turn" })
+  resumed.answer("Tests pass.")
+  expect(said(await sending)).toEqual([["@minh", "Run the tests."], ["codex", "Tests pass."]])
 })

@@ -32,7 +32,8 @@ to Claude Code if it lists claude.
 
 - **Sessions.** The line under the prompt counts their Codex and Claude Code sessions. "Open an instrument…" in the
   command list (ctrl+p), or ctrl+x down, opens one as a chat of its own, where you watch the harness work and write
-  to it too; ctrl+x up goes back. A chat has at most four live sessions of each harness.
+  to it too; ctrl+x up goes back. Only the chat's opener (its company's CEO for a chat nobody opened) writes there
+  besides your employee. A chat has at most four live sessions of each harness.
 - **Two speakers.** The session shows who sent each message, and the harness reads each one with its author and is
   told your word wins: your employee reads what you told it with its next answer, and can't interrupt or stop a turn
   you started. A message you or your employee send while Claude Code works joins its turn once its running tool calls
@@ -44,8 +45,13 @@ to Claude Code if it lists claude.
   none in the background there) and cancels every message it hasn't started, so none of them runs after.
 - **Idle and the end.** A Claude Code session left idle for five minutes stops Claude Code, and the next message
   resumes the same conversation; so does the next message after Claude Code exits on its own, whose turn is marked
-  interrupted. Ending the chat ends its shells, their commands and its harness sessions. Restarting the office ends
-  those sessions too, and your employee starts new ones.
+  interrupted. Ending the chat ends its shells, their commands and its harness sessions.
+- **Restarting the office.** Restarting the office stops its harness sessions but keeps them, each listed as it was:
+  your employee still reads each one's record by its name, and the next message to it, theirs or yours in the
+  session, continues the same Codex thread or Claude Code conversation, through every check a new session's start
+  makes. Until then it shows idle and doesn't count toward the four. A turn the restart cut off is marked interrupted, naming who started it, and nothing reruns
+  it. A new session never takes an old one's name. A Codex session the restart caught before its first turn ran can't
+  be continued, so your employee starts another.
 
 ### The SOP that drives a harness
 
@@ -55,9 +61,9 @@ where in the chat's folder to work, and the harness (`codex` or `claude`). Your 
 harness, follows it, checks its work, sends it what is missing, then stops the session and reports. Messages sent to
 its run steer them, and an interrupt stops them and the harness turn they wait on.
 
-A run resumed in the same office never repeats a start or a message: a call a crash cut off comes back as one whose
-outcome is unknown, and your employee reads the session's record before acting again. The office keeps harness
-sessions only while it runs, so after it restarts the session is gone and a resumed run starts the work over.
+A resumed run never repeats a start or a message: a call a crash cut off comes back as one whose outcome is unknown,
+and your employee reads the session's record before acting again. After the office restarts, a resumed run finds its
+session by name and its next message continues it, so the work goes on where it stopped.
 `opencorp doctor` warns about an employee who lists the SOP in `sops:` but uses neither harness.
 
 ## What an employee may touch

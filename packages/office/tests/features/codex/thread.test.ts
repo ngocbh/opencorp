@@ -457,6 +457,41 @@ test.skipIf(NO_CODEX)(
 )
 
 test.skipIf(NO_CODEX)(
+  "a real codex takes a thread/resume in a new app-server as the office sends it, and has nothing to resume before a turn",
+  async () => {
+    const real = realHome()
+    const { options } = real
+    const loaded = async () => {
+      const { p, proc } = await realServer(real, path.join(real.root, "ws"))
+      await proc.start()
+      return { proc, params: await employeeLoad(proc.rpc!, p, "opencorp-real", options.codex.install) }
+    }
+    const first = await loaded()
+    let threadId: string
+    try {
+      const started = await first.proc.rpc!.request("thread/start", first.params)
+      checkLoaded(started, "opencorp-real")
+      threadId = (started as { thread: { id: string } }).thread.id
+    } finally {
+      await first.proc.close(2000)
+    }
+    // The office restarted: a new app-server, which has never loaded the thread. Codex keeps a thread on disk from its
+    // first turn, which this test runs none of, so the resume is taken and refused as having no rollout: an instrument
+    // session the restart caught before its first turn fails, saying so.
+    const second = await loaded()
+    try {
+      const params = { threadId, excludeTurns: true, ...second.params }
+      await expect(second.proc.rpc!.request("thread/resume", params)).rejects.toMatchObject({
+        rpcMessage: expect.stringMatching(/^no rollout found for thread id /),
+      })
+    } finally {
+      await second.proc.close(2000)
+    }
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
   "in a folder the owner's real codex trusts, the project's own config would load, so the load is refused before any of it runs",
   async () => {
     const real = realHome()

@@ -1,9 +1,13 @@
-/** A Codex session's record: meta.json, conversation.log and trace.log in a private folder, labelled and escaped. */
+/** A Codex session's record: meta.json, conversation.log and trace.log in a private folder, labelled and escaped, and
+ *  the entries a later office loads it back from. */
 import fs from "node:fs"
 import path from "node:path"
 import type { Message } from "@opencorp/protocol"
 import { expect, test } from "bun:test"
 import { CodexRecord, markInterrupted, readCodexRecord } from "../../../src/tools/codex/record.ts"
+import { CODEX } from "../../../src/tools/codex/tools.ts"
+import { loadRecord } from "../../../src/tools/harness/record.ts"
+import { CLAUDE } from "../../../src/tools/claude/instrument.ts"
 import { tempDir } from "../../helpers.ts"
 
 const META = { id: "01JA1H00000000000000000001", name: "codex 1", driver: "minh", chat: "01JA1H00000000000000000002",
@@ -86,4 +90,61 @@ test("a record cut off by an office stop is marked interrupted once, and an ende
   expect(readCodexRecord(path.join(root, "a"))!.state).toBe("interrupted")
   expect(readCodexRecord(path.join(root, "b"))!.state).toBe("ended")
   expect(readCodexRecord(path.join(root, "missing"))).toBeNull()
+})
+
+test("a record loads back as it was kept: each log's newest entries, where it ends, its meta, and writes on after", () => {
+  const dir = path.join(tempDir(), "r")
+  const record = new CodexRecord(dir, META, { keep: 100 })
+  for (let i = 0; i < 10; i++) record.add([message("assistant", null, [{ id: `t${i}`, type: "text", text: `${i}`.repeat(30) }])], label)
+  record.setHarnessSession("thr_1")
+  record.setRead(270)
+  record.suspend()
+  const loaded = loadRecord(CODEX, dir, { keep: 100 })
+  expect(loaded.meta).toMatchObject({ ...META, kind: "codex", state: "interrupted", harnessSessionId: "thr_1", read: 270 })
+  expect([loaded.conversation.end, loaded.conversation.start]).toEqual([300, 210])
+  expect(loaded.conversation.entries).toEqual(record.conversation.entries)
+  expect(loaded.trace.entries).toEqual(record.trace.entries)
+  loaded.resume()
+  expect(loaded.state).toBe("running")
+  loaded.add([message("user", "minh", [{ id: "u", type: "text", text: "More." }])], label)
+  expect(loaded.conversation.entries.at(-1)).toEqual({ at: 300, author: "@minh", text: "More." })
+  const log = fs.readFileSync(path.join(dir, "conversation.log"), "utf8")
+  expect(log).toContain("0".repeat(30))
+  expect(log).toContain("More.")
+  expect(loadRecord(CODEX, dir).conversation.end).toBe(305)
+  for (const file of ["conversation.jsonl", "trace.jsonl"]) expect(fs.statSync(path.join(dir, file)).mode & 0o777).toBe(0o600)
+})
+
+test("a log whose last entry a crash cut off loads what came before it", () => {
+  const dir = path.join(tempDir(), "r")
+  const record = new CodexRecord(dir, META)
+  record.add([message("user", "minh", [{ id: "u", type: "text", text: "Run the tests." }])], label)
+  fs.appendFileSync(path.join(dir, "conversation.jsonl"), '{"at":14,"author":"codex","text":"All 1')
+  const loaded = loadRecord(CODEX, dir)
+  expect(loaded.conversation.entries).toEqual([{ at: 0, author: "@minh", text: "Run the tests." }])
+  expect(loaded.conversation.end).toBe(14)
+})
+
+test("a folder that holds no record of the harness doesn't load, saying why", () => {
+  const root = tempDir()
+  expect(() => loadRecord(CODEX, path.join(root, "missing"))).toThrow()
+  new CodexRecord(path.join(root, "r"), META)
+  expect(() => loadRecord(CLAUDE, path.join(root, "r"))).toThrow("meta.json")
+  fs.writeFileSync(path.join(root, "r", "meta.json"), "{")
+  expect(() => loadRecord(CODEX, path.join(root, "r"))).toThrow("meta.json")
+})
+
+test("an entries file a crash cut short goes on with a line of its own, so the next entry isn't lost", () => {
+  const dir = path.join(tempDir(), "r")
+  const record = new CodexRecord(dir, META)
+  record.add([message("user", "minh", [{ id: "u", type: "text", text: "Run the tests." }])], label)
+  record.suspend()
+  fs.appendFileSync(path.join(dir, "conversation.jsonl"), '{"at":14,"author":"codex","text":"All 1')
+  const loaded = loadRecord(CODEX, dir)
+  loaded.resume()
+  loaded.add([message("assistant", null, [{ id: "a", type: "text", text: "All pass." }])], label)
+  expect(loadRecord(CODEX, dir).conversation.entries).toEqual([
+    { at: 0, author: "@minh", text: "Run the tests." },
+    { at: 14, author: "codex", text: "All pass." },
+  ])
 })

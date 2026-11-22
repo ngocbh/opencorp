@@ -448,6 +448,8 @@ export class ChatHarness implements SessionHarness {
   }
 
   async prompt(sessionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<string> {
+    // Only a harness session waits for the check: a chat's message reaches its actor before an Esc sent after it.
+    if (this.store.getSession(sessionId)?.kind === "instrument") await this.#mayWrite(sessionId, by)
     const claude = this.#claudeFor(sessionId)
     if (claude) return claude.prompt(sessionId, text, { by })
     const codex = this.#codexFor(sessionId)
@@ -455,6 +457,8 @@ export class ChatHarness implements SessionHarness {
   }
 
   async steer(sessionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<string> {
+    // Only a harness session waits for the check: a chat's message reaches its actor before an Esc sent after it.
+    if (this.store.getSession(sessionId)?.kind === "instrument") await this.#mayWrite(sessionId, by)
     const claude = this.#claudeFor(sessionId)
     if (claude) return claude.steer(sessionId, text, { by })
     const codex = this.#codexFor(sessionId)
@@ -597,6 +601,20 @@ export class ChatHarness implements SessionHarness {
       throw error
     }
     if (!removed) throw new HarnessError(404, "not_found", "this chat has no such rule")
+  }
+
+  /** Refused 403 unless `by` may write in session `sessionId`: in an employee's Codex or Claude Code session, its two
+   *  speakers are the employee, through its tools, and its chat's approver, so only the approver writes there. */
+  async #mayWrite(sessionId: string, by: string | null): Promise<void> {
+    const session = this.store.getSession(sessionId)
+    if (session === undefined) return
+    const chat = (session.instrument_of === null ? undefined : this.store.getSession(session.instrument_of)) ?? session
+    const approver = await this.#approverOf(chat)
+    const title = session.harness === "claude" ? "Claude Code" : "Codex"
+    if (approver === null) throw new HarnessError(403, "forbidden", `nobody may write in this ${title} session`)
+    if (by !== approver) {
+      throw new HarnessError(403, "forbidden", `only @${approver} may write in this ${title} session, besides its employee`)
+    }
   }
 
   /** Who answers for `session`: its opener, else the CEO at its pinned commit, which is read only then. */

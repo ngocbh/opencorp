@@ -10,7 +10,9 @@
  *  exits on its own (a crash), whose turn is marked interrupted and whose process group is killed, so nothing it
  *  started outlives it. Only a resume that can't start fails the session. Its end and an office stop take every
  *  Claude Code of the session with it: the running one, one starting, and one the idle stop is closing. An office
- *  stop ends every session, and a start ends what a crash left live, marking its record interrupted. */
+ *  stop ends every session without telling its instrument, which keeps it to continue after the restart, and a start
+ *  ends what a crash left live, marking its record interrupted. After a restart, the chat's instrument continues one
+ *  (`resumeInstrument`): the same child session, Claude Code started with `--resume` by the same path. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -38,7 +40,7 @@ import { type OfficePaths as SandboxOfficePaths, UnsafeProfile, UnsafeWorkspace 
 import { checkFolder } from "../../runtime/sessions/folder.ts"
 import { employeePermission } from "../../runtime/sessions/permission.ts"
 import { instructions } from "../../runtime/sessions/speakers.ts"
-import { HarnessError, notWaiting, writeState } from "../../runtime/sessions/state.ts"
+import { HarnessError, continueFirst, notWaiting, resumable, writeState } from "../../runtime/sessions/state.ts"
 import { LIVE, type SessionRecord, type Store } from "../../runtime/store/store.ts"
 import { workerEnv } from "../../runtime/worker/spawn.ts"
 import type { OfficePaths } from "../../util/home.ts"
@@ -139,6 +141,8 @@ export class ClaudeSessions {
   readonly #socat: string | undefined
   readonly #libraries: ((file: string) => string[]) | undefined
   readonly #live = new Map<string, ClaudeSession>()
+  /** How the owner's message continues each instrument session an office restart cut off (`resumable`). */
+  readonly #resumers = new Map<string, (by: string | null) => Promise<void>>()
   #closed = false
 
   constructor(office: ClaudeOffice, options: ClaudeSessionsOptions = {}) {
@@ -179,16 +183,7 @@ export class ClaudeSessions {
     { observer, label, owner }: { observer: ThreadEvents; label: (author: string | null) => string; owner: string | null },
   ): Promise<SessionRecord> {
     if (this.#closed) throw new HarnessError(503, "stopping", "the office is stopping")
-    const repo = loadRepo(await this.office.git.pin(chat.repo_commit))
-    const person = repo.people.get(chat.person)
-    if (person === undefined) throw new HarnessError(404, "not_found", missingPerson(repo, chat.person))
-    if (!person.harnesses.includes("claude")) {
-      throw new HarnessError(
-        422,
-        "unsupported_harness",
-        `@${chat.person} doesn't use the claude harness: the owner adds claude to their person's harnesses`,
-      )
-    }
+    await this.#usesClaude(chat)
     const real = checkFolder(this.office, chat.cwd, this.log)
     const t = now()
     const session = this.store.createSession(
@@ -214,23 +209,88 @@ export class ClaudeSessions {
         updated_at: t,
       }),
     )
-    const live = new ClaudeSession(this, session, {
-      observer,
-      wire: (text, author) => authoredText(label(author), text),
-      instructions: instructions(label, chat.person, owner),
-      owner,
+    return this.#begin(session, chat, { observer, label, owner }, { resumed: false })
+  }
+
+  /**
+   * Continues Claude Code session `id`, an instrument of `chat` that an office restart cut off, on its Claude Code
+   * session `claudeId`: the same child session, live again, Claude Code started with `--resume` by the path every
+   * start takes (`prepare`: the employee's permission at the chat's commit, a fresh temp folder, the install check,
+   * socat, and the network's and a read-only folder's refusals; and the tool allowlist at its first line), with the
+   * speakers as `startInstrument` sets them. Resolves once Claude Code has started.
+   *
+   * Refused as `startInstrument` is, as `resumable` refuses a session that isn't that chat's on that Claude Code
+   * session, and 409 `live` for one live here; a start that fails fails the session and rejects with 422
+   * `start_failed`, saying what to fix.
+   */
+  async resumeInstrument(
+    chat: SessionRecord,
+    id: string,
+    claudeId: string,
+    { observer, label, owner }: { observer: ThreadEvents; label: (author: string | null) => string; owner: string | null },
+  ): Promise<SessionRecord> {
+    const stopping = () => new HarnessError(503, "stopping", "the office is stopping")
+    const live = () => new HarnessError(409, "live", `Claude Code session ${id} is live`)
+    if (this.#closed) throw stopping()
+    if (this.#live.has(id)) throw live()
+    resumable(this.store, chat, id, { harness: "claude", harnessSessionId: claudeId, log: this.log })
+    await this.#usesClaude(chat)
+    const real = checkFolder(this.office, chat.cwd, this.log)
+    // Again after the waits; from here on nothing waits before it is live, so restore can't end it between.
+    if (this.#closed) throw stopping()
+    if (this.#live.has(id)) throw live()
+    const session = this.store.updateSession(id, {
+      ...notWaiting("starting"), harness_turn_id: null, cwd: real, repo_commit: chat.repo_commit,
     })
+    return this.#begin(session, chat, { observer, label, owner }, { resumed: true })
+  }
+
+  /** Refused (`HarnessError`) unless `chat`'s person uses the claude harness at the chat's commit. */
+  async #usesClaude(chat: SessionRecord): Promise<void> {
+    const repo = loadRepo(await this.office.git.pin(chat.repo_commit))
+    const person = repo.people.get(chat.person)
+    if (person === undefined) throw new HarnessError(404, "not_found", missingPerson(repo, chat.person))
+    if (!person.harnesses.includes("claude")) {
+      throw new HarnessError(
+        422,
+        "unsupported_harness",
+        `@${chat.person} doesn't use the claude harness: the owner adds claude to their person's harnesses`,
+      )
+    }
+  }
+
+  /** Makes stored `session` live as `chat`'s instrument and starts its Claude Code (`resumed`: with `--resume`);
+   *  resolves once Claude Code has started, and a start that fails fails the session. */
+  async #begin(
+    session: SessionRecord,
+    chat: SessionRecord,
+    { observer, label, owner }: { observer: ThreadEvents; label: (author: string | null) => string; owner: string | null },
+    { resumed }: { resumed: boolean },
+  ): Promise<SessionRecord> {
+    const id = session.id
+    const live = new ClaudeSession(
+      this,
+      session,
+      {
+        observer,
+        wire: (text, author) => authoredText(label(author), text),
+        instructions: instructions(label, chat.person, owner),
+        owner,
+      },
+      { resumed },
+    )
     this.#live.set(id, live)
+    const stopping = () => new HarnessError(503, "stopping", "the office is stopping")
     if (this.#closed) {
-      // The office began stopping meanwhile: nothing will drive it.
-      await live.finish("ended")
-      throw new HarnessError(503, "stopping", "the office is stopping")
+      // The office began stopping meanwhile: nothing will drive it, and its instrument hears so from the refusal.
+      await live.finish("ended", { tell: false })
+      throw stopping()
     }
     try {
       await live.launch()
     } catch (error) {
-      // Ended while it started: the end has ended it.
-      if (live.over) throw new HarnessError(409, "not_live", `Claude Code session ${id} has ended`)
+      // Ended while it started: the end, or the office's stop, has ended it.
+      if (live.over) throw this.#closed ? stopping() : new HarnessError(409, "not_live", `Claude Code session ${id} has ended`)
       const why = live.failure(error)
       await live.finish("failed", { tell: false })
       throw new HarnessError(422, "start_failed", why)
@@ -238,10 +298,19 @@ export class ClaudeSessions {
     return this.store.getSession(id)!
   }
 
-  /** A message from `by` (the chat's owner when null): a turn, or a steer of the running one. 404 for no session,
-   *  409 `not_live` for one that has ended. */
+  /** A message from `by` (the chat's owner when null): a turn, or a steer of the running one; one to a session an
+   *  office restart cut off continues it first, through its chat's instrument. 404 for no session, 409 `not_live` for
+   *  one that has ended. */
   async prompt(sessionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<string> {
+    if (!this.#live.has(sessionId)) await continueFirst(this.#resumers.get(sessionId), by)
     return this.#must(sessionId).prompt(text, by)
+  }
+
+  /** Lets a message to session `id`, which an office restart cut off, continue it first through `resume` (its
+   *  chat's instrument); null takes that away. */
+  resumable(id: string, resume: ((by: string | null) => Promise<void>) | null): void {
+    if (resume === null) this.#resumers.delete(id)
+    else this.#resumers.set(id, resume)
   }
 
   /** A steer is a `prompt`: Claude Code reads a message sent mid-turn in the same turn by itself. */
@@ -284,7 +353,8 @@ export class ClaudeSessions {
     )
   }
 
-  /** Office stop: every session ends, its Claude Code stopped; no session starts after. */
+  /** Office stop: every session ends, its Claude Code stopped, and its instrument isn't told, so it keeps the session
+   *  to continue after the restart; no session starts after. */
   async closeAll(): Promise<void> {
     this.#closed = true
     const live = [...this.#live.values()]
@@ -293,7 +363,8 @@ export class ClaudeSessions {
   }
 
   /** After an office restart, each Claude Code session that was live ends: its chat's instrument went with the
-   *  office, so nothing drives it. Its record is marked interrupted, and the temp folders a crash left go. */
+   *  office, so nothing drives it until that chat's next instrument continues it (`resumeInstrument`). Its record is
+   *  marked interrupted, and the temp folders a crash left go. One continued meanwhile is left as it is. */
   async restore(): Promise<void> {
     this.#sweep()
     for (const session of this.store.listSessions({ status: [...LIVE] })) {
@@ -501,7 +572,13 @@ export class ClaudeSession {
   #finished = false
   #usage: HarnessUsage = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 }
 
-  constructor(owner: ClaudeSessions, session: SessionRecord, instrument: InstrumentOf) {
+  /** `resumed`: a session an earlier office started, so its first start resumes it, and its token counts go on. */
+  constructor(
+    owner: ClaudeSessions,
+    session: SessionRecord,
+    instrument: InstrumentOf,
+    { resumed = false }: { resumed?: boolean } = {},
+  ) {
     this.#owner = owner
     this.#store = owner.store
     this.sessionId = session.id
@@ -510,6 +587,8 @@ export class ClaudeSession {
     this.claudeId = session.harness_session_id!
     this.instrument = instrument
     this.translator = new Translator(session.id, (e) => this.#event(e))
+    this.#started = resumed
+    if (resumed && session.harness_usage) this.#usage = { ...session.harness_usage }
   }
 
   /** Whether a turn runs, or a message waits for Claude Code. */
@@ -652,7 +731,8 @@ export class ClaudeSession {
   }
 
   /** Office stop: every Claude Code of the session is killed (the running one, one starting, one going away) and the
-   *  session ends. */
+   *  session ends; the turn it cut off is marked interrupted, and its instrument isn't told it ended, so the record
+   *  waits for the next start to continue it. */
   async shutdown(): Promise<void> {
     this.#clearIdle()
     const proc = this.proc
@@ -661,7 +741,7 @@ export class ClaudeSession {
     await Promise.all([proc?.kill(), ...this.#others()])
     await this.#starting?.catch(() => {})
     this.translator.abort()
-    await this.finish("ended")
+    await this.finish("ended", { tell: false })
   }
 
   /** Kills the Claude Code being started and the one going away; resolves once they have gone. */

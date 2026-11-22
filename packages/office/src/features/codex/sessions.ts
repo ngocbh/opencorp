@@ -6,7 +6,7 @@ import { type Message, OFFICE, Question, Session, WorkItem, now } from "@opencor
 import type { Connections } from "../../models/connections.ts"
 import type { Hooks } from "../../runtime/sessions/hooks.ts"
 import { ProviderError } from "../../models/provider.ts"
-import { HarnessError, notAnAgent, notWaiting } from "../../runtime/sessions/state.ts"
+import { HarnessError, continueFirst, notAnAgent, notWaiting, resumable } from "../../runtime/sessions/state.ts"
 import type { CompanyGit } from "../../company/git.ts"
 import { loadRepo, missingPerson } from "../../company/loader.ts"
 import type { Bus } from "../../runtime/bus.ts"
@@ -121,6 +121,8 @@ export class CodexSessions implements SessionHarness {
   #closed = false
   /** The tail of the continuations' serial section. */
   #continuing: Promise<unknown> = Promise.resolve()
+  /** How the owner's message continues each instrument session an office restart cut off (`resumable`). */
+  readonly #resumers = new Map<string, (by: string | null) => Promise<void>>()
 
   constructor(office: CodexOffice, hooks: Hooks, options: CodexSessionsOptions = {}) {
     this.office = office
@@ -255,16 +257,7 @@ export class CodexSessions implements SessionHarness {
     { observer, label, owner }: { observer: ThreadEvents; label: (author: string | null) => string; owner: string | null },
   ): Promise<SessionRecord> {
     if (this.#closed) throw new HarnessError(503, "stopping", "the office is stopping")
-    const repo = loadRepo(await this.office.git.pin(chat.repo_commit))
-    const person = repo.people.get(chat.person)
-    if (person === undefined) throw new HarnessError(404, "not_found", missingPerson(repo, chat.person))
-    if (!person.harnesses.includes("codex")) {
-      throw new HarnessError(
-        422,
-        "unsupported_harness",
-        `@${chat.person} doesn't use the codex harness: the owner adds codex to their person's harnesses`,
-      )
-    }
+    await this.#usesCodex(chat)
     const real = checkFolder(this.office, chat.cwd, this.log)
     const t = now()
     const session = this.store.createSession(
@@ -289,11 +282,7 @@ export class CodexSessions implements SessionHarness {
         updated_at: t,
       }),
     )
-    const instrument: InstrumentOf = {
-      observer,
-      wire: (text, author) => authoredText(label(author), text),
-      instructions: instructions(label, chat.person, owner),
-    }
+    const instrument = instrumentOf(chat, { observer, label, owner })
     try {
       await this.start(session, { instrument })
     } catch (error) {
@@ -302,13 +291,78 @@ export class CodexSessions implements SessionHarness {
     return this.store.getSession(session.id)!
   }
 
-  /** A message: `turn`, `steer` (a turn was running), or `queued` (until the thread is loaded). */
+  /**
+   * Continues Codex session `id`, an instrument of `chat` that an office restart cut off, on its thread `threadId`:
+   * the same child session, live again, its thread loaded in a new app-server with `thread/resume`, by the path a new
+   * one's load takes (the employee's permission at the chat's commit, a fresh temp folder, the checks of Codex's
+   * install and of a trusted project's config), with the speakers as `startInstrument` sets them. Cards it left open
+   * go stale.
+   *
+   * Refused as `startInstrument` is, as `resumable` refuses a session that isn't that chat's on that thread, and 409
+   * `live` for one live here; a load that fails later fails the session, and the observer hears so.
+   */
+  async resumeInstrument(
+    chat: SessionRecord,
+    id: string,
+    threadId: string,
+    { observer, label, owner }: { observer: ThreadEvents; label: (author: string | null) => string; owner: string | null },
+  ): Promise<SessionRecord> {
+    const stopping = () => new HarnessError(503, "stopping", "the office is stopping")
+    const live = () => new HarnessError(409, "live", `Codex session ${id} is live`)
+    if (this.#closed) throw stopping()
+    if (this.#live.has(id)) throw live()
+    const old = resumable(this.store, chat, id, { harness: "codex", harnessSessionId: threadId, log: this.log })
+    await this.#usesCodex(chat)
+    const real = checkFolder(this.office, chat.cwd, this.log)
+    const author = await this.opener(old)
+    // Again after the waits; from here on nothing waits, so restore can't end it between.
+    if (this.#closed) throw stopping()
+    if (this.#live.has(id)) throw live()
+    for (const q of this.store.listQuestions({ sessionId: id, status: "open" })) {
+      try {
+        this.store.setQuestionStatus(q.id, "stale")
+      } catch (error) {
+        if (!(error instanceof InvalidTransition)) throw error
+      }
+    }
+    const session = this.store.updateSession(id, {
+      ...notWaiting("starting"), harness_turn_id: null, cwd: real, repo_commit: chat.repo_commit,
+    })
+    const resumed = new CodexSession(this, session, { author, instrument: instrumentOf(chat, { observer, label, owner }) })
+    this.#live.set(id, resumed)
+    resumed.start({ resume: true })
+    return session
+  }
+
+  /** Refused (`HarnessError`) unless `chat`'s person uses the codex harness at the chat's commit. */
+  async #usesCodex(chat: SessionRecord): Promise<void> {
+    const repo = loadRepo(await this.office.git.pin(chat.repo_commit))
+    const person = repo.people.get(chat.person)
+    if (person === undefined) throw new HarnessError(404, "not_found", missingPerson(repo, chat.person))
+    if (!person.harnesses.includes("codex")) {
+      throw new HarnessError(
+        422,
+        "unsupported_harness",
+        `@${chat.person} doesn't use the codex harness: the owner adds codex to their person's harnesses`,
+      )
+    }
+  }
+
+  /** A message: `turn`, `steer` (a turn was running), or `queued` (until the thread is loaded). One to an instrument
+   *  session an office restart cut off continues it first, through its chat's instrument. */
   async prompt(sessionId: string, text: string, { by = null }: { by?: string | null } = {}) {
     const session = this.#codexSession(sessionId)
-    const live = this.#must(sessionId)
     for (const refusal of this.hooks.fire("promptCheck", session, text))
       if (refusal) throw new HarnessError(422, "refused", String(refusal))
-    return live.prompt(text, { by })
+    if (!this.#live.has(sessionId)) await continueFirst(this.#resumers.get(sessionId), by)
+    return this.#must(sessionId).prompt(text, { by })
+  }
+
+  /** Lets a message to instrument session `id`, which an office restart cut off, continue it first through `resume`
+   *  (its chat's instrument); null takes that away. */
+  resumable(id: string, resume: ((by: string | null) => Promise<void>) | null): void {
+    if (resume === null) this.#resumers.delete(id)
+    else this.#resumers.set(id, resume)
   }
 
   /** A steer is a `prompt`: Codex steers a running turn by itself. */
@@ -481,7 +535,8 @@ export class CodexSessions implements SessionHarness {
   }
 
   /** Ends an instrument session an office restart found live: its chat's instrument went with the office, so nothing
-   *  drives it. Its cards go stale, and its record is marked interrupted. */
+   *  drives it until that chat's next instrument continues it (`resumeInstrument`). Its cards go stale, and its record
+   *  is marked interrupted. One continued meanwhile is left as it is. */
   async #endInstrument(session: SessionRecord, cards: readonly QuestionRecord[]): Promise<void> {
     for (const q of cards) {
       try {
@@ -497,8 +552,8 @@ export class CodexSessions implements SessionHarness {
     }
     const live = new CodexSession(this, session, { author: await this.opener(session) })
     live.release()
-    if (this.#closed) return
-    live.translator.error("The office restarted, so this Codex session ended; its employee starts a new one.")
+    if (this.#closed || this.#live.has(session.id)) return
+    live.translator.error("The office restarted, so this Codex session stopped; its employee's next message continues it.")
     await this.finished(live, "ended")
   }
 
@@ -855,4 +910,17 @@ export function masked(question: QuestionRecord, answer: unknown): unknown {
   if (typeof answer !== "object" || answer === null || Array.isArray(answer)) return "[secret]"
   const safe = new Set(pages.filter((p) => !p.secret).map((p) => p.header))
   return Object.fromEntries(Object.entries(answer).map(([k, v]) => [k, safe.has(k) ? v : "[secret]"]))
+}
+
+/** What makes a Codex session `chat`'s instrument: `observer` hears it, each message reads to Codex inside its
+ *  author's `label`, and Codex is told at each load that `owner`'s word wins. */
+function instrumentOf(
+  chat: SessionRecord,
+  { observer, label, owner }: { observer: ThreadEvents; label: (author: string | null) => string; owner: string | null },
+): InstrumentOf {
+  return {
+    observer,
+    wire: (text, author) => authoredText(label(author), text),
+    instructions: instructions(label, chat.person, owner),
+  }
 }

@@ -1350,7 +1350,8 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * Office stop: the workspace is interrupted, the terminal closed and every delivery not yet answered is answered:
+   * Office stop: the workspace is interrupted, the terminal closed, the harness instruments' sessions left for the next
+   * start to continue (`suspend`), and every delivery not yet answered is answered:
    * with its recorded reply when the worker sent one, else by the closing rule with `503 stopping`. Later commands are
    * refused `503 stopping`, later worker frames are ignored and later `askUser` and `toolCall` requests are refused
    * (store requests still run); the office's registry stops the workers, and the parked worker is closed. Returns a
@@ -1365,7 +1366,7 @@ export class SessionActor implements LiveCalls {
     this.#stopSettleRetry()
     void this.#releaseParked()
     this.#interruptShells()
-    const shells = this.#closeShells()
+    const shells = this.#closeShells({ stopping: true })
     this.#approvals.stop()
     this.#answerCalls()
     const given = [...(this.#starting?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
@@ -3277,16 +3278,17 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Closes the terminal and the Codex and Claude Code instruments: every command and harness session ends, and
-   *  their listings go. Never rejects. */
-  #closeShells(): Promise<void> {
+   *  their listings go. At the office's stop (`stopping`), the harness sessions it has stopped wait for its next start
+   *  to continue them. Never rejects. */
+  #closeShells({ stopping = false }: { stopping?: boolean } = {}): Promise<void> {
     const { terminal, codex, claude } = this.#spec ?? {}
     const shells = terminal?.close().catch((error: unknown) => {
       this.#log(`session ${this.sessionId}: its terminal didn't close cleanly (${errorName(error)})`)
     })
-    const threads = codex?.close().catch((error: unknown) => {
+    const threads = (stopping ? codex?.suspend() : codex?.close())?.catch((error: unknown) => {
       this.#log(`session ${this.sessionId}: its Codex sessions didn't close cleanly (${errorName(error)})`)
     })
-    const claudes = claude?.close().catch((error: unknown) => {
+    const claudes = (stopping ? claude?.suspend() : claude?.close())?.catch((error: unknown) => {
       this.#log(`session ${this.sessionId}: its Claude Code sessions didn't close cleanly (${errorName(error)})`)
     })
     return Promise.all([shells, threads, claudes]).then(() => {})

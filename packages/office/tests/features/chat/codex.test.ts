@@ -1,6 +1,7 @@
 /** A main chat's Codex instrument: the employee drives Codex sessions, each the chat's child session under the
  *  employee's permission, listed as the chat's instrument with its record in the chat's `codex/` folder, and the
- *  owner's messages to Codex reach the employee's next reply; on the fake app-server. */
+ *  owner's messages to Codex reach the employee's next reply; after an office restart, a session goes on from its
+ *  record and its thread; on the fake app-server. */
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
@@ -11,10 +12,11 @@ import { readCodexRecord } from "../../../src/tools/codex/record.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
 import { person } from "../../company/helpers.ts"
 import { session as sessionRow } from "../../runtime/store/helpers.ts"
+import type { SessionRecord } from "../../../src/runtime/store/store.ts"
 import { sameProcess, startTime } from "../../../src/util/proc.ts"
 import { isGone, waitFor } from "../../helpers.ts"
 import { fakeLlm, makeHarness, PRICES } from "./helpers.ts"
-import { type Codex, allGone, makeCodex, status } from "../codex/helpers.ts"
+import { type Codex, allGone, makeCodex, reopened, status } from "../codex/helpers.ts"
 
 setDefaultTimeout(30_000)
 afterAll(allGone)
@@ -25,7 +27,12 @@ async function employee(h: Codex) {
   const chat = h.store.createSession(
     sessionRow({ cwd: fs.realpathSync(h.workspace), repo_commit: head, opened_by: "ngocbh", connection: "office" }),
   )
-  const repo = loadRepo(await h.office.git.pin(head))
+  return { chat, ...(await instrumentOf(h, chat)) }
+}
+
+/** `chat`'s Codex instrument on `h`'s sessions, and a call of its tools. */
+async function instrumentOf(h: Codex, chat: SessionRecord) {
+  const repo = loadRepo(await h.office.git.pin(chat.repo_commit))
   const codex = new EmployeeCodex({
     chat,
     sessions: h.sessions,
@@ -36,7 +43,24 @@ async function employee(h: Codex) {
   const tools = codex.tools()
   const call = async (name: keyof typeof tools, args: Record<string, unknown>) =>
     JSON.parse(String(await tools[name].call(args))) as Record<string, any>
-  return { chat, codex, call }
+  return { codex, call }
+}
+
+/** The office's stop and its next start, as the daemon runs them: the Codex sessions stop, then the chat's instrument
+ *  keeps them; the next office's sessions restore theirs, and the chat's new instrument takes its calls. */
+async function restart(h: Codex, codex: EmployeeCodex, chat: SessionRecord) {
+  await h.sessions.closeAll()
+  await codex.suspend()
+  const r = reopened(h)
+  await r.sessions.restore()
+  return { r, ...(await instrumentOf(r, chat)) }
+}
+
+/** The Codex session's id, its record's folder, and the record's conversation log. */
+function recordOf(h: Codex, chat: SessionRecord) {
+  const id = h.store.listSessions({ kind: "instrument" }).find((s) => s.instrument_of === chat.id)!.id
+  const dir = path.join(h.office.paths.sessionDir(chat.id), "codex", id)
+  return { id, dir, conversation: () => fs.readFileSync(path.join(dir, "conversation.log"), "utf8") }
 }
 
 test("the employee starts Codex as the chat's instrument, a child session, and reads its answer", async () => {
@@ -197,4 +221,222 @@ test("a cost-cap stop while the employee waits on Codex stops the Codex turn, so
   const sent = h.codex!.fake.calls("turn/start").length
   expect(sent === 0 || h.codex!.fake.calls("turn/interrupt").length === 1).toBe(true)
   expect(listed!.status).not.toBe("running")
+})
+
+test("after an office restart, history reads the Codex session's record, and send resumes its thread", async () => {
+  const h = makeCodex()
+  h.fake.script([
+    fc.agentMessage("a1", "The build is fixed."),
+    fc.agentMessage("a2", "The tests pass too."),
+    fc.agentMessage("a3", "Docs written."),
+  ])
+  const { chat, codex, call } = await employee(h)
+  await call("start", { message: "Fix the build." })
+  const { id, dir } = recordOf(h, chat)
+  const { r, call: next } = await restart(h, codex, chat)
+  // Ended in the store, listed idle until someone writes to it; the record waits.
+  expect(status(r, id)).toBe("ended")
+  expect(h.office.instruments.list(chat.id)).toMatchObject([{ id, name: "codex 1", status: "idle" }])
+  expect(readCodexRecord(dir)).toMatchObject({ state: "interrupted", harnessSessionId: "thr_1" })
+  const read = await next("history", { codex: "codex 1", from: 0 })
+  expect(read.output).toEqual([
+    { author: "@minh", text: "Fix the build." },
+    { author: "codex", text: "The build is fixed." },
+  ])
+  expect(r.fake.calls("thread/resume")).toEqual([])
+  const reply = await next("send", { codex: "codex 1", message: "Run the tests." })
+  expect(reply).toMatchObject({ codex: "codex 1", status: "idle" })
+  expect(reply.output).toEqual([
+    { author: "@minh", text: "Run the tests." },
+    { author: "codex", text: "The tests pass too." },
+  ])
+  // The same thread, loaded by the start's own path: the employee's permission, and Codex told of its speakers.
+  const [resume] = r.fake.calls("thread/resume") as Record<string, any>[]
+  expect(resume).toMatchObject({ threadId: "thr_1", approvalPolicy: "never", permissions: `opencorp-${id}` })
+  expect(resume!.developerInstructions).toContain("the owner's word wins")
+  expect(r.fake.calls("thread/start")).toHaveLength(1)
+  // The same child session, live again and listed again.
+  expect(r.store.getSession(id)).toMatchObject({ status: "idle", instrument_of: chat.id, harness_session_id: "thr_1" })
+  expect(h.office.instruments.list(chat.id)).toMatchObject([{ id, name: "codex 1", status: "idle" }])
+  expect(readCodexRecord(dir)!.state).toBe("running")
+  // A new session takes the next name.
+  expect((await next("start", { message: "Write the docs." })).codex).toBe("codex 2")
+})
+
+test("a Codex turn an office restart cut off is marked interrupted in the record, and send resumes the session", async () => {
+  const h = makeCodex()
+  h.fake.script([
+    fc.agentMessage("a1", "Started."),
+    [...fc.agentMessage("a2", "Reading the parser."), { sleep: 30 }],
+    fc.agentMessage("a3", "Rewritten."),
+  ])
+  const { chat, codex, call } = await employee(h)
+  await call("start", { message: "Look around." })
+  expect((await call("send", { codex: "codex 1", message: "Rewrite the parser.", wait: 0 })).status).toBe("running")
+  const { id } = recordOf(h, chat)
+  await waitFor(() => h.sessions.get(id)?.turnId != null, { what: "the turn" })
+  const { r, call: next } = await restart(h, codex, chat)
+  const reply = await next("send", { codex: "codex 1", message: "Go on." })
+  const said = (reply.output as { author: string; text: string }[]).map((e) => [e.author, e.text])
+  // From where the employee last read: its message, what Codex said before the stop, the restart's mark, then on.
+  expect(said[0]).toEqual(["@minh", "Rewrite the parser."])
+  expect(said.slice(1, -2).map(([, t]) => t).join("\n")).toContain("[interrupted]")
+  expect(said.at(-3)![1]).toContain("The office restarted while Codex worked on a turn @minh started")
+  expect(said.slice(-2)).toEqual([["@minh", "Go on."], ["codex", "Rewritten."]])
+  expect(r.fake.calls("thread/resume")).toHaveLength(1)
+})
+
+test("a resume goes through a new session's checks: a project config Codex would load fails the session, saying so", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("a1", "The build is fixed.")])
+  const { chat, codex, call } = await employee(h)
+  await call("start", { message: "Fix the build." })
+  const { id, dir } = recordOf(h, chat)
+  const { r, call: next } = await restart(h, codex, chat)
+  const cwd = fs.realpathSync(h.workspace)
+  r.fake.script([], { project_layers: { [cwd]: [{ dotCodexFolder: path.join(cwd, ".codex") }] } })
+  const reply = await next("send", { codex: "codex 1", message: "Run the tests." })
+  expect(reply.status).toBe("failed")
+  expect(reply.error).toContain("Codex would load this project's own config")
+  expect(r.fake.calls("thread/resume")).toEqual([])
+  expect(status(r, id)).toBe("failed")
+  expect(readCodexRecord(dir)!.state).toBe("failed")
+})
+
+test("an office restart doesn't continue a session whose record names another thread than the office's", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("a1", "The build is fixed.")])
+  const { chat, codex, call } = await employee(h)
+  await call("start", { message: "Fix the build." })
+  const { id, dir } = recordOf(h, chat)
+  await h.sessions.closeAll()
+  await codex.suspend()
+  const meta = path.join(dir, "meta.json")
+  fs.writeFileSync(meta, JSON.stringify({ ...JSON.parse(fs.readFileSync(meta, "utf8")), harnessSessionId: "thr_other" }))
+  const r = reopened(h)
+  await r.sessions.restore()
+  const { call: next } = await instrumentOf(r, chat)
+  const reply = await next("send", { codex: "codex 1", message: "Run the tests." })
+  expect(reply.status).toBe("failed")
+  expect(reply.error).toContain("doesn't match")
+  expect(r.lines.some((l) => l.includes(id) && l.includes("doesn't match"))).toBe(true)
+  expect(r.fake.calls("thread/resume")).toEqual([])
+})
+
+test("across an office restart the chat keeps its Codex session: the employee's next message to it resumes its thread", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    { tool_calls: [{ name: "codex_start", arguments: { message: "Fix the build.", wait: 120 } }] },
+    { content: "Codex fixed the build." },
+    { tool_calls: [{ name: "codex_send", arguments: { codex: "codex 1", message: "Run the tests.", wait: 120 } }] },
+    { content: "The tests pass." },
+  )
+  const h = await makeHarness(fake, { codex: true })
+  h.codex!.fake.script([fc.agentMessage("a1", "The build is fixed."), fc.agentMessage("a2", "The tests pass too.")])
+  const s = await h.harness.startSession("minh", h.folder, { openedBy: "ngocbh" })
+  await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's first turn" })
+  await h.harness.prompt(s.id, "Hand the build to Codex.", { by: "ngocbh" })
+  await waitFor(() => fake.requests().length === 2 && h.store.getSession(s.id)?.status === "idle", {
+    what: "the chat's turn",
+  })
+  const [listed] = h.office.instruments.list(s.id)
+  // The office's stop and its next start, with the next office's Codex sessions.
+  await h.reopen()
+  const dir = path.join(h.office.paths.sessionDir(s.id), "codex", listed!.id)
+  // The chat's stop left the session to continue, not ended.
+  expect(readCodexRecord(dir)!.state).toBe("interrupted")
+  h.office.codex = reopened(h.codex!).sessions
+  await h.harness.restore()
+  await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's restore" })
+  // The chat's restore lists it, idle, before anyone writes to it.
+  expect(h.office.instruments.list(s.id)).toMatchObject([{ id: listed!.id, name: "codex 1", status: "idle" }])
+  await h.harness.prompt(s.id, "Now the tests.", { by: "ngocbh" })
+  await waitFor(() => fake.requests().length === 4 && h.store.getSession(s.id)?.status === "idle", {
+    what: "the chat's next turn",
+  })
+  expect(h.codex!.fake.calls("thread/start")).toHaveLength(1)
+  expect(h.codex!.fake.calls("thread/resume")).toMatchObject([{ threadId: "thr_1" }])
+  expect(h.office.instruments.list(s.id)).toMatchObject([{ id: listed!.id, name: "codex 1", status: "idle" }])
+  const reply = (fake.requests()[3]!.messages as Record<string, any>[]).filter((m) => m.role === "tool").at(-1)
+  expect(JSON.parse(String(reply?.content))).toMatchObject({
+    codex: "codex 1",
+    status: "idle",
+    output: [{ author: "@minh", text: "Run the tests." }, { author: "codex", text: "The tests pass too." }],
+  })
+})
+
+test("after an office restart, the owner's message to a Codex session continues it, and the employee reads it", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("a1", "The build is fixed."), fc.agentMessage("a2", "Using staging.")])
+  const { chat, codex, call } = await employee(h)
+  await call("start", { message: "Fix the build." })
+  const { id } = recordOf(h, chat)
+  const { r, call: next } = await restart(h, codex, chat)
+  // The owner writes in the session's own chat, as the TUI sends it.
+  await r.sessions.prompt(id, "Use the staging database.", { by: "ngocbh" })
+  await waitFor(() => status(r, id) === "idle" && r.fake.calls("turn/start").length === 2, { what: "the owner's turn" })
+  expect(r.fake.calls("thread/resume")).toMatchObject([{ threadId: "thr_1" }])
+  const read = await next("history", { codex: "codex 1" })
+  expect(read.output).toEqual([
+    { author: "Hong Ngoc Bui (owner)", text: "Use the staging database." },
+    { author: "codex", text: "Using staging." },
+  ])
+})
+
+test("an office stop while the employee's message continues a Codex session leaves it to continue after the next start", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("a1", "The build is fixed."), fc.agentMessage("a2", "The tests pass too.")])
+  const { chat, codex, call } = await employee(h)
+  await call("start", { message: "Fix the build." })
+  const { id, dir } = recordOf(h, chat)
+  const { r, codex: second, call: next } = await restart(h, codex, chat)
+  // The office's stop, in its order: the Codex sessions close, while the chat's run still calls its tools.
+  await r.sessions.closeAll()
+  const reply = await next("send", { codex: "codex 1", message: "Run the tests." })
+  expect(reply.refused).toContain("office is stopping")
+  await second.suspend()
+  expect(readCodexRecord(dir)!.state).toBe("interrupted")
+  const { r: third, call: last } = await restart(r, second, chat)
+  const sent = await last("send", { codex: "codex 1", message: "Run the tests." })
+  expect(sent).toMatchObject({ status: "idle" })
+  expect(sent.output.at(-1)).toEqual({ author: "codex", text: "The tests pass too." })
+  expect(status(third, id)).toBe("idle")
+})
+
+test("only the chat's approver may write in its Codex session; after a restart their message continues it", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    { tool_calls: [{ name: "codex_start", arguments: { message: "Fix the build.", wait: 120 } }] },
+    { content: "Codex fixed the build." },
+  )
+  const h = await makeHarness(fake, { codex: true })
+  h.codex!.fake.script([fc.agentMessage("a1", "The build is fixed."), fc.agentMessage("a2", "Using staging.")])
+  const s = await h.harness.startSession("minh", h.folder, { openedBy: "ngocbh" })
+  await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's first turn" })
+  await h.harness.prompt(s.id, "Hand the build to Codex.", { by: "ngocbh" })
+  await waitFor(() => fake.requests().length === 2 && h.store.getSession(s.id)?.status === "idle", {
+    what: "the chat's turn",
+  })
+  const [listed] = h.office.instruments.list(s.id)
+  // Another signed-in person, while the session is live, and the employee as a person: refused, naming who may.
+  for (const by of ["lan", "minh"]) {
+    await expect(h.harness.prompt(listed!.id, "Delete the tests.", { by })).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining("@ngocbh"),
+    })
+    await expect(h.harness.steer(listed!.id, "Delete the tests.", { by })).rejects.toMatchObject({ status: 403 })
+  }
+  await h.reopen()
+  h.office.codex = reopened(h.codex!).sessions
+  await h.harness.restore()
+  await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's restore" })
+  await expect(h.harness.prompt(listed!.id, "Delete the tests.", { by: "lan" })).rejects.toMatchObject({ status: 403 })
+  expect(h.codex!.fake.calls("thread/resume")).toEqual([])
+  // The approver's message continues the session restored, and goes to Codex.
+  await h.harness.prompt(listed!.id, "Use the staging database.", { by: "ngocbh" })
+  await waitFor(() => h.codex!.fake.calls("turn/start").length === 2 && h.store.getSession(listed!.id)?.status === "idle", {
+    what: "the owner's turn",
+  })
+  expect(h.codex!.fake.calls("thread/resume")).toMatchObject([{ threadId: "thr_1" }])
+  expect(JSON.stringify(h.codex!.fake.calls("turn/start"))).not.toContain("Delete the tests.")
 })
