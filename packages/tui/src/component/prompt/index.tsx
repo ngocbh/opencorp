@@ -138,7 +138,7 @@ export function Prompt(props: PromptProps) {
     const s = session()
     return s?.harness === "codex" && !s.instrument_of && ["ended", "failed", "debriefing"].includes(s.status)
   })
-  const history = usePromptHistory()
+  const history = usePromptHistory(() => unwrap(store.prompt))
   const stash = usePromptStash()
   const keymap = useOpenCorpKeymap()
   const peopleShortcut = useCommandShortcut("person.list")
@@ -359,12 +359,14 @@ export function Prompt(props: PromptProps) {
       input.blur()
     },
     set(prompt) {
+      history.reset()
       input.setText(prompt.input)
       setStore("prompt", prompt)
       restoreExtmarksFromParts(prompt.parts)
       input.gotoBufferEnd()
     },
     reset() {
+      history.reset()
       input.clear()
       input.extmarks.clear()
       setStore("prompt", {
@@ -628,7 +630,7 @@ export function Prompt(props: PromptProps) {
             }
 
             const item = history.move(-1, input.plainText)
-            if (item === undefined) return false
+            if (!item) return false
             showHistory(item)
             input.cursorOffset = 0
           },
@@ -665,7 +667,7 @@ export function Prompt(props: PromptProps) {
             }
 
             const item = history.move(1, input.plainText)
-            if (item === undefined) return false
+            if (!item) return false
             showHistory(item)
             input.cursorOffset = input.plainText.length
           },
@@ -700,11 +702,11 @@ export function Prompt(props: PromptProps) {
     toast.show({ message: "Image and PDF attachments are not supported yet", variant: "warning" })
   }
 
-  function showHistory(text: string) {
-    input.setText(text)
-    input.extmarks.clear()
-    setStore("prompt", { input: text, parts: [] })
-    setStore("extmarkToPartIndex", new Map())
+  /** Shows a text from the history, or the draft it was left from, with its parts. */
+  function showHistory(prompt: PromptInfo) {
+    input.setText(prompt.input)
+    setStore("prompt", prompt)
+    restoreExtmarksFromParts(prompt.parts)
   }
 
   /** The prompt's text with pasted-text placeholders expanded; `@file` mentions stay as text. */
@@ -905,6 +907,7 @@ export function Prompt(props: PromptProps) {
 
   function clearPrompt() {
     if (store.prompt.input.trim().length >= DRAFT_RETENTION_MIN_CHARS) history.append(promptText())
+    else history.reset()
     input.clear()
     input.extmarks.clear()
     setStore("prompt", {

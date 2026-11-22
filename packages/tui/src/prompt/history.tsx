@@ -50,7 +50,9 @@ export function isDuplicateEntry(previous: string | undefined, next: string): bo
   return previous === next
 }
 
-export const { use: usePromptHistory, provider: PromptHistoryProvider } = createSimpleContext({
+export const emptyPrompt = (): PromptInfo => ({ input: "", parts: [] })
+
+const { use: useHistoryEntries, provider: PromptHistoryProvider } = createSimpleContext({
   name: "PromptHistory",
   init: () => {
     const paths = useTuiPaths()
@@ -65,31 +67,14 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
       if (lines.length > 0) write()
     })
 
-    const [store, setStore] = createStore({
-      index: 0,
-      history: [] as string[],
-    })
+    const [store, setStore] = createStore({ history: [] as string[] })
 
     return {
-      /** Steps through sent texts; returns the text to show, or undefined to leave the input alone. */
-      move(direction: 1 | -1, input: string) {
-        if (!store.history.length) return undefined
-        const next = store.index + direction
-        // Nothing is older than the oldest text, nor newer than what is being typed: the key goes past the history (to
-        // the session's ↑ and ↓), as the upstream TUI's does.
-        if (next < -store.history.length || next > 0) return undefined
-        const current = store.history.at(store.index)
-        if (current === undefined) return undefined
-        if (current !== input && input.length) return
-        setStore("index", next)
-        if (next === 0) return ""
-        return store.history.at(next)
+      get entries() {
+        return store.history
       },
       append(text: string) {
-        if (isDuplicateEntry(store.history.at(-1), text)) {
-          setStore("index", 0)
-          return
-        }
+        if (isDuplicateEntry(store.history.at(-1), text)) return
         let trimmed = false
         setStore(
           produce((draft) => {
@@ -98,7 +83,6 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
               draft.history = draft.history.slice(-MAX_HISTORY_ENTRIES)
               trimmed = true
             }
-            draft.index = 0
           }),
         )
 
@@ -108,3 +92,41 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
     }
   },
 })
+
+export { PromptHistoryProvider }
+
+/**
+ * One prompt's walk through the sent texts, the upstream TUI's: ↑ from what is being typed keeps it as the draft and
+ * shows the newest text, and ↓ back past the newest restores the draft. `move` returns what to show, or undefined past
+ * either end, or when the text shown was edited.
+ */
+export function usePromptHistory(currentDraft = emptyPrompt) {
+  const history = useHistoryEntries()
+  let index = 0
+  let draft: PromptInfo | undefined
+  function reset() {
+    index = 0
+    draft = undefined
+  }
+  return {
+    move(direction: 1 | -1, input: string): PromptInfo | undefined {
+      const next = index + direction
+      if (next < -history.entries.length || next > 0) return
+      if (index < 0 && input && history.entries.at(index) !== input) return
+      if (index === 0) draft = structuredClone({ ...currentDraft(), input })
+      index = next
+      if (next !== 0) {
+        const entry = history.entries.at(next)
+        return entry === undefined ? undefined : { ...emptyPrompt(), input: entry }
+      }
+      const restored = draft
+      draft = undefined
+      return restored
+    },
+    reset,
+    append(text: string) {
+      reset()
+      history.append(text)
+    },
+  }
+}

@@ -7,6 +7,9 @@
 // where the owner writes to the harness. Each session keeps its own unsent draft.
 import type { Instrument, Session } from "@opencorp/protocol"
 import { expect, setDefaultTimeout, test } from "bun:test"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import path from "node:path"
+import { Global } from "../../../src/core/global"
 import { createFakeOffice, createStub, type FakeOffice } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
 import { until } from "../../fixture/until"
@@ -97,6 +100,21 @@ async function runCommand(app: App, title: string) {
   app.input.typeText(title)
   await app.until((f) => f.split(title).length > 2)
   app.input.pressEnter()
+}
+
+/** Makes `texts`, oldest first, the whole prompt history the next TUI reads. The app keeps it under the preload's
+ *  OPENCORP_HOME, which every test file shares, and an earlier test's app may still be adding a text it sent: it is
+ *  written again until it holds only these. */
+async function seedHistory(...texts: string[]) {
+  const file = path.join(Global.Path.state, "prompt-history.jsonl")
+  const content = texts.map((text) => JSON.stringify(text) + "\n").join("")
+  mkdirSync(Global.Path.state, { recursive: true })
+  for (let i = 0; i < 20; i++) {
+    writeFileSync(file, content)
+    await Bun.sleep(50)
+    if (readFileSync(file, "utf8") === content) return
+  }
+  throw new Error("the prompt history kept changing")
 }
 
 /** The row of `f` holding `text`, its trailing blanks cut. */
@@ -246,14 +264,76 @@ test("an idle child keeps its prompt, where the owner's message resumes it; ↓ 
   }
 })
 
-test("in a live child, ↑ past the oldest text sent goes back to the chat", async () => {
+test("in a live child, ↑ on the empty prompt shows the one text sent, and the next ↑ goes back to the chat", async () => {
+  await seedHistory("the only text sent")
   const { fake, children } = office([{ status: "busy" }])
   const app = await boot(fake, children[0]!.id)
   try {
     await app.until((f) => f.includes("Codex 1 says hello.") && f.includes(COMMANDS))
-    // Each ↑ shows an older text sent, from the history the tests before left; past the oldest, the chat.
-    for (let i = 0; i < 50 && !app.frame().includes("@minh auto ·"); i++) await press(app, "up")
+    await press(app, "up")
+    await app.until((f) => f.includes("the only text sent") && f.includes("driven by @minh"))
+    await press(app, "up")
     await app.until((f) => f.includes("@minh auto ·") && !f.includes("driven by @minh"))
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
+
+test("in a live child, ↑ from a typed draft walks back through the history, ↓ brings the draft back, and ↑ past the oldest goes to the chat", async () => {
+  await seedHistory("first sent", "second sent")
+  const { fake, children } = office([{ status: "busy" }])
+  const app = await boot(fake, children[0]!.id)
+  /** Presses `key`, then waits for the prompt to show `text` and not `gone`, still in the child. */
+  const step = async (key: "up" | "down", text: string, gone: string) => {
+    await press(app, key)
+    await app.until((f) => f.includes(text) && !f.includes(gone) && f.includes("driven by @minh"))
+  }
+  try {
+    await app.until((f) => f.includes("Codex 1 says hello.") && f.includes(COMMANDS))
+    app.input.typeText("my draft")
+    await app.until((f) => f.includes("my draft"))
+    // The first ↑ takes the cursor to the start; the next shows the newest text sent, then the one before.
+    await press(app, "up")
+    await step("up", "second sent", "my draft")
+    await step("up", "first sent", "second sent")
+    // ↓ takes the cursor to the end, then walks forward, each text shown with the cursor at its end, back to the draft.
+    await press(app, "down")
+    await step("down", "second sent", "first sent")
+    await step("down", "my draft", "second sent")
+    // Past the oldest text, ↑ goes to the chat.
+    await press(app, "up")
+    await step("up", "second sent", "my draft")
+    await step("up", "first sent", "second sent")
+    await press(app, "up")
+    await app.until((f) => f.includes("@minh auto ·") && !f.includes("driven by @minh"))
+    expect(prompts(fake, children[0]!.id)).toEqual([])
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
+
+test("a message to a child that ends while it goes out says it failed, and the child turns read-only", async () => {
+  const { fake, chat, children } = office([{ status: "busy" }])
+  const child = children[0]!
+  const app = await boot(fake, child.id)
+  try {
+    await app.until((f) => f.includes("Codex 1 says hello.") && f.includes(COMMANDS))
+    const release = fake.hold("POST /sessions/:id/prompt")
+    app.input.typeText("One more thing.")
+    app.input.pressEnter()
+    await until(() => prompts(fake, child.id).length === 1, 3000)
+    // The session ends while the message is on its way: the office refuses it, 409 not_live.
+    fake.setStatus(child.id, "ended")
+    const listing = fake.state.instruments[chat.id]!.find((i) => i.id === child.id)!
+    fake.addInstrument(chat.id, { ...listing, status: "ended" })
+    await app.until((f) => f.includes(ENDED))
+    release()
+    const f = await app.until((f) => f.includes("Failed to send prompt"))
+    expect(f).toContain("has no live run")
+    expect(f).toContain(ENDED)
+    expect(f).not.toContain(COMMANDS)
   } finally {
     await app.stop()
     fake.stop()
