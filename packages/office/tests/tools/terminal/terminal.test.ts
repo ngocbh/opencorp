@@ -10,7 +10,9 @@ import { type Result, run, SandboxUnavailable } from "../../../src/runtime/sandb
 import type { Verdict, Where } from "../../../src/runtime/permissions/policy.ts"
 import { Terminal } from "../../../src/tools/terminal/terminal.ts"
 import { waitFor } from "../../helpers.ts"
-import { goldenPolicy, goldenSshPolicy, gone, makePolicy, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import {
+  ended, goldenPolicy, goldenSshPolicy, makePolicy, ownSleepers, sandboxAvailable,
+} from "../../runtime/sandbox/helpers.ts"
 import { fakePipes, HOST_WHERE, json, openTerminal, permissions, plainShells, rule, sshShells } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -72,6 +74,8 @@ test("interruptWaits ends every waiting reply at once, and stops the commands th
   await waitFor(() => t.terminal.shells().filter(({ state }) => state.status === "running").length === 2, {
     what: "both commands",
   })
+  const sleeping = await ownSleepers("10.41", { count: 2 })
+  expect(sleeping).toHaveLength(2)
   t.terminal.interruptWaits()
   // Each reply says its command ended, as a Ctrl-C ends it.
   expect((await waiting).map((reply) => [json(reply).status, json(reply).exit])).toEqual([["idle", 130], ["idle", 130]])
@@ -80,7 +84,7 @@ test("interruptWaits ends every waiting reply at once, and stops the commands th
     ["idle", null],
     ["idle", null],
   ])
-  expect(await gone("10.41")).toBe(true)
+  expect(await ended(sleeping)).toBe(true)
 })
 
 test("a run whose reply is cut off stops its command, in a pipes shell and in a PTY shell", async () => {
@@ -131,9 +135,11 @@ test("a run whose reply is cut off stops its command, in a pipes shell and in a 
   const ptyStop = new AbortController()
   const sleeping = pty.call("run", { command: "sleep 30.31", why: "x", wait: 60 }, { signal: ptyStop.signal })
   await waitFor(() => pty.terminal.shells()[0]?.state.status === "running", { what: "the PTY command" })
+  const ptySleep = await ownSleepers("30.31")
+  expect(ptySleep).toHaveLength(1)
   ptyStop.abort()
   expect(json(await sleeping)).toMatchObject({ shell: "shell 1", status: "idle", exit: 130 })
-  expect(await gone("30.31")).toBe(true)
+  expect(await ended(ptySleep)).toBe(true)
   // A read cut off stops nothing: there is nothing it started.
   let readFake!: ReturnType<typeof fakePipes>
   const reader = openTerminal({ perms: permissions({ rules: allowMake }).perms, shells: (dir) => (readFake = fakePipes(dir)).shells })
@@ -194,7 +200,8 @@ test("on a PTY, a cut-off's Ctrl-C and the agent's interrupt reach the shell onc
   const [ctrlC, started] = ctrlCAfterStart(logged.log)
   expect(started).toBeGreaterThan(-1)
   expect(ctrlC).toBeGreaterThan(started)
-  expect(await gone("30.71")).toBe(true)
+  // None is left in this test's own process tree, where the shell that ran it still lives.
+  await waitFor(async () => (await ownSleepers("30.71", { waitMs: 0 })).length === 0, { what: "the sleep's end" })
   // The agent's interrupt right after a reply that didn't wait.
   logged.log.length = 0
   const quick = await t.call("run", { command: "sleep 30.72", why: "x", wait: 0, shell: "shell 1" })
@@ -204,7 +211,8 @@ test("on a PTY, a cut-off's Ctrl-C and the agent's interrupt reach the shell onc
   const [interrupted, read] = ctrlCAfterStart(logged.log)
   expect(read).toBeGreaterThan(-1)
   expect(interrupted).toBeGreaterThan(read)
-  expect(await gone("30.72")).toBe(true)
+  // None is left in this test's own process tree, where the shell that ran it still lives.
+  await waitFor(async () => (await ownSleepers("30.72", { waitMs: 0 })).length === 0, { what: "the sleep's end" })
 })
 
 test("a reply whose exit is null says why in its note: still running, cut off, interrupted, stopped, or the shell gone", async () => {

@@ -13,7 +13,7 @@ import { type PipeHost, PipeShell } from "../../../src/tools/terminal/pipes.ts"
 import { InstrumentRecord, readRecord } from "../../../src/tools/terminal/record.ts"
 import type { ShellState } from "../../../src/tools/terminal/shell.ts"
 import { waitFor } from "../../helpers.ts"
-import { gone, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import { ended, ownSleepers, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -170,6 +170,8 @@ describe.skipIf(!sandboxAvailable())("in the sandbox", () => {
     const started = await t.shell.run(command, 100)
     expect(started.status).toBe("running")
     await waitFor(() => t.live().endsWith("before\n"), { timeout: 10_000, what: "the first line" })
+    const sleeping = [...(await ownSleepers("3737")), ...(await ownSleepers("3838"))]
+    expect(sleeping).toHaveLength(2)
     // Keys other than Ctrl-C go nowhere: the shell takes no input.
     t.shell.ownerKeys("yes\r")
     expect(t.shell.state().status).toBe("running")
@@ -181,8 +183,7 @@ describe.skipIf(!sandboxAvailable())("in the sandbox", () => {
     expect(started.output + done.output).toBe(`$ ${command}\nbefore\n`)
     expect(performance.now() - at).toBeLessThan(5_000)
     // The command and what it left in the background are gone.
-    expect(await gone("3737")).toBe(true)
-    expect(await gone("3838")).toBe(true)
+    expect(await ended(sleeping)).toBe(true)
     expect(readRecord(t.recordDir)!.commands).toMatchObject([{ command, by: "@minh", exit: null }])
     expect(t.states.map((state) => [state.status, state.exit])).toEqual([
       ["idle", null],
@@ -195,18 +196,22 @@ describe.skipIf(!sandboxAvailable())("in the sandbox", () => {
     const slow = "echo again; sleep 3939"
     const again = await t.shell.run(slow, 100)
     await waitFor(() => t.live().endsWith("again\n"), { timeout: 10_000, what: "the first line" })
+    const slept = await ownSleepers("3939")
+    expect(slept).toHaveLength(1)
     const interrupted = t.shell.interrupt()
     expect(interrupted).toMatchObject({ status: "running" })
     expect(interrupted.refused).toBeUndefined()
     expect(again.output + interrupted.output).toBe(`$ ${slow}\nagain\n`)
     expect(await t.shell.read({ waitMs: 10_000 })).toMatchObject({ status: "idle", exit: null, output: "" })
-    expect(await gone("3939")).toBe(true)
+    expect(await ended(slept)).toBe(true)
 
     // Closing the shell stops a running command too, and ends its record.
     expect((await t.shell.run("sleep 4040", 300)).status).toBe("running")
+    const last = await ownSleepers("4040")
+    expect(last).toHaveLength(1)
     await t.shell.close()
     expect(t.shell.state()).toEqual({ status: "ended", waiting: null, command: null, exit: null, error: null })
-    expect(await gone("4040")).toBe(true)
+    expect(await ended(last)).toBe(true)
     expect(readRecord(t.recordDir)).toMatchObject({
       state: "ended",
       commands: [{ exit: null }, { command: slow, exit: null }, { command: "sleep 4040", exit: null }],

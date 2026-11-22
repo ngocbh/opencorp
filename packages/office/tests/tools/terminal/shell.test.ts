@@ -13,7 +13,7 @@ import { ModelView } from "../../../src/tools/terminal/output.ts"
 import { InstrumentRecord, readRecord } from "../../../src/tools/terminal/record.ts"
 import { PtyShell, type ShellHost, type ShellState } from "../../../src/tools/terminal/shell.ts"
 import { waitFor } from "../../helpers.ts"
-import { gone, makePolicy, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import { ended, makePolicy, ownSleepers, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -267,9 +267,11 @@ test("aliases and brace expansion are off", async () => {
 test("background jobs end with the shell", async () => {
   const t = await openShell()
   expect((await t.shell.run("sleep 3131 &", 5000)).status).toBe("idle")
+  const sleeping = await ownSleepers("3131")
+  expect(sleeping).toHaveLength(1)
   await t.shell.close()
   expect(t.shell.state().status).toBe("ended")
-  expect(await gone("3131")).toBe(true)
+  expect(await ended(sleeping)).toBe(true)
 })
 
 test("a command that outlives the wait returns running, and read waits for more", async () => {
@@ -460,11 +462,13 @@ test("closing a shell ends its process group, SIGHUP then SIGKILL after 2 s", as
   const t = await openShell()
   // The shell and its job ignore the hangup, so only the kill can end them.
   expect((await t.shell.run("trap '' HUP; sleep 4141 &", 5000)).status).toBe("idle")
+  const sleeping = await ownSleepers("4141")
+  expect(sleeping).toHaveLength(1)
   const started = performance.now()
   await t.shell.close()
   expect(performance.now() - started).toBeGreaterThanOrEqual(1900)
   expect(t.shell.state()).toMatchObject({ status: "ended", exit: null })
-  expect(await gone("4141")).toBe(true)
+  expect(await ended(sleeping)).toBe(true)
   expect(readRecord(t.recordDir)!.state).toBe("ended")
 })
 

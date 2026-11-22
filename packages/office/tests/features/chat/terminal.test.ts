@@ -14,7 +14,7 @@ import { Instruments } from "../../../src/runtime/sessions/instruments.ts"
 import { readRecord } from "../../../src/tools/terminal/record.ts"
 import { CEO } from "../../server/helpers.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
-import { gone, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import { ended, ownSleepers, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import { openStore } from "../../runtime/store/helpers.ts"
 import { fakePipes, json, permissions, rule } from "../../tools/terminal/helpers.ts"
 import { fakeLlm, type HarnessOffice, makeHarness, noWorkersLeft, running, status, texts } from "./helpers.ts"
@@ -151,9 +151,11 @@ sandboxed("the approver's Ctrl-C in the shell stops its command, and the agent r
   expect(result(fake, "call_sleep")).toMatchObject({ status: "running" })
   const [shell] = listed(h, id)
   expect(shell).toMatchObject({ status: "running", command: "sleep 30.71" })
+  const sleeping = await ownSleepers("30.71")
+  expect(sleeping).toHaveLength(1)
   // The instrument route's Ctrl-C, which only the approver may send.
   h.office.instruments.get(id, shell!.id)!.interrupt()
-  expect(await gone("30.71")).toBe(true)
+  expect(await ended(sleeping)).toBe(true)
   await waitFor(() => listed(h, id)[0]?.status === "idle", { what: "the shell idle" })
   await h.harness.prompt(id, "is it done?")
   await replied(h, id, "It ended.")
@@ -167,8 +169,10 @@ sandboxed("Esc stops the agent and the command its call waited on", async () => 
   const id = await chat(h)
   await h.harness.prompt(id, "wait a while")
   await waitFor(() => listed(h, id)[0]?.status === "running", { what: "the command" })
+  const sleeping = await ownSleepers("30.72")
+  expect(sleeping).toHaveLength(1)
   await h.harness.interrupt(id)
-  expect(await gone("30.72")).toBe(true)
+  expect(await ended(sleeping)).toBe(true)
   await waitFor(() => status(h, id) === "idle" && !running(h.registry, id), { what: "the turn's end" })
   const [tool] = await tools(h, id)
   expect(tool).toMatchObject({ tool: "terminal_run", state: "completed" })
@@ -279,9 +283,11 @@ sandboxed("End closes the session's shells and removes their listings", async ()
   await replied(h, id, "Started.")
   const [shell] = listed(h, id)
   expect(shell).toMatchObject({ status: "running" })
+  const sleeping = await ownSleepers("30.75")
+  expect(sleeping).toHaveLength(1)
   await h.harness.end(id)
   await waitFor(() => status(h, id) === "ended", { what: "the end" })
-  expect(await gone("30.75")).toBe(true)
+  expect(await ended(sleeping)).toBe(true)
   await waitFor(() => listed(h, id).length === 0, { what: "the listing's removal" })
   expect(h.lives.some((e) => e.type === "instrument.removed" && e.session_id === id)).toBe(true)
   expect(readRecord(recordOf(h, id, shell!.id))!.state).toBe("ended")

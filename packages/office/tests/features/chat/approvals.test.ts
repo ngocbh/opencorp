@@ -17,7 +17,7 @@ import { CEO } from "../../server/helpers.ts"
 import { git, person, recordingGit } from "../../company/helpers.ts"
 import { CompanyGit } from "../../../src/company/git.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
-import { gone, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import { ended, ownSleepers, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import {
   fakeLlm,
   type HarnessOffice,
@@ -562,8 +562,10 @@ sandboxed("Esc while an approved command runs stops it, and the agent's turn end
   await h.harness.answer(q!.id, YES, "option", { by: CEO })
   await waitFor(() => h.store.listWorkers().some((w) => w.key.startsWith("call:")), { what: "the command to run" })
   expect(status(h, id)).toBe("busy")
+  const sleeping = await ownSleepers("30.9")
+  expect(sleeping).toHaveLength(1)
   await h.harness.interrupt(id)
-  expect(await gone("30.9")).toBe(true)
+  expect(await ended(sleeping)).toBe(true)
   await waitFor(() => status(h, id) === "idle", { what: "the turn's end" })
   await waitFor(async () => (await tools(h, id))[0]?.state === "interrupted", { what: "the call shown interrupted" })
   await waitFor(() => rows(h, id).length === 2, { what: "the command's row" })

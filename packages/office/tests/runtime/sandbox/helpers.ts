@@ -8,6 +8,7 @@ import { type Helper, helperCommand } from "../../../src/platform.ts"
 import { type OfficePaths, SandboxPolicy } from "../../../src/runtime/sandbox/policy.ts"
 import { command, fsHelper, run, scrubbedEnv } from "../../../src/runtime/sandbox/run.ts"
 import { SshPolicy } from "../../../src/runtime/sandbox/ssh_policy.ts"
+import { sameProcess, startTime } from "../../../src/util/proc.ts"
 import { tempDir } from "../../helpers.ts"
 
 const SRC = fileURLToPath(new URL("../../../src/runtime/sandbox/", import.meta.url))
@@ -134,6 +135,80 @@ export function sandboxAvailable(): boolean {
   }
   available = problem === null
   return available
+}
+
+/** A process a test started: its pid, and its start time (`startTime`), which tells it from a later one on its pid. */
+export interface Started {
+  readonly pid: number
+  readonly started: number
+}
+
+/** The pids of this test process's descendants whose command line is `sleep <marker>` (by path or not), zombies
+ *  left out, from one `ps` listing. */
+function ownSleeping(marker: string): number[] {
+  const out = spawnSync("ps", ["-A", "-o", "pid=,ppid=,stat=,command="], { encoding: "utf8" }).stdout
+  const pattern = new RegExp(`(^|/)sleep ${marker}$`)
+  const rows = out
+    .split("\n")
+    .map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/))
+    .filter((m) => m !== null)
+    .map((m) => ({ pid: Number(m![1]), ppid: Number(m![2]), zombie: m![3]!.startsWith("Z"), command: m![4]! }))
+  const children = new Map<number, number[]>()
+  for (const row of rows) children.set(row.ppid, [...(children.get(row.ppid) ?? []), row.pid])
+  const mine = new Set<number>()
+  const queue = [process.pid]
+  while (queue.length > 0) {
+    for (const child of children.get(queue.shift()!) ?? []) {
+      if (!mine.has(child)) {
+        mine.add(child)
+        queue.push(child)
+      }
+    }
+  }
+  return rows.filter((row) => mine.has(row.pid) && !row.zombie && pattern.test(row.command)).map((row) => row.pid)
+}
+
+/** The processes of this test's own process tree whose command line is `sleep <marker>`, once at least `count` run
+ *  (waiting up to `waitMs`; those found then, after it), each with its start time. Call it while the command runs:
+ *  only this process's descendants count, so an identical command another test or worktree runs never matches, and
+ *  `ended` then follows these by pid. */
+export async function ownSleepers(
+  marker: string,
+  { count = 1, waitMs = 10_000 }: { count?: number; waitMs?: number } = {},
+): Promise<Started[]> {
+  const deadline = performance.now() + waitMs
+  for (;;) {
+    const found = ownSleeping(marker).flatMap((pid) => {
+      const started = startTime(pid)
+      return started === null ? [] : [{ pid, started }]
+    })
+    if (found.length >= count || performance.now() >= deadline) return found
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
+/** Whether `pid` is a zombie, by `ps`. */
+function zombie(pid: number): boolean {
+  return spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim().startsWith("Z")
+}
+
+/** Whether each of `procs` has ended (or is a zombie) within `waitMs`, told by its pid and start time; SIGKILLs any
+ *  left before answering false, so a failed test leaves no orphan. */
+export async function ended(procs: readonly Started[], waitMs = 5_000): Promise<boolean> {
+  const deadline = performance.now() + waitMs
+  for (;;) {
+    const alive = procs.filter(({ pid, started }) => sameProcess(pid, started) && !zombie(pid))
+    if (alive.length === 0) return true
+    if (performance.now() >= deadline) {
+      for (const { pid } of alive) {
+        try {
+          process.kill(pid, "SIGKILL")
+        } catch {}
+      }
+      return false
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
 }
 
 /** The pids of processes whose command line is `sleep <marker>` (by path or not). */
