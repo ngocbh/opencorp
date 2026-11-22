@@ -8,6 +8,10 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import type { Part } from "@opencorp/protocol"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
+import { speakers } from "../../../src/runtime/sessions/speakers.ts"
+import { loadRepo } from "../../../src/company/loader.ts"
+import { newId } from "../../../src/util/ids.ts"
+import { session as sessionRow } from "../../runtime/store/helpers.ts"
 import type { HarnessEvent } from "../../../src/tools/harness/adapter.ts"
 import { APP_SERVER_ARGS, type CodexProcess, CodexStartError, nativeCodex } from "../../../src/tools/codex/codex.ts"
 import { JsonRpc, RpcClosed, RpcError } from "../../../src/tools/codex/rpc.ts"
@@ -1223,9 +1227,9 @@ function uniqueSleep(n: number): string {
   return `sleep 30.${process.pid}${n}`
 }
 
-/** A session on the real Codex, under minh's permission with a temp home and `CODEX_HOME`, whose model is the stand-in
- *  answering `answers`. */
-async function realSession(answers: Answer[]) {
+/** Codex sessions on the real Codex, under minh's permission with a temp home and `CODEX_HOME`, whose model is the
+ *  stand-in answering `answers`; `options` start a restarted office's sessions the same way. */
+async function realCodex(answers: Answer[]) {
   if (CODEX === undefined) throw new Error("OPENCORP_TEST_SANDBOX is set: set OPENCORP_TEST_CODEX to a Codex 0.167.0+")
   const model = await standInModel(answers)
   const codexHome = fs.realpathSync(tempDir())
@@ -1235,7 +1239,13 @@ async function realSession(answers: Answer[]) {
       `base_url = "${model.url}"\nwire_api = "responses"\n`,
   )
   const real = nativeCodex(CODEX)
-  const h = makeCodex({ command: () => [real.run, ...APP_SERVER_ARGS], environ: { CODEX_HOME: codexHome } })
+  const options = { command: () => [real.run, ...APP_SERVER_ARGS], environ: { CODEX_HOME: codexHome } }
+  return { h: makeCodex(options), model, options }
+}
+
+/** A session on the real Codex (`realCodex`). */
+async function realSession(answers: Answer[]) {
+  const { h, model } = await realCodex(answers)
   const sid = await start(h, h.workspace)
   return { h, sid, model }
 }
@@ -1304,6 +1314,38 @@ test.skipIf(NO_CODEX)(
     await h.sessions.end(sid)
     await waitFor(() => status(h, sid) === "ended", { what: "the end" })
     await waitFor(command.gone, { timeout: 5_000, what: "the command to stop" })
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
+  "on a real codex, an employee's instrument session goes on in its thread in a new app-server after an office restart",
+  async () => {
+    const { h, model, options } = await realCodex([{ say: "The build is fixed." }, { say: "The tests pass." }])
+    const head = await h.office.git.head()
+    const chat = h.store.createSession(
+      sessionRow({ cwd: fs.realpathSync(h.workspace), repo_commit: head, opened_by: "ngocbh", connection: "office" }),
+    )
+    const said = speakers(loadRepo(await h.office.git.pin(head)), chat)
+    const heard = { event: () => {}, state: () => {} }
+    const of = { observer: heard, label: said.label, owner: said.owner }
+    const { id } = await h.sessions.startInstrument(chat, newId(), of)
+    await h.sessions.prompt(id, "Fix the build.", { by: "minh" })
+    await waitFor(() => model.calls() === 1 && texts(h, id).includes("The build is fixed.") && status(h, id) === "idle", {
+      timeout: 60_000,
+      what: "the first turn",
+    })
+    const thread = h.store.getSession(id)!.harness_session_id!
+    const r = await restarted(h, options)
+    await r.sessions.resumeInstrument(chat, id, thread, of)
+    await r.sessions.prompt(id, "Run the tests.", { by: "minh" })
+    await waitFor(() => texts(r, id).includes("The tests pass.") && status(r, id) === "idle", {
+      timeout: 60_000,
+      what: "the resumed turn",
+    })
+    expect(r.store.getSession(id)!.harness_session_id).toBe(thread)
+    // Only the restore's own word that it stopped: Codex took the thread back with no error.
+    expect(errors(r, id)).toEqual(["The office restarted, so this Codex session stopped; its employee's next message continues it."])
   },
   120_000,
 )
