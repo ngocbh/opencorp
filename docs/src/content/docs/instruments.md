@@ -45,10 +45,10 @@ to Claude Code if it lists claude.
 - **Idle and the end.** A Claude Code session left idle for five minutes stops Claude Code, and the next message
   resumes the same conversation; so does the next message after Claude Code exits on its own, whose turn is marked
   interrupted. Ending the chat ends its shells, their commands and its harness sessions.
-- **Restarting the office.** Restarting the office stops its harness sessions but keeps them: your employee still
-  reads each one's record by its name, and their next message to it continues the same Codex thread or Claude Code
-  conversation, through every check a new session's start makes. Until then the session isn't listed and doesn't
-  count toward the four. A turn the restart cut off is marked interrupted, naming who started it, and nothing reruns
+- **Restarting the office.** Restarting the office stops its harness sessions but keeps them, each listed as it was:
+  your employee still reads each one's record by its name, and the next message to it, theirs or yours in the
+  session, continues the same Codex thread or Claude Code conversation, through every check a new session's start
+  makes. Until then it shows idle and doesn't count toward the four. A turn the restart cut off is marked interrupted, naming who started it, and nothing reruns
   it. A new session never takes an old one's name. A Codex session the restart caught before its first turn ran can't
   be continued, so your employee starts another.
 
