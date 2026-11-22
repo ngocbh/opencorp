@@ -1,6 +1,7 @@
 /** Codex as a thread's sandbox can run it: as installed, or, installed in a folder an employee's permission denies
  *  (the standalone installer's `~/.codex`), from the office's private copy of its install in the owner's cache folder,
- *  shared per Codex, mended in place when a file goes missing, and swept unless it is the current Codex's or in use. */
+ *  shared per Codex, mended in place when a file goes missing, and swept unless it is the current Codex's, was used
+ *  within a day, or is in use. */
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
@@ -78,6 +79,14 @@ function filesIn(dir: string): string[] {
     .sort()
 }
 
+/** A day and a minute ago. */
+const DAY_AGO = () => new Date(Date.now() - 24 * 60 * 60 * 1000 - 60_000)
+
+/** Makes the copy `install` last used over a day ago, as its last-used file says. */
+function unused(install: string): void {
+  fs.utimesSync(path.join(install, "last-used"), DAY_AGO(), DAY_AGO())
+}
+
 /** The copies in the copies' folder `folder`: its folders named as copies are. */
 function copies(folder: string): string[] {
   if (!fs.existsSync(folder)) return []
@@ -113,7 +122,15 @@ test("a Codex installed in a folder the permission denies runs from the office's
     expect([stat.isDirectory(), stat.mode & 0o777], dir).toEqual([true, 0o700])
   }
   expect(filesIn(copy.install)).toEqual(
-    ["bin/codex", "bin/codex-exec-server", "codex-package.json", "codex-path/rg", "codex-resources/bwrap", "source.json"].sort(),
+    [
+      "bin/codex",
+      "bin/codex-exec-server",
+      "codex-package.json",
+      "codex-path/rg",
+      "codex-resources/bwrap",
+      "last-used",
+      "source.json",
+    ].sort(),
   )
   for (const rel of ["bin/codex", "bin/codex-exec-server", "codex-resources/bwrap", "codex-path/rg", "codex-package.json"]) {
     expect(fs.readFileSync(path.join(copy.install, rel), "utf8"), rel).toBe(fs.readFileSync(path.join(release, rel), "utf8"))
@@ -178,12 +195,52 @@ test("sessions share one copy per Codex, made once even when they start together
   expect(await threadCodex(p, codex, folder)).toEqual(first)
   expect(fs.statSync(first.run).ino).toBe(inode)
   expect(fs.readdirSync(folder).filter((name) => name.endsWith(".part"))).toEqual([])
-  // An update rewrites the binary: the next session gets a copy of the new one, and the old one goes.
+  // An update rewrites the binary: the next session gets a copy of the new one, and the old one goes a day after its
+  // last use.
   fs.writeFileSync(codex.run, "\x7fELF the updated codex binary")
   const updated = await threadCodex(p, codex, folder)
   expect(updated.install).not.toBe(first.install)
   expect(fs.readFileSync(updated.run, "utf8")).toBe("\x7fELF the updated codex binary")
+  expect(copies(folder).sort()).toEqual([path.basename(first.install), path.basename(updated.install)].sort())
+  unused(first.install)
+  await threadCodex(p, codex, folder)
   expect(copies(folder)).toEqual([path.basename(updated.install)])
+})
+
+test("each start from a copy writes its last-used time into it, the user's alone", async () => {
+  const { home, p, folder } = layout()
+  const codex = fakeInstall(releaseIn(home))
+  const before = Date.now()
+  const copy = await threadCodex(p, codex, folder)
+  const file = path.join(copy.install, "last-used")
+  const stat = fs.statSync(file)
+  expect(stat.mtimeMs).toBeGreaterThanOrEqual(before - 1000)
+  expect(stat.mode & 0o077).toBe(0)
+  expect(Date.parse(fs.readFileSync(file, "utf8").trim())).toBeGreaterThanOrEqual(before - 1000)
+  unused(copy.install)
+  await threadCodex(p, codex, folder)
+  expect(fs.statSync(file).mtimeMs).toBeGreaterThanOrEqual(before - 1000)
+})
+
+test("a copy of another Codex a session found but hasn't started from is kept: only a copy unused for over a day goes, never the current one", async () => {
+  const { home, p, folder } = layout()
+  // Another office found its copy of an earlier Codex for a session that hasn't started from it: no program runs
+  // from it yet.
+  const found = await threadCodex(p, fakeInstall(releaseIn(home, "0.170.0")), folder)
+  const stale = await threadCodex(p, fakeInstall(releaseIn(home, "0.171.0")), folder)
+  unused(stale.install)
+  // One made before copies said when they were used goes by when it last changed.
+  const unmarked = await threadCodex(p, fakeInstall(releaseIn(home, "0.169.0")), folder)
+  fs.rmSync(path.join(unmarked.install, "last-used"))
+  fs.utimesSync(unmarked.install, DAY_AGO(), DAY_AGO())
+  const current = fakeInstall(releaseIn(home, "0.172.0"))
+  const copy = await threadCodex(p, current, folder)
+  expect(copies(folder).sort()).toEqual([path.basename(copy.install), path.basename(found.install)].sort())
+  // The current Codex's copy stays however long since its last use; the found one goes once a day has passed.
+  unused(copy.install)
+  unused(found.install)
+  await threadCodex(p, current, folder)
+  expect(copies(folder)).toEqual([path.basename(copy.install)])
 })
 
 test("a copy that lost a file or had one changed gets it back in place at the next start, so a session running from it goes on", async () => {
@@ -230,13 +287,14 @@ test("a Codex in a denied folder that isn't a binary in its install's bin, or wi
   expect(copies(folder)).toEqual([])
 })
 
-test("using a copy removes every other copy no program runs from, and folders a process that is gone half made, never a link or a file", async () => {
+test("using a copy removes every other copy unused for a day that no program runs from, and folders a process that is gone half made, never a link or a file", async () => {
   const { home, root, p, folder } = layout()
-  // A copy a program runs from: another office's live session on an earlier Codex, say.
+  // A copy a program runs from: another office's live session on an earlier Codex, started over a day ago, say.
   const busy = await threadCodex(p, fakeInstall(releaseIn(home, "0.170.0"), "/bin/sleep"), folder)
   const running = spawn(busy.run, ["30"], { stdio: "ignore" })
   onTestFinished(() => void running.kill("SIGKILL"))
   const old = await threadCodex(p, fakeInstall(releaseIn(home, "0.171.0")), folder)
+  for (const install of [busy.install, old.install]) unused(install)
   for (const name of ["install-0000000000000000.999999999.part", `install-1111111111111111.${process.pid}.part`]) {
     fs.mkdirSync(path.join(folder, name), { mode: 0o700 })
   }
