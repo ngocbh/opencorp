@@ -39,8 +39,9 @@ your username, paths, job lists).
   there. The agent sees the prompt as the screen shows it, never what you type at it.
 - **One login.** The agent's ssh uses a connection you have open to the cluster, with no password prompt.
   Without one, each separate ssh may ask you to log in. Connect from your own terminal first, or let the agent
-  log in once and type its commands into that shell. The agent's commands could end a connection of yours;
-  the mode asks first.
+  log in once and type its commands into that shell. The agent's commands could end a connection of yours, or run
+  an ssh other than the one OpenCorp sets up for them (`command -p ssh`, `/usr/bin/ssh`), which would log in again;
+  each asks you first, in every mode.
 - **Saving.** The agent shows you `reach.sh` and `notes.md` (how your cluster is reached, in plain words)
   with the risks of your setup on a card, which you read to the end before you choose. It asks in every
   mode. "Test it, then save it" runs the whole connection in OpenCorp's own connection shell, which the chat

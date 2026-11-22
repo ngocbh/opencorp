@@ -451,6 +451,45 @@ test("ssh port forwards ask in every mode and are refused in dontAsk: over a sha
   each(["ssh -o ExitOnForwardFailure=yes h", "ssh -o ClearAllForwardings=yes h", "ssh -l L h", "ssh -p 22 h"], risk, null)
 })
 
+test("ssh behind command, builtin, exec or env is ssh to the reader; one that skips the PATH lookup, and so the ssh wrapper, asks", () => {
+  // Each form is an ssh part: its destination is read, and a local command in it asks as plain ssh's does.
+  const forms = ["command", "command -p", "builtin", "exec", "exec -a x", "env", "env -i", "env PATH=/usr/bin", "nohup"]
+  for (const form of forms) {
+    const read = readCommand(`${form} ssh -o ProxyCommand=x h uptime`)
+    expect([form, sshHosts(read)]).toEqual([form, ["h"]])
+    expect([form, read.parts.map((p) => ownerOnly(p, true)).find((r) => r !== null)]).toEqual([
+      form, "it runs a local command for ssh",
+    ])
+  }
+  // One found on the shell's PATH runs the wrapper there, and reads as plain ssh does.
+  each(["ssh h uptime", "command ssh h uptime", "builtin ssh h uptime", "time ssh h uptime"], readOnly, true)
+  each(["exec ssh h uptime", "env ssh h uptime", "nohup ssh h uptime", "command ssh h uptime"], (line) =>
+    readCommand(line).parts.map((p) => ownerOnly(p, true)).find((r) => r !== null) ?? null, null)
+  // One run by path, through `command -p`'s default PATH, or with PATH set, cleared or unset, skips it: it asks in
+  // every mode.
+  const skips = "it runs ssh without the shell's PATH lookup, so around any ssh wrapper on it"
+  const lines = [
+    "command -p ssh h uptime", "/usr/bin/ssh h uptime", "PATH=/usr/bin ssh h uptime", "env PATH=/usr/bin ssh h",
+    "env -i ssh h", "env - ssh h", "env --ignore-environment ssh h", "env -u PATH ssh h", "env -uPATH ssh h",
+    "env --unset=PATH ssh h", "exec command -p ssh h", "command -p command ssh h", "nohup /usr/bin/ssh h",
+  ]
+  each(lines, risk, skips)
+  each(lines, readOnly, false)
+  each(lines, (line) => readCommand(line).parts.map((p) => ownerOnly(p, true)).find((r) => r !== null) ?? null, skips)
+  const S: Where = { profile: "ssh", cwd: "/tmp/w", writable: [] }
+  const allows = [{ effect: "allow" as const, kind: "command" as const, pattern: "ssh *" }]
+  for (const mode of ["auto", "dontAsk"] as Mode[]) {
+    expect([mode, decide({ kind: "command", text: "command -p ssh h uptime" }, mode, allows, S)]).toEqual([
+      mode,
+      mode === "dontAsk"
+        ? { verdict: "deny", reason: `this session doesn't ask (dontAsk mode): ${skips}` }
+        : { verdict: "ask", reason: skips, rules: [] },
+    ])
+  }
+  // `command -v` names ssh, and runs none.
+  expect(risk("command -v ssh")).toBeNull()
+})
+
 test("the ssh wrapper's config variable is a local command for ssh, set, exported or unset, as GIT_SSH_COMMAND is", () => {
   const local = "it runs a local command for ssh"
   const lines = [

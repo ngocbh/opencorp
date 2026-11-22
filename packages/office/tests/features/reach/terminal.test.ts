@@ -172,6 +172,27 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
     expect(fs.readFileSync(path.join(t.ssh, "config"), "utf8")).toBe(`${userConfig(t.ssh).join("\n")}\n`)
   })
 
+  test("ssh behind command, env or exec runs the wrapper; builtin runs none; one that skips the PATH lookup asks", async () => {
+    const { perms, held } = permissions({ check: RUNS })
+    const t = await learning({ perms })
+    // The wrapper passes the agent's config, whose ControlMaster no comes first.
+    await t.call("run", { command: "true", why: "start a shell" })
+    const config = `controlmaster no\ncontrolpath ${t.ssh}/tmp/${fakeControlName("h")}\nuser alice\n`
+    for (const command of ["command ssh -G h", "env ssh -G h", "(exec ssh -G h)"]) {
+      const printed = json(await t.call("run", { command, why: "check the config", shell: "shell 1" }))
+      expect([command, printed.output]).toEqual([command, `$ ${command}\n${config}`])
+    }
+    const builtin = json(await t.call("run", { command: "builtin ssh -G h", why: "x", shell: "shell 1" }))
+    expect(builtin.exit).not.toBe(0)
+    expect(builtin.output).not.toContain("controlmaster")
+    // The forms that would run an ssh other than the wrapper are held for the owner, before anything runs.
+    for (const command of ["command -p ssh -G h", "env -i ssh -G h", "PATH=/usr/bin ssh -G h", "/usr/bin/ssh -G h"]) {
+      expect([command, isPending(await t.call("run", { command, why: "x", shell: "shell 1" }))]).toEqual([command, true])
+    }
+    const skips = "it runs ssh without the shell's PATH lookup, so around any ssh wrapper on it"
+    expect(held.map((h) => h.card.reason)).toEqual(Array(4).fill(skips))
+  })
+
   test("with a connection of the user's open, the agent's ssh rides it with no password", async () => {
     const t = await learning({ perms: permissions({ check: RUNS }).perms })
     // The user's own master, as their terminal leaves one, at their ControlPath.
