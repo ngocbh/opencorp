@@ -390,13 +390,13 @@ export class PtyShell {
 
   /** Stops the agent's running command for a call cut off, as the owner's Ctrl-C would, whatever holds it (a secret
    *  prompt, a line the owner is typing): Ctrl-C once the shell has read the command's line. Nothing when no command of
-   *  the agent's runs. */
+   *  the agent's runs. What the shell keeps of the owner's keys stays: a secret prompt that ends under their answer
+   *  drops the rest of it until their Enter, so it never reaches the shell's prompt. */
   stop(): void {
     if (this.nonce === null) return
     this.interrupted = true
     this.agentLine = ""
     this.agentDirty = false
-    this.dropping = this.ownerMidLine = this.ownerAtSecret = false
     this.ctrlC()
   }
 
