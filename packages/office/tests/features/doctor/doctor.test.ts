@@ -1706,6 +1706,16 @@ test("on Linux, claude warns of each employee who uses it with a folder they may
   // macOS's sandbox isn't known to fail there.
   const mac = await doctor.claudeCheck(env, {}, null, { office, base, readOnly: ["minh"], platform: "darwin" })
   expect(mac.status).toBe("ok")
+  // A start that fails, or no socat, still names them.
+  const failing = fakeClaudeIn(probeHomes().dir, { sandbox_unavailable: true })
+  const failed = await doctor.claudeCheck(failing.env, {}, null, { office, base, readOnly: ["minh"], platform: "linux" })
+  expect(failed.status).toBe("fail")
+  expect(failed.detail).toContain("sandbox can't start here")
+  expect(failed.detail).toContain("@minh's Claude Code sessions are refused")
+  fs.rmSync(path.join(failing.fake.bin, "socat"))
+  const noSocat = await doctor.claudeCheck(failing.env, {}, null, { office, base, readOnly: ["minh"], platform: "linux" })
+  expect(noSocat.detail).toContain("needs socat")
+  expect(noSocat.detail).toContain("@minh's Claude Code sessions are refused")
 })
 
 test("on Linux, claude fails without a socat for its sandbox, saying how to fix it; the start doctor tries runs with the office's", async () => {

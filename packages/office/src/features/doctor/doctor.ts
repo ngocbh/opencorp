@@ -34,7 +34,7 @@ import {
 import { probeStart } from "../../tools/claude/probe.ts"
 import { type Probed, threadProbe } from "../codex/thread.ts"
 import { writableFolders } from "../../runtime/sessions/permission.ts"
-import { checkHarnessBinary } from "../../runtime/sandbox/harness_profile.ts"
+import { type HarnessInstall, checkHarnessBinary } from "../../runtime/sandbox/harness_profile.ts"
 import { SANDBOX_FIX } from "../../tools/terminal/terminal.ts"
 import { selfCommand, tuiAssetRoot } from "../../platform.ts"
 import {
@@ -752,8 +752,8 @@ export async function codexCheck(
  *
  * `environ` is the office's environment: its `OPENCORP_CLAUDE_BIN` picks the binary and its `CLAUDE_CONFIG_DIR` joins
  * `env`, as they do for a session. `mode` is the office's recorded service mode, which decides how a fix reaches it.
- * A start that works warns of the employees in `readOnly` (`readOnlyClaude`) on a `platform` where Claude Code can't
- * run in their read-only folders, whose sessions are refused. Where its sandbox needs socat (Linux), the start runs
+ * On a `platform` where Claude Code can't run in a read-only folder, the line names the employees in `readOnly`
+ * (`readOnlyClaude`), whose sessions are refused: a start that works warns, and one that fails says so too. Where its sandbox needs socat (Linux), the start runs
  * with the one the office finds (`OPENCORP_SOCAT_BIN` in `environ`, else `socat` on `env`'s PATH), and none fails.
  */
 export async function claudeCheck(
@@ -823,6 +823,29 @@ export async function claudeCheck(
     return { name: "claude", status: "fail", detail }
   }
   if (office === undefined) return { name: "claude", status: "ok", detail: named }
+  const started = await claudeStarts(named, env, environ, mode, { claude, office, base, platform })
+  if (readOnly.length === 0 || !readOnlyFails(platform)) return started
+  const whose = readOnly.map((handle) => `@${handle}'s`)
+  const names = whose.length === 1 ? whose[0] : `${whose.slice(0, -1).join(", ")} and ${whose.at(-1)}`
+  const refused = `${names} Claude Code sessions are refused: ${READ_ONLY_FIX}`
+  if (started.status === "ok") return { name: "claude", status: "warn", detail: `${started.detail}, but ${refused}` }
+  return { ...started, detail: `${started.detail}; and ${refused}` }
+}
+
+/** The part of `claudeCheck` that starts Claude Code, `named` (its version and path), under an employee's permission,
+ *  with the office's socat where its sandbox needs one. */
+async function claudeStarts(
+  named: string,
+  env: Record<string, string>,
+  environ: Env,
+  mode: string | null,
+  {
+    claude,
+    office,
+    base,
+    platform,
+  }: { claude: HarnessInstall; office: CodexOffice; base?: string; platform: NodeJS.Platform },
+): Promise<Check> {
   const cant = `${named} can't start under an employee's permission`
   let socat: string | undefined
   if (socatNeeded(platform)) {
@@ -849,14 +872,7 @@ export async function claudeCheck(
     const detail =
       `${named}, signed in, and starts with its sandbox required under an employee's permission ` +
       "(no command tried in it)"
-    if (readOnly.length === 0 || !readOnlyFails(platform)) return { name: "claude", status: "ok", detail }
-    const whose = readOnly.map((handle) => `@${handle}'s`)
-    const names = whose.length === 1 ? whose[0] : `${whose.slice(0, -1).join(", ")} and ${whose.at(-1)}`
-    return {
-      name: "claude",
-      status: "warn",
-      detail: `${detail}, but ${names} Claude Code sessions are refused: ${READ_ONLY_FIX}`,
-    }
+    return { name: "claude", status: "ok", detail }
   }
   if (error instanceof ClaudeSignedOut) {
     const detail = `${named} is signed out; run \`claude\` in a terminal and sign in with /login`
