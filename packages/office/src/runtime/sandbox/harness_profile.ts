@@ -254,6 +254,10 @@ export function claudeStart(p: EmployeePermission): {
     // The session still binds an inbox socket (only bare mode doesn't, and it skips the login); this drops what
     // arrives there, from the owner's other sessions or the employee's commands, undelivered.
     crossSessionInbound: "refuse",
+    // No background sessions or agent view (Claude Code's docs, agent-view): their supervisor's socket folder is
+    // /tmp/cc-daemon-<uid>/<hash of the config folder>, one per config folder, so the owner's and every employee's
+    // sessions would share one supervisor.
+    disableAgentView: true,
   }
   const env = {
     PATH: c.path,

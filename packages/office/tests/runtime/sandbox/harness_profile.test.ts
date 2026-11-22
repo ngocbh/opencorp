@@ -615,6 +615,7 @@ test("Claude Code's start turns its sandbox on, fails if it can't start, allows 
       },
       disableAllHooks: true,
       crossSessionInbound: "refuse",
+      disableAgentView: true,
     },
     addDirs: [],
     env: {
