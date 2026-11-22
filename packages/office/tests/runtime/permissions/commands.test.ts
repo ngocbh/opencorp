@@ -490,6 +490,41 @@ test("ssh behind command, builtin, exec or env is ssh to the reader; one that sk
   expect(risk("command -v ssh")).toBeNull()
 })
 
+test("on the SSH-only profile, a line that sets, exports or unsets PATH, or runs hash -p, asks in every mode", () => {
+  const sets = "it changes the shell's PATH, which OpenCorp's ssh wrapper comes first on"
+  const lines = [
+    // Bare, and so kept for the shell's later lines; for a program; and before ssh on the same line.
+    "PATH=/usr/bin", "PATH+=:/x", "PATH=/usr/bin; ssh h uptime", "PATH=/usr/bin make deploy", "env PATH=/usr/bin make",
+    "env -i make", "env -u PATH make", "export PATH=/usr/bin", "export PATH", "export -n PATH", "unset PATH",
+    "declare -x PATH=/x", "typeset PATH=/x", "readonly PATH=/x", "local PATH=/x", "read PATH", "read -r a PATH <f",
+    "mapfile PATH", "printf -v PATH %s /x", "printf -vPATH %s /x", "getopts a PATH", "declare -n r=PATH; r=/x",
+    "echo ${PATH:=/x}", "echo ${PATH=/x}", "builtin export PATH=/x", "hash -p /usr/bin/ssh ssh", "hash -tp /x ssh",
+    "sh -c 'PATH=/usr/bin; ssh h'", "eval 'export PATH=/x'",
+  ]
+  const allows = ["*", "ssh *", "export *", "hash *", "make *", "sh *"].map((pattern) => ({
+    effect: "allow" as const, kind: "command" as const, pattern,
+  }))
+  for (const mode of ["auto", "default", "ask", "dontAsk"] as Mode[]) {
+    for (const text of lines) {
+      expect([mode, text, decide({ kind: "command", text }, mode, allows, S)]).toEqual([
+        mode, text,
+        mode === "dontAsk"
+          ? { verdict: "deny", reason: `this session doesn't ask (dontAsk mode): ${sets}` }
+          : { verdict: "ask", reason: sets, rules: [] },
+      ])
+    }
+  }
+  // A plain read of PATH, a word that only says it, and a PATH set over ssh, on the other machine, change nothing here.
+  const plain = ["echo $PATH", "echo ${PATH}", "grep PATH notes", "hash ssh", "ssh h 'PATH=/x; ls'", "command -v ssh"]
+  for (const text of plain) {
+    const { verdict } = decide({ kind: "command", text }, "auto", allows, S)
+    expect([text, ["allow", "check"].includes(verdict)]).toEqual([text, true])
+  }
+  // In a workspace's sandbox there is no ssh wrapper to skip: a PATH for a build goes as any command does.
+  const build = "PATH=/w/s/node_modules/.bin:$PATH npm test"
+  expect(decide({ kind: "command", text: build }, "auto", allows, W)).toEqual({ verdict: "allow", by: "an allow rule" })
+})
+
 test("the ssh wrapper's config variable is a local command for ssh, set, exported or unset, as GIT_SSH_COMMAND is", () => {
   const local = "it runs a local command for ssh"
   const lines = [

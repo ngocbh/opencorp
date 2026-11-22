@@ -18,7 +18,8 @@
  * sets or clears), which skips a wrapper there, or a command that controls a shared ssh connection (`-O` but `check`,
  * `-S`, `ControlPath`, `ControlMaster`, and port forwards): the owner's own connections can be reached from the
  * SSH-only profile, `-O exit` would end one, and a forward added to one outlives the call. ssh behind `command`,
- * `builtin`, `exec`, `env` and the other wrappers is ssh to every check.
+ * `builtin`, `exec`, `env` and the other wrappers is ssh to every check. On the SSH-only profile, where an ssh wrapper
+ * comes first on PATH, neither does Auto's check judge a line that changes PATH or runs `hash -p` (`pathChange`).
  *
  * It can't know what a program does with its files, its config or its input: `git` runs hooks and programs its
  * config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host has
@@ -156,6 +157,7 @@ const PUSHES = "it pushes to another repository"
 const COPIES = "it copies files to or from another machine"
 const LOCAL_SSH = "it runs a local command for ssh"
 const SSH_OFF_PATH = "it runs ssh without the shell's PATH lookup, so around any ssh wrapper on it"
+const SETS_PATH = "it changes the shell's PATH, which OpenCorp's ssh wrapper comes first on"
 const CONTROLS_SSH = "it controls a shared ssh connection"
 const NETWORK = "it connects to another machine"
 const FEEDS_SHELL = "it feeds a remote shell from its input"
@@ -248,6 +250,10 @@ const SSH_CONTROL_LETTERS = "SOLRD"
  *  value, `$NAME` or `${NAME}`, is left out; `${NAME:=x}` assigns, so it counts. */
 const SSH_VARIABLE =
   /(?:^|[^A-Za-z0-9_${]|\$\{(?=[A-Za-z_]+:?=))(?:-[A-Za-z]+)?(?:GIT_SSH_COMMAND|GIT_SSH|OPENCORP_SSH_CONFIG)(?![A-Za-z0-9_])/
+/** The builtins that set, export or unset a variable a word of theirs names. */
+const SETS_VARIABLE = set("export declare typeset readonly local unset read mapfile readarray printf getopts")
+/** A word that names PATH, as `SSH_VARIABLE` names ssh's variables: a plain read of its value is left out. */
+const PATH_VARIABLE = /(?:^|[^A-Za-z0-9_${]|\$\{(?=PATH:?=))(?:-[A-Za-z]+)?PATH(?![A-Za-z0-9_])/
 const SSH_LOCAL_KEYS = set("proxycommand localcommand permitlocalcommand knownhostscommand")
 const SSH_IDENTITY_KEYS = set("identityfile certificatefile")
 /** Programs that read only names and metadata, so a credential path given to them reads no secret. */
@@ -655,6 +661,27 @@ export function ownerOnly(part: SimpleCommand, readable: boolean): string | null
   for (const inner of innerParts(part)) {
     const found = ownerOnly(inner, readable)
     if (found) return host ? `on ${host}: ${found}` : found
+  }
+  return null
+}
+
+/** Why `part` may change which ssh the shell's later commands, or the program it runs, find on PATH: it sets,
+ *  exports or unsets PATH (a bare assignment, one for its program or `env`'s, `env -i`, `env -u PATH`, a builtin that
+ *  writes the variable, `${PATH:=…}`), looks its program up on another PATH (`command -p`), or runs `hash -p`; here,
+ *  under `sudo` or `find -exec`, but not in an ssh remote command, whose PATH is another machine's. Null otherwise. A
+ *  wrapper for ssh first on PATH holds only while PATH stays as the host set it. */
+export function pathChange(part: SimpleCommand): string | null {
+  const { start, offPath } = unwrap(part)
+  const [prog = "", ...args] = part.words.slice(start)
+  const name = base(prog)
+  const named = SETS_VARIABLE.has(name) && args.some((w) => PATH_VARIABLE.test(w))
+  const expanded = part.words.some((w) => /\$\{PATH:?=/.test(w))
+  const hashed = name === "hash" && args.slice(0, optionsEnd(args, "", [])).some((w) => /^-[A-Za-z]*p/.test(w))
+  if (offPath || named || expanded || hashed) return SETS_PATH
+  if (sshOf(part) !== null) return null
+  for (const inner of innerParts(part)) {
+    const found = pathChange(inner)
+    if (found !== null) return found
   }
   return null
 }
@@ -1205,7 +1232,7 @@ function unwrap(part: SimpleCommand): { start: number; sets: string[]; wrappers:
     offPath ||= skipped.offPath
     i = skipped.next
   }
-  offPath ||= sets.some((set) => set.startsWith("PATH="))
+  offPath ||= sets.some((set) => /^PATH\+?=/.test(set))
   return { start: i, sets, wrappers, offPath }
 }
 

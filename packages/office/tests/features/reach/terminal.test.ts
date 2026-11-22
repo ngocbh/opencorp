@@ -193,6 +193,19 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
     expect(held.map((h) => h.card.reason)).toEqual(Array(4).fill(skips))
   })
 
+  test("a line that changes PATH is held for the owner, so the shell's next line still runs ssh through the wrapper", async () => {
+    const { perms, held } = permissions({ check: RUNS })
+    const t = await learning({ perms })
+    await t.call("run", { command: "true", why: "start a shell" })
+    for (const command of ["PATH=/usr/bin", "export PATH=/usr/bin", "unset PATH", "hash -p /usr/bin/ssh ssh"]) {
+      expect([command, isPending(await t.call("run", { command, why: "x", shell: "shell 1" }))]).toEqual([command, true])
+    }
+    const changes = "it changes the shell's PATH, which OpenCorp's ssh wrapper comes first on"
+    expect(held.map((h) => h.card.reason)).toEqual(Array(4).fill(changes))
+    const printed = json(await t.call("run", { command: "ssh -G h", why: "check the config", shell: "shell 1" }))
+    expect(printed.output).toStartWith("$ ssh -G h\ncontrolmaster no\n")
+  })
+
   test("with a connection of the user's open, the agent's ssh rides it with no password", async () => {
     const t = await learning({ perms: permissions({ check: RUNS }).perms })
     // The user's own master, as their terminal leaves one, at their ControlPath.

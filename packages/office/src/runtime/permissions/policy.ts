@@ -46,7 +46,7 @@
  */
 import { ruleWords } from "@opencorp/protocol"
 import {
-  assignmentsOf, classify, EMPTY, fileOp, innerParts, lineCredential, logsIn, ownerOnly, programOf, pushOf,
+  assignmentsOf, classify, EMPTY, fileOp, innerParts, lineCredential, logsIn, ownerOnly, pathChange, programOf, pushOf,
   readCommand, remoteOf, type SimpleCommand, sshHosts, sshOf, type Where,
 } from "./commands.ts"
 export type { Where } from "./commands.ts"
@@ -180,6 +180,10 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
   if (credential) return held(credential)
   const owner = parts.map((p) => ownerOnly(p, read.unreadable === null)).find((found) => found !== null)
   if (owner) return held(owner)
+  // Where an ssh wrapper comes first on PATH (the SSH-only profile, and shells with no sandbox), a PATH change could
+  // skip it for this line or the shell's later ones.
+  const path = where.profile === "ssh" ? parts.map(pathChange).find((found) => found !== null) : undefined
+  if (path) return held(path)
   const asked = first("ask")
   if (asked) return held(`an ask rule: ${asked.pattern}`)
 
