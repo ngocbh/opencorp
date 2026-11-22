@@ -6,7 +6,7 @@ import type { Message } from "@opencorp/protocol"
 import { expect, test } from "bun:test"
 import { CodexRecord, markInterrupted, readCodexRecord } from "../../../src/tools/codex/record.ts"
 import { CODEX } from "../../../src/tools/codex/tools.ts"
-import { loadRecord } from "../../../src/tools/harness/record.ts"
+import { ENTRY_CHARS, loadRecord } from "../../../src/tools/harness/record.ts"
 import { CLAUDE } from "../../../src/tools/claude/instrument.ts"
 import { tempDir } from "../../helpers.ts"
 
@@ -70,6 +70,42 @@ test("memory keeps only the newest entries, the files all of them", () => {
   expect(record.conversation.start).toBe(210)
   expect(record.conversation.entries.map((e) => e.text[0])).toEqual(["7", "8", "9"])
   expect(fs.readFileSync(path.join(dir, "conversation.log"), "utf8")).toContain("0".repeat(30))
+})
+
+test("memory keeps a huge entry's head and tail with a marker between, the files all of it", () => {
+  const dir = path.join(tempDir(), "r")
+  const record = new CodexRecord(dir, META)
+  // 10 MB: an "h" head, an astral character across where the head is cut, a long middle and a "t" tail.
+  const head = "h".repeat(ENTRY_CHARS / 2 - 1)
+  const said = `${head}😀${"m".repeat(10_000_000)}${"t".repeat(ENTRY_CHARS)}`
+  record.add([message("assistant", null, [
+    { id: "t1", type: "text", text: said },
+    { id: "p1", type: "tool", call_id: "c1", tool: "codex.command", state: "completed",
+      input: { command: "cat big.log", exit_code: 0 }, output: said, error: null, yian_call_id: null },
+  ])], label)
+  const huge = [...record.conversation.entries, ...record.trace.entries]
+  expect(huge.map((e) => e.text.length < ENTRY_CHARS + 200)).toEqual([true, true, true])
+  for (const { text } of huge) {
+    expect(text.isWellFormed()).toBe(true)
+    expect(text).toEndWith("t".repeat(ENTRY_CHARS / 2))
+    expect(text).toMatch(/\n\n\[… \d+ characters left out here; the session's record keeps them\]\n\n/)
+  }
+  // The head stops short of the astral character rather than split it.
+  const [said1] = record.conversation.entries
+  expect(said1!.text).toStartWith(`${head}\n\n[… ${said.length - head.length - ENTRY_CHARS / 2} characters left out`)
+  expect(record.trace.entries[1]!.text).toStartWith("[command] $ cat big.log (exit 0)\n")
+  // Where each entry starts counts what memory keeps of the ones before it.
+  expect(record.trace.entries[1]!.at).toBe(said1!.text.length)
+  expect(record.conversation.end).toBe(said1!.text.length)
+  // The .log files keep the entry whole.
+  expect(fs.readFileSync(path.join(dir, "conversation.log"), "utf8")).toContain(said)
+  expect(fs.readFileSync(path.join(dir, "trace.log"), "utf8")).toContain(said)
+  // The JSON lines keep what memory kept, so a later office loads back the same entries, offsets and all.
+  expect(fs.statSync(path.join(dir, "trace.jsonl")).size).toBeLessThan(3 * (ENTRY_CHARS + 1000))
+  const loaded = loadRecord(CODEX, dir)
+  expect(loaded.conversation.entries).toEqual(record.conversation.entries)
+  expect(loaded.trace.entries).toEqual(record.trace.entries)
+  expect([loaded.conversation.end, loaded.trace.end]).toEqual([record.conversation.end, record.trace.end])
 })
 
 test("a record is never written over another's", () => {
