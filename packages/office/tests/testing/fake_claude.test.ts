@@ -768,7 +768,9 @@ test("an --mcp-config file's servers are read at the start and started in the fa
     web: { type: "http", url: "https://e.example/mcp" },
   }
   const step = { tool: "mcp__github__get_me", input: {}, result: "me" }
-  const { fake, work } = fakeClaude({ mcp_tools: { github: ["get_me"], docs: ["search"] }, turns: [[step], [step]] })
+  const list = { tool: "ListMcpResourcesTool", input: {}, result: "[]" }
+  const mcp_tools = { github: ["get_me"], docs: ["search"] }
+  const { fake, work } = fakeClaude({ mcp_tools, turns: [[step, list], [step, list]] })
   const config = path.join(work, "mcp.json")
   fs.writeFileSync(config, JSON.stringify({ mcpServers: servers }))
   const allow = JSON.stringify({ permissions: { allow: ["mcp__github__*"] } })
@@ -782,7 +784,8 @@ test("an --mcp-config file's servers are read at the start and started in the fa
     { name: "github", status: "connected" },
     { name: "web", status: "connected" },
   ])
-  expect(verdicts(lines)).toEqual(["ran"])
+  // Reading the servers' resources needs no approval.
+  expect(verdicts(lines)).toEqual(["ran", "ran"])
   expect(await allowed.close()).toBe(0)
   expect(fs.readFileSync(path.join(dir, "pwd"), "utf8").trim()).toBe(fs.realpathSync(work))
   expect(fs.readFileSync(path.join(dir, "names"), "utf8").split("\n")).toContain("O5_TOKEN")
@@ -790,7 +793,7 @@ test("an --mcp-config file's servers are read at the start and started in the fa
   // With no allow rule, nothing approves it here.
   const asked = new Claude(fake, base, work)
   asked.send(user("Who am I?", "u-2"))
-  expect(verdicts(await asked.turn())).toEqual(["refused"])
+  expect(verdicts(await asked.turn())).toEqual(["refused", "ran"])
   expect(await asked.close()).toBe(0)
   // A file that isn't there stops the start; a JSON string isn't modelled.
   const missing = runOnce(fake, [...STREAM, `--mcp-config=${path.join(work, "none.json")}`], work)

@@ -70,9 +70,9 @@
  *       `rmdir`, `mv` and `cp`, on paths inside the working folders (the fake's, `--add-dir`'s and
  *       `permissions.additionalDirectories`), not `.git` or `.claude`, and not a `touch` with an option or a glob;
  *    5. the allow rules, from `--allowedTools` and `permissions.allow`, and what needs no approval: a read (`Read`,
- *       `Glob`, `Grep`, `LS`) inside the working folders, and the docs' read-only commands (`ls`, `cat`, `echo`, …,
- *       `git status`); a compound command runs when each of its commands does, and a redirect's file is checked as a
- *       write or a read;
+ *       `Glob`, `Grep`, `LS`) inside the working folders, `ListMcpResourcesTool` and `ReadMcpResourceTool`, and the
+ *       docs' read-only commands (`ls`, `cat`, `echo`, …, `git status`); a compound command runs when each of its
+ *       commands does, and a redirect's file is checked as a write or a read;
  *    6. else, unless the mode is `dontAsk`, with `--permission-prompt-tool stdio` the host gets `can_use_tool` and
  *       answers `{behavior: "allow", updatedInput?}` or `{behavior: "deny", message}`; anything else is refused, as
  *       a headless Claude Code with no way to ask: with `--permission-prompts none` as recorded, a
@@ -313,6 +313,8 @@ const DEFAULT_TOOLS = [
   "Workflow", "Write",
 ]
 const READS = new Set(["Read", "Glob", "Grep", "LS"])
+/** The tools that read MCP servers' resources, which need no approval (Claude Code's docs, tools-reference). */
+const MCP_RESOURCE_READS = new Set(["ListMcpResourcesTool", "ReadMcpResourceTool"])
 const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"])
 const INIT_CAPABILITIES = ["interrupt_receipt_v1", "interrupt_cancel_queued_v1", "msg_lifecycle_v1", "ui_surface_v1"]
 const MESSAGE_USAGE = {
@@ -682,6 +684,7 @@ class Policy {
     if (tool === "Bash") return subs().every((sub, _, all) => this.approved(sub, all, mode)) ? "allow" : "ask"
     if (this.allowed(tool, target)) return "allow"
     if (READS.has(tool) && !outside) return "allow"
+    if (MCP_RESOURCE_READS.has(tool)) return "allow"
     if (mode === "acceptEdits" && EDITS.has(tool) && target !== undefined && this.editable(target)) return "allow"
     return "ask"
   }
