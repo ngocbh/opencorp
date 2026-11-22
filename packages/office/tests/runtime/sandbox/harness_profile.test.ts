@@ -10,6 +10,7 @@ import {
   checkCodexInstall,
   checkHarnessBinary,
   checkPermission,
+  checkSocatInstall,
   claudeStart,
   codexThread,
   type EmployeePermission,
@@ -1249,4 +1250,15 @@ test("a programs folder goes first on the harness PATH and is read in Claude Cod
     expect(() => checkPermission(permission({ programs: inside })), inside).toThrow(UnsafeProfile)
     fs.rmSync(inside, { recursive: true })
   }
+})
+
+test("socat's check returns the real file it checked, which is what a session copies", () => {
+  const { root, permission } = layout()
+  const dir = path.join(root, "socat-install")
+  fs.mkdirSync(dir, { mode: 0o755 })
+  const real = path.join(dir, "socat-1.8")
+  fs.writeFileSync(real, "#!/bin/sh\n", { mode: 0o755 })
+  const link = path.join(dir, "socat")
+  fs.symlinkSync(real, link)
+  expect(checkSocatInstall(permission(), link)).toBe(real)
 })

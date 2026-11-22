@@ -572,11 +572,13 @@ export function checkClaudeInstall(p: EmployeePermission, install: HarnessInstal
   checkInstall(p, install, CLAUDE)
 }
 
-/** Throws `UnsafeProfile` unless the socat the office found (`found`, and its real file) can't be changed by anyone but
- *  the user, as `checkClaudeInstall` checks Claude Code: Claude Code runs it as the owner, outside its sandbox. */
-export function checkSocatInstall(p: EmployeePermission, found: string): void {
+/** The real file of the socat the office found (`found`), once checked: throws `UnsafeProfile` unless neither can be
+ *  changed by anyone but the user, as `checkClaudeInstall` checks Claude Code, since Claude Code runs it as the owner,
+ *  outside its sandbox. Copy the file it returns, not `found`, which a link could repoint meanwhile. */
+export function checkSocatInstall(p: EmployeePermission, found: string): string {
   const run = realPath(found)
   checkInstall(p, { run, install: path.dirname(run), found }, SOCAT)
+  return run
 }
 
 /** What runs a harness: the file the office spawns, the folder it is installed in, and, when given, the path found on

@@ -353,8 +353,8 @@ export class ClaudeSessions {
     }
     checkClaudeInstall(permission, install)
     if (socat !== undefined) {
-      checkSocatInstall(permission, socat)
-      permission.programs = programsFolder(root, `${live.sessionId}.bin`, { socat })
+      const checked = checkSocatInstall(permission, socat)
+      permission.programs = programsFolder(root, `${live.sessionId}.bin`, { socat: checked })
     }
     const configDir = this.#environ.CLAUDE_CONFIG_DIR || path.join(this.office.guards.home ?? os.homedir(), ".claude")
     const id = live.claudeId

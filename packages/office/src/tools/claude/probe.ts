@@ -80,8 +80,7 @@ export async function probeStart(options: ProbeOptions): Promise<{ error: Error 
     }
     checkClaudeInstall(p, options.claude)
     if (options.socat !== undefined) {
-      checkSocatInstall(p, options.socat)
-      p.programs = programsFolder(dir, "bin", { socat: options.socat })
+      p.programs = programsFolder(dir, "bin", { socat: checkSocatInstall(p, options.socat) })
     }
     const start = claudeStart(p)
     proc = new ClaudeProcess({
