@@ -60,6 +60,25 @@ const SYSTEM_PATH: readonly string[] = [
   "/sbin",
   ...(process.platform === "darwin" ? ["/opt/homebrew/bin"] : []),
 ]
+/** Where the owner's own Unix sockets and temp files live: tmux's, ssh-agent's, D-Bus's (`/run/user/<uid>`), other
+ *  Claude Code sessions' inboxes. Claude Code's Bash sandbox reads everything but `denyRead`, and on Linux the seccomp
+ *  filter that blocks a Unix socket is optional (no setting requires it, and doctor can't see it without a model
+ *  call: O5 checks it), so a command that can read a socket there can connect to it and act as the owner. So they
+ *  are all denied, but what a listed folder covers; the session's folder and temp folder (`allowRead`) are re-opened
+ *  inside them. macOS's per-user temp folders are under `/var/folders`.
+ *
+ *  - When the network may be on, `/run/systemd/resolve` must be re-allowed: `/etc/resolv.conf` often links to its
+ *    stub, the local DNS resolver.
+ *  - O5 confirms that the temp folder, an `allowRead` under the `/tmp` deny, works, and that the sandbox's proxy
+ *    bridge puts its sockets in the session's temp folder (its `TMPDIR`), not in `/tmp`. */
+const SOCKET_ROOTS: readonly string[] = [
+  "/tmp",
+  "/var/tmp",
+  "/var/run",
+  "/run",
+  "/dev/shm",
+  ...(process.platform === "darwin" ? ["/var/folders"] : []),
+]
 /** Characters Codex (`*?[]`) or Claude Code's sandbox (also `{}`) read as a pattern in a path. */
 const PATTERN = /[*?[\]{}]/
 /** The harnesses' own config under the home, and whether each is a folder: Codex's `~/.codex`, and Claude Code's
@@ -129,7 +148,7 @@ export function codexThread(
   // read, and a more specific entry beats a broader one.
   const filesystem: Record<string, string> = {
     ":minimal": "read",
-    [installFolder(install, [...c.writableRoots, ...c.others])]: "read",
+    [installFolder(install, [...c.writableRoots, ...c.others], CODEX.folder)]: "read",
     [c.workspace]: c.writable ? "write" : "read",
   }
   filesystem[c.tmpdir] = "write"
@@ -192,6 +211,9 @@ export function claudeStart(p: EmployeePermission): {
   const mirrored = c.denied.filter((denied) => !opened.some((p) => within(p, denied)))
   const readOnly = readOnlyOf(c.folders)
   const writable = writableOf(c.folders)
+  const sockets = [...new Set(SOCKET_ROOTS.filter((p) => fs.existsSync(p)).map((p) => realPath(p)))].filter(
+    (root) => !covered(root),
+  )
   const settings = {
     sandbox: {
       enabled: true,
@@ -199,7 +221,7 @@ export function claudeStart(p: EmployeePermission): {
       allowUnsandboxedCommands: false,
       autoAllowBashIfSandboxed: true,
       filesystem: {
-        denyRead: [...(covered(c.home) ? [] : [c.home]), ...c.denied],
+        denyRead: [...(covered(c.home) ? [] : [c.home]), ...sockets, ...c.denied],
         allowRead: [c.workspace, c.tmpdir, ...c.folders.map((folder) => folder.path)],
         allowWrite: [...(c.writable ? [c.workspace] : []), c.tmpdir, ...writable],
         denyWrite: [
@@ -213,6 +235,8 @@ export function claudeStart(p: EmployeePermission): {
     },
     permissions: {
       blockReadsOutsideWorkingDirectories: true,
+      // Its file tools run as the owner, outside its sandbox: they write only the working folders.
+      blockWritesOutsideWorkingDirectories: true,
       deny: [
         ...(c.writable ? [] : ["Edit", "Write", "NotebookEdit"]),
         ...readOnly.flatMap((folder) => rules("Edit", folder, true)),
@@ -221,9 +245,15 @@ export function claudeStart(p: EmployeePermission): {
         // Both reach the web from Claude Code itself, outside its sandbox.
         "WebFetch",
         "WebSearch",
+        // They message and list the owner's other Claude Code sessions, which run outside this permission.
+        "SendMessage",
+        "ListAgents",
       ],
     },
     disableAllHooks: true,
+    // The session still binds an inbox socket (only bare mode doesn't, and it skips the login); this drops what
+    // arrives there, from the owner's other sessions or the employee's commands, undelivered.
+    crossSessionInbound: "refuse",
   }
   const env = {
     PATH: c.path,
@@ -471,31 +501,86 @@ function checkReached(workspace: string, writable: readonly string[]): void {
   }
 }
 
+/** How a harness's install is named in a refusal. */
+interface Named {
+  /** The file the office spawns: "the Codex the office runs". */
+  run: string
+  /** Its install folder: "Codex's install folder". */
+  folder: string
+}
+
+const CODEX: Named = { run: "the Codex the office runs", folder: "Codex's install folder" }
+const CLAUDE: Named = { run: "the Claude Code the office runs", folder: "Claude Code's install folder" }
+
 /** Throws `UnsafeProfile` unless Codex as the office runs it can't be changed by anyone but the user: `run`, the file
  *  the office spawns, and `install`, the folder Codex's sandboxed commands run it from (`nativeCodex`). Neither, nor a
  *  folder either's path walks through, may lie in a folder the employee's harness can write, another person's
  *  writable folder or a live session's folder (`othersWritable`); the install folder may hold none of them; and
  *  neither file's folder, the file itself, the install folder nor its `bin` may be open to the group or others. Codex
  *  runs as the owner, outside any sandbox, so this comes before it runs. Throws as `checkPermission` does too. */
-export function checkCodexInstall(p: EmployeePermission, { run, install }: { run: string; install: string }): void {
+export function checkCodexInstall(p: EmployeePermission, install: HarnessInstall): void {
+  checkInstall(p, install, CODEX)
+}
+
+/** Throws `UnsafeProfile` unless Claude Code as the office runs it can't be changed by anyone but the user, as
+ *  `checkCodexInstall` checks Codex: `run`, the file the office spawns, `install`, the folder it is in
+ *  (`nativeClaude`), and, when given, `found`, the path found on PATH that led to it (the walk to it, links
+ *  included, lies in no folder others may write either). Claude Code runs as the owner, outside its own sandbox, so
+ *  this comes before it runs. Throws as `checkPermission` does too. */
+export function checkClaudeInstall(p: EmployeePermission, install: HarnessInstall): void {
+  checkInstall(p, install, CLAUDE)
+}
+
+/** What runs a harness: the file the office spawns, the folder it is installed in, and, when given, the path found on
+ *  PATH that led to the file (a launcher link, or npm's launcher). */
+export interface HarnessInstall {
+  run: string
+  install: string
+  found?: string
+}
+
+/** Throws `UnsafeProfile` unless `harness` as the office would run it can't be changed by anyone but the user, before
+ *  any employee's permission is built, as doctor checks it before running it at all: the same checks as
+ *  `checkCodexInstall` and `checkClaudeInstall`, against `othersWritable` alone (every person's writable listed
+ *  folders, and live sessions' folders). */
+export function checkHarnessBinary(
+  harness: "codex" | "claude",
+  install: HarnessInstall,
+  othersWritable: readonly string[],
+): void {
+  const roots = othersWritable
+    .filter((dir) => path.isAbsolute(dir) && !dir.includes("\0"))
+    .map((dir) => realPath(dir))
+  checkAgainst(roots, install, harness === "codex" ? CODEX : CLAUDE)
+}
+
+/** `checkCodexInstall` and `checkClaudeInstall`, with the harness's names for the refusals. */
+function checkInstall(p: EmployeePermission, install: HarnessInstall, named: Named): void {
   const c = checked(p)
-  const roots = [...c.writableRoots, ...c.others]
-  installFolder(install, roots)
-  const what = `the Codex the office runs, ${JSON.stringify(run)},`
-  if (!path.isAbsolute(run)) throw new UnsafeProfile(`${what} isn't absolute`)
-  const visited: string[] = []
-  const real = realPath(run, visited)
-  const through = [real, ...visited].find((p) => roots.some((root) => within(p, root)))
-  if (through !== undefined) throw new UnsafeProfile(`${what} is writable by the employee or others: ${through}`)
-  const open = [real, path.dirname(real)].find(openToOthers)
-  if (open !== undefined) throw new UnsafeProfile(`${what} can be changed: others than the user may write ${open}`)
+  checkAgainst([...c.writableRoots, ...c.others], install, named)
+}
+
+/** Throws `UnsafeProfile` if `install` lies in, holds or is reached through one of `roots`, or others than the user
+ *  may write its files. */
+function checkAgainst(roots: readonly string[], { run, install, found }: HarnessInstall, named: Named): void {
+  installFolder(install, roots, named.folder)
+  for (const file of found === undefined || found === run ? [run] : [found, run]) {
+    const what = `${named.run}, ${JSON.stringify(file)},`
+    if (!path.isAbsolute(file)) throw new UnsafeProfile(`${what} isn't absolute`)
+    const visited: string[] = []
+    const real = realPath(file, visited)
+    const through = [real, ...visited].find((p) => roots.some((root) => within(p, root)))
+    if (through !== undefined) throw new UnsafeProfile(`${what} is writable by the employee or others: ${through}`)
+    const open = [real, path.dirname(real)].find(openToOthers)
+    if (open !== undefined) throw new UnsafeProfile(`${what} can be changed: others than the user may write ${open}`)
+  }
 }
 
 /** `install` resolved, if no one but the user can write it: neither it nor a folder its path walks through lies in
  *  one of `writable` (the folders the harness can write, and others' writable folders), it holds none, and neither it
- *  nor its `bin` is open to the group or others. */
-function installFolder(install: string, writable: readonly string[]): string {
-  const what = `Codex's install folder ${JSON.stringify(install)}`
+ *  nor its `bin` is open to the group or others. `name` names it in a refusal. */
+function installFolder(install: string, writable: readonly string[], name: string): string {
+  const what = `${name} ${JSON.stringify(install)}`
   if (!path.isAbsolute(install)) throw new UnsafeProfile(`${what} isn't absolute`)
   const visited: string[] = []
   const real = realPath(install, visited)

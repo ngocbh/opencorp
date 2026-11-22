@@ -61,6 +61,17 @@ export function employeePermission(
   }
 }
 
+/** Every writable folder the people in `repo` list, `~/…` in `home`, as each person's harness may write them: what
+ *  no harness may run a program from. One that isn't absolute, or holds a null byte, names nothing. */
+export function writableFolders(repo: Pick<CompanyRepo, "people">, home: string): string[] {
+  const all = [...repo.people.values()]
+    .flatMap((person) => person.harness_policy?.folders ?? [])
+    .filter((folder) => folder.access === "write")
+    .map((folder) => inHome(folder.path, home))
+    .filter((p) => path.isAbsolute(p) && !p.includes("\0"))
+  return [...new Set(all)]
+}
+
 /** `policy`'s folders as `handle`'s harness mounts them, in order and each with its access: `~/…` in `home`, and one
  *  that isn't a folder there (missing, a file, or one the office can't look at) left out, with a `note` saying so. A
  *  path that is neither absolute nor `~/…`, or holds a null byte, is kept as written, so the permission's check

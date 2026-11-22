@@ -165,6 +165,14 @@ license, the upstream paths and commit, and our paths.
   `packages/core/test/plugin/provider/claude-agent/lib/fake-claude.ts` and `lib/recorder.ts`, read at commit `df46f69`
   (2026-11-16).
 - **Ours:** `packages/office/tests/fixtures/claude/stream.jsonl`, `packages/office/src/testing/fake_claude.ts`.
+- **What:** how the office starts Claude Code and checks it: the command line the Agent SDK passes (`--setting-sources=`,
+  `--strict-mcp-config`, hooks off in `--settings`, and `CLAUDE_CODE_DISABLE_AUTO_MEMORY`), a user message sent as
+  written (`client_composed`), and the sign-in check from `initialize`'s `account` (signed in when its `tokenSource`
+  isn't `none` or it has an `apiKeySource`) with no message sent, so no model call. Our driver speaks the CLI's
+  stream-json directly instead of through the SDK; the code is our own.
+- **Upstream:** `packages/core/src/plugin/provider/claude-agent/claude/{probe,query-options}.ts` and the recordings
+  above, read at commit `df46f69` (2026-11-16).
+- **Ours:** `packages/office/src/tools/claude/{claude,probe}.ts`.
 
 ## Paperclip
 

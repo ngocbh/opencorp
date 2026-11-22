@@ -46,16 +46,19 @@ export class Launch {
 /** Which Codex the office runs, when the caller's shell sets them: its home, and a binary other than `codex`. */
 export const CODEX_ENV = ["CODEX_HOME", "OPENCORP_CODEX_BIN"] as const
 
+/** Which Claude Code the office runs, alike: its config folder, and a binary other than `claude`. */
+export const CLAUDE_ENV = ["CLAUDE_CONFIG_DIR", "OPENCORP_CLAUDE_BIN"] as const
+
 /**
- * The daemon's environment: the worker allowlist, `LC_*` and `CODEX_ENV`, so no key in the caller's shell
- * reaches it. `PATH` keeps only its absolute entries, and is left out when none is.
+ * The daemon's environment: the worker allowlist, `LC_*`, `CODEX_ENV` and `CLAUDE_ENV`, so no key in the caller's
+ * shell reaches it. `PATH` keeps only its absolute entries, and is left out when none is.
  *
  * `LC_TERMINAL*` (iTerm's name and version) is left out: it isn't a locale, and it would change the service file
  * whenever the terminal updates. A relative `PATH` entry would refuse every workspace and let a cwd shadow a
  * tool; an empty `PATH` searches the cwd.
  */
 export function daemonEnv(environ: Env): Record<string, string> {
-  const kept: readonly string[] = [...INHERITED_ENV, ...CODEX_ENV]
+  const kept: readonly string[] = [...INHERITED_ENV, ...CODEX_ENV, ...CLAUDE_ENV]
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(environ)) {
     if (value === undefined) continue

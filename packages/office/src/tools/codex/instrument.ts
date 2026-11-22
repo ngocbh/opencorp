@@ -24,7 +24,7 @@
  *  trace, and its state. Calls on one session queue; calls on different sessions run together. */
 import { type Instrument, type Message, now } from "@opencorp/protocol"
 import { newId } from "../../util/ids.ts"
-import type { HarnessEvent } from "./adapter.ts"
+import type { HarnessEvent } from "../harness/adapter.ts"
 import { CodexRecord, type Said } from "./record.ts"
 import { type Entry as Shown, type Parsed, parseArgs, refusalText, type Reply, type ReplyStatus, replyText,
   type ToolName, TOOLS, toolSpecs } from "./tools.ts"

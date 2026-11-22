@@ -3,7 +3,7 @@ import fs from "node:fs"
 import { Ajv } from "ajv"
 import { expect, test } from "bun:test"
 import type { Message, Part } from "@opencorp/protocol"
-import type { HarnessEvent } from "../../../src/tools/codex/adapter.ts"
+import type { HarnessEvent } from "../../../src/tools/harness/adapter.ts"
 import { changeCounts, COMMAND, declined, FILE_CHANGE, type Issued, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED,
   relative, REPLY_SCHEMAS, REQUEST, SERVED, Translator, Unserved, Unshowable } from "../../../src/tools/codex/translate.ts"
 import { agentMessage, agentMessageDelta, command, commandApproval, commandStarted, error, fileChange,

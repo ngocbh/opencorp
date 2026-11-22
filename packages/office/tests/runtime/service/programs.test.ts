@@ -64,6 +64,22 @@ test("the codex override is a path or a name on the path", () => {
   expect(resolveTools({ PATH: bin }).codex).toBe(path.join(bin, "codex"))
 })
 
+test("the claude override is a path or a name on the path, and never falls back to claude", () => {
+  const root = tempDir()
+  const bin = path.join(root, "bin")
+  const absolute = fakeTool(path.join(root, "abs", "claude-x"))
+  fakeTool(path.join(bin, "claude-x"))
+  fakeTool(path.join(bin, "claude"))
+  expect(resolveTools({ PATH: bin, OPENCORP_CLAUDE_BIN: absolute }).claude).toBe(absolute)
+  expect(resolveTools({ PATH: bin, OPENCORP_CLAUDE_BIN: "claude-x" }).claude).toBe(path.join(bin, "claude-x"))
+  expect(resolveTools({ PATH: bin, OPENCORP_CLAUDE_BIN: path.join(root, "missing") }).claude).toBeUndefined()
+  expect(resolveTools({ PATH: bin, OPENCORP_CLAUDE_BIN: "./claude" }).claude).toBeUndefined()
+  expect(resolveTools({ PATH: bin, OPENCORP_CLAUDE_BIN: "" }).claude).toBe(path.join(bin, "claude"))
+  expect(resolveTools({ PATH: bin }).claude).toBe(path.join(bin, "claude"))
+  // Codex's override doesn't pick Claude Code, nor the other way round.
+  expect(resolveTools({ PATH: bin, OPENCORP_CODEX_BIN: absolute }).claude).toBe(path.join(bin, "claude"))
+})
+
 /** Writes a shell script at `file` printing `body`'s output, making its folders. */
 function script(file: string, body: string): string {
   fs.mkdirSync(path.dirname(file), { recursive: true })

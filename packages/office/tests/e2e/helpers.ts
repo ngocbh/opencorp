@@ -10,6 +10,7 @@ import { authorization, officeFetch } from "@opencorp/client"
 import { readIdentity } from "@opencorp/client/node"
 import { onTestFinished } from "bun:test"
 import { args } from "../../src/util/proc.ts"
+import { installFakeClaude } from "../../src/testing/fake_claude.ts"
 import { FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { OfficePaths } from "../../src/util/home.ts"
 import { git, gitEnv } from "../company/helpers.ts"
@@ -165,8 +166,8 @@ async function stopAll(root: string): Promise<void> {
 /** Starts an office on a fresh temp home, onboarded unless `onboard` is false, and stops it, its workers and the
  *  fake LLM when the current test finishes. `hq` is written as `office/hq.json` (HQ's TCP listener stays off by
  *  default: it is on by default on macOS, where the owner's own office holds its port). `PATH` starts with refusing
- *  stand-ins for the service tools, so no test registers a real service, and the fake Codex as `codex`, run with
- *  `codexScript` (an empty one by default). Call inside a test. */
+ *  stand-ins for the service tools, so no test registers a real service, the fake Codex as `codex`, run with
+ *  `codexScript` (an empty one by default), and the fake Claude Code as `claude`. Call inside a test. */
 export async function openOffice({
   hq = { tcp: false },
   device = false,
@@ -220,13 +221,22 @@ export async function openOffice({
       `exec /usr/bin/env -i PATH=/usr/bin:/bin HOME=${q(codexDir)} ${q(process.execPath)} --no-install ` +
       `--no-env-file --config=/dev/null ${q(FAKE_CODEX)}${scripted} "$@"\n`,
   )
-  // Only the user may change the Codex the office runs, whatever the umask: it refuses one others could.
-  for (const p of [path.dirname(tools), tools, path.join(tools, "codex")]) fs.chmodSync(p, 0o755)
+  // The fake Claude Code as `claude`, signed in and at the floor, so doctor never finds the owner's own on the
+  // inherited PATH; its HOME is its own folder.
+  const claudeDir = path.join(root, "claude")
+  const fakeClaude = installFakeClaude(claudeDir, { version: "2.1.325" })
+  script(path.join(tools, "claude"), `exec /usr/bin/env HOME=${q(claudeDir)} ${q(fakeClaude.claude)} "$@"\n`)
+  // Only the user may change the Codex and Claude Code the office runs, whatever the umask: it refuses one others
+  // could.
+  for (const p of [path.dirname(tools), tools, path.join(tools, "codex"), path.join(tools, "claude")]) {
+    fs.chmodSync(p, 0o755)
+  }
 
   llm = await FakeLLM.start()
   const env = gitEnv(process.env)
-  // The CLI runs as from a local terminal with no Codex override, whatever this process was started with.
-  for (const name of ["OPENCORP_CODEX_BIN", ...SSH_VARS]) delete env[name]
+  // The CLI runs as from a local terminal with no harness override or config folder, whatever this process was
+  // started with.
+  for (const name of ["OPENCORP_CODEX_BIN", "OPENCORP_CLAUDE_BIN", "CLAUDE_CONFIG_DIR", ...SSH_VARS]) delete env[name]
   Object.assign(env, {
     PATH: [tools, process.env.PATH].filter(Boolean).join(":"),
     OPENCORP_HOME: home,

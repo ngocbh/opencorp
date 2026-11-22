@@ -62,7 +62,8 @@ harness_policy:
 
 When your employee works in Codex or Claude Code, that harness's own sandbox holds their commands to the project
 folder, a private temp folder and the listed folders, each with exactly the access listed. The shell above doesn't
-mount the listed folders.
+mount the listed folders. Turning the network on (`network: true`) gives the harness's commands your machine's
+network, services on localhost and abstract Unix sockets included, which can act as you.
 
 Codex asks you nothing there: every command and file edit runs at once inside that permission, and one it refuses
 goes back to Codex. The session's mode doesn't apply. Codex runs as you, with its own sign-in and `~/.codex`, where it
@@ -70,6 +71,15 @@ keeps its sessions, logs and caches; your employee's commands can't read it. In 
 servers, hooks, `notify`, apps and plugins are off, and so is web search when the network is off, and your
 `~/.codex/config.toml` is left as it is. Commands get no `/tmp`, so a tool that writes there fails unless a listed folder
 covers it.
+
+Claude Code asks you nothing either: what its permission doesn't allow is refused. It runs as you, with its own
+sign-in in `~/.claude` (or the Keychain on macOS), but none of your Claude Code settings files load, nor the project's:
+your hooks, plugins, MCP servers, skills, permission rules and default model don't apply there, and auto memory is
+off. Only a `/login` sign-in reaches it: an API key in your shell or your settings doesn't. OpenCorp passes it your
+`~/.claude/CLAUDE.md` and the project's `CLAUDE.md` (at the folder and at its repository's root, or its `AGENTS.md`
+when there's none) as text; an `@` import in them isn't followed. It doesn't take messages from your other Claude Code
+sessions, and can't message or list them. Its commands can't see `/tmp`, `/run` or `/dev/shm` (nor `/var/folders` on
+macOS), where the sockets of your tmux, ssh-agent and desktop session live.
 
 A project you've trusted in Codex (Codex asks the first time you run it there) loads its own `.codex/config.toml`,
 whose MCP servers and hooks would run as you, outside your employee's permission. So your employee's Codex session

@@ -115,6 +115,22 @@ test("the daemon keeps which codex to run and its home", () => {
   })
 })
 
+test("the daemon keeps which claude code to run and its config folder, never a claude key", () => {
+  const environ = {
+    PATH: "/usr/bin",
+    CLAUDE_CONFIG_DIR: "/Users/owner/.claude-work",
+    OPENCORP_CLAUDE_BIN: "/opt/claude",
+    ANTHROPIC_API_KEY: "sk-ant-secret",
+    CLAUDE_CODE_OAUTH_TOKEN: "oat-secret",
+    CLAUDE_CODE_PLUGIN_DIRS: "/Users/owner/plugins",
+  }
+  expect(daemonEnv(environ)).toEqual({
+    PATH: "/usr/bin",
+    CLAUDE_CONFIG_DIR: "/Users/owner/.claude-work",
+    OPENCORP_CLAUDE_BIN: "/opt/claude",
+  })
+})
+
 test("the daemon keeps where tls finds ca certificates when set", () => {
   const environ = {
     PATH: "/usr/bin",

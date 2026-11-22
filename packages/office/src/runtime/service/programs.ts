@@ -9,8 +9,8 @@ import { selfCommand } from "../../platform.ts"
 import { type OfficePaths as SandboxOfficePaths, isInside, realPath } from "../sandbox/policy.ts"
 import { type Env, which } from "../../util/env.ts"
 
-/** The programs the daemon, its workers and Codex run. */
-export const TOOL_NAMES = ["git", "codex", "tmux", "bwrap", "ps", "who"] as const
+/** The programs the daemon, its workers and the harnesses run. */
+export const TOOL_NAMES = ["git", "codex", "claude", "tmux", "bwrap", "ps", "who"] as const
 
 /** One of `TOOL_NAMES`. */
 export type ToolName = (typeof TOOL_NAMES)[number]
@@ -24,12 +24,14 @@ const PLATFORM_PACKAGE = /^opencorp-[a-z0-9]+-[a-z0-9]+$/
 /**
  * Each tool as the absolute path `env.PATH`'s absolute entries find it at, not its realpath. Codex is
  * `OPENCORP_CODEX_BIN` when set (a name looked up on the path, or an absolute path; a relative path finds nothing),
- * else `codex`; a missing override never falls back to `codex`.
+ * else `codex`; a missing override never falls back to `codex`. Claude Code is `OPENCORP_CLAUDE_BIN`, alike.
  */
 export function resolveTools(env: Env): Tools {
   const tools: { [K in ToolName]?: string } = {}
+  const overrides: { [K in ToolName]?: string } = { codex: env.OPENCORP_CODEX_BIN, claude: env.OPENCORP_CLAUDE_BIN }
   for (const name of TOOL_NAMES) {
-    const found = which(name === "codex" ? env.OPENCORP_CODEX_BIN || "codex" : name, env.PATH)
+    // `||`: an empty override means the tool's own name.
+    const found = which(overrides[name] || name, env.PATH)
     if (found !== null) tools[name] = found
   }
   return tools

@@ -5,7 +5,9 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import {
+  checkClaudeInstall,
   checkCodexInstall,
+  checkHarnessBinary,
   checkPermission,
   claudeStart,
   codexThread,
@@ -88,10 +90,25 @@ function codexDenies(home: string, except: readonly string[] = []): Record<strin
   return Object.fromEntries(all.map((p) => [p, "deny"]))
 }
 
-/** The same, as Claude Code's `denyRead`: the home first. */
+/** Where the owner's own Unix sockets live (tmux's, ssh-agent's, D-Bus's, other Claude Code sessions' inboxes), as
+ *  Claude Code's sandbox gets them, resolved: none is readable, since its reads are a deny list and the seccomp
+ *  filter that would block a socket is optional. */
+const SOCKETS = [
+  ...new Set(
+    ["/tmp", "/var/tmp", "/var/run", "/run", "/dev/shm", ...(process.platform === "darwin" ? ["/var/folders"] : [])]
+      .filter((p) => fs.existsSync(p))
+      .map((p) => fs.realpathSync(p)),
+  ),
+]
+
+/** The same, as Claude Code's `denyRead`: the home first, then the socket folders. */
 function claudeDenies(home: string, except: readonly string[] = []): string[] {
-  return [home, ...Object.keys(codexDenies(home, except))]
+  return [home, ...SOCKETS, ...Object.keys(codexDenies(home, except))]
 }
+
+/** The tools Claude Code's start closes whatever the permission: the web, which Claude Code reaches itself, outside
+ *  its sandbox, and messages to and the list of the owner's other Claude Code sessions. */
+const CLOSED = ["WebFetch", "WebSearch", "SendMessage", "ListAgents"]
 
 /** The workspace's paths both harnesses keep read-only, as Codex's `read` entries. */
 function codexKept(ws: string): Record<string, string> {
@@ -223,8 +240,7 @@ test("a read-only employee's folder is read-only in both harnesses, Claude Code'
     "NotebookEdit",
     ...kept.deny,
     ...claudeReads(home),
-    "WebFetch",
-    "WebSearch",
+    ...CLOSED,
   ])
 })
 
@@ -312,6 +328,69 @@ test("codex as the office runs it is refused before it runs where anyone but the
   }
   fs.chmodSync(path.join(root, "codex-install"), 0o757)
   expect(() => codexThread(permission(), "opencorp-s1", { install })).toThrow(/others than the user may write/)
+})
+
+test("claude as the office runs it is refused before it runs where anyone but the user could change it", () => {
+  const { root, ws, permission, folder } = layout()
+  // The native installer's layout: a launcher linking to a version in a folder of its own.
+  const versions = folder("claude-install/versions")
+  const binary = path.join(versions, "2.1.325")
+  fs.writeFileSync(binary, "", { mode: 0o755 })
+  const launcher = path.join(root, "claude-install/bin/claude")
+  fs.mkdirSync(path.dirname(launcher), { recursive: true })
+  fs.symlinkSync(binary, launcher)
+  const native = { run: binary, install: versions }
+  expect(() => checkClaudeInstall(permission(), native)).not.toThrow()
+  // A launcher the employee can write, though the binary it links to isn't.
+  const planted = path.join(ws, "claude")
+  fs.symlinkSync(binary, planted)
+  const reached = { run: planted, install: versions }
+  expect(() => checkClaudeInstall(permission(), reached)).toThrow(/the Claude Code the office runs/)
+  expect(() => checkClaudeInstall(permission({ writable: false }), reached)).not.toThrow()
+  // Another person's writable folder, or a live session's folder, holding the install.
+  const shared = folder("shared")
+  fs.writeFileSync(path.join(shared, "claude"), "", { mode: 0o755 })
+  const elsewhere = { run: path.join(shared, "claude"), install: shared }
+  expect(() => checkClaudeInstall(permission({ othersWritable: [shared] }), elsewhere)).toThrow(UnsafeProfile)
+  expect(() => checkClaudeInstall(permission({ othersWritable: [shared] }), elsewhere)).toThrow(
+    /Claude Code's install folder/,
+  )
+  expect(() => checkClaudeInstall(permission(), elsewhere)).not.toThrow()
+  // Open to the group or others: the binary, its folder, the install folder.
+  for (const open of [binary, versions]) {
+    fs.chmodSync(open, 0o775)
+    expect(() => checkClaudeInstall(permission(), native), open).toThrow(/others than the user may write/)
+    fs.chmodSync(open, 0o755)
+  }
+  // The check is the permission's too.
+  expect(() => checkClaudeInstall(permission({ tmpdir: ws }), native)).toThrow(UnsafeProfile)
+  // The path found on PATH that led to the binary: a launcher link the employee could repoint is refused.
+  expect(() => checkClaudeInstall(permission(), { ...native, found: launcher })).not.toThrow()
+  expect(() => checkClaudeInstall(permission(), { ...native, found: planted })).toThrow(/is writable by the employee/)
+})
+
+test("before any permission is built, a harness binary others could change is refused, as doctor checks it before running it", () => {
+  const { root, folder } = layout()
+  const shared = folder("shared")
+  const bin = path.join(shared, "bin/claude")
+  fs.writeFileSync(bin, "", { mode: 0o755 })
+  const inShared = { run: bin, install: path.dirname(bin) }
+  expect(() => checkHarnessBinary("claude", inShared, [])).not.toThrow()
+  expect(() => checkHarnessBinary("claude", inShared, [shared])).toThrow(/Claude Code's install folder/)
+  // Through a link in another person's writable folder.
+  const elsewhere = folder("elsewhere")
+  fs.writeFileSync(path.join(elsewhere, "codex"), "", { mode: 0o755 })
+  const linked = path.join(shared, "codex")
+  fs.symlinkSync(path.join(elsewhere, "codex"), linked)
+  const codex = { found: linked, run: path.join(elsewhere, "codex"), install: elsewhere }
+  expect(() => checkHarnessBinary("codex", codex, [])).not.toThrow()
+  expect(() => checkHarnessBinary("codex", codex, [shared])).toThrow(/the Codex the office runs/)
+  // Open to the group or others.
+  fs.chmodSync(elsewhere, 0o775)
+  expect(() => checkHarnessBinary("codex", codex, [])).toThrow(/others than the user may write/)
+  // A relative or null-holding listing names no folder anyone's harness can write.
+  expect(() => checkHarnessBinary("claude", inShared, ["shared", "/x\0"])).not.toThrow()
+  expect(fs.existsSync(root)).toBe(true)
 })
 
 test("the office's home, the home's credential folders and the harnesses' own config folders are denied by name", () => {
@@ -412,7 +491,7 @@ test("a listed folder is mounted as listed, and one covering a credential folder
   const wide = claudeStart(permission({ folders: [{ path: home, access: "read" }] })).settings.sandbox as {
     filesystem: Record<string, string[]>
   }
-  expect(wide.filesystem.denyRead).toEqual([])
+  expect(wide.filesystem.denyRead).toEqual(SOCKETS)
 })
 
 test("a worktree's .git file is kept read-only whole, and a kept path that is a link is left out", () => {
@@ -450,8 +529,7 @@ test("a read-only listed folder gets Claude Code's write deny and edit deny; a w
     ...rules("Edit", cargo),
     ...kept.deny,
     ...claudeReads(home),
-    "WebFetch",
-    "WebSearch",
+    ...CLOSED,
   ])
   expect(JSON.stringify(settings)).not.toContain(`Edit(/${envs}`)
   expect(sandbox.filesystem.denyWrite).not.toContain(envs)
@@ -509,7 +587,7 @@ test("a listed bin folder others can write, or one another person's permission l
   expect(inside).toBe([...SYSTEM, path.join(team, "bin")].join(":"))
 })
 
-test("Claude Code's start turns its sandbox on, fails if it can't start, allows no unsandboxed command, reads only the folder in the home, and turns auto memory off", () => {
+test("Claude Code's start turns its sandbox on, fails if it can't start, allows no unsandboxed command, reads only the folder in the home, keeps its file tools to the working folders, and turns auto memory off", () => {
   const { home, ws, tmp, permission } = layout()
   const kept = claudeKept(ws)
   expect(claudeStart(permission())).toEqual({
@@ -529,9 +607,11 @@ test("Claude Code's start turns its sandbox on, fails if it can't start, allows 
       },
       permissions: {
         blockReadsOutsideWorkingDirectories: true,
-        deny: [...kept.deny, ...claudeReads(home), "WebFetch", "WebSearch"],
+        blockWritesOutsideWorkingDirectories: true,
+        deny: [...kept.deny, ...claudeReads(home), ...CLOSED],
       },
       disableAllHooks: true,
+      crossSessionInbound: "refuse",
     },
     addDirs: [],
     env: {
@@ -541,6 +621,34 @@ test("Claude Code's start turns its sandbox on, fails if it can't start, allows 
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     },
   })
+})
+
+test("Claude Code's commands can't reach the owner's sockets: /tmp, /run and /dev/shm are hidden but the session's own folders, unless a listed folder covers one", () => {
+  const { root, home, ws, tmp, permission } = layout()
+  const denyRead = (p: EmployeePermission) =>
+    (claudeStart(p).settings.sandbox as { filesystem: { denyRead: string[] } }).filesystem.denyRead
+  const allowRead = (p: EmployeePermission) =>
+    (claudeStart(p).settings.sandbox as { filesystem: { allowRead: string[] } }).filesystem.allowRead
+  expect(SOCKETS).toContain(fs.realpathSync("/tmp"))
+  if (fs.existsSync("/var/tmp")) expect(SOCKETS).toContain(fs.realpathSync("/var/tmp"))
+  expect(denyRead(permission())).toEqual(claudeDenies(home))
+  // The session's folder and temp folder lie under /tmp here: the narrower allow re-opens them.
+  expect([ws, tmp].every((p) => p.startsWith(fs.realpathSync("/tmp") + "/"))).toBe(true)
+  expect(allowRead(permission())).toEqual([ws, tmp])
+  // A listed folder that covers one of them lifts that one alone, as for the home's folders.
+  const listed = SOCKETS.find((p) => !ws.startsWith(p + "/"))!
+  const covering = permission({ folders: [{ path: listed, access: "read" }] })
+  expect(denyRead(covering)).toEqual(claudeDenies(home).filter((p) => p !== listed))
+  expect(fs.existsSync(root)).toBe(true)
+})
+
+test("Claude Code's start refuses messages from the owner's other sessions, and closes its tools that message or list them", () => {
+  const { permission } = layout()
+  for (const p of [permission(), permission({ writable: false })]) {
+    const { settings } = claudeStart(p)
+    expect(settings.crossSessionInbound).toBe("refuse")
+    expect((settings.permissions as { deny: string[] }).deny).toEqual(expect.arrayContaining(["SendMessage", "ListAgents"]))
+  }
 })
 
 test("Claude Code with the network on is refused: its sandbox has no checked way to allow every host", () => {

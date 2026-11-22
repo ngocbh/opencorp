@@ -5,10 +5,12 @@ import fs from "node:fs"
 import path from "node:path"
 import {
   type EmployeePermission,
+  type HarnessInstall,
   checkCodexInstall,
   codexThread,
   harnessPath,
 } from "../../runtime/sandbox/harness_profile.ts"
+import { fenceIn, freshFolder, harnessRoot, removeFolder } from "../../runtime/sandbox/harness_temp.ts"
 import { UnsafeProfile, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
 import { APP_SERVER_ARGS, CodexProcess, CodexStartError, threadLoad } from "../../tools/codex/codex.ts"
 import { type JsonRpc, RpcClosed, RpcError, nameOf } from "../../tools/codex/rpc.ts"
@@ -18,82 +20,9 @@ const CONFIG_READ_MS = 30_000
 /** Milliseconds the probe's app-server has to exit once its stdin closes. */
 const PROBE_GRACE_MS = 2_000
 
-/** `<base>/opencorp-<uid>/codex`, which holds each Codex thread's temp folder and the fence. Both levels are made 0700
- *  when missing; `UnsafeProfile` when one isn't the user's own private folder (a link is refused). */
+/** `<base>/opencorp-<uid>/codex`, which holds each Codex thread's temp folder and the fence (`harnessRoot`). */
 export function harnessTemp(base = "/tmp"): string {
-  const uid = process.getuid!()
-  const top = path.join(base, `opencorp-${uid}`)
-  const codex = path.join(top, "codex")
-  for (const dir of [top, codex]) privateDir(dir, uid)
-  return codex
-}
-
-/** Makes `dir` 0700 unless it is there; throws `UnsafeProfile` unless it is then the user's private folder. */
-function privateDir(dir: string, uid: number): void {
-  try {
-    fs.mkdirSync(dir, { mode: 0o700 })
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-  }
-  const stat = fs.lstatSync(dir)
-  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new UnsafeProfile(`${dir} isn't a folder (a link is refused)`)
-  if (stat.uid !== uid) throw new UnsafeProfile(`${dir} isn't the user's`)
-  if ((stat.mode & 0o077) !== 0) throw new UnsafeProfile(`${dir} isn't private (0700)`)
-}
-
-/** The fence in `root` (`harnessTemp`'s): an empty 0600 file, made unless something is there. The permission's check
- *  refuses anything else there. */
-export function fenceIn(root: string): string {
-  const fence = path.join(root, "fence")
-  try {
-    fs.writeFileSync(fence, "", { mode: 0o600, flag: "wx" })
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-  }
-  return fence
-}
-
-/** `<root>/<name>` made fresh: an empty 0700 folder, whatever an earlier thread's commands left there. */
-export function freshFolder(root: string, name: string): string {
-  const dir = inRoot(root, name)
-  removeTree(dir)
-  fs.mkdirSync(dir, { mode: 0o700 })
-  // The umask can't widen it, but it can leave the user without write.
-  fs.chmodSync(dir, 0o700)
-  return dir
-}
-
-/** Removes `<root>/<name>` and what is in it, if it is there. */
-export function removeFolder(root: string, name: string): void {
-  removeTree(inRoot(root, name))
-}
-
-/** `<root>/<name>`, for a `name` that is one path segment. */
-function inRoot(root: string, name: string): string {
-  if (name === "" || name === "." || name === ".." || name.includes("/") || name.includes("\0")) {
-    throw new Error(`a thread's temp folder is named by one path segment; got ${JSON.stringify(name)}`)
-  }
-  return path.join(root, name)
-}
-
-/** Removes `dir` and what is in it, never following a link; a folder in it that a command left without write is
- *  opened first. */
-function removeTree(dir: string): void {
-  try {
-    fs.rmSync(dir, { recursive: true, force: true })
-    return
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== "EACCES" && code !== "EPERM") throw error
-  }
-  const open = (p: string): void => {
-    const stat = fs.lstatSync(p, { throwIfNoEntry: false })
-    if (stat === undefined || !stat.isDirectory()) return
-    fs.chmodSync(p, 0o700)
-    for (const name of fs.readdirSync(p)) open(path.join(p, name))
-  }
-  open(dir)
-  fs.rmSync(dir, { recursive: true, force: true })
+  return harnessRoot("codex", base)
 }
 
 /** The git root of `dir`, a resolved folder: the nearest folder at or above it holding `.git` (a folder, a worktree's
@@ -164,38 +93,10 @@ export function checkLoaded(answer: unknown, id: string): void {
   )
 }
 
-/** Removes each folder in `root` (`harnessTemp`'s) that is the user's and no link, and that `stale` names or that is a
- *  doctor probe's (`doctor-<pid>`) whose process is gone; a failure is passed to `log`. What another office keeps
- *  there is left alone, unless `stale` names it. */
-export function sweepTemp(root: string, stale: (name: string) => boolean, log: (line: string) => void): void {
-  const uid = process.getuid!()
-  for (const name of fs.readdirSync(root)) {
-    const probe = /^doctor-(\d+)$/.exec(name)
-    if (!(probe !== null ? gone(Number(probe[1])) : stale(name))) continue
-    const stat = fs.lstatSync(path.join(root, name), { throwIfNoEntry: false })
-    if (stat === undefined || stat.isSymbolicLink() || !stat.isDirectory() || stat.uid !== uid) continue
-    try {
-      removeFolder(root, name)
-    } catch (error) {
-      log(`codex: the temp folder ${name} an earlier run left wasn't removed (${nameOf(error)})`)
-    }
-  }
-}
-
-/** Whether no process `pid` runs. */
-function gone(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return false
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH"
-  }
-}
-
 /** What `threadProbe` runs. */
 export type ProbeOptions = {
-  /** What runs Codex, and its install folder (`nativeCodex`). */
-  codex: { run: string; install: string }
+  /** What runs Codex, its install folder (`nativeCodex`), and the path found on PATH that led to it. */
+  codex: HarnessInstall
   /** The app-server's environment, as the office gives one (the worker environment). */
   env: Record<string, string>
   /** The office's environment: its `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. */
@@ -207,6 +108,8 @@ export type ProbeOptions = {
   base?: string
   /** Milliseconds each request has to answer. */
   timeoutMs: number
+  /** Folders others may write: every person's writable listed folders, and live sessions' folders. */
+  othersWritable?: readonly string[]
 }
 
 /** What `threadProbe` found: what failed and the log holding Codex's output, or null; and the projects the owner's
@@ -246,6 +149,7 @@ export async function threadProbe(options: ProbeOptions): Promise<Probed> {
       home: options.home,
       officeHome: options.officeHome,
       harnessHomes: harnessHomes(options.environ),
+      othersWritable: options.othersWritable ?? [],
     }
     checkCodexInstall(p, options.codex)
     const started: CodexProcess = (proc = new CodexProcess({
