@@ -359,6 +359,36 @@ test(
 )
 
 test(
+  "a terminate kills only the command spawned as that process id, and says whether it did",
+  async () => {
+    const dir = tempDir()
+    const live = new Live(dir, { turns: [[{ spawn: 300, process: "p1" }, { spawn: 300, process: "p2" }, { sleep: 30 }]] })
+    live.send(...START)
+    await live.until(method("turn/started"))
+    const spawned = () => log(dir).filter((e) => e.dir === "spawn")
+    const spawns = await waitFor(() => (spawned().length === 2 ? spawned() : undefined), { what: "the commands" })
+    const procs: Record<string, { pid: number; started: number | null }> = Object.fromEntries(
+      spawns.map((e) => [e.process, { pid: e.pid, started: startTime(e.pid) }]),
+    )
+    onTestFinished(() => {
+      for (const { pid, started } of Object.values(procs)) {
+        if (started !== null && sameProcess(pid, started)) process.kill(pid, "SIGKILL")
+      }
+    })
+    const terminate = (id: number, processId: string) =>
+      live.send({ id, method: "thread/backgroundTerminals/terminate", params: { threadId: "thr_fake", processId } })
+    terminate(5, "p2")
+    expect(await live.until((m) => m.id === 5)).toEqual({ id: 5, result: { terminated: true } })
+    await waitFor(() => isGone(procs.p2!.pid, procs.p2!.started), { what: "p2 killed" })
+    expect(isGone(procs.p1!.pid, procs.p1!.started)).toBe(false)
+    terminate(6, "p2")
+    expect(await live.until((m) => m.id === 6)).toEqual({ id: 6, result: { terminated: false } })
+    await live.close()
+  },
+  TIMEOUT,
+)
+
+test(
   "an interrupt completes the turn before it resolves the waiting requests",
   async () => {
     // Real Codex (sessions/interrupt.jsonl) sends turn/completed, then serverRequest/resolved; its ids start at 0.

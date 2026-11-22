@@ -595,34 +595,43 @@ test("esc interrupts the turn and marks it", async () => {
   expect(last.type === "text" && last.text.endsWith("[interrupted]")).toBe(true)
 })
 
-test("esc also ends the commands the interrupted turn left running, after codex stops the turn", async () => {
-  const h = makeCodex()
-  h.fake.script([[fc.commandStarted("c1", "sleep 300"), { spawn: 300 }, { sleep: 30 }]])
-  const sid = await start(h, h.workspace)
-  await h.sessions.prompt(sid, "sleep")
-  const [child] = await waitFor(() => (h.fake.spawned().length > 0 ? h.fake.spawned() : undefined), {
-    what: "the running command",
+/** The fake's commands by the process id each `spawn` step gave, once that many have started. */
+async function spawnedAs(h: Codex, count: number): Promise<Record<string, { pid: number; started: number | null }>> {
+  const entries = await waitFor(() => (h.fake.entries("spawn").length >= count ? h.fake.entries("spawn") : undefined), {
+    what: "the running commands",
   })
-  const started = startTime(child!)
+  return Object.fromEntries(entries.map((e) => [e.process, { pid: e.pid, started: startTime(e.pid) }]))
+}
+
+test("esc stops the command the interrupted turn runs, after codex stops the turn, and a command an earlier turn left running goes on", async () => {
+  const h = makeCodex()
+  h.fake.script([
+    // A server the model was told is running.
+    [fc.commandStarted("c1", "serve", { processId: "p1" }), { spawn: 300, process: "p1" }],
+    [fc.commandStarted("c2", "sleep 300", { processId: "p2" }), { spawn: 300, process: "p2" }, { sleep: 30 }],
+  ])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "serve")
+  await waitFor(() => status(h, sid) === "idle" && h.fake.calls("turn/start").length === 1, { what: "the first turn" })
+  await h.sessions.prompt(sid, "sleep")
+  const { p1, p2 } = await spawnedAs(h, 2)
   await h.sessions.interrupt(sid)
   await waitFor(() => status(h, sid) === "idle", { what: "the interrupted turn's end" })
-  // Codex's interrupt stops the turn and leaves its command running; the clean after it ends the command.
+  // Codex's interrupt stops the turn and leaves its command running; the terminate after it ends that command.
   const sent = h.fake.messages().filter((m) => "method" in m && "id" in m).map((m) => m.method)
-  expect(sent.slice(sent.indexOf("turn/interrupt"))).toEqual(["turn/interrupt", "thread/backgroundTerminals/clean"])
-  expect(h.fake.calls("thread/backgroundTerminals/clean")).toEqual([{ threadId: "thr_1" }])
-  await waitFor(() => isGone(child!, started), { what: "the command to stop" })
+  expect(sent.slice(sent.indexOf("turn/interrupt"))).toEqual(["turn/interrupt", "thread/backgroundTerminals/terminate"])
+  expect(h.fake.calls("thread/backgroundTerminals/terminate")).toEqual([{ threadId: "thr_1", processId: "p2" }])
+  await waitFor(() => isGone(p2!.pid, p2!.started), { what: "the interrupted turn's command to stop" })
+  expect(isGone(p1!.pid, p1!.started)).toBe(false)
   requestsValid(h.fake)
 })
 
-test("an esc codex refuses still ends the thread's commands", async () => {
+test("an esc codex refuses still stops the command the turn runs", async () => {
   const h = makeCodex()
-  h.fake.script([[{ spawn: 300 }, { sleep: 30 }]])
+  h.fake.script([[fc.commandStarted("c1", "sleep 300", { processId: "p1" }), { spawn: 300, process: "p1" }, { sleep: 30 }]])
   const sid = await start(h, h.workspace)
   await h.sessions.prompt(sid, "sleep")
-  const [child] = await waitFor(() => (h.fake.spawned().length > 0 ? h.fake.spawned() : undefined), {
-    what: "the running command",
-  })
-  const started = startTime(child!)
+  const { p1 } = await spawnedAs(h, 1)
   const rpc = h.sessions.get(sid)!.process!.rpc!
   const real = rpc.request.bind(rpc)
   spyOn(rpc, "request").mockImplementation(async (method, params, options) => {
@@ -630,8 +639,19 @@ test("an esc codex refuses still ends the thread's commands", async () => {
     return real(method, params, options)
   })
   await h.sessions.interrupt(sid)
-  expect(h.fake.calls("thread/backgroundTerminals/clean")).toEqual([{ threadId: "thr_1" }])
-  await waitFor(() => isGone(child!, started), { what: "the command to stop" })
+  expect(h.fake.calls("thread/backgroundTerminals/terminate")).toEqual([{ threadId: "thr_1", processId: "p1" }])
+  await waitFor(() => isGone(p1!.pid, p1!.started), { what: "the command to stop" })
+})
+
+test("a command that ended before the esc isn't stopped again", async () => {
+  const h = makeCodex()
+  h.fake.script([[...fc.command("c1", "true", { processId: "p1" }), { sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "go")
+  await waitFor(() => h.fake.messages("out").some((m) => m.method === "item/completed"), { what: "the command's end" })
+  await h.sessions.interrupt(sid)
+  await waitFor(() => status(h, sid) === "idle", { what: "the interrupted turn's end" })
+  expect(h.fake.calls("thread/backgroundTerminals/terminate")).toEqual([])
 })
 
 test("esc with no turn running asks codex nothing", async () => {
@@ -1147,20 +1167,26 @@ test("office stop makes a reply not yet written give up at once", async () => {
 const CODEX = process.env.OPENCORP_TEST_CODEX
 const NO_CODEX = CODEX === undefined ? !process.env.OPENCORP_TEST_SANDBOX : !sandboxAvailable()
 
-/** A stand-in for the model on 127.0.0.1, which Codex's Responses API calls reach: the first call runs `command` with
- *  Codex's `exec_command` and waits on it, every later one says "done". No model, network or sign-in is used. */
-async function standInModel(command: string): Promise<{ url: string; calls: () => number }> {
+/** What the stand-in model answers one call with: a command for Codex's `exec_command`, which the call waits on for
+ *  `waitMs`, or a text. */
+type Answer = { run: string; waitMs: number } | { say: string }
+
+/** A stand-in for the model on 127.0.0.1, which Codex's Responses API calls reach: each call gets the next of
+ *  `answers`, and every call after them says "done". No model, network or sign-in is used. */
+async function standInModel(answers: Answer[]): Promise<{ url: string; calls: () => number }> {
   let calls = 0
   const server = http.createServer((req, res) => {
     req.resume()
     req.on("end", () => {
       if (req.method !== "POST" || !req.url?.endsWith("/responses")) return void res.writeHead(404).end()
+      const answer = answers[calls] ?? { say: "done" }
       calls += 1
       const id = `resp-${calls}`
       const item =
-        calls === 1
-          ? { type: "function_call", call_id: "call-1", name: "exec_command", arguments: JSON.stringify({ cmd: command, yield_time_ms: 30_000 }) }
-          : { type: "message", role: "assistant", id: `msg-${calls}`, content: [{ type: "output_text", text: "done" }] }
+        "run" in answer
+          ? { type: "function_call", call_id: `call-${calls}`, name: "exec_command",
+              arguments: JSON.stringify({ cmd: answer.run, yield_time_ms: answer.waitMs }) }
+          : { type: "message", role: "assistant", id: `msg-${calls}`, content: [{ type: "output_text", text: answer.say }] }
       const usage = { input_tokens: 0, input_tokens_details: null, output_tokens: 0, output_tokens_details: null, total_tokens: 0 }
       const events = [
         { type: "response.created", response: { id } },
@@ -1192,14 +1218,16 @@ function processesOf(args: string): number[] {
     .map(Number)
 }
 
-/** A session on the real Codex, under minh's permission with a temp home and `CODEX_HOME`, whose turn runs a command
- *  the stand-in model asks for; resolves once Codex holds the command among the thread's terminals (an Esc before
- *  that drops it with the tool call). */
-async function realCommand() {
+/** A command line no other process runs, `sleep 30.<n>`, so the command is found by its arguments alone. */
+function uniqueSleep(n: number): string {
+  return `sleep 30.${process.pid}${n}`
+}
+
+/** A session on the real Codex, under minh's permission with a temp home and `CODEX_HOME`, whose model is the stand-in
+ *  answering `answers`. */
+async function realSession(answers: Answer[]) {
   if (CODEX === undefined) throw new Error("OPENCORP_TEST_SANDBOX is set: set OPENCORP_TEST_CODEX to a Codex 0.167.0+")
-  // A length no other process sleeps, so the command is found by its arguments alone.
-  const args = `sleep 30.${process.pid}${Date.now() % 1000}`
-  const model = await standInModel(args)
+  const model = await standInModel(answers)
   const codexHome = fs.realpathSync(tempDir())
   fs.writeFileSync(
     path.join(codexHome, "config.toml"),
@@ -1209,10 +1237,15 @@ async function realCommand() {
   const real = nativeCodex(CODEX)
   const h = makeCodex({ command: () => [real.run, ...APP_SERVER_ARGS], environ: { CODEX_HOME: codexHome } })
   const sid = await start(h, h.workspace)
-  await h.sessions.prompt(sid, "Run the command.")
+  return { h, sid, model }
+}
+
+/** The process running `args`, once Codex holds it among the thread's terminals (an Esc before that drops it with
+ *  the tool call); `gone` once it has stopped. */
+async function runningCommand(h: Codex, sid: string, args: string) {
   const [pid] = await waitFor(() => (processesOf(args).length > 0 ? processesOf(args) : undefined), {
     timeout: 20_000,
-    what: "Codex to run the command",
+    what: `Codex to run ${args}`,
   })
   const started = startTime(pid!)
   onTestFinished(() => {
@@ -1228,19 +1261,35 @@ async function realCommand() {
   for (const deadline = Date.now() + 10_000; !(await listed()); await sleep(100)) {
     if (Date.now() > deadline) throw new Error("Codex never listed the command among the thread's terminals")
   }
-  // The tool call still waits on the command: the model was called once.
-  expect(model.calls()).toBe(1)
-  return { h, sid, gone: () => isGone(pid!, started) }
+  return { gone: () => isGone(pid!, started) }
 }
 
 test.skipIf(NO_CODEX)(
-  "on a real codex, esc stops the command its turn waits on, not only the turn",
+  "on a real codex, esc stops the command its turn waits on, a command an earlier turn left running goes on, and ending the session stops that one",
   async () => {
-    const { h, sid, gone } = await realCommand()
+    const [server, waited] = [uniqueSleep(1), uniqueSleep(2)]
+    const { h, sid, model } = await realSession([
+      // The first turn starts a server and is told it runs on; the second waits on a command.
+      { run: server, waitMs: 1000 },
+      { say: "The server runs." },
+      { run: waited, waitMs: 30_000 },
+    ])
+    await h.sessions.prompt(sid, "Start the server.")
+    const first = await runningCommand(h, sid, server)
+    await waitFor(() => status(h, sid) === "idle" && model.calls() === 2, { what: "the first turn's end" })
+    await h.sessions.prompt(sid, "Run the command.")
+    const second = await runningCommand(h, sid, waited)
+    expect(model.calls()).toBe(3) // the call still waits on the command
     await h.sessions.interrupt(sid)
     await waitFor(() => status(h, sid) === "idle", { what: "the interrupted turn's end" })
     expect(texts(h, sid).at(-1)).toEndWith("[interrupted]")
-    await waitFor(gone, { timeout: 5_000, what: "the command to stop" })
+    await waitFor(second.gone, { timeout: 5_000, what: "the interrupted turn's command to stop" })
+    await sleep(1000)
+    expect(first.gone()).toBe(false)
+    // Ending an idle session closes its app-server, which stops every command the thread runs.
+    await h.sessions.end(sid)
+    await waitFor(() => status(h, sid) === "ended", { what: "the end" })
+    await waitFor(first.gone, { timeout: 5_000, what: "the server to stop with the session" })
   },
   120_000,
 )
@@ -1248,10 +1297,13 @@ test.skipIf(NO_CODEX)(
 test.skipIf(NO_CODEX)(
   "on a real codex, ending the session stops the command its turn waits on",
   async () => {
-    const { h, sid, gone } = await realCommand()
+    const args = uniqueSleep(3)
+    const { h, sid } = await realSession([{ run: args, waitMs: 30_000 }])
+    await h.sessions.prompt(sid, "Run the command.")
+    const command = await runningCommand(h, sid, args)
     await h.sessions.end(sid)
     await waitFor(() => status(h, sid) === "ended", { what: "the end" })
-    await waitFor(gone, { timeout: 5_000, what: "the command to stop" })
+    await waitFor(command.gone, { timeout: 5_000, what: "the command to stop" })
   },
   120_000,
 )

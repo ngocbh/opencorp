@@ -37,11 +37,11 @@ to Claude Code if it lists claude.
   told your word wins: your employee reads what you told it with its next answer, and can't interrupt or stop a turn
   you started. A message you or your employee send while Claude Code works joins its turn once its running tool calls
   finish.
-- **Esc.** Esc in your employee's chat stops your employee and the harness turn they were waiting on, and so does
-  their run stopping (the cost cap, say); Esc in the session stops the harness's turn. Either Esc on a Codex turn
-  also stops every command Codex still runs in that session, which would otherwise go on after the turn. Either Esc
-  on a Claude Code turn stops the command it runs (Claude Code runs none in the background there) and cancels every
-  message it hasn't started, so none of them runs after.
+- **Esc.** Esc in your employee's chat stops your employee and the harness turn they were waiting on, and so does their
+  run stopping (the cost cap, say); Esc in the session stops the harness's turn. Either Esc on a Codex turn also stops
+  the commands that turn started and hadn't finished, which would otherwise go on after it; one an earlier turn left
+  running goes on until the session ends. Either Esc on a Claude Code turn stops the command it runs (Claude Code runs
+  none in the background there) and cancels every message it hasn't started, so none of them runs after.
 - **Idle and the end.** A Claude Code session left idle for five minutes stops Claude Code, and the next message
   resumes the same conversation; so does the next message after Claude Code exits on its own, whose turn is marked
   interrupted. Ending the chat ends its shells, their commands and its harness sessions. Restarting the office ends

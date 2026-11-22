@@ -160,6 +160,11 @@ export class CodexSession {
   /** Esc came while a message was being sent and its turn wasn't known yet: that turn is interrupted once it starts.
    *  `mark` when that Esc also dropped queued messages, which get the interrupt marker if no turn starts to carry it. */
   #interruptWanted: { mark: boolean } | null = null
+  /** Turn id -> the process ids (`thread/backgroundTerminals`) of its commands that haven't ended: what an interrupt
+   *  of that turn stops. A turn's go once it completes, unless an interrupt of it still reads them. */
+  readonly #commands = new Map<string, Set<string>>()
+  /** The turns an interrupt is stopping now, whose commands outlive their `turn/completed` until it reads them. */
+  readonly #interrupting = new Set<string>()
 
   constructor(
     owner: CodexSessions,
@@ -239,24 +244,36 @@ export class CodexSession {
     if (turn !== null && proc !== null) await this.#interruptTurn(proc, turn)
   }
 
-  /** Asks `proc` to interrupt `turn`, then to end every command the thread still runs. Codex's interrupt stops the
-   *  turn but leaves the commands it started running, as the thread's background terminals; the clean ends them (the
-   *  turn's own too) once the interrupt is answered, so no new one starts after it. */
+  /** Asks `proc` to interrupt `turn`, then to stop each command of the turn that hasn't ended. Codex's interrupt
+   *  stops the turn but leaves its commands running, as the thread's background terminals: the one the cut-off call
+   *  waited on, and any it started that the model didn't hear end. Each is stopped once the interrupt is answered, so
+   *  no new one starts after it; a command an earlier turn left running, which the model was told runs on, goes on. */
   async #interruptTurn(proc: CodexProcess, turn: string): Promise<void> {
-    const steps: [string, unknown][] = [
-      ["turn/interrupt", { threadId: this.threadId, turnId: turn }],
-      ["thread/backgroundTerminals/clean", { threadId: this.threadId }],
-    ]
-    for (const [method, params] of steps) {
-      try {
-        await proc.rpc!.request(method, params)
-      } catch (error) {
-        // The app-server is gone, and its commands with it.
-        if (error instanceof RpcClosed) return
-        // The turn ended meanwhile (its commands may still run), or Codex hangs (its end or office stop kills it).
-        if (!(error instanceof RpcError || isTimeout(error))) throw error
+    this.#interrupting.add(turn)
+    try {
+      if (!(await this.#ask(proc, "turn/interrupt", { threadId: this.threadId, turnId: turn }))) return
+      // Each command Codex wrote of before its answer is known: they are kept as their lines are read.
+      for (const processId of [...(this.#commands.get(turn) ?? [])]) {
+        if (!(await this.#ask(proc, "thread/backgroundTerminals/terminate", { threadId: this.threadId, processId }))) {
+          return
+        }
       }
+    } finally {
+      this.#interrupting.delete(turn)
+      if (this.turnId !== turn) this.#commands.delete(turn)
     }
+  }
+
+  /** Sends `proc` request `method`; false once the app-server is gone, and its commands with it. A refusal (the turn
+   *  ended meanwhile, the command too) or a Codex that hangs (its end or office stop kills it) is let go. */
+  async #ask(proc: CodexProcess, method: string, params: unknown): Promise<boolean> {
+    try {
+      await proc.rpc!.request(method, params)
+    } catch (error) {
+      if (error instanceof RpcClosed) return false
+      if (!(error instanceof RpcError || isTimeout(error))) throw error
+    }
+    return true
   }
 
   /** Esc with no turn: cancels each card Codex asked outside any turn, as closing an MCP client's dialog does. Posted,
@@ -310,7 +327,9 @@ export class CodexSession {
     if (wanted?.mark && !this.stopped && !this.closed) this.#markInterrupted()
   }
 
-  /** Ends the session: interrupts a running turn, closes the app-server, then ends through the hooks. */
+  /** Ends the session: interrupts a running turn, closes the app-server, then ends through the hooks. An idle session
+   *  needs nothing more: closing the app-server stops every command its thread still runs, those earlier turns left
+   *  running too. */
   async end(): Promise<void> {
     if (this.stopped) throw new HarnessError(409, "not_live", `session ${this.sessionId} has no live Codex app-server`)
     if (this.ending) return // already ending (or closing): ending it again is a no-op
@@ -420,8 +439,9 @@ export class CodexSession {
     return true
   }
 
-  /** A notification from `proc`. */
+  /** A notification from `proc`; a command it starts or ends is kept at once, in the order Codex wrote it. */
   notified(proc: CodexProcess, method: string, params: unknown): void {
+    if (proc === this.process) this.#command(method, params as Obj)
     void this.post("notification", () => this.#notification(proc, method, params as Obj))
   }
 
@@ -640,6 +660,7 @@ export class CodexSession {
       this.translator.turnCompleted(turn.id, turn.status, turn.error ?? null)
       if (turn.id === this.turnId) this.#turnIs(null)
       this.#expireTurn(turn.id)
+      if (!this.#interrupting.has(turn.id)) this.#commands.delete(turn.id)
       if (this.ending) void this.post("close", () => this.#close())
       // Its expired cards may leave a turn that raced it running, no longer waiting.
       else if (this.turnId !== null || !this.loading) this.#settle()
@@ -650,6 +671,17 @@ export class CodexSession {
     } else if (method === "thread/closed") {
       await this.#lost(proc, null)
     }
+  }
+
+  /** Keeps the process id of each command a turn starts until it ends: what an interrupt of the turn stops. */
+  #command(method: string, params: Obj): void {
+    const item = params?.item
+    if (item?.type !== "commandExecution" || typeof item.processId !== "string" || typeof params.turnId !== "string")
+      return
+    if (method === "item/started") {
+      const running = this.#commands.get(params.turnId) ?? new Set<string>()
+      this.#commands.set(params.turnId, running.add(item.processId))
+    } else if (method === "item/completed") this.#commands.get(params.turnId)?.delete(item.processId)
   }
 
   #usage(total: Obj): void {
@@ -828,6 +860,8 @@ export class CodexSession {
     // The stored id stays until the turn is marked interrupted, so an office stop or a crash before that still
     // leaves restore a turn to mark.
     this.turnId = null
+    // Its commands went with it.
+    this.#commands.clear()
     // Codex waits on none of them any more.
     for (const questionId of [...this.requests.keys()]) {
       this.requests.delete(questionId)

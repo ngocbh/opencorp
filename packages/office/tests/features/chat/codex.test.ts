@@ -96,14 +96,14 @@ test("close ends every Codex session of the chat and takes its listing out; the 
 
 test("the employee's interrupt stops Codex's turn and the command it runs", async () => {
   const h = makeCodex()
-  h.fake.script([fc.agentMessage("a1", "Started."), [{ spawn: 300 }, { sleep: 30 }]])
+  h.fake.script([fc.agentMessage("a1", "Started."), [fc.commandStarted("c1", "make", { processId: "p1" }), { spawn: 300, process: "p1" }, { sleep: 30 }]])
   const { call } = await employee(h)
   await call("start", { message: "Look around." })
   expect((await call("send", { codex: "codex 1", message: "Run the long check.", wait: 0 })).status).toBe("running")
   const command = await running(h)
   const reply = await call("interrupt", { codex: "codex 1" })
   expect(reply.status).toBe("idle")
-  expect(h.fake.calls("thread/backgroundTerminals/clean")).toEqual([{ threadId: "thr_1" }])
+  expect(h.fake.calls("thread/backgroundTerminals/terminate")).toEqual([{ threadId: "thr_1", processId: "p1" }])
   await waitFor(command.gone, { what: "Codex's command to stop" })
 })
 
@@ -121,7 +121,7 @@ test("Esc in the chat reaches a running Codex turn through the call's interrupt,
   const fake = await fakeLlm()
   fake.script({ tool_calls: [{ name: "codex_start", arguments: { message: "Fix the build.", wait: 120 } }] })
   const h = await makeHarness(fake, { codex: true })
-  h.codex!.fake.script([[...fc.agentMessage("a1", "Reading the build files."), { spawn: 300 }, { sleep: 30 }]])
+  h.codex!.fake.script([[...fc.agentMessage("a1", "Reading the build files."), fc.commandStarted("c1", "make", { processId: "p1" }), { spawn: 300, process: "p1" }, { sleep: 30 }]])
   const s = await h.harness.startSession("minh", h.folder, { openedBy: "ngocbh" })
   await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's first turn" })
   await h.harness.prompt(s.id, "Hand the build to Codex.", { by: "ngocbh" })
@@ -133,7 +133,7 @@ test("Esc in the chat reaches a running Codex turn through the call's interrupt,
   await waitFor(() => h.codex!.fake.calls("turn/interrupt").length === 1, { what: "Codex's interrupt" })
   // The command the turn ran stops with it.
   await waitFor(command.gone, { what: "Codex's command to stop" })
-  expect(h.codex!.fake.calls("thread/backgroundTerminals/clean")).toHaveLength(1)
+  expect(h.codex!.fake.calls("thread/backgroundTerminals/terminate")).toEqual([{ threadId: "thr_1", processId: "p1" }])
   await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's turn to end" })
   const log = fs.readFileSync(path.join(h.office.paths.runs, h.store.getSession(s.id)!.run_ids.at(-1)!, "log.jsonl"), "utf8")
   // The call's own reply, with what Codex said before the interrupt, is what the run recorded.
@@ -151,7 +151,7 @@ async function codexTurn(o: { usage?: { prompt_tokens: number; completion_tokens
   const call = { name: "codex_start", arguments: { message: "Fix the build.", wait: 120 } }
   fake.script({ tool_calls: [call], ...(o.usage ? { usage: o.usage } : {}) }, { content: "spare" })
   const h = await makeHarness(fake, { codex: true, ...(o.usage ? { prices: PRICES } : {}) })
-  h.codex!.fake.script([[...fc.agentMessage("a1", "Reading the build files."), { spawn: 300 }, { sleep: 30 }]])
+  h.codex!.fake.script([[...fc.agentMessage("a1", "Reading the build files."), fc.commandStarted("c1", "make", { processId: "p1" }), { spawn: 300, process: "p1" }, { sleep: 30 }]])
   const s = await h.harness.startSession("minh", h.folder, { openedBy: "ngocbh" })
   await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's first turn" })
   await h.harness.prompt(s.id, "Hand the build to Codex.", { by: "ngocbh" })
