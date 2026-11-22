@@ -32,6 +32,7 @@ import {
   socatNeeded,
 } from "../../tools/claude/claude.ts"
 import { probeStart } from "../../tools/claude/probe.ts"
+import { SocatUnusable } from "../../tools/claude/socat.ts"
 import { type Probed, threadProbe } from "../codex/thread.ts"
 import { writableFolders } from "../../runtime/sessions/permission.ts"
 import { type HarnessInstall, checkHarnessBinary } from "../../runtime/sandbox/harness_profile.ts"
@@ -878,6 +879,7 @@ async function claudeStarts(
     const detail = `${named} is signed out; run \`claude\` in a terminal and sign in with /login`
     return { name: "claude", status: "warn", detail }
   }
+  if (error instanceof SocatUnusable) return { name: "claude", status: "fail", detail: `${cant}: ${error.message}` }
   if (error instanceof ClaudeSandboxUnavailable) {
     const detail =
       `${cant}: its sandbox can't start here (on Linux, install bubblewrap and socat, and allow unprivileged user ` +

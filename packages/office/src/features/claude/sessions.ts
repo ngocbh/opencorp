@@ -24,7 +24,6 @@ import type { Tools } from "../../runtime/service/programs.ts"
 import {
   type EmployeePermission,
   checkClaudeInstall,
-  checkSocatInstall,
   gitRootOf,
   harnessHomes,
 } from "../../runtime/sandbox/harness_profile.ts"
@@ -32,7 +31,6 @@ import {
   fenceIn,
   freshFolder,
   harnessRoot,
-  programsFolder,
   removeFolder,
   sweepTemp,
 } from "../../runtime/sandbox/harness_temp.ts"
@@ -60,6 +58,7 @@ import {
   toolsBeyond,
 } from "../../tools/claude/claude.ts"
 import { markClaudeInterrupted } from "../../tools/claude/instrument.ts"
+import { prepareSocat } from "../../tools/claude/socat.ts"
 import { type Msg, nameOf } from "../../tools/claude/stream.ts"
 import { Translator } from "../../tools/claude/translate.ts"
 import type { HarnessEvent } from "../../tools/harness/adapter.ts"
@@ -99,6 +98,8 @@ export type ClaudeSessionsOptions = {
   platform?: NodeJS.Platform
   /** The socat to run in place of the one the daemon pinned, or null for none; tests pass a stand-in's. */
   socat?: string | null
+  /** The libraries a socat loads (default `lddLibraries`); tests pass what a stand-in's would. */
+  socatLibraries?: (file: string) => string[]
 }
 
 /** How long an idle session keeps its Claude Code: five minutes, as the upstream TUI's sessions do. */
@@ -136,6 +137,7 @@ export class ClaudeSessions {
   readonly #tmpBase: string | undefined
   readonly #platform: NodeJS.Platform
   readonly #socat: string | undefined
+  readonly #libraries: ((file: string) => string[]) | undefined
   readonly #live = new Map<string, ClaudeSession>()
   #closed = false
 
@@ -148,6 +150,7 @@ export class ClaudeSessions {
     this.#tmpBase = options.tmpBase
     this.#platform = options.platform ?? process.platform
     this.#socat = options.socat === undefined ? office.tools.socat : (options.socat ?? undefined)
+    this.#libraries = options.socatLibraries
     this.idleMs = options.idleMs ?? IDLE_MS
     this.closeGraceMs = options.closeGraceMs ?? CLOSE_GRACE_MS
     this.stopWaitMs = options.stopWaitMs ?? STOP_WAIT_MS
@@ -321,8 +324,9 @@ export class ClaudeSessions {
 
   /** What one start of `live`'s Claude Code runs: the pinned `claude` (or the options'), checked as it will run
    *  (`checkClaudeInstall`), since it runs as the owner; the employee's permission over the session's folder, with a
-   *  fresh, private temp folder, and on Linux the pinned socat, checked as Claude Code is, copied alone into a private
-   *  folder first on its PATH (`<root>/<session>.bin`); the session's instructions; and its environment, the worker's
+   *  fresh, private temp folder, and on Linux the pinned socat, readied for its sandbox (`prepareSocat`: checked, run
+   *  once, and, outside the system folders, linked into `<root>/<session>.bin` with the folders it loads from read);
+   *  the session's instructions; and its environment, the worker's
    *  with Claude Code's fixed variables. A new session starts with its own id; a later start resumes it. Throws
    *  `ClaudeMissing` with no Claude Code, `ClaudeSandboxUnavailable` with no socat where the sandbox needs it, and as
    *  the checks do. */
@@ -353,8 +357,10 @@ export class ClaudeSessions {
     }
     checkClaudeInstall(permission, install)
     if (socat !== undefined) {
-      const checked = checkSocatInstall(permission, socat)
-      permission.programs = programsFolder(root, `${live.sessionId}.bin`, { socat: checked })
+      const name = `${live.sessionId}.bin`
+      const prepared = prepareSocat(permission, socat, { root, name, libraries: this.#libraries, env: this.#env() })
+      if (prepared.programs !== null) permission.programs = prepared.programs
+      permission.programReads = prepared.reads
     }
     const configDir = this.#environ.CLAUDE_CONFIG_DIR || path.join(this.office.guards.home ?? os.homedir(), ".claude")
     const id = live.claudeId

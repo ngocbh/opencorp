@@ -53,15 +53,14 @@ export function freshFolder(root: string, name: string): string {
   return dir
 }
 
-/** `<root>/<name>` made fresh (`freshFolder`), holding a copy of each of `programs` (its name, and the real file that
- *  was checked), only the user's to read and run (0500): a harness's sandbox runs them from there, where its commands
- *  can't change them, rather than from the folders they were found in, whose other programs it may not run. */
+/** `<root>/<name>` made fresh (`freshFolder`), holding a link to each of `programs` (its name, and the real file that
+ *  was checked): a harness's sandbox runs them from there, where its commands can't change them, rather than from the
+ *  folders they were found in, whose other programs it may not run. A link, not a copy, so a program finds what it
+ *  loads beside its real file (`$ORIGIN`). */
 export function programsFolder(root: string, name: string, programs: Readonly<Record<string, string>>): string {
   const dir = freshFolder(root, name)
   for (const [program, checked] of Object.entries(programs)) {
-    const copy = path.join(dir, inRoot(dir, program).slice(dir.length + 1))
-    fs.copyFileSync(checked, copy, fs.constants.COPYFILE_EXCL)
-    fs.chmodSync(copy, 0o500)
+    fs.symlinkSync(checked, path.join(dir, inRoot(dir, program).slice(dir.length + 1)))
   }
   return dir
 }

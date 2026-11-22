@@ -52,6 +52,9 @@ export interface EmployeePermission {
   /** A private folder of the programs the office lets the harness's sandbox run (`programsFolder`: Claude Code's
    *  socat), first on its PATH and readable, never writable, in its sandbox. */
   programs?: string
+  /** The folders those programs run from and load libraries from, each checked as a program's install folder is:
+   *  readable in the sandbox where a deny would hide them, and only those exact folders. */
+  programReads?: readonly string[]
 }
 
 /** The system folders that start every harness PATH. Both harnesses run `git`, `rg` and (Codex, on Linux) `bwrap`
@@ -63,6 +66,11 @@ const SYSTEM_PATH: readonly string[] = [
   "/sbin",
   ...(process.platform === "darwin" ? ["/opt/homebrew/bin"] : []),
 ]
+/** The system folders that start every harness PATH. */
+export function systemPath(): string[] {
+  return [...SYSTEM_PATH]
+}
+
 /** Where the owner's own Unix sockets and temp files live: tmux's, ssh-agent's, D-Bus's (`/run/user/<uid>`), other
  *  Claude Code sessions' inboxes. Claude Code's Bash sandbox reads everything but `denyRead`, and on Linux the seccomp
  *  filter that blocks a Unix socket is optional (no setting requires it, doctor can't see it without a model call, and
@@ -126,6 +134,8 @@ interface Checked {
   path: string
   /** `programs`, resolved. */
   programs: string | null
+  /** `programReads`, resolved. */
+  programReads: string[]
 }
 
 /** A path kept read-only, and whether it is a folder (Claude Code's edit deny then covers what is in it). */
@@ -220,6 +230,7 @@ export function claudeStart(p: EmployeePermission): {
   const sockets = [...new Set(SOCKET_ROOTS.filter((p) => fs.existsSync(p)).map((p) => realPath(p)))].filter(
     (root) => !covered(root),
   )
+  const denyRead = [...(covered(c.home) ? [] : [c.home]), ...sockets, ...c.denied]
   const settings = {
     sandbox: {
       enabled: true,
@@ -227,8 +238,15 @@ export function claudeStart(p: EmployeePermission): {
       allowUnsandboxedCommands: false,
       autoAllowBashIfSandboxed: true,
       filesystem: {
-        denyRead: [...(covered(c.home) ? [] : [c.home]), ...sockets, ...c.denied],
-        allowRead: [c.workspace, c.tmpdir, ...c.folders.map((folder) => folder.path), ...(c.programs ? [c.programs] : [])],
+        denyRead,
+        allowRead: [
+          c.workspace,
+          c.tmpdir,
+          ...c.folders.map((folder) => folder.path),
+          ...(c.programs ? [c.programs] : []),
+          // Only those a deny would hide: the rest are read already.
+          ...c.programReads.filter((dir) => denyRead.some((denied) => within(dir, denied))),
+        ],
         allowWrite: [...(c.writable ? [c.workspace] : []), c.tmpdir, ...writable],
         denyWrite: [
           ...(c.writable ? [] : [c.workspace]),
@@ -365,6 +383,9 @@ function checked(p: EmployeePermission): Checked {
   ])
   const others = (p.othersWritable ?? []).map((dir) => realPath(dir))
   const programs = p.programs === undefined ? null : programsOf(p.programs, [...writable, ...others], officeHome)
+  const programReads = (p.programReads ?? []).map((dir) =>
+    readFolder(dir, [...writable, ...others], [home, officeHome, ...byName]),
+  )
   const all = [workspace, tmpdir, fence, home, ...folders.map((f) => f.path), ...denied, ...held.map((h) => h.path)]
   for (const resolved of all) {
     if (PATTERN.test(resolved)) throw new UnsafeProfile(`the harness would read ${resolved} as a pattern`)
@@ -385,7 +406,31 @@ function checked(p: EmployeePermission): Checked {
     held,
     path: [...(programs === null ? [] : [programs]), pathOf(folders, [...writable, ...others])].join(":"),
     programs,
+    programReads: [...new Set(programReads)],
   }
+}
+
+/** `dir`, a folder a program runs or loads libraries from, resolved: refused (`UnsafeProfile`) unless it is a folder
+ *  others than the user can't write, in and holding none of `offLimits` (what the harness or others may write), and
+ *  in and holding none of `kept` (the home, the office's home and the folders denied by name), so it opens no more
+ *  than that folder. */
+function readFolder(dir: string, offLimits: readonly string[], kept: readonly string[]): string {
+  const what = `the folder ${JSON.stringify(dir)}, which a program the harness runs loads from,`
+  if (!path.isAbsolute(dir) || dir.includes("\0")) throw new UnsafeProfile(`${what} isn't absolute`)
+  const visited: string[] = []
+  const real = realPath(dir, visited)
+  if (!fs.statSync(real, { throwIfNoEntry: false })?.isDirectory()) throw new UnsafeProfile(`${what} isn't a folder`)
+  for (const root of offLimits) {
+    const through = [real, ...visited].find((p) => within(p, root)) ?? (within(root, real) ? root : undefined)
+    if (through !== undefined) throw new UnsafeProfile(`${what} is writable by the employee or others: ${through}`)
+  }
+  if (openToOthers(real)) throw new UnsafeProfile(`${what} can be changed: others than the user may write ${real}`)
+  const holds = kept.find((k) => within(k, real))
+  if (holds !== undefined) throw new UnsafeProfile(`${what} holds ${holds}, which the harness may not read`)
+  const inside = kept.slice(1).find((k) => within(real, k))
+  if (inside !== undefined) throw new UnsafeProfile(`${what} lies in ${inside}, which the harness may not read`)
+  if (PATTERN.test(real)) throw new UnsafeProfile(`the harness would read ${real} as a pattern`)
+  return real
 }
 
 /** `programs` resolved, if it is a folder (not a link), the user's and private, outside `offLimits` (what the harness
@@ -405,8 +450,9 @@ function programsOf(programs: string, offLimits: readonly string[], officeHome: 
   const inside = [...offLimits, officeHome].find((root) => within(real, root) || within(root, real))
   if (inside !== undefined) throw new UnsafeProfile(`${what} lies in or holds ${inside}`)
   for (const name of fs.readdirSync(real)) {
-    const file = fs.lstatSync(path.join(real, name))
-    if (!file.isFile() || file.uid !== process.getuid?.() || (file.mode & 0o022) !== 0) {
+    // A link names the real file of a program that was checked; its own folder can't be written, so it stays.
+    const file = fs.statSync(path.join(real, name), { throwIfNoEntry: false })
+    if (!file?.isFile() || (file.mode & 0o022) !== 0) {
       throw new UnsafeProfile(`${what} holds ${name}, which isn't a file only the user may change`)
     }
   }

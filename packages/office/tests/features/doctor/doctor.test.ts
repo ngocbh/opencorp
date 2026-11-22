@@ -1727,6 +1727,8 @@ test("on Linux, claude fails without a socat for its sandbox, saying how to fix 
   const first = (start.env as Record<string, string>).PATH!.split(":")[0]!
   expect(path.basename(first)).toBe("bin")
   expect(first).not.toBe(fake.bin)
+  // The probe's folders go with it.
+  expect(fs.existsSync(first)).toBe(false)
   fs.rmSync(path.join(fake.bin, "socat"))
   const missing = await doctor.claudeCheck(env, {}, "systemd", { office, base, platform: "linux" })
   expect(missing.status).toBe("fail")
@@ -1735,6 +1737,13 @@ test("on Linux, claude fails without a socat for its sandbox, saying how to fix 
   const named = await doctor.claudeCheck(env, { OPENCORP_SOCAT_BIN: "/nowhere/socat" }, null, { office, base, platform: "linux" })
   expect(named.status).toBe("fail")
   expect(named.detail).toContain("OPENCORP_SOCAT_BIN names /nowhere/socat")
+  // One that doesn't run says so.
+  fs.writeFileSync(path.join(fake.bin, "socat"), "#!/bin/sh\necho 'cannot open shared object file' >&2\nexit 127\n", {
+    mode: 0o755,
+  })
+  const broken = await doctor.claudeCheck(env, {}, null, { office, base, platform: "linux" })
+  expect(broken.status).toBe("fail")
+  expect(broken.detail).toContain("doesn't run (cannot open shared object file)")
   // macOS's sandbox needs none.
   const mac = probeHomes()
   const plain = fakeClaudeIn(mac.dir)
