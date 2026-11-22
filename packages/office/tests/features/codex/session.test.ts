@@ -25,7 +25,7 @@ import * as fc from "../../../src/testing/fake_codex.ts"
 import { fakeLlm, makeHarness } from "../chat/helpers.ts"
 import { person } from "../../company/helpers.ts"
 import { envEntries, isGone, tempDir, waitFor } from "../../helpers.ts"
-import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import { sandboxAvailable, standaloneCodex } from "../../runtime/sandbox/helpers.ts"
 import {
   type Codex,
   YES,
@@ -199,6 +199,55 @@ test("a codex app server runs with the harness PATH and its own fresh temp folde
   await h.sessions.end(sid)
   await waitFor(() => status(h, sid) === "ended", { what: "the end" })
   expect(fs.existsSync(tmp)).toBe(false)
+})
+
+test("a session on a codex its standalone installer put in ~/.codex loads its thread from the office's copy in the owner's cache, which a later start mends, and which a session on an updated codex removes once nothing runs from it", async () => {
+  const h = makeCodex()
+  // A native program in Codex's place (bun, which runs the fake), laid out as the standalone installer lays Codex out.
+  const release = (version: string) => {
+    const at = path.join(h.home, `.codex/packages/standalone/releases/${version}-x86_64-unknown-linux-musl`)
+    fs.mkdirSync(path.join(at, "bin"), { recursive: true })
+    fs.copyFileSync(process.execPath, path.join(at, "bin/codex"))
+    for (let p = path.join(at, "bin/codex"); p !== h.home; p = path.dirname(p)) fs.chmodSync(p, 0o755)
+    return path.join(at, "bin/codex")
+  }
+  let codex = release("0.171.0")
+  // The office's environment sets no XDG_CACHE_HOME: the copies go in the owner's ~/.cache.
+  const r = reopened(h, { command: () => [codex, ...h.fake.command().slice(1)] })
+  const started = async (cwd: string) => {
+    const { id } = await r.sessions.startSession("minh", cwd, { openedBy: "ngocbh" })
+    await waitFor(() => status(h, id) === "idle", { what: "the Codex session to load" })
+    return id
+  }
+  const sid = await started(h.workspace)
+  const folder = path.join(h.home, ".cache/opencorp/codex")
+  const copies = () => fs.readdirSync(folder).filter((name) => name.startsWith("install-"))
+  expect(copies()).toHaveLength(1)
+  const copy = path.join(folder, copies()[0]!)
+  expect(fs.readFileSync(path.join(copy, "bin/codex")).equals(fs.readFileSync(process.execPath))).toBe(true)
+  const [load] = h.fake.calls("thread/start") as Record<string, any>[]
+  const filesystem = load!.config.permissions[`opencorp-${sid}`].filesystem
+  expect(filesystem[copy]).toBe("read")
+  expect(filesystem[path.dirname(path.dirname(codex))]).toBeUndefined()
+  expect(filesystem[path.join(h.home, ".codex")]).toBe("deny")
+  // Something took the binary while the session runs: the next session's start puts it back, and both run.
+  fs.rmSync(path.join(copy, "bin/codex"))
+  const second = await started(fs.realpathSync(tempDir()))
+  expect(fs.readFileSync(path.join(copy, "bin/codex")).equals(fs.readFileSync(process.execPath))).toBe(true)
+  expect(status(h, sid)).toBe("idle")
+  // An update: a session on the new codex gets its own copy, and the old one stays while its sessions run.
+  codex = release("0.172.0")
+  const third = await started(fs.realpathSync(tempDir()))
+  expect(copies()).toHaveLength(2)
+  expect(fs.existsSync(copy)).toBe(true)
+  for (const id of [sid, second, third]) {
+    await r.sessions.end(id)
+    await waitFor(() => status(h, id) === "ended", { what: "the end" })
+  }
+  // Once none runs from it, the next session's start removes it.
+  await r.sessions.end(await started(fs.realpathSync(tempDir())))
+  expect(copies()).toHaveLength(1)
+  expect(fs.existsSync(copy)).toBe(false)
 })
 
 test("a codex the employee could change is refused before it runs as the owner", async () => {
@@ -1367,6 +1416,33 @@ test.skipIf(NO_CODEX)(
     await h.sessions.end(sid)
     await waitFor(() => status(h, sid) === "ended", { what: "the end" })
     await waitFor(first.gone, { timeout: 5_000, what: "the server to stop with the session" })
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
+  "on a real codex its standalone installer put in ~/.codex, a session's command runs in its sandbox, from the office's copy",
+  async () => {
+    if (CODEX === undefined) throw new Error("OPENCORP_TEST_SANDBOX is set: set OPENCORP_TEST_CODEX to a Codex 0.167.0+")
+    const model = await standInModel([{ run: "echo ran > ran.txt", waitMs: 10_000 }, { say: "It ran." }])
+    const codexHome = fs.realpathSync(tempDir())
+    fs.writeFileSync(
+      path.join(codexHome, "config.toml"),
+      `model = "stand-in"\nmodel_provider = "stand_in"\n\n[model_providers.stand_in]\nname = "stand-in"\n` +
+        `base_url = "${model.url}"\nwire_api = "responses"\n`,
+    )
+    let found = ""
+    const h = makeCodex({ command: () => [nativeCodex(found).run, ...APP_SERVER_ARGS], environ: { CODEX_HOME: codexHome } })
+    found = standaloneCodex(h.home, nativeCodex(CODEX).install)
+    const folder = path.join(h.home, ".cache/opencorp/codex")
+    const sid = await start(h, h.workspace)
+    await h.sessions.prompt(sid, "Run it.")
+    await waitFor(() => texts(h, sid).includes("It ran.") && status(h, sid) === "idle", {
+      timeout: 60_000,
+      what: "the turn",
+    })
+    expect(fs.readFileSync(path.join(h.workspace, "ran.txt"), "utf8")).toBe("ran\n")
+    expect(fs.readdirSync(folder).filter((name) => name.startsWith("install-"))).toHaveLength(1)
   },
   120_000,
 )

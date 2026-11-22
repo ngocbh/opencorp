@@ -671,7 +671,8 @@ export interface CodexOffice {
  * Whether the office can start Codex sessions, in the environment it gives an app-server (`env`): the binary on its
  * PATH, the version (0.167.0 or later), the sign-in, and, given `office`, a thread under an employee's permission that
  * can be used (`threadProbe`, under `base`'s harness temp folder: a thread that starts but whose config no turn could
- * load fails, with no model turn run), and a warning for each trusted project whose own config Codex would load.
+ * load fails, and so does one whose sandbox can't run a command, with no model turn run), and a warning for each
+ * trusted project whose own config Codex would load.
  * Missing, signed out, or a `login status` that fails otherwise (shown by the first line it printed) is a warning, not
  * a failure: only people with `codex` in `harnesses` need it. A `codex` that won't run, doesn't answer within
  * `timeoutMs`, is older than the floor or whose version can't be read fails.

@@ -113,7 +113,7 @@ function tracked(store: Store): void {
 }
 
 /** An office whose minh may use Codex (plus `files`), and its `CodexSessions` running `fake` with a fixed
- *  environment; `options` replace the sessions' others. `lines` gets the sessions' and hooks' log lines, `events`
+ *  environment and an empty office environment; `options` replace the sessions' others. `lines` gets the sessions' and hooks' log lines, `events`
  *  every live event the bus got, `storeEvents` every event the store delivered. Call inside a test: when it finishes
  *  the office stops (closing the sessions before the store closes), then every app-server it recorded that is still
  *  running is killed. */
@@ -140,6 +140,8 @@ export function makeCodex({ files = {}, ...options }: { files?: Record<string, u
   const sessions = new CodexSessions(office, hooks, {
     command: () => fake.command(),
     env: () => ({ PATH: "/usr/bin:/bin", HOME: home }),
+    // None of this process's: its XDG_CACHE_HOME would put the office's copies of Codex in the real cache.
+    environ: {},
     tmpBase,
     closeGraceMs: 500,
     log,
@@ -160,6 +162,7 @@ export function reopened(h: Codex, options: CodexSessionsOptions = {}): Codex {
   const sessions = new CodexSessions(h.office, hooks, {
     command: () => h.fake.command(),
     env: () => ({ PATH: "/usr/bin:/bin", HOME: h.home }),
+    environ: {},
     tmpBase: h.tmpBase,
     closeGraceMs: 500,
     log,

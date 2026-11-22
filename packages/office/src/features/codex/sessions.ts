@@ -12,12 +12,7 @@ import { loadRepo, missingPerson } from "../../company/loader.ts"
 import type { Bus } from "../../runtime/bus.ts"
 import type { Tools } from "../../runtime/service/programs.ts"
 import type { AnswerKind, SessionHarness } from "../../runtime/sessions/harness.ts"
-import {
-  type EmployeePermission,
-  checkCodexInstall,
-  gitRootOf,
-  harnessHomes,
-} from "../../runtime/sandbox/harness_profile.ts"
+import { type EmployeePermission, gitRootOf, harnessHomes } from "../../runtime/sandbox/harness_profile.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../../runtime/sandbox/policy.ts"
 import {
   InvalidTransition,
@@ -56,6 +51,7 @@ import {
   sweepTemp,
 } from "../../runtime/sandbox/harness_temp.ts"
 import { harnessTemp, threadEnv } from "./thread.ts"
+import { copiesFolder, threadCodex } from "./install.ts"
 
 /** What a yian chat's session calls answer, until the chat harness serves them. */
 const NOT_SERVED = "yian chats are not served yet"
@@ -77,7 +73,7 @@ export interface CodexOffice {
 export type Launchable = Pick<CodexSession, "sessionId" | "cwd" | "launchingAs" | "notified" | "requested" | "exited">
 
 /** What one load of a session's thread runs: the app-server's command and environment, its employee's permission,
- *  and the folder Codex is installed in. */
+ *  and the folder Codex runs from (its install, or the office's copy of it: `threadCodex`). */
 export type Prepared = {
   command: string[]
   env: Record<string, string>
@@ -93,7 +89,8 @@ export type CodexSessionsOptions = {
   env?: () => Record<string, string>
   /** Where the harness temp folder is (`harnessTemp`; default `/tmp`); tests pass their own. */
   tmpBase?: string
-  /** The office's environment (default `process.env`), whose `CODEX_HOME` and `CLAUDE_CONFIG_DIR` are read. */
+  /** The office's environment (default `process.env`), whose `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `XDG_CACHE_HOME`
+   *  are read. */
   environ?: Record<string, string | undefined>
   closeGraceMs?: number
   stopWaitMs?: number
@@ -617,10 +614,12 @@ export class CodexSessions implements SessionHarness {
   }
 
   /** What one load of `live`'s thread runs (`Prepared`): the pinned Codex (its native binary, `nativeCodex`) or the
-   *  test's command; the worker environment with the harness PATH and a fresh, private temp folder as TMPDIR
-   *  (`/tmp/opencorp-<uid>/codex/<session>`); and the employee's permission over that folder, the fence beside it,
-   *  the folder's git root, the harnesses' own config folders where the office's environment sets them apart, and,
-   *  when they may use MCP servers, a fresh MCP folder of the session's in the office's home, where those start.
+   *  test's command, as the thread's sandbox can run it (`threadCodex`: the office's copy in the owner's cache when it
+   *  is installed in a folder the permission denies); the worker environment with the harness PATH and a fresh,
+   *  private temp folder as TMPDIR (`/tmp/opencorp-<uid>/codex/<session>`); and the employee's permission over that
+   *  folder, the fence beside it, the folder's git root, the harnesses' own config folders where the office's
+   *  environment sets them apart, and, when they may use MCP servers, a fresh MCP folder of the session's in the
+   *  office's home, where those start.
    *  Codex as it will run is checked first (`checkCodexInstall`), since it runs as the owner. Throws `CodexMissing`
    *  with no Codex, and as the checks do. */
   async prepare(live: Pick<Launchable, "sessionId" | "cwd">): Promise<Prepared> {
@@ -637,9 +636,14 @@ export class CodexSessions implements SessionHarness {
       tempRoot: path.dirname(root),
     })
     if ((permission.allowedMcp ?? []).length > 0) permission.mcpHome = mcpFolder(this.#mcpRoot(), live.sessionId)
-    const { install } = nativeCodex(command[0]!)
-    checkCodexInstall(permission, { run: command[0]!, install })
-    return { command, env: threadEnv(this.#env(), permission), permission, install }
+    const codex = await threadCodex(
+      permission,
+      { run: command[0]!, install: nativeCodex(command[0]!).install },
+      copiesFolder(permission.home, this.#environ),
+      this.log,
+    )
+    const env = threadEnv(this.#env(), permission)
+    return { command: [codex.run, ...command.slice(1)], env, permission, install: codex.install }
   }
 
   /** The session's employee's permission for one harness thread in its folder, from the people at the session's

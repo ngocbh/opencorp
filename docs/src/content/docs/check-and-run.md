@@ -9,9 +9,13 @@ and the web app, and says how to fix what it finds. `opencorp start` starts the 
 
 OpenCorp needs Codex 0.167.0 or later. For an older one doctor fails and says to update Codex:
 `npm install -g @openai/codex@latest` (or `brew upgrade codex`), then `opencorp doctor`. With Codex
-signed in, doctor also starts a thread under an employee's permission and checks that Codex can
-use it, without running a model turn. It warns about each project you trust in Codex whose own
-`.codex/config.toml` Codex would load: your employees' Codex sessions won't start there.
+signed in, doctor also starts a thread under an employee's permission, checks that Codex can use
+it, and runs one command in Codex's sandbox under that permission, without running a model turn. So
+a Codex whose sandbox can't run its commands fails here, saying what Codex said, and not at your
+employee's first command. A Codex from Codex's own installer works too (see
+[What an employee may touch](/instruments/#what-an-employee-may-touch)). Doctor warns about each
+project you trust in Codex whose own `.codex/config.toml` Codex would load: your employees' Codex
+sessions won't start there.
 
 OpenCorp needs Claude Code 2.1.325 or later. For an older one doctor fails and says to update it:
 `claude update` (or `brew upgrade claude-code`, or

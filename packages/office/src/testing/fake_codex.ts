@@ -25,6 +25,10 @@
  *    once its turn ends or is interrupted, until `thread/backgroundTerminals/terminate` names its `process`,
  *    `thread/backgroundTerminals/clean`, or the group's kill.
  *
+ *  `codex sandbox [flags] -- command` logs `{"dir": "sandbox", "args": [what follows `sandbox`]}`, then, when the script
+ *  has `sandbox_stderr` or `sandbox_exit`, writes the one to stderr and exits with the other (default 1); else it runs
+ *  the command itself, unsandboxed, and exits as it does.
+ *
  *  `"{thread}"`, `"{turn}"` and `"{cwd}"` in params are filled in. `turn/start` during a turn is a steer and answers
  *  with the running turn. `turn/interrupt` stops the steps, completes the turn `interrupted`, and then resolves the
  *  requests of the turn still waiting (a request whose `turnId` is null outlives it); with `interrupt_hangs` it gets
@@ -33,7 +37,7 @@
  *  Codex ends a thread's commands. Every message read or written
  *  is appended to `--log` as `{"dir": "in"|"out", "msg"}`. Stdin EOF exits 0. The builders below make steps whose
  *  messages match the pinned Codex schema. */
-import { type ChildProcess, spawn } from "node:child_process"
+import { type ChildProcess, spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import readline from "node:readline"
@@ -642,17 +646,19 @@ const USAGE = "usage: fake_codex (--script SCRIPT | --scenario e2e) [--log LOG]"
 
 /** Runs the fake on `argv` (the real command's `app-server --listen stdio://` is ignored); returns its exit code. */
 export async function main(argv: string[]): Promise<number> {
-  if (argv.includes("--version")) {
+  // What follows `--` is a sandboxed command's own.
+  const head = argv.includes("--") ? argv.slice(0, argv.indexOf("--")) : argv
+  if (head.includes("--version")) {
     // what `opencorp doctor` asks a codex on the office's PATH: the oldest version it takes
     process.stdout.write("codex-cli 0.167.0-fake\n")
     return 0
   }
-  if (argv.includes("login")) return 0 // `codex login status`: the fake is always signed in
+  if (head.includes("login")) return 0 // `codex login status`: the fake is always signed in
   const options: Record<string, string> = {}
-  for (let i = 0; i < argv.length; i++) {
-    const flag = argv[i]!
+  for (let i = 0; i < head.length; i++) {
+    const flag = head[i]!
     if (flag !== "--script" && flag !== "--scenario" && flag !== "--log") continue
-    const value = argv[i + 1]
+    const value = head[i + 1]
     if (value === undefined || value.startsWith("--")) {
       process.stderr.write(`${USAGE}\nfake_codex: error: argument ${flag}: expected one argument\n`)
       return 2
@@ -667,7 +673,19 @@ export async function main(argv: string[]): Promise<number> {
     return 2
   }
   const loaded = scenario === "e2e" ? e2e() : JSON.parse(fs.readFileSync(script!, "utf8"))
+  if (head.includes("sandbox")) return sandbox(loaded, argv.slice(argv.indexOf("sandbox") + 1), options["--log"] ?? null)
   return new Fake(loaded, options["--log"] ?? null, script ?? null).serve()
+}
+
+/** `codex sandbox` given `args` (what follows `sandbox`), as the module's doc says. */
+function sandbox(script: Obj, args: string[], log: string | null): number {
+  if (log !== null) fs.appendFileSync(log, `${JSON.stringify({ dir: "sandbox", args })}\n`)
+  if (script.sandbox_stderr !== undefined || script.sandbox_exit !== undefined) {
+    process.stderr.write(script.sandbox_stderr ?? "")
+    return script.sandbox_exit ?? 1
+  }
+  const command = args.slice(args.indexOf("--") + 1)
+  return spawnSync(command[0]!, command.slice(1), { stdio: "inherit" }).status ?? 1
 }
 
 if (import.meta.main) {

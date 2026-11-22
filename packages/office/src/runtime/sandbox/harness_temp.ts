@@ -19,8 +19,9 @@ export function harnessRoot(harness: HarnessName, base = "/tmp"): string {
   return root
 }
 
-/** Makes `dir` 0700 unless it is there; throws `UnsafeProfile` unless it is then the user's private folder. */
-function privateDir(dir: string, uid: number): void {
+/** Makes `dir` 0700 unless it is there; throws `UnsafeProfile` unless it is then the user's private folder (a link is
+ *  refused). */
+export function privateDir(dir: string, uid: number = process.getuid!()): void {
   try {
     fs.mkdirSync(dir, { mode: 0o700 })
   } catch (error) {

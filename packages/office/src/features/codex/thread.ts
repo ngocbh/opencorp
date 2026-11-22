@@ -1,20 +1,22 @@
 /** What a Codex thread runs under beside its employee's permission: the private folder under `/tmp` holding each
  *  thread's temp folder and the fence, the app-server's PATH and TMPDIR, and the load that turns the owner's MCP
- *  servers off but those the employee may use. Also doctor's probe of a thread that starts but can't be used. */
+ *  servers off but those the employee may use. Also doctor's probe of a thread that starts but can't be used, or whose
+ *  sandbox can't run a command. */
 import fs from "node:fs"
 import path from "node:path"
 import {
   type EmployeePermission,
   type HarnessInstall,
-  checkCodexInstall,
   codexThread,
   harnessHomes,
   harnessPath,
 } from "../../runtime/sandbox/harness_profile.ts"
 import { fenceIn, freshFolder, harnessRoot, removeFolder } from "../../runtime/sandbox/harness_temp.ts"
 import { UnsafeProfile, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
+import { runCommand } from "../../runtime/service/launch.ts"
 import { APP_SERVER_ARGS, CodexProcess, CodexStartError, threadLoad } from "../../tools/codex/codex.ts"
 import { type JsonRpc, RpcClosed, RpcError, nameOf } from "../../tools/codex/rpc.ts"
+import { copiesFolder, threadCodex } from "./install.ts"
 
 /** Milliseconds `config/read` has to answer. */
 const CONFIG_READ_MS = 30_000
@@ -107,7 +109,7 @@ export type ProbeOptions = {
   codex: HarnessInstall
   /** The app-server's environment, as the office gives one (the worker environment). */
   env: Record<string, string>
-  /** The office's environment: its `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. */
+  /** The office's environment: its `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `XDG_CACHE_HOME`. */
   environ: Record<string, string | undefined>
   /** The owner's home and `<OPENCORP_HOME>`, denied by name. */
   home: string
@@ -128,12 +130,15 @@ export type Probed = { failed: { why: string; log: string } | null; projectConfi
 /** The most trusted projects the probe looks at. */
 const PROJECTS_MAX = 50
 
-/** Whether a Codex thread under an employee's permission can be used. It checks Codex as the office would run it
- *  (`checkCodexInstall`), starts it as a session does, loads an ephemeral thread in a fresh read-only folder with no
- *  network, then lists the thread's MCP servers, which reloads its config as each turn does: a thread can start under
- *  a config no turn could load. Then, for each project the owner's Codex config trusts (up to 50), whether its own
- *  config would load. No model turn runs; the probe's folders are removed, and Codex's output stays in
- *  `doctor-codex.log` beside the fence. The MCP servers its load turned off are the owner's, named for doctor. */
+/** Whether a Codex thread under an employee's permission can be used. It takes Codex as a session would run it
+ *  (`threadCodex`: checked, and the office's copy when it is installed in a denied folder), starts it as a session
+ *  does, loads an ephemeral thread in a fresh read-only folder with no network, then lists the thread's MCP servers,
+ *  which reloads its config as each turn does: a thread can start under a config no turn could load. Then it runs one
+ *  command in Codex's sandbox under the thread's profile and override (`sandboxArgs`), so a sandbox that can't run
+ *  Codex's own binary, or can't start, fails here and not at an employee's first command. Then, for each project the
+ *  owner's Codex config trusts (up to 50), whether its own config would load. No model turn runs; the probe's folders
+ *  are removed, and Codex's output stays in `doctor-codex.log` beside the fence. The MCP servers its load turned off
+ *  are the owner's, named for doctor. */
 export async function threadProbe(options: ProbeOptions): Promise<Probed> {
   const root = harnessTemp(options.base)
   const name = `doctor-${process.pid}`
@@ -161,9 +166,10 @@ export async function threadProbe(options: ProbeOptions): Promise<Probed> {
       harnessHomes: harnessHomes(options.environ),
       othersWritable: options.othersWritable ?? [],
     }
-    checkCodexInstall(p, options.codex)
+    step = "the copy of Codex"
+    const codex = await threadCodex(p, options.codex, copiesFolder(options.home, options.environ))
     const started: CodexProcess = (proc = new CodexProcess({
-      command: [options.codex.run, ...APP_SERVER_ARGS],
+      command: [codex.run, ...APP_SERVER_ARGS],
       cwd: ws,
       env: threadEnv(options.env, p),
       log,
@@ -181,13 +187,15 @@ export async function threadProbe(options: ProbeOptions): Promise<Probed> {
     step = "config/read"
     // As `employeeLoad` loads a session's thread, keeping the names the owner's config defines.
     mcpServers = (await ownerConfig(rpc, ws)).mcpServers
-    const params = threadLoad(ws, codexThread(p, "opencorp-doctor", { install: options.codex.install, mcpServers }))
+    const params = threadLoad(ws, codexThread(p, "opencorp-doctor", { install: codex.install, mcpServers }))
     step = "thread/start"
     const loaded = await rpc.request("thread/start", { ...params, ephemeral: true }, { timeout })
     checkLoaded(loaded, "opencorp-doctor")
     step = "mcpServerStatus/list"
     const threadId = (loaded as { thread: { id: string } }).thread.id
     await rpc.request("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly" }, { timeout })
+    step = "a command in Codex's sandbox"
+    await sandboxRuns(codex.run, params, started.env, timeout, log)
     step = "config/read"
     return { failed: null, projectConfigs: await projectConfigs(rpc), mcpServers }
   } catch (error) {
@@ -217,6 +225,64 @@ async function projectConfigs(rpc: JsonRpc): Promise<string[]> {
     }
   }
   return [...new Set(found)]
+}
+
+/** The command doctor's probe runs in Codex's sandbox, and what it prints there. */
+const SANDBOX_OK = "opencorp-sandbox-ok"
+const SANDBOX_CHECK = ["/bin/sh", "-c", `echo ${SANDBOX_OK}`]
+
+/** The arguments of `codex sandbox` that run `command` in Codex's sandbox as a thread's commands run, under `load`
+ *  (`employeeLoad`'s): its permission profile, its config override as one `-c` flag per top-level key (each value in
+ *  TOML, on one line), in its folder. */
+export function sandboxArgs(
+  load: { cwd: string; permissions: string; config: Record<string, unknown> },
+  command: readonly string[],
+): string[] {
+  const flags = Object.entries(load.config).flatMap(([key, value]) => ["-c", `${key}=${toml(value)}`])
+  return ["sandbox", "-P", load.permissions, "-C", load.cwd, ...flags, "--", ...command]
+}
+
+/** `value` as a TOML value on one line: strings quoted, tables inline with their keys quoted. */
+function toml(value: unknown): string {
+  // JSON's escapes are TOML's, but for DEL, which TOML wants escaped.
+  if (typeof value === "string") return JSON.stringify(value).replaceAll("\x7f", "\\u007f")
+  if (typeof value === "boolean" || typeof value === "number") return String(value)
+  if (Array.isArray(value)) return `[${value.map(toml).join(", ")}]`
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value).map(([key, v]) => `${toml(key)} = ${toml(v)}`)
+    return `{ ${entries.join(", ")} }`
+  }
+  throw new Error(`a Codex config value can't be ${JSON.stringify(value)}`)
+}
+
+/** Runs `SANDBOX_CHECK` in the sandbox of the Codex `run`, under `load`, with `env`, appending what it prints to `log`;
+ *  rejects unless it prints `SANDBOX_OK` and exits 0, with what Codex said (`said`). */
+async function sandboxRuns(
+  run: string,
+  load: { cwd: string; permissions: string; config: Record<string, unknown> },
+  env: Record<string, string>,
+  timeoutMs: number,
+  log: string,
+): Promise<void> {
+  const done = await runCommand([run, ...sandboxArgs(load, SANDBOX_CHECK)], { env, timeoutMs, group: true })
+  const { O_WRONLY, O_APPEND, O_CREAT, O_NOFOLLOW } = fs.constants
+  const fd = fs.openSync(log, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
+  try {
+    fs.writeSync(fd, `${done.stdout}${done.stderr}`)
+  } finally {
+    fs.closeSync(fd)
+  }
+  if (done.code === 124 && done.stderr === `${run} timed out`) {
+    throw new Error(`it didn't finish in ${timeoutMs / 1000} s`)
+  }
+  if (done.code !== 0 || !done.stdout.includes(SANDBOX_OK)) throw new Error(said(done.stderr) ?? `exit ${done.code}`)
+}
+
+/** The line of Codex's stderr that says why: the first but its warnings and a panic's header and note. */
+function said(stderr: string): string | null {
+  const noise = /^(WARNING: |thread '.*' .*panicked at |note: run with )/
+  const line = stderr.split("\n").map((l) => l.trim()).find((l) => l !== "" && !noise.test(l))
+  return line === undefined ? null : line.slice(0, 300)
 }
 
 /** Why the probe failed at `step` (empty before Codex runs). */

@@ -164,8 +164,9 @@ interface Kept {
  *  is unique per session, since the layer is deep-merged with any other layer defining the same id; a subagent
  *  inherits its parent's profile.
  *
- *  `install` is the folder Codex is installed in (the one holding the `bin` of its resolved binary): its sandboxed
- *  commands run Codex's own binary, so the profile reads it, and it is refused if the employee can write it.
+ *  `install` is the folder Codex runs from (the one holding the `bin` of the binary the office spawns): its sandboxed
+ *  commands run Codex's own binary, so the profile reads it, and it is refused if the employee can write it, or if it
+ *  lies in a folder the profile denies (`deniedHolding`), where the sandbox couldn't run it.
  *  `mcpServers` are the owner's MCP servers: each but those `p` allows is turned off (`mcpServersOff`). Of those
  *  allowed, each that Codex starts as a program (`stdio`, as against one it reaches by URL, where Codex takes no
  *  folder) starts in the office's empty folder (`mcpCwd`), never the employee's, where a launcher (npx, uvx, python)
@@ -183,11 +184,20 @@ export function codexThread(
   // A `:` name is one of Codex's built-in profiles.
   if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`a Codex profile id is letters, digits, - and _; got ${id}`)
   const c = checked(p)
+  const installed = installFolder(install, [...c.writableRoots, ...c.others], CODEX.folder)
+  const held = holding(c.denied, installed)
+  if (held !== null) {
+    throw new UnsafeProfile(
+      `${CODEX.folder} ${JSON.stringify(install)} lies in ${held}, which the employee's permission denies, so Codex's ` +
+        "sandbox couldn't run its own binary from there",
+    )
+  }
   // No `:root` entry, so nothing is readable but what is listed. On equally specific entries deny beats write beats
-  // read, and a more specific entry beats a broader one.
+  // read, and a more specific write or read entry beats a broader one. A deny doesn't, on Linux at least: its mount
+  // goes over the others', so a read entry inside a denied folder stays hidden.
   const filesystem: Record<string, string> = {
     ":minimal": "read",
-    [installFolder(install, [...c.writableRoots, ...c.others], CODEX.folder)]: "read",
+    [installed]: "read",
     [c.workspace]: c.writable ? "write" : "read",
   }
   filesystem[c.tmpdir] = "write"
@@ -229,6 +239,19 @@ export function codexThread(
   // Codex's own web search reaches the web from the harness, outside the sandbox.
   if (!c.network) config.web_search = "disabled"
   return { permissions: id, config }
+}
+
+/** The folder `p` denies by name (`<OPENCORP_HOME>`, a credential folder or a harness's own config folder, less any a
+ *  listed folder covers) that is or holds `dir`, resolved, or null. Codex's sandbox hides a denied folder whole (on
+ *  Linux at least), so a Codex installed in one (its standalone installer puts it in `~/.codex`) can't run its
+ *  sandboxed commands from there. Throws as `checkPermission` does. */
+export function deniedHolding(p: EmployeePermission, dir: string): string | null {
+  return holding(checked(p).denied, realPath(dir))
+}
+
+/** The one of `denied` that is or holds `real`, or null. */
+function holding(denied: readonly string[], real: string): string | null {
+  return denied.find((d) => within(real, d)) ?? null
 }
 
 /** The `mcp_servers` override that turns each of `defined` off: exactly the names the owner's Codex config defines,
@@ -694,9 +717,32 @@ const SOCAT: Named = { run: "the socat Claude Code's sandbox runs", folder: "soc
  *  folder either's path walks through, may lie in a folder the employee's harness can write, another person's
  *  writable folder or a live session's folder (`othersWritable`); the install folder may hold none of them; and
  *  neither file's folder, the file itself, the install folder nor its `bin` may be open to the group or others. Codex
- *  runs as the owner, outside any sandbox, so this comes before it runs. Throws as `checkPermission` does too. */
-export function checkCodexInstall(p: EmployeePermission, install: HarnessInstall): void {
-  checkInstall(p, install, CODEX)
+ *  runs as the owner, outside any sandbox, so this comes before it runs. Throws as `checkPermission` does too.
+ *  Returns `run` and `install` as checked, resolved: use those, not the paths given, which a link could repoint. */
+export function checkCodexInstall(p: EmployeePermission, install: HarnessInstall): { run: string; install: string } {
+  return checkInstall(p, install, CODEX)
+}
+
+/** Throws `UnsafeProfile` unless `dir`, a folder the office keeps for the harness outside its install (the office's
+ *  copies of Codex), lies in no folder `p` denies, and neither lies in nor holds the session's folder, the temp folder,
+ *  a listed folder, another person's writable folder or the MCP folder (`mcpHome`): the harness's sandbox reads it as
+ *  it is, and only the office writes it. `what` names it. Returns it resolved. Throws as `checkPermission` does too. */
+export function checkApart(p: EmployeePermission, dir: string, what: string): string {
+  const c = checked(p)
+  const real = realPath(dir)
+  const held = holding(c.denied, real)
+  if (held !== null) throw new UnsafeProfile(`${what} ${real} lies in ${held}, which the employee's permission denies`)
+  const near: [string, string][] = [
+    ["the session's folder", c.workspace],
+    ["the harness's temp folder", c.tmpdir],
+    ...c.folders.map((f): [string, string] => ["a listed folder", f.path]),
+    ...c.others.map((o): [string, string] => ["another person's writable folder", o]),
+    ...(c.mcpHome === null ? [] : ([["the MCP folder", c.mcpHome]] as [string, string][])),
+  ]
+  for (const [name, at] of near) {
+    if (within(real, at) || within(at, real)) throw new UnsafeProfile(`${what} ${real} lies in or holds ${name}, ${at}`)
+  }
+  return real
 }
 
 /** Throws `UnsafeProfile` unless Claude Code as the office runs it can't be changed by anyone but the user, as
@@ -741,15 +787,20 @@ export function checkHarnessBinary(
 }
 
 /** `checkCodexInstall` and `checkClaudeInstall`, with the harness's names for the refusals. */
-function checkInstall(p: EmployeePermission, install: HarnessInstall, named: Named): void {
+function checkInstall(p: EmployeePermission, install: HarnessInstall, named: Named): { run: string; install: string } {
   const c = checked(p)
-  checkAgainst([...c.writableRoots, ...c.others], install, named)
+  return checkAgainst([...c.writableRoots, ...c.others], install, named)
 }
 
 /** Throws `UnsafeProfile` if `install` lies in, holds or is reached through one of `roots`, or others than the user
- *  may write its files. */
-function checkAgainst(roots: readonly string[], { run, install, found }: HarnessInstall, named: Named): void {
-  installFolder(install, roots, named.folder)
+ *  may write its files; returns `run` and `install` resolved. */
+function checkAgainst(
+  roots: readonly string[],
+  { run, install, found }: HarnessInstall,
+  named: Named,
+): { run: string; install: string } {
+  const folder = installFolder(install, roots, named.folder)
+  let resolved = run
   for (const file of found === undefined || found === run ? [run] : [found, run]) {
     const what = `${named.run}, ${JSON.stringify(file)},`
     if (!path.isAbsolute(file)) throw new UnsafeProfile(`${what} isn't absolute`)
@@ -759,7 +810,9 @@ function checkAgainst(roots: readonly string[], { run, install, found }: Harness
     if (through !== undefined) throw new UnsafeProfile(`${what} is writable by the employee or others: ${through}`)
     const open = [real, path.dirname(real)].find(openToOthers)
     if (open !== undefined) throw new UnsafeProfile(`${what} can be changed: others than the user may write ${open}`)
+    resolved = real
   }
+  return { run: resolved, install: folder }
 }
 
 /** `install` resolved, if no one but the user can write it: neither it nor a folder its path walks through lies in
@@ -801,7 +854,7 @@ function pathOf(folders: readonly Listed[], writable: readonly string[]): string
 }
 
 /** Whether `p` (followed) exists and its group or others may write it. */
-function openToOthers(p: string): boolean {
+export function openToOthers(p: string): boolean {
   const stat = fs.statSync(p, { throwIfNoEntry: false })
   return stat !== undefined && (stat.mode & 0o022) !== 0
 }
