@@ -74,19 +74,16 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
       /** Steps through sent texts; returns the text to show, or undefined to leave the input alone. */
       move(direction: 1 | -1, input: string) {
         if (!store.history.length) return undefined
+        const next = store.index + direction
+        // Nothing is older than the oldest text, nor newer than what is being typed: the key goes past the history (to
+        // the session's ↑ and ↓), as the upstream TUI's does.
+        if (next < -store.history.length || next > 0) return undefined
         const current = store.history.at(store.index)
         if (current === undefined) return undefined
         if (current !== input && input.length) return
-        setStore(
-          produce((draft) => {
-            const next = store.index + direction
-            if (Math.abs(next) > store.history.length) return
-            if (next > 0) return
-            draft.index = next
-          }),
-        )
-        if (store.index === 0) return ""
-        return store.history.at(store.index)
+        setStore("index", next)
+        if (next === 0) return ""
+        return store.history.at(next)
       },
       append(text: string) {
         if (isDuplicateEntry(store.history.at(-1), text)) {

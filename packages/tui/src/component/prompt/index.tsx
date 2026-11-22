@@ -378,8 +378,12 @@ export function Prompt(props: PromptProps) {
     },
   }
 
+  // Captured once: the session route is keyed by sessionID, so this Prompt belongs to exactly one session (home's is
+  // undefined). Reading props.sessionID lazily could see the next route during onCleanup and stash under the wrong one.
+  const stashSessionID = props.sessionID
+
   onMount(() => {
-    const saved = promptRef.takeDraft()
+    const saved = promptRef.takeDraft(stashSessionID)
     if (store.prompt.input) return
     if (saved && saved.prompt.input) {
       input.setText(saved.prompt.input)
@@ -399,7 +403,7 @@ export function Prompt(props: PromptProps) {
     disposed = true
     // Text that is going out isn't a draft: the next prompt would offer it again after it was sent.
     if (store.prompt.input && store.prompt.input !== sending) {
-      promptRef.saveDraft({ prompt: unwrap(store.prompt), cursor: input.cursorOffset })
+      promptRef.saveDraft(stashSessionID, { prompt: unwrap(store.prompt), cursor: input.cursorOffset })
     }
     setInputTarget(undefined)
     props.ref?.(undefined)
@@ -598,8 +602,11 @@ export function Prompt(props: PromptProps) {
     ],
   }))
 
+  // ↑ and ↓ move the cursor, then step through the history; past its ends they fall through (false) to the session's
+  // ↑ (the parent) and ↓ (the picker). Above those, as the upstream TUI's.
   useBindings(() => {
     return {
+      priority: 1,
       target: inputTarget,
       enabled: (() => {
         cursorVersion()
@@ -612,8 +619,12 @@ export function Prompt(props: PromptProps) {
           category: "Prompt",
           run() {
             if (input.cursorOffset !== 0) {
-              if (input.scrollY + input.visualCursor.visualRow === 0) input.cursorOffset = 0
-              return false
+              if (input.scrollY + input.visualCursor.visualRow === 0) {
+                input.cursorOffset = 0
+                return
+              }
+              input.moveCursorUp()
+              return
             }
 
             const item = history.move(-1, input.plainText)
@@ -629,6 +640,7 @@ export function Prompt(props: PromptProps) {
 
   useBindings(() => {
     return {
+      priority: 1,
       target: inputTarget,
       enabled: (() => {
         cursorVersion()
@@ -644,9 +656,12 @@ export function Prompt(props: PromptProps) {
               if (
                 input.scrollY + input.visualCursor.visualRow ===
                 Math.max(0, input.editorView.getTotalVirtualLineCount() - 1)
-              )
+              ) {
                 input.cursorOffset = input.plainText.length
-              return false
+                return
+              }
+              input.moveCursorDown()
+              return
             }
 
             const item = history.move(1, input.plainText)
@@ -791,8 +806,14 @@ export function Prompt(props: PromptProps) {
         history.append(text)
         return true
       }
-      // A new session opens even if its prompt failed; the unsent text follows it there.
-      if (sessionID && sessionID !== props.sessionID) route.navigate({ type: "session", sessionID })
+      // A new session opens even if its prompt failed; the unsent text follows it there, stashed under its id and
+      // cleared here so this prompt's cleanup doesn't stash it under its own.
+      if (sessionID && sessionID !== props.sessionID) {
+        // Copy before clearing: unwrap returns the live store target, which the reset writes into.
+        promptRef.saveDraft(sessionID, { prompt: { ...unwrap(store.prompt) }, cursor: input.cursorOffset })
+        ref.reset()
+        route.navigate({ type: "session", sessionID })
+      }
       return true
     }
 
