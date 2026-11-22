@@ -1658,9 +1658,11 @@ test("checks give the codex check the offices recorded service mode", async () =
 })
 
 /** The fake Claude Code as `claude` in `<dir>/fake/bin`, only the user's to change, on `script` (2.1.325 and signed
- *  in unless it says otherwise). Returns the env to run it with, the fake, and the binary. */
+ *  in unless it says otherwise), with a stand-in socat beside it. Returns the env to run it with, the fake, and the
+ *  binary. */
 function fakeClaudeIn(dir: string, script: FakeClaudeScript = {}) {
   const fake = installFakeClaude(path.join(dir, "fake"), { version: "2.1.325", ...script })
+  fs.writeFileSync(path.join(fake.bin, "socat"), "#!/bin/sh\nexit 0\n", { mode: 0o755 })
   for (const p of [path.join(dir, "fake"), fake.bin]) fs.chmodSync(p, 0o755)
   return { env: { PATH: `${fake.bin}:/usr/bin:/bin`, HOME: dir }, fake, claude: fake.claude }
 }
@@ -1704,6 +1706,31 @@ test("on Linux, claude warns of each employee who uses it with a folder they may
   // macOS's sandbox isn't known to fail there.
   const mac = await doctor.claudeCheck(env, {}, null, { office, base, readOnly: ["minh"], platform: "darwin" })
   expect(mac.status).toBe("ok")
+})
+
+test("on Linux, claude fails without a socat for its sandbox, saying how to fix it; the start doctor tries runs with the office's", async () => {
+  const { dir, office, base } = probeHomes()
+  const { env, fake } = fakeClaudeIn(dir, { needs_socat: true })
+  expect((await doctor.claudeCheck(env, {}, null, { office, base, platform: "linux" })).status).toBe("ok")
+  // The start found socat first on its PATH, in a folder of its own.
+  const start = fake.log().filter((e) => e.dir === "start")[1]!
+  const first = (start.env as Record<string, string>).PATH!.split(":")[0]!
+  expect(path.basename(first)).toBe("bin")
+  expect(first).not.toBe(fake.bin)
+  fs.rmSync(path.join(fake.bin, "socat"))
+  const missing = await doctor.claudeCheck(env, {}, "systemd", { office, base, platform: "linux" })
+  expect(missing.status).toBe("fail")
+  expect(missing.detail).toContain("needs socat")
+  expect(missing.detail).toContain("OPENCORP_SOCAT_BIN")
+  const named = await doctor.claudeCheck(env, { OPENCORP_SOCAT_BIN: "/nowhere/socat" }, null, { office, base, platform: "linux" })
+  expect(named.status).toBe("fail")
+  expect(named.detail).toContain("OPENCORP_SOCAT_BIN names /nowhere/socat")
+  // macOS's sandbox needs none.
+  const mac = probeHomes()
+  const plain = fakeClaudeIn(mac.dir)
+  fs.rmSync(path.join(plain.fake.bin, "socat"))
+  const check = await doctor.claudeCheck(plain.env, {}, null, { office: mac.office, base: mac.base, platform: "darwin" })
+  expect(check.status).toBe("ok")
 })
 
 test("doctor names the employees who use Claude Code with a read-only folder, from the company's people", () => {

@@ -10,7 +10,7 @@ import { CLAUDE, readClaudeRecord } from "../../../src/tools/claude/instrument.t
 import { HarnessRecord } from "../../../src/tools/harness/record.ts"
 import { person } from "../../company/helpers.ts"
 import { startTime } from "../../../src/util/proc.ts"
-import { isGone, waitFor } from "../../helpers.ts"
+import { isGone, tempDir, waitFor } from "../../helpers.ts"
 import { type Claude, Heard, allGone, chatOf, label, makeClaude } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -224,12 +224,14 @@ test("an office stop ends every session, and a restart ends what a crash left li
   const dir = h.sessions.recordDir(chat.id, left.id)
   new HarnessRecord(CLAUDE, dir, { id: left.id, name: "claude 2", driver: "minh", chat: chat.id, started: left.created_at })
   fs.mkdirSync(path.join(h.sessions.root(), left.id))
+  fs.mkdirSync(path.join(h.sessions.root(), `${left.id}.bin`))
   // The next start's sessions.
   const restarted = new ClaudeSessions(h.office, { claude: h.fake.claude, environ: {}, tmpBase: h.tmpBase, log: () => {} })
   await restarted.restore()
   expect(status(h, left.id)).toBe("ended")
   expect(readClaudeRecord(dir)!.state).toBe("interrupted")
   expect(fs.existsSync(path.join(h.sessions.root(), left.id))).toBe(false)
+  expect(fs.existsSync(path.join(h.sessions.root(), `${left.id}.bin`))).toBe(false)
 })
 
 test("Esc right after a send interrupts the turn before it runs, cancelling the message", async () => {
@@ -351,4 +353,57 @@ test("a Claude Code whose first turn lists a tool outside the office's allowlist
   )
   expect(errors.at(-1)).toContain("RemoteTrigger")
   expect(errors.at(-1)).toContain("act on your account or outside your employee's permission")
+})
+
+test("on Linux, the office's own socat, copied alone into a private folder first on the harness PATH, is what Claude Code's sandbox finds; with none, the start is refused saying how to fix it", async () => {
+  // A stand-in for socat, only the user's to change.
+  const dir = tempDir()
+  const socat = path.join(dir, "socat")
+  fs.writeFileSync(socat, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  fs.writeFileSync(path.join(dir, "other-tool"), "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  const h = makeClaude({ script: { needs_socat: true }, socat, platform: "linux" })
+  const { id } = await started(h)
+  const env = starts(h)[0]!.env as Record<string, string>
+  const [first, ...rest] = env.PATH!.split(":")
+  expect(first).toBe(path.join(h.sessions.root(), `${id}.bin`))
+  expect(rest).not.toContain(dir)
+  expect(fs.readdirSync(first!)).toEqual(["socat"])
+  const copy = fs.lstatSync(path.join(first!, "socat"))
+  expect([copy.isFile(), copy.mode & 0o777]).toEqual([true, 0o500])
+  expect(fs.readFileSync(path.join(first!, "socat"), "utf8")).toBe(fs.readFileSync(socat, "utf8"))
+  // Claude Code's sandbox reads it, and writes nothing there.
+  const sandbox = (starts(h)[0]!.flags!.settings as Record<string, any>).sandbox.filesystem
+  expect(sandbox.allowRead).toContain(first)
+  expect(sandbox.allowWrite).not.toContain(first)
+  await h.sessions.end(id)
+  await waitFor(() => !fs.existsSync(first!), { what: "the folder to go with the session" })
+
+  const none = makeClaude({ script: { needs_socat: true }, socat: null, platform: "linux" })
+  const chat = await chatOf(none)
+  const error = await none.sessions
+    .startInstrument(chat, "01JA1H0000000000000000CA05", { observer: new Heard(), label, owner: "ngocbh" })
+    .catch((e) => e)
+  expect(error).toMatchObject({ status: 422, code: "start_failed" })
+  expect(error.message).toContain("socat")
+  expect(error.message).toContain("OPENCORP_SOCAT_BIN")
+  expect(starts(none)).toEqual([])
+  // On macOS, Claude Code's sandbox needs none.
+  const mac = makeClaude({ platform: "darwin" })
+  expect((await started(mac)).session.status).toBe("idle")
+})
+
+test("a socat others could change isn't run for Claude Code", async () => {
+  const dir = tempDir()
+  fs.chmodSync(dir, 0o777)
+  const socat = path.join(dir, "socat")
+  fs.writeFileSync(socat, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  const h = makeClaude({ script: { needs_socat: true }, socat, platform: "linux" })
+  const chat = await chatOf(h)
+  const error = await h.sessions
+    .startInstrument(chat, "01JA1H0000000000000000CA06", { observer: new Heard(), label, owner: "ngocbh" })
+    .catch((e) => e)
+  expect(error).toMatchObject({ status: 422, code: "start_failed" })
+  expect(error.message).toContain("socat")
+  expect(error.message).toContain("others than the user may write")
+  expect(starts(h)).toEqual([])
 })

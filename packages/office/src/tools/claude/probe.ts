@@ -6,9 +6,17 @@ import {
   type EmployeePermission,
   type HarnessInstall,
   checkClaudeInstall,
+  checkSocatInstall,
   claudeStart,
 } from "../../runtime/sandbox/harness_profile.ts"
-import { fenceIn, freshFolder, harnessRoot, removeFolder, sweepTemp } from "../../runtime/sandbox/harness_temp.ts"
+import {
+  fenceIn,
+  freshFolder,
+  harnessRoot,
+  programsFolder,
+  removeFolder,
+  sweepTemp,
+} from "../../runtime/sandbox/harness_temp.ts"
 import { UnsafeProfile } from "../../runtime/sandbox/policy.ts"
 import { ClaudeProcess, claudeArgs } from "./claude.ts"
 
@@ -30,6 +38,9 @@ export type ProbeOptions = {
   base?: string
   /** Folders others may write: every person's writable listed folders, and live sessions' folders. */
   othersWritable?: readonly string[]
+  /** The socat Claude Code's sandbox runs, where it needs one: checked as Claude Code is and copied into the probe's
+   *  own `bin`, first on its PATH, as a session's start does. */
+  socat?: string
 }
 
 /** Starts Claude Code as an employee's session starts it, under the permission's settings, in a read-only folder with
@@ -68,6 +79,10 @@ export async function probeStart(options: ProbeOptions): Promise<{ error: Error 
       othersWritable: options.othersWritable ?? [],
     }
     checkClaudeInstall(p, options.claude)
+    if (options.socat !== undefined) {
+      checkSocatInstall(p, options.socat)
+      p.programs = programsFolder(dir, "bin", { socat: options.socat })
+    }
     const start = claudeStart(p)
     proc = new ClaudeProcess({
       command: [options.claude.run, ...claudeArgs(start, { persist: false })],

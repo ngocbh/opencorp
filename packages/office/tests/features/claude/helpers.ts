@@ -39,7 +39,8 @@ function tracked(store: Store): void {
 }
 
 /** An office whose minh may use Claude Code (plus `files`), and its `ClaudeSessions` running the fake (2.1.325 and
- *  `script`) with a fixed environment and a temp owner's home; `options` replace the sessions' others. `lines` gets
+ *  `script`) with a fixed environment, a temp owner's home and a stand-in socat; `options` replace the sessions'
+ *  others. `lines` gets
  *  the sessions' log lines, `events` every live event the bus got. Call inside a test: the office's stop closes the
  *  sessions before the store closes, and every Claude Code still running is then killed. */
 export function makeClaude({
@@ -61,8 +62,11 @@ export function makeClaude({
   })
   const lines: string[] = []
   const fake = installFakeClaude(path.join(tempDir(), "fake"), { version: "2.1.325", ...script })
+  const socat = path.join(tempDir(), "socat")
+  fs.writeFileSync(socat, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
   const sessions = new ClaudeSessions(office, {
     claude: fake.claude,
+    socat,
     env: () => ({ PATH: "/usr/bin:/bin", HOME: home }),
     environ: {},
     tmpBase,

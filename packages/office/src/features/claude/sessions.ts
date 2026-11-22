@@ -24,10 +24,18 @@ import type { Tools } from "../../runtime/service/programs.ts"
 import {
   type EmployeePermission,
   checkClaudeInstall,
+  checkSocatInstall,
   gitRootOf,
   harnessHomes,
 } from "../../runtime/sandbox/harness_profile.ts"
-import { fenceIn, freshFolder, harnessRoot, removeFolder, sweepTemp } from "../../runtime/sandbox/harness_temp.ts"
+import {
+  fenceIn,
+  freshFolder,
+  harnessRoot,
+  programsFolder,
+  removeFolder,
+  sweepTemp,
+} from "../../runtime/sandbox/harness_temp.ts"
 import { type OfficePaths as SandboxOfficePaths, UnsafeProfile, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
 import { checkFolder } from "../../runtime/sessions/folder.ts"
 import { employeePermission } from "../../runtime/sessions/permission.ts"
@@ -43,9 +51,12 @@ import {
   ClaudeProcess,
   ClaudeStartError,
   READ_ONLY_FIX,
+  SOCAT_MISSING,
+  ClaudeSandboxUnavailable,
   claudeSession,
   nativeClaude,
   readOnlyFails,
+  socatNeeded,
   toolsBeyond,
 } from "../../tools/claude/claude.ts"
 import { markClaudeInterrupted } from "../../tools/claude/instrument.ts"
@@ -86,6 +97,8 @@ export type ClaudeSessionsOptions = {
   log?: (line: string) => void
   /** The platform Claude Code's sandbox runs on (default `process.platform`). */
   platform?: NodeJS.Platform
+  /** The socat to run in place of the one the daemon pinned, or null for none; tests pass a stand-in's. */
+  socat?: string | null
 }
 
 /** How long an idle session keeps its Claude Code: five minutes, as the upstream TUI's sessions do. */
@@ -122,6 +135,7 @@ export class ClaudeSessions {
   readonly #environ: Record<string, string | undefined>
   readonly #tmpBase: string | undefined
   readonly #platform: NodeJS.Platform
+  readonly #socat: string | undefined
   readonly #live = new Map<string, ClaudeSession>()
   #closed = false
 
@@ -133,6 +147,7 @@ export class ClaudeSessions {
     this.#environ = options.environ ?? process.env
     this.#tmpBase = options.tmpBase
     this.#platform = options.platform ?? process.platform
+    this.#socat = options.socat === undefined ? office.tools.socat : (options.socat ?? undefined)
     this.idleMs = options.idleMs ?? IDLE_MS
     this.closeGraceMs = options.closeGraceMs ?? CLOSE_GRACE_MS
     this.stopWaitMs = options.stopWaitMs ?? STOP_WAIT_MS
@@ -306,15 +321,19 @@ export class ClaudeSessions {
 
   /** What one start of `live`'s Claude Code runs: the pinned `claude` (or the options'), checked as it will run
    *  (`checkClaudeInstall`), since it runs as the owner; the employee's permission over the session's folder, with a
-   *  fresh, private temp folder; the session's instructions; and its environment, the worker's with Claude Code's
-   *  fixed variables. A new session starts with its own id; a later start resumes it. Throws `ClaudeMissing` with no
-   *  Claude Code, and as the checks do. */
+   *  fresh, private temp folder, and on Linux the pinned socat, checked as Claude Code is, copied alone into a private
+   *  folder first on its PATH (`<root>/<session>.bin`); the session's instructions; and its environment, the worker's
+   *  with Claude Code's fixed variables. A new session starts with its own id; a later start resumes it. Throws
+   *  `ClaudeMissing` with no Claude Code, `ClaudeSandboxUnavailable` with no socat where the sandbox needs it, and as
+   *  the checks do. */
   async prepare(
     live: ClaudeSession,
     { resume }: { resume: boolean },
   ): Promise<{ command: string[]; env: Record<string, string>; instructions: string | null }> {
     const found = this.#claude ?? this.office.tools.claude
     if (found === undefined) throw new ClaudeMissing(MISSING)
+    const socat = socatNeeded(this.#platform) ? this.#socat : undefined
+    if (socatNeeded(this.#platform) && socat === undefined) throw new ClaudeSandboxUnavailable(`${SOCAT_MISSING}.`)
     const install = { ...nativeClaude(found), found }
     const root = this.root()
     const permission = await this.#permission(live.sessionId, {
@@ -333,6 +352,10 @@ export class ClaudeSessions {
       throw new UnsafeProfile(`@${live.person}'s folder is read-only to them, and ${READ_ONLY_FIX}`)
     }
     checkClaudeInstall(permission, install)
+    if (socat !== undefined) {
+      checkSocatInstall(permission, socat)
+      permission.programs = programsFolder(root, `${live.sessionId}.bin`, { socat })
+    }
     const configDir = this.#environ.CLAUDE_CONFIG_DIR || path.join(this.office.guards.home ?? os.homedir(), ".claude")
     const id = live.claudeId
     const started = claudeSession(permission, {
@@ -374,11 +397,12 @@ export class ClaudeSessions {
     return proc
   }
 
-  /** Drops `live` once it finished, and its temp folder. */
+  /** Drops `live` once it finished, and its temp and programs folders. */
   dropped(live: ClaudeSession): void {
     if (this.#live.get(live.sessionId) === live) this.#live.delete(live.sessionId)
     try {
       removeFolder(this.root(), live.sessionId)
+      removeFolder(this.root(), `${live.sessionId}.bin`)
     } catch (error) {
       this.log(`claude session ${live.sessionId}: its temp folder wasn't removed (${nameOf(error)})`)
     }
@@ -403,7 +427,10 @@ export class ClaudeSessions {
    *  sessions with no live Claude Code here, and a doctor probe's whose process is gone. */
   #sweep(): void {
     try {
-      const ours = (name: string) => !this.#live.has(name) && this.store.getSession(name) !== undefined
+      const ours = (folder: string) => {
+        const name = folder.endsWith(".bin") ? folder.slice(0, -".bin".length) : folder
+        return !this.#live.has(name) && this.store.getSession(name) !== undefined
+      }
       sweepTemp(this.root(), ours, this.log)
     } catch (error) {
       this.log(`claude: the harness temp folder wasn't swept (${nameOf(error)})`)

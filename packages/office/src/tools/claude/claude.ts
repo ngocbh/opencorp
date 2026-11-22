@@ -55,6 +55,18 @@ export const READ_ONLY_FIX =
   "on Linux Claude Code's sandbox fails every command in a folder its employee may only read; the owner makes their " +
   "harness_policy sandbox workspace-write, or they use Codex for read-only work"
 
+/** Whether Claude Code's sandbox needs socat on `platform`: on Linux it bridges the sandbox's network through it, and
+ *  refuses to start without it (O5: "socat not installed"). */
+export function socatNeeded(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "linux"
+}
+
+/** What to do when the office found no socat. */
+export const SOCAT_MISSING =
+  "Claude Code's sandbox needs socat on Linux, and the office didn't find it (on its PATH when it started, or as " +
+  "OPENCORP_SOCAT_BIN): install socat (for example `sudo apt-get install socat`, or `sudo dnf install socat`), or " +
+  "point OPENCORP_SOCAT_BIN at one, then restart the office and run `opencorp doctor`"
+
 /** How the office talks to Claude Code: stream-json both ways, every message written out. */
 export const STREAM_ARGS = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"] as const
 

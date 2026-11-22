@@ -24,10 +24,12 @@ import {
   ClaudeSignedOut,
   ClaudeStartError,
   READ_ONLY_FIX,
+  SOCAT_MISSING,
   claudeCommand,
   nativeClaude,
   olderThan,
   readOnlyFails,
+  socatNeeded,
 } from "../../tools/claude/claude.ts"
 import { probeStart } from "../../tools/claude/probe.ts"
 import { type Probed, threadProbe } from "../codex/thread.ts"
@@ -751,7 +753,8 @@ export async function codexCheck(
  * `environ` is the office's environment: its `OPENCORP_CLAUDE_BIN` picks the binary and its `CLAUDE_CONFIG_DIR` joins
  * `env`, as they do for a session. `mode` is the office's recorded service mode, which decides how a fix reaches it.
  * A start that works warns of the employees in `readOnly` (`readOnlyClaude`) on a `platform` where Claude Code can't
- * run in their read-only folders, whose sessions are refused.
+ * run in their read-only folders, whose sessions are refused. Where its sandbox needs socat (Linux), the start runs
+ * with the one the office finds (`OPENCORP_SOCAT_BIN` in `environ`, else `socat` on `env`'s PATH), and none fails.
  */
 export async function claudeCheck(
   env: Record<string, string>,
@@ -821,9 +824,21 @@ export async function claudeCheck(
   }
   if (office === undefined) return { name: "claude", status: "ok", detail: named }
   const cant = `${named} can't start under an employee's permission`
+  let socat: string | undefined
+  if (socatNeeded(platform)) {
+    const override = environ.OPENCORP_SOCAT_BIN
+    socat = which(override || "socat", env.PATH) ?? undefined
+    if (socat === undefined) {
+      const detail = override
+        ? `${cant}: OPENCORP_SOCAT_BIN names ${override}, which isn't an executable the office can find; fix or unset ` +
+          `it, then ${changeLands(mode)}`
+        : `${cant}: ${SOCAT_MISSING.replace("restart the office and run `opencorp doctor`", changeLands(mode))}`
+      return { name: "claude", status: "fail", detail }
+    }
+  }
   let probed: { error: Error | null; log: string }
   try {
-    probed = await probeStart({ claude, env, environ, ...office, base })
+    probed = await probeStart({ claude, env, environ, ...office, base, ...(socat === undefined ? {} : { socat }) })
   } catch (error) {
     // Its folders under /tmp couldn't be made or removed, or the binary is gone.
     return { name: "claude", status: "fail", detail: `${cant}: doctor can't try one: ${messageOf(error)}` }

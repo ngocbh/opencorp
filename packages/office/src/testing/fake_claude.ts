@@ -23,9 +23,10 @@
  *    its wording unrecorded), as `--flag v` or `--flag=v`, and the bare `--strict-mcp-config`, `--verbose`,
  *    `--dangerously-skip-permissions` and `--no-session-persistence` (no session kept). Any other flag, and any
  *    argument that is no flag's value, isn't modelled. Settings that enable the sandbox with `failIfUnavailable`
- *    stop the start where it can't run (the script's `sandbox_unavailable`): as recorded, `initialize` gets no answer
- *    but a `result` naming `startup_failure_reason` `sandbox_required_unavailable`, the reason goes to stderr, and
- *    stdin's end exits 1. Without `failIfUnavailable` it goes on unsandboxed, as Claude Code does.
+ *    stop the start where it can't run (the script's `sandbox_unavailable`, or its `needs_socat` with no `socat` on
+ *    the fake's PATH, as on Linux): as recorded, `initialize` gets no answer but a `result` naming
+ *    `startup_failure_reason` `sandbox_required_unavailable`, the reason goes to stderr, and stdin's end exits 1.
+ *    Without `failIfUnavailable` it goes on unsandboxed, as Claude Code does.
  *  - **`initialize`** is answered, after the script's `slow_start` seconds if it has them, with the version, models, `commands: []`, the permission mode, the pid and the
  *    account, `{tokenSource: "none", apiProvider: "firstParty"}` when the script is `signed_out`. Hooks aren't
  *    modelled: no recording of 2.1.330 holds them, and the office registers none.
@@ -127,6 +128,8 @@ export interface FakeClaudeScript {
   models?: Obj[]
   /** The sandbox can't start here: settings that enable it with `failIfUnavailable` stop the start. */
   sandbox_unavailable?: boolean
+  /** The sandbox needs `socat` on the fake's PATH, as on Linux; without it the start stops as above. */
+  needs_socat?: boolean
   /** Tools `system`/`init` lists whatever `--tools` and the deny rules say. */
   tools_added?: string[]
   /** Seconds `initialize` waits before its answer, as a Claude Code slow to start. */
@@ -1577,8 +1580,11 @@ function main(state: string, argv: string[]): void {
   if (flags.settings !== undefined && settings === null)
     return quit(1, `fake claude: --settings is neither JSON nor a JSON file: ${flags.settings}`)
   const sandbox = settings?.sandbox
-  const sandboxUp = script.sandbox_unavailable !== true
-  const reason = `${SANDBOX_REASON}: the fake's script says the sandbox can't start here`
+  const noSocat = script.needs_socat === true && !onPath("socat", process.env.PATH)
+  const sandboxUp = script.sandbox_unavailable !== true && !noSocat
+  const reason = noSocat
+    ? `${SANDBOX_REASON}: socat not installed \u00b7 install missing tools (e.g. apt install bubblewrap socat) or see https://code.claude.com/docs/en/sandboxing`
+    : `${SANDBOX_REASON}: the fake's script says the sandbox can't start here`
   const stopped = !sandboxUp && sandbox?.enabled === true && sandbox.failIfUnavailable === true
   // A rule's `/` anchors at a settings file's folder, else at the working folder.
   const fromFile = flags.settings !== undefined && !flags.settings.trimStart().startsWith("{")
@@ -1601,6 +1607,19 @@ function main(state: string, argv: string[]): void {
   if (stopped)
     process.stderr.write(`\nError: ${reason[0]!.toLowerCase()}${reason.slice(1)}\n  Refusing to start without a working sandbox (see sandbox.failIfUnavailable).\n`)
   new Fake(state, script, flags, policy, mode, id, stopped ? reason : null).serve()
+}
+
+/** Whether an executable `name` is in a folder of `PATH`. */
+function onPath(name: string, PATH: string | undefined): boolean {
+  return (PATH ?? "").split(":").some((dir) => {
+    if (dir === "") return false
+    try {
+      fs.accessSync(path.join(dir, name), fs.constants.X_OK)
+      return true
+    } catch {
+      return false
+    }
+  })
 }
 
 if (import.meta.main) {

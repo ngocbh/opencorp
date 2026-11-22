@@ -1220,3 +1220,33 @@ test("the harnesses' own config folders are those the office's environment sets"
   expect(harnessHomes({ CODEX_HOME: "/c", CLAUDE_CONFIG_DIR: "/d", HOME: "/h" })).toEqual(["/c", "/d"])
   expect(harnessHomes({ CODEX_HOME: "" })).toEqual([])
 })
+
+test("a programs folder goes first on the harness PATH and is read in Claude Code's sandbox, never written; one that isn't private, holds what others could change, or lies where the harness writes is refused", () => {
+  const { root, ws, tmp, permission } = layout()
+  const programs = path.join(root, "programs")
+  fs.mkdirSync(programs, { mode: 0o700 })
+  fs.writeFileSync(path.join(programs, "socat"), "", { mode: 0o500 })
+  const p = permission({ programs })
+  expect(harnessPath(p).split(":")[0]).toBe(programs)
+  const { settings, env } = claudeStart(p)
+  const fsRules = (settings.sandbox as { filesystem: Record<string, string[]> }).filesystem
+  expect(fsRules.allowRead).toContain(programs)
+  expect(fsRules.allowWrite).not.toContain(programs)
+  expect(env.PATH!.split(":")[0]).toBe(programs)
+
+  fs.chmodSync(path.join(programs, "socat"), 0o522)
+  expect(() => checkPermission(p)).toThrow(/holds socat/)
+  fs.chmodSync(path.join(programs, "socat"), 0o500)
+  fs.chmodSync(programs, 0o750)
+  expect(() => checkPermission(p)).toThrow(/isn't private/)
+  fs.chmodSync(programs, 0o700)
+  const link = path.join(root, "programs-link")
+  fs.symlinkSync(programs, link)
+  expect(() => checkPermission(permission({ programs: link }))).toThrow(/a link is refused/)
+  // In the folder the harness writes, or its temp folder.
+  for (const inside of [path.join(ws, "bin"), path.join(tmp, "bin")]) {
+    fs.mkdirSync(inside, { mode: 0o700 })
+    expect(() => checkPermission(permission({ programs: inside })), inside).toThrow(UnsafeProfile)
+    fs.rmSync(inside, { recursive: true })
+  }
+})

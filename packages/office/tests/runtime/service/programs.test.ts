@@ -64,6 +64,17 @@ test("the codex override is a path or a name on the path", () => {
   expect(resolveTools({ PATH: bin }).codex).toBe(path.join(bin, "codex"))
 })
 
+test("socat, which Claude Code's sandbox needs on Linux, is found as claude is: OPENCORP_SOCAT_BIN, else socat on the path", () => {
+  const root = tempDir()
+  const bin = path.join(root, "bin")
+  const absolute = fakeTool(path.join(root, "abs", "socat-x"))
+  fakeTool(path.join(bin, "socat"))
+  expect(resolveTools({ PATH: bin }).socat).toBe(path.join(bin, "socat"))
+  expect(resolveTools({ PATH: bin, OPENCORP_SOCAT_BIN: absolute }).socat).toBe(absolute)
+  expect(resolveTools({ PATH: bin, OPENCORP_SOCAT_BIN: path.join(root, "missing") }).socat).toBeUndefined()
+  expect(resolveTools({ PATH: path.join(root, "none") }).socat).toBeUndefined()
+})
+
 test("the claude override is a path or a name on the path, and never falls back to claude", () => {
   const root = tempDir()
   const bin = path.join(root, "bin")

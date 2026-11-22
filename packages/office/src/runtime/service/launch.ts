@@ -46,8 +46,9 @@ export class Launch {
 /** Which Codex the office runs, when the caller's shell sets them: its home, and a binary other than `codex`. */
 export const CODEX_ENV = ["CODEX_HOME", "OPENCORP_CODEX_BIN"] as const
 
-/** Which Claude Code the office runs, alike: its config folder, and a binary other than `claude`. */
-export const CLAUDE_ENV = ["CLAUDE_CONFIG_DIR", "OPENCORP_CLAUDE_BIN"] as const
+/** Which Claude Code the office runs, alike: its config folder, a binary other than `claude`, and the socat its Linux
+ *  sandbox runs. */
+export const CLAUDE_ENV = ["CLAUDE_CONFIG_DIR", "OPENCORP_CLAUDE_BIN", "OPENCORP_SOCAT_BIN"] as const
 
 /**
  * The daemon's environment: the worker allowlist, `LC_*`, `CODEX_ENV` and `CLAUDE_ENV`, so no key in the caller's

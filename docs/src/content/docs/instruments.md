@@ -163,5 +163,7 @@ folders of tools you run yourself read-only: `~/.cargo` read-only, `~/miniconda3
   so nothing can commit them. On your side the empty files exist only while one of their commands runs, and go when
   it ends: don't `git add -A` in the project then.
 - **The sandbox must run.** Each harness holds the permission with its own sandbox: bubblewrap in a user namespace on
-  Linux, Seatbelt on macOS. Claude Code doesn't start without it ([Check and run](/check-and-run/)). On macOS, how
-  either sandbox holds an employee's permission is unchecked.
+  Linux, Seatbelt on macOS. Claude Code doesn't start without it ([Check and run](/check-and-run/)). On Linux its
+  sandbox also needs `socat`: the office runs the one it found when it started, copied alone into a folder of the
+  session's own that its commands can't change, first on their `PATH`. On macOS, how either sandbox holds an
+  employee's permission is unchecked.

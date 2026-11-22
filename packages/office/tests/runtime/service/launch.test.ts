@@ -120,6 +120,7 @@ test("the daemon keeps which claude code to run and its config folder, never a c
     PATH: "/usr/bin",
     CLAUDE_CONFIG_DIR: "/Users/owner/.claude-work",
     OPENCORP_CLAUDE_BIN: "/opt/claude",
+    OPENCORP_SOCAT_BIN: "/opt/socat/bin/socat",
     ANTHROPIC_API_KEY: "sk-ant-secret",
     CLAUDE_CODE_OAUTH_TOKEN: "oat-secret",
     CLAUDE_CODE_PLUGIN_DIRS: "/Users/owner/plugins",
@@ -128,6 +129,7 @@ test("the daemon keeps which claude code to run and its config folder, never a c
     PATH: "/usr/bin",
     CLAUDE_CONFIG_DIR: "/Users/owner/.claude-work",
     OPENCORP_CLAUDE_BIN: "/opt/claude",
+    OPENCORP_SOCAT_BIN: "/opt/socat/bin/socat",
   })
 })
 

@@ -49,6 +49,9 @@ export interface EmployeePermission {
   /** Folders others may write (other people's writable listings, and live sessions' folders): none of them goes on
    *  this one's PATH. */
   othersWritable?: readonly string[]
+  /** A private folder of the programs the office lets the harness's sandbox run (`programsFolder`: Claude Code's
+   *  socat), first on its PATH and readable, never writable, in its sandbox. */
+  programs?: string
 }
 
 /** The system folders that start every harness PATH. Both harnesses run `git`, `rg` and (Codex, on Linux) `bwrap`
@@ -120,6 +123,8 @@ interface Checked {
   held: Kept[]
   /** The harness PATH. */
   path: string
+  /** `programs`, resolved. */
+  programs: string | null
 }
 
 /** A path kept read-only, and whether it is a folder (Claude Code's edit deny then covers what is in it). */
@@ -222,7 +227,7 @@ export function claudeStart(p: EmployeePermission): {
       autoAllowBashIfSandboxed: true,
       filesystem: {
         denyRead: [...(covered(c.home) ? [] : [c.home]), ...sockets, ...c.denied],
-        allowRead: [c.workspace, c.tmpdir, ...c.folders.map((folder) => folder.path)],
+        allowRead: [c.workspace, c.tmpdir, ...c.folders.map((folder) => folder.path), ...(c.programs ? [c.programs] : [])],
         allowWrite: [...(c.writable ? [c.workspace] : []), c.tmpdir, ...writable],
         denyWrite: [
           ...(c.writable ? [] : [c.workspace]),
@@ -358,6 +363,7 @@ function checked(p: EmployeePermission): Checked {
     ...harnessHomes.map((dir) => ({ path: dir, folder: true })),
   ])
   const others = (p.othersWritable ?? []).map((dir) => realPath(dir))
+  const programs = p.programs === undefined ? null : programsOf(p.programs, [...writable, ...others], officeHome)
   const all = [workspace, tmpdir, fence, home, ...folders.map((f) => f.path), ...denied, ...held.map((h) => h.path)]
   for (const resolved of all) {
     if (PATTERN.test(resolved)) throw new UnsafeProfile(`the harness would read ${resolved} as a pattern`)
@@ -376,8 +382,35 @@ function checked(p: EmployeePermission): Checked {
     others,
     kept: keptPaths(workspace, gitRoot, writable),
     held,
-    path: pathOf(folders, [...writable, ...others]),
+    path: [...(programs === null ? [] : [programs]), pathOf(folders, [...writable, ...others])].join(":"),
+    programs,
   }
+}
+
+/** `programs` resolved, if it is a folder (not a link), the user's and private, outside `offLimits` (what the harness
+ *  or others may write) and the office's home, holding only files others than the user can't write; else
+ *  `UnsafeProfile`. */
+function programsOf(programs: string, offLimits: readonly string[], officeHome: string): string {
+  const what = `the harness's programs folder ${programs}`
+  if (!path.isAbsolute(programs) || programs.includes("\0") || programs.includes(":")) {
+    throw new UnsafeProfile(`${what} isn't an absolute path PATH can hold`)
+  }
+  const stat = fs.lstatSync(programs, { throwIfNoEntry: false })
+  if (stat === undefined || stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new UnsafeProfile(`${what} isn't a folder (a link is refused)`)
+  }
+  if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) throw new UnsafeProfile(`${what} isn't private`)
+  const real = realPath(programs)
+  const inside = [...offLimits, officeHome].find((root) => within(real, root) || within(root, real))
+  if (inside !== undefined) throw new UnsafeProfile(`${what} lies in or holds ${inside}`)
+  for (const name of fs.readdirSync(real)) {
+    const file = fs.lstatSync(path.join(real, name))
+    if (!file.isFile() || file.uid !== process.getuid?.() || (file.mode & 0o022) !== 0) {
+      throw new UnsafeProfile(`${what} holds ${name}, which isn't a file only the user may change`)
+    }
+  }
+  if (PATTERN.test(real)) throw new UnsafeProfile(`the harness would read ${real} as a pattern`)
+  return real
 }
 
 /** The paths of the writable ones of `folders`. */
@@ -518,6 +551,7 @@ interface Named {
 
 const CODEX: Named = { run: "the Codex the office runs", folder: "Codex's install folder" }
 const CLAUDE: Named = { run: "the Claude Code the office runs", folder: "Claude Code's install folder" }
+const SOCAT: Named = { run: "the socat Claude Code's sandbox runs", folder: "socat's folder" }
 
 /** Throws `UnsafeProfile` unless Codex as the office runs it can't be changed by anyone but the user: `run`, the file
  *  the office spawns, and `install`, the folder Codex's sandboxed commands run it from (`nativeCodex`). Neither, nor a
@@ -536,6 +570,13 @@ export function checkCodexInstall(p: EmployeePermission, install: HarnessInstall
  *  this comes before it runs. Throws as `checkPermission` does too. */
 export function checkClaudeInstall(p: EmployeePermission, install: HarnessInstall): void {
   checkInstall(p, install, CLAUDE)
+}
+
+/** Throws `UnsafeProfile` unless the socat the office found (`found`, and its real file) can't be changed by anyone but
+ *  the user, as `checkClaudeInstall` checks Claude Code: Claude Code runs it as the owner, outside its sandbox. */
+export function checkSocatInstall(p: EmployeePermission, found: string): void {
+  const run = realPath(found)
+  checkInstall(p, { run, install: path.dirname(run), found }, SOCAT)
 }
 
 /** What runs a harness: the file the office spawns, the folder it is installed in, and, when given, the path found on
