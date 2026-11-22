@@ -21,3 +21,7 @@ the second hires.
 Your employee runs their commands in a sandboxed shell, and hands work to Codex or Claude Code when their
 `person.yaml` lists that harness. [Instruments and permissions](/instruments/) says how you watch and steer each one,
 what `harness_policy` lets it touch, and where that permission stops.
+
+To let your employee's Codex and Claude Code use one of your MCP servers, name it in their `harness_policy`
+(`mcp_servers: [github]`). An allowed server runs as you, outside their folder fence: allowing `github` lets them do
+whatever your GitHub token can. See [MCP servers](/instruments/#mcp-servers).

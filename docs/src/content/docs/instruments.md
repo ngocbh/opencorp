@@ -1,6 +1,6 @@
 ---
 title: "Instruments and permissions"
-description: "The shell, Codex and Claude Code your employees work with: how you watch them, what they may touch, and where that stops."
+description: "The shell, Codex and Claude Code your employees work with: how you watch them, what they may touch, the MCP servers you allow them, and where that stops."
 ---
 
 Your employees work with three instruments: a shell, Codex and Claude Code. This page says how you watch and steer
@@ -85,16 +85,18 @@ folder, a private temp folder and the listed folders, each with exactly the acce
 the listed folders.
 
 **Codex** asks you nothing: every command and file edit runs at once inside that permission, and one it refuses goes
-back to Codex. In your employee's Codex threads your MCP servers, hooks, `notify`, apps and plugins are off, and so
-is web search when the network is off, and your `~/.codex/config.toml` is left as it is. An MCP server you add while
-a session runs would start at its next turn, so the session takes no message until you remove it or start a new
-session, which turns it off.
+back to Codex. In your employee's Codex threads your hooks, `notify`, apps and plugins are off, and so are your MCP
+servers but those you [allow them](#mcp-servers), and so is web search when the network is off. Your
+`~/.codex/config.toml` is left as it is. An MCP server you add while a session runs would start at its next turn, so
+the session takes no message until you remove it or start a new session, which turns it off; one you allow them that
+Codex reaches by URL is fine.
 
 **Claude Code** asks you nothing either: what its permission doesn't allow is refused. Its only tools are its file
 tools, Bash and ToolSearch: none that acts on your claude.ai account (routines, Claude Design, push notifications),
 reaches outside its sandbox or runs on after the turn. A Claude Code that offers more is stopped before it uses them.
-Neither your Claude Code settings nor the project's load: your hooks, plugins, MCP servers, skills, permission rules and
-default model don't apply there, and auto memory, background sessions and agent view are off. Only a `/login` sign-in
+Neither your Claude Code settings nor the project's load: your hooks, plugins, skills, permission rules and default
+model don't apply there, nor any MCP server but those you [allow them](#mcp-servers), and auto memory, background
+sessions and agent view are off. Only a `/login` sign-in
 reaches it: an API key in your shell or your settings doesn't. OpenCorp passes it your `~/.claude/CLAUDE.md` and the
 project's `CLAUDE.md` (at the folder and at its repository's root, or its `AGENTS.md` when there's none) as text; an `@`
 import in them isn't followed. It doesn't take messages from your other Claude Code sessions, and can't message or list
@@ -141,6 +143,36 @@ counts each one as a lint warning.
 So list no folder that holds secrets, make a folder writable only where your employee must write there, and keep the
 folders of tools you run yourself read-only: `~/.cargo` read-only, `~/miniconda3/envs/ml` writable.
 
+## MCP servers
+
+Your employees' Codex and Claude Code load none of your MCP servers unless you allow them, by name, in
+`harness_policy`:
+
+```yaml
+harness_policy:
+  sandbox: workspace-write
+  mcp_servers: [github]      # your servers they may use; none by default
+```
+
+**An allowed server runs as you, outside your employee's folder fence.** The harness starts it with your
+credentials, and nothing holds it to their permission: allowing `github` lets your employee do whatever your GitHub
+token can.
+
+- **Codex** keeps each allowed server as your `~/.codex/config.toml` (or `CODEX_HOME`'s) defines it, and turns every
+  other one off. A project's own `.codex/config.toml` never loads, so allowing a name never runs a project's server
+  of that name.
+- **Claude Code** gets each allowed server's definition from your user-scope servers (`claude mcp add --scope user`,
+  kept in `~/.claude.json`, or in `CLAUDE_CONFIG_DIR`). OpenCorp hands Claude Code only those, in a file your
+  employee's commands can't read, removed when Claude Code stops; nothing else loads, a project's `.mcp.json` and your
+  local-scope servers included. Their tools run without asking, as Claude Code asks nobody there.
+- **Names.** A name is letters, digits, `-` and `_`, as your harness config names the server. A server only one
+  harness defines loads only there.
+- **Your environment.** The harnesses run with few of your shell's variables, so a server that reads a token from
+  one (`${GITHUB_TOKEN}`, say) doesn't get it there.
+
+`opencorp doctor` lists each employee's allowed servers and whether Codex and Claude Code define each, and warns when
+a harness they use doesn't. Its lint warns about each allowed server.
+
 ## Where the permission stops
 
 - **The harnesses run as you.** Only their commands, and Codex's file edits, are held to your employee's
@@ -155,6 +187,7 @@ folders of tools you run yourself read-only: `~/.cargo` read-only, `~/miniconda3
   by Claude Code's permission rules, not by the operating system.
 - **Claude Code still loads** managed settings (an administrator's), `~/.claude.json` and its built-in mods, so what
   they turn on applies to your employees' sessions too.
+- **Allowed MCP servers** run as you, outside the fence ([MCP servers](#mcp-servers)).
 - **Unix sockets.** Claude Code's commands can't see `/tmp`, `/run` or `/dev/shm` (nor `/var/folders` on macOS),
   where the sockets of your tmux, ssh-agent and desktop session live. Whether its Linux sandbox also blocks
   connecting to a socket elsewhere is unchecked.
