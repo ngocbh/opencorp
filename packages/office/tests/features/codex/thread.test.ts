@@ -302,7 +302,8 @@ function probeOptions(dir: string, home: string, script: object) {
 test("doctor's probe passes when a thread under an employee's permission loads and reloads its config", async () => {
   const { root, home } = layout()
   const options = probeOptions(path.join(root, "probe"), home, { mcp_servers: { docs: {} } })
-  expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [] })
+  // The names of the servers the owner's config defines, for doctor's MCP line.
+  expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [], mcpServers: ["docs"] })
   const log = path.join(root, "probe/rpc.jsonl")
   const [start] = calls(log, "thread/start") as Record<string, any>[]
   expect([start!.approvalPolicy, start!.ephemeral, start!.permissions]).toEqual(["never", true, "opencorp-doctor"])
@@ -321,6 +322,7 @@ test("doctor's probe says why a thread that starts can't be used", async () => {
   expect(await threadProbe(options)).toEqual({
     failed: { why: `mcpServerStatus/list failed: ${message}`, log: path.join(harnessTemp(options.base), "doctor-codex.log") },
     projectConfigs: [],
+    mcpServers: [],
   })
   expect(calls(path.join(root, "probe/rpc.jsonl"), "thread/start")).toHaveLength(1)
   const refused = probeOptions(path.join(root, "refused"), home, { load_exit: 3 })
@@ -360,7 +362,11 @@ test("doctor's probe names each trusted project whose own config codex would loa
     },
     project_layers: { [trusted]: [{ dotCodexFolder: path.join(trusted, ".codex") }], [plain]: [{ dotCodexFolder: path.join(plain, ".codex") }] },
   })
-  expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [path.join(trusted, ".codex")] })
+  expect(await threadProbe(options)).toEqual({
+    failed: null,
+    projectConfigs: [path.join(trusted, ".codex")],
+    mcpServers: [],
+  })
 })
 
 /** The real Codex the opt-in tests run, named by `OPENCORP_TEST_CODEX` (a wrapper, npm's launcher or the native
@@ -403,7 +409,7 @@ test.skipIf(NO_CODEX)(
   "a real codex takes the thread the office sends, keeps the owner's MCP server off and writes no config",
   async () => {
     const { codexHome, marker, config, options } = realHome()
-    expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [] })
+    expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [], mcpServers: ["probe"] })
     expect(fs.existsSync(marker)).toBe(false)
     expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).toBe(config)
   },
@@ -580,7 +586,11 @@ test.skipIf(NO_CODEX)(
       await proc.close(2000)
     }
     // Doctor names the project.
-    expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [path.join(ws, ".codex")] })
+    expect(await threadProbe(options)).toEqual({
+      failed: null,
+      projectConfigs: [path.join(ws, ".codex")],
+      mcpServers: ["probe"],
+    })
   },
   120_000,
 )
@@ -601,7 +611,7 @@ test.skipIf(NO_CODEX)(
     fs.symlinkSync(own, link)
     // Codex's home by default (~/.codex), named, and named through a link: Codex skips its own home as a project.
     for (const environ of [{}, { CODEX_HOME: own }, { CODEX_HOME: link }]) {
-      expect(await threadProbe({ ...options, environ })).toEqual({ failed: null, projectConfigs: [] })
+      expect(await threadProbe({ ...options, environ })).toEqual({ failed: null, projectConfigs: [], mcpServers: [] })
       const ws = path.join(home, "proj")
       fs.mkdirSync(ws, { recursive: true })
       const proc = new CodexProcess({
@@ -629,6 +639,7 @@ test.skipIf(NO_CODEX)(
     expect(await threadProbe({ ...options, environ: { CODEX_HOME: elsewhere } })).toEqual({
       failed: null,
       projectConfigs: [own],
+      mcpServers: [],
     })
   },
   120_000,

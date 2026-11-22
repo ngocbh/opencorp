@@ -1,6 +1,6 @@
 /** `opencorp doctor`: check the office home (there and private), company repo, provider and connections, the run and
  *  session folders (writable), service, daemon, HQ, sandbox and its terminals, worked folders, Codex and Claude
- *  Code. */
+ *  Code, and the MCP servers employees may use. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -15,6 +15,7 @@ import { CompanyGit, CompanyGitError } from "../../company/git.ts"
 import type { RepoIssue } from "../../company/issues.ts"
 import { lint } from "../../company/lint.ts"
 import { type CompanyRepo, loadRepo } from "../../company/loader.ts"
+import { MCP_SERVER_NAME } from "../../company/naming.ts"
 import { companyState, missingFiles } from "../../company/template.ts"
 import { CodexMissing, codexCommand, nativeCodex } from "../../tools/codex/codex.ts"
 import {
@@ -31,6 +32,7 @@ import {
   readOnlyFails,
   socatNeeded,
 } from "../../tools/claude/claude.ts"
+import { claudeJson, ownerMcpServers } from "../../tools/claude/mcp.ts"
 import { probeStart } from "../../tools/claude/probe.ts"
 import { SocatUnusable } from "../../tools/claude/socat.ts"
 import { type Probed, threadProbe } from "../codex/thread.ts"
@@ -116,6 +118,9 @@ export interface Check {
   status: "ok" | "warn" | "fail"
   detail: string
 }
+
+/** The Codex check's line, and the MCP servers the owner's Codex config defines, by name, when its probe read them. */
+export type CodexCheck = Check & { mcpServers?: string[] }
 
 function errnoCode(error: unknown): string | undefined {
   const code = (error as NodeJS.ErrnoException | null)?.code
@@ -638,13 +643,14 @@ export interface CodexOffice {
  *
  * `environ` is the office's environment: its `OPENCORP_CODEX_BIN` picks the binary and its `CODEX_HOME` joins `env`,
  * as they do for an app-server. `mode` is the office's recorded service mode, which decides how a fix reaches it.
+ * A thread that runs also names the MCP servers the owner's Codex config defines (`mcpServers`), for the MCP line.
  */
 export async function codexCheck(
   env: Record<string, string>,
   environ: Env,
   mode: string | null = null,
   { timeoutMs = 30_000, office, base }: { timeoutMs?: number; office?: CodexOffice; base?: string } = {},
-): Promise<Check> {
+): Promise<CodexCheck> {
   let found: string
   try {
     found = codexCommand(env, environ)[0]!
@@ -723,7 +729,7 @@ export async function codexCheck(
     const detail = `${named} is signed in, but doctor can't try a thread under an employee's permission: ${messageOf(error)}`
     return { name: "codex", status: "fail", detail }
   }
-  const { failed, projectConfigs } = probed
+  const { failed, projectConfigs, mcpServers } = probed
   if (failed !== null) {
     const detail =
       `${named} is signed in, but a thread under an employee's permission can't be used: ` +
@@ -731,14 +737,49 @@ export async function codexCheck(
     return { name: "codex", status: "fail", detail }
   }
   const runs = `${named}, signed in, and a thread under an employee's permission runs`
-  if (projectConfigs.length === 0) return { name: "codex", status: "ok", detail: runs }
+  if (projectConfigs.length === 0) return { name: "codex", status: "ok", detail: runs, mcpServers }
   const files = projectConfigs.map((dir) => path.join(dir, "config.toml"))
   const shown = files.length > 3 ? [...files.slice(0, 3), `${files.length - 3} more`] : files
   const detail =
     `${runs}, but your Codex config trusts projects whose own config it would load, as you, so employees' Codex ` +
     `sessions there are refused (${shown.join(", ")}); untrust those projects in your Codex config.toml, or remove ` +
     "those files"
-  return { name: "codex", status: "warn", detail }
+  return { name: "codex", status: "warn", detail, mcpServers }
+}
+
+/**
+ * The employees in `repo` the owner allows MCP servers (each plain name in their `harness_policy.mcp_servers`, as
+ * their harness takes it), each server with whether `defined` says the owner's Codex config and Claude Code's
+ * user-scope servers define it (null: unknown there, the harness's own line saying why); names only, never a
+ * definition. A warning when a server isn't defined for a harness its employee uses, where it then doesn't load;
+ * null when nobody is allowed one.
+ */
+export function mcpCheck(
+  repo: Pick<CompanyRepo, "people">,
+  defined: { codex: readonly string[] | null; claude: readonly string[] | null },
+): Check | null {
+  const state = (names: readonly string[] | null, name: string) =>
+    names === null ? "unknown" : names.includes(name) ? "defined" : "not defined"
+  let missing = false
+  const lines: string[] = []
+  for (const [handle, person] of [...repo.people].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    const allowed = [...new Set((person.harness_policy?.mcp_servers ?? []).filter((n) => MCP_SERVER_NAME.test(n)))]
+    if (allowed.length === 0) continue
+    const servers = allowed.map((name) => {
+      for (const [harness, names] of [["codex", defined.codex], ["claude", defined.claude]] as const) {
+        if (person.harnesses.includes(harness) && names !== null && !names.includes(name)) missing = true
+      }
+      return `${name} (Codex: ${state(defined.codex, name)}, Claude Code: ${state(defined.claude, name)})`
+    })
+    lines.push(`@${handle}: ${servers.join(", ")}`)
+  }
+  if (lines.length === 0) return null
+  const listed = `each runs as you, outside the employee's folder fence: ${lines.join("; ")}`
+  if (!missing) return { name: "mcp", status: "ok", detail: listed }
+  const fix =
+    "an allowed server that isn't defined for a harness its employee uses doesn't load there: define it in your " +
+    "Codex config.toml ([mcp_servers.<name>]) or with `claude mcp add --scope user`"
+  return { name: "mcp", status: "warn", detail: `${listed}; ${fix}` }
 }
 
 /**
@@ -1243,13 +1284,13 @@ export interface CheckOptions {
   /** Why a sandboxed program can't run on a terminal, or null if one does (default `terminalProblem`). */
   terminal?: () => Promise<string | null>
   /** The Codex check, given the worker env, the office's env, its recorded service mode, and the owner's and the
-   *  office's homes (default `codexCheck`). */
+   *  office's homes (default `codexCheck`); the MCP servers it names go to the MCP line, not its own. */
   codex?: (
     env: Record<string, string>,
     environ: Env,
     mode: string | null,
     options: { office: CodexOffice },
-  ) => Promise<Check>
+  ) => Promise<CodexCheck>
   /** The Claude Code check, given the same and the employees who use it with a read-only folder (default
    *  `claudeCheck`). */
   claude?: (
@@ -1425,14 +1466,25 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   // A store that failed its own check isn't opened again (it may be a FIFO).
   const others = othersWritable(paths, host.userHome, store?.status !== "fail")
   const homes = { home: host.userHome, officeHome: paths.home, othersWritable: others }
-  found.push(await codex(workerEnv(run.env), run.env, service.recordedMode(run), { office: homes }))
-  let readOnly: string[] = []
+  const { mcpServers: codexMcp, ...codexLine } = await codex(workerEnv(run.env), run.env, service.recordedMode(run), {
+    office: homes,
+  })
+  found.push(codexLine)
+  let company: CompanyRepo | null = null
   try {
-    if (fs.existsSync(paths.company)) readOnly = readOnlyClaude(loadRepo(paths.company))
+    if (fs.existsSync(paths.company)) company = loadRepo(paths.company)
   } catch {
     // The company check says why it doesn't load.
   }
+  const readOnly = company === null ? [] : readOnlyClaude(company)
   found.push(await claude(workerEnv(run.env), run.env, service.recordedMode(run), { office: homes, readOnly }))
+  if (company !== null) {
+    // Claude Code's user-scope servers as a session reads them: in the owner's .claude.json, or CLAUDE_CONFIG_DIR's.
+    const claudeMcp = ownerMcpServers(claudeJson(run.env, host.userHome))
+    const claudeNames = claudeMcp === null ? null : Object.keys(claudeMcp)
+    const line = mcpCheck(company, { codex: codexMcp ?? null, claude: claudeNames })
+    if (line !== null) found.push(line)
+  }
   return found
 }
 

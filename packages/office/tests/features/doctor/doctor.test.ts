@@ -29,7 +29,9 @@ import { Store } from "../../../src/runtime/store/store.ts"
 import { INHERITED_ENV } from "../../../src/util/env.ts"
 import { OfficePaths } from "../../../src/util/home.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
-import { git } from "../../company/helpers.ts"
+import { writeYaml } from "../../../src/company/flow_yaml.ts"
+import { loadRepo } from "../../../src/company/loader.ts"
+import { git, makeCompany, person } from "../../company/helpers.ts"
 import { CEO, giveDevice, makeOffice, served } from "../../server/helpers.ts"
 import { fifo, isGone, ps, shortDir, tempDir, waitFor } from "../../helpers.ts"
 import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
@@ -1442,17 +1444,103 @@ function probeHomes() {
 
 test("given the office, the check loads a thread under an employee's permission, with no model turn", async () => {
   const { dir, office, base } = probeHomes()
-  const { env, log } = fakeAppServer(dir, { mcp_servers: { docs: {} } })
+  const { env, log } = fakeAppServer(dir, { mcp_servers: { docs: { env: { TOKEN: "decoy-token" } } } })
   const codex = path.join(dir, "bin", "codex")
+  // With the names of the MCP servers the owner's Codex config defines, for the MCP line.
   expect(await doctor.codexCheck(env, {}, null, { office, base })).toEqual({
     name: "codex",
     status: "ok",
     detail: `codex-cli 0.167.0-fake at ${codex}, signed in, and a thread under an employee's permission runs`,
+    mcpServers: ["docs"],
   })
   const sent = fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
   const methods = sent.filter((e) => e.dir === "in" && "method" in e.msg).map((e) => e.msg.method)
   expect(methods).toContain("mcpServerStatus/list")
   expect(methods).not.toContain("turn/start")
+})
+
+/** A company of minh (Codex and Claude Code, allowed github and linear), ann (Claude Code, allowed docs) and bob
+ *  (allowed none). */
+function mcpCompany() {
+  const minh = person("minh", {
+    harnesses: ["composer", "codex", "claude"],
+    harness_policy: { sandbox: "workspace-write", mcp_servers: ["github", "linear", "not plain"] },
+  })
+  const ann = person("minh", { handle: "ann", name: "Ann", harnesses: ["claude"], harness_policy: { mcp_servers: ["docs"] } })
+  const bob = person("minh", { handle: "bob", name: "Bob", harnesses: ["codex"] })
+  return loadRepo(
+    makeCompany({ "people/minh/person.yaml": minh, "people/ann/person.yaml": ann, "people/bob/person.yaml": bob }),
+  )
+}
+
+test("the MCP line lists each employee's allowed servers and whether each is defined for Codex and for Claude Code, and warns when one their harness needs isn't", () => {
+  const repo = mcpCompany()
+  const minh = "@minh: github (Codex: defined, Claude Code: defined), linear (Codex: not defined, Claude Code: not defined)"
+  expect(doctor.mcpCheck(repo, { codex: ["github", "web"], claude: ["github", "docs"] })).toEqual({
+    name: "mcp",
+    status: "warn",
+    detail:
+      `each runs as you, outside the employee's folder fence: @ann: docs (Codex: not defined, Claude Code: defined); ` +
+      `${minh}; an allowed server that isn't defined for a harness its employee uses doesn't load there: define it in ` +
+      "your Codex config.toml ([mcp_servers.<name>]) or with `claude mcp add --scope user`",
+  })
+  // Defined wherever each employee needs it: ann doesn't use Codex.
+  const all = doctor.mcpCheck(repo, { codex: ["github", "linear"], claude: ["github", "linear", "docs"] })!
+  expect(all.status).toBe("ok")
+  expect(all.detail).toContain("@ann: docs (Codex: not defined, Claude Code: defined)")
+  // A harness whose servers doctor couldn't read is unknown, and warns about nothing: its own line says why.
+  const unknown = doctor.mcpCheck(repo, { codex: null, claude: ["github", "linear", "docs"] })!
+  expect([unknown.status, unknown.detail]).toEqual([
+    "ok",
+    "each runs as you, outside the employee's folder fence: @ann: docs (Codex: unknown, Claude Code: defined); " +
+      "@minh: github (Codex: unknown, Claude Code: defined), linear (Codex: unknown, Claude Code: defined)",
+  ])
+  // Nobody allowed any: no line.
+  expect(doctor.mcpCheck(loadRepo(makeCompany()), { codex: [], claude: [] })).toBeNull()
+})
+
+test("doctor's MCP line reads the names Codex's check found and the owner's .claude.json, never a definition", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const minh = person("minh", { harnesses: ["composer", "codex", "claude"], harness_policy: { mcp_servers: ["github", "docs"] } })
+  fs.mkdirSync(path.join(paths.company, "people/minh"), { recursive: true })
+  fs.writeFileSync(path.join(paths.company, "people/minh/person.yaml"), writeYaml(minh))
+  const servers = { github: { command: "gh-mcp", env: { GITHUB_TOKEN: "ghp_decoy-token" } } }
+  fs.writeFileSync(path.join(dir, ".claude.json"), JSON.stringify({ mcpServers: servers }))
+  const run = (environ: Record<string, string>) =>
+    doctor.checks(paths.home, {
+      host: makeHost(dir, new Runner()),
+      command: COMMAND,
+      repo: path.join(dir, "repo"),
+      probe: async () => null,
+      terminal: async () => null,
+      codex: async () => ({ name: "codex", status: "ok", detail: "stand-in", mcpServers: ["docs"] }),
+      claude: async () => ({ name: "claude", status: "ok", detail: "stand-in" }),
+      environ,
+      hq: async () => "unreachable",
+      hqChecks,
+      office: async () => "unreachable",
+    })
+  const found = await run({})
+  const got = byName(found)
+  expect(got.codex).toEqual({ name: "codex", status: "ok", detail: "stand-in" })
+  expect(got.mcp).toEqual({
+    name: "mcp",
+    status: "warn",
+    detail:
+      "each runs as you, outside the employee's folder fence: @minh: github (Codex: not defined, Claude Code: " +
+      "defined), docs (Codex: defined, Claude Code: not defined); an allowed server that isn't defined for a harness " +
+      "its employee uses doesn't load there: define it in your Codex config.toml ([mcp_servers.<name>]) or with " +
+      "`claude mcp add --scope user`",
+  })
+  expect(doctor.report(found)).not.toContain("ghp_decoy-token")
+  expect(doctor.report(found)).not.toContain("gh-mcp")
+  // Where the office sets CLAUDE_CONFIG_DIR, Claude Code's servers are in the .claude.json there.
+  const work = path.join(dir, "claude-work")
+  fs.mkdirSync(work)
+  fs.writeFileSync(path.join(work, ".claude.json"), JSON.stringify({ mcpServers: { docs: { command: "docs-mcp" } } }))
+  const elsewhere = byName(await run({ CLAUDE_CONFIG_DIR: work })).mcp!
+  expect(elsewhere.detail).toContain("@minh: github (Codex: not defined, Claude Code: not defined), docs (Codex: defined, Claude Code: defined)")
 })
 
 test("a thread that starts but can't be used fails the check, saying why", async () => {

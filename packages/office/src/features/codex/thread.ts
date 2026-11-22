@@ -1,6 +1,6 @@
 /** What a Codex thread runs under beside its employee's permission: the private folder under `/tmp` holding each
  *  thread's temp folder and the fence, the app-server's PATH and TMPDIR, and the load that turns the owner's MCP
- *  servers off. Also doctor's probe of a thread that starts but can't be used. */
+ *  servers off but those the employee may use. Also doctor's probe of a thread that starts but can't be used. */
 import fs from "node:fs"
 import path from "node:path"
 import {
@@ -79,7 +79,8 @@ export async function ownerConfig(rpc: JsonRpc, cwd: string): Promise<{ mcpServe
 }
 
 /** The `thread/start` (or `thread/resume`) params of a thread in `p.workspace` under `p`, with profile `id`: every MCP
- *  server the owner's config defines turned off (`ownerConfig`), and `install` read (`codexThread`). Rejects when the
+ *  server the owner's config defines (`ownerConfig`) turned off but those `p` allows, and `install` read
+ *  (`codexThread`). Rejects when the
  *  config can't be read, since a server left on would run as the owner; throws `ProjectConfigLoads`, and as
  *  `codexThread` does. */
 export async function employeeLoad(rpc: JsonRpc, p: EmployeePermission, id: string, install: string) {
@@ -118,9 +119,10 @@ export type ProbeOptions = {
   othersWritable?: readonly string[]
 }
 
-/** What `threadProbe` found: what failed and the log holding Codex's output, or null; and the projects the owner's
- *  Codex config trusts whose own config would load, where employees' Codex sessions are refused. */
-export type Probed = { failed: { why: string; log: string } | null; projectConfigs: string[] }
+/** What `threadProbe` found: what failed and the log holding Codex's output, or null; the projects the owner's Codex
+ *  config trusts whose own config would load, where employees' Codex sessions are refused; and the MCP servers the
+ *  owner's Codex config defines, by name (none when it failed before reading them). */
+export type Probed = { failed: { why: string; log: string } | null; projectConfigs: string[]; mcpServers: string[] }
 
 /** The most trusted projects the probe looks at. */
 const PROJECTS_MAX = 50
@@ -130,7 +132,7 @@ const PROJECTS_MAX = 50
  *  network, then lists the thread's MCP servers, which reloads its config as each turn does: a thread can start under
  *  a config no turn could load. Then, for each project the owner's Codex config trusts (up to 50), whether its own
  *  config would load. No model turn runs; the probe's folders are removed, and Codex's output stays in
- *  `doctor-codex.log` beside the fence. */
+ *  `doctor-codex.log` beside the fence. The MCP servers its load turned off are the owner's, named for doctor. */
 export async function threadProbe(options: ProbeOptions): Promise<Probed> {
   const root = harnessTemp(options.base)
   const name = `doctor-${process.pid}`
@@ -143,6 +145,7 @@ export async function threadProbe(options: ProbeOptions): Promise<Probed> {
   fs.rmSync(log, { force: true })
   let proc: CodexProcess | null = null
   let step = ""
+  let mcpServers: string[] = []
   try {
     const p: EmployeePermission = {
       workspace: ws,
@@ -175,7 +178,9 @@ export async function threadProbe(options: ProbeOptions): Promise<Probed> {
     const rpc = started.rpc!
     const timeout = options.timeoutMs
     step = "config/read"
-    const params = await employeeLoad(rpc, p, "opencorp-doctor", options.codex.install)
+    // As `employeeLoad` loads a session's thread, keeping the names the owner's config defines.
+    mcpServers = (await ownerConfig(rpc, ws)).mcpServers
+    const params = threadLoad(ws, codexThread(p, "opencorp-doctor", { install: options.codex.install, mcpServers }))
     step = "thread/start"
     const loaded = await rpc.request("thread/start", { ...params, ephemeral: true }, { timeout })
     checkLoaded(loaded, "opencorp-doctor")
@@ -183,9 +188,9 @@ export async function threadProbe(options: ProbeOptions): Promise<Probed> {
     const threadId = (loaded as { thread: { id: string } }).thread.id
     await rpc.request("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly" }, { timeout })
     step = "config/read"
-    return { failed: null, projectConfigs: await projectConfigs(rpc) }
+    return { failed: null, projectConfigs: await projectConfigs(rpc), mcpServers }
   } catch (error) {
-    return { failed: { why: probeFailure(error, step), log }, projectConfigs: [] }
+    return { failed: { why: probeFailure(error, step), log }, projectConfigs: [], mcpServers: [] }
   } finally {
     await proc?.close(PROBE_GRACE_MS)
     removeFolder(root, name)
