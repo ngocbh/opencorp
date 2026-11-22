@@ -15,7 +15,7 @@ import type { AnswerKind, CardActor } from "../../../src/runtime/sessions/harnes
 import { InvalidTransition, type QuestionRecord, type Store } from "../../../src/runtime/store/store.ts"
 import type { FakeLLM, ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { ASK_MANAGER, card, fakeLlm, makeHarness, noWorkersLeft, ROOT, status, texts } from "../../features/chat/helpers.ts"
-import { waitFor } from "../../helpers.ts"
+import { tempDir, waitFor } from "../../helpers.ts"
 import { question, recordEvents, session } from "../../runtime/store/helpers.ts"
 import {
   CEO,
@@ -281,11 +281,16 @@ test("an answer goes to the harness when there are no cards", async () => {
 })
 
 test("an answer to a codex card codex no longer waits on is 200 and stale", async () => {
-  const office = makeOffice()
+  // The owner's home, the harness temp folder and the environments are temp ones, never the real home or /tmp's.
+  const home = tempDir()
+  const office = makeOffice({ guards: { home } })
   office.harness = new CodexSessions(office, new Hooks({ log: () => {} }), {
     command: () => {
       throw new Error("no app-server in this test")
     },
+    env: () => ({ PATH: "/usr/bin:/bin", HOME: home }),
+    environ: {},
+    tmpBase: tempDir(),
   })
   register(office)
   const s = office.store.createSession(session({ harness: "codex", status: "idle", opened_by: CEO }))

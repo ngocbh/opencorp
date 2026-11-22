@@ -31,6 +31,10 @@ a model-written project could then shadow `bun` or `opencorp` itself.
   run each package's own `test` and `typecheck` scripts, except yian's (`@ngocbh/yian` in
   `packages/yian`), which the yian repo tests.
 - CI runs a package's `bun test` only once it has a `*.test.ts(x)` file.
+- A test gives each child it starts an explicit environment on a temp home, and never names the real one. An office
+  and the CLI take `ownerEnv` (`packages/office/src/testing/office.ts`): a temp `HOME` with its config, cache and
+  Codex folders, and only `PATH` and the locale of the test's own environment.
+  `packages/office/tests/repo/test_helpers.test.ts` checks the helpers.
 - A new office test goes where `packages/office/tests/` mirrors `packages/office/src/`; see "Where
   tests live" in `ARCHITECTURE.md`.
 - When you change the docs site (`docs/`), also run

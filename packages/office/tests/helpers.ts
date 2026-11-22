@@ -60,7 +60,7 @@ export function unusableFolders(): { folders: [string, string, string][]; restor
   // both macOS and Linux).
   const made = spawnSync("sh", ["-c", 'for i in $(seq 18); do mkdir "$n" && cd "$n" || exit 1; done'], {
     cwd: deep,
-    env: { ...process.env, n: level },
+    env: { PATH: "/usr/bin:/bin", n: level },
   })
   if (made.status !== 0) throw new Error("couldn't make the deep folder")
   const locked = path.join(top, "locked")

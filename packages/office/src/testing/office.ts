@@ -13,17 +13,33 @@ import { OfficePaths } from "../util/home.ts"
 import { FakeLLM, LLM_CONFIG } from "./fake_llm.ts"
 
 const OPENCORP = path.join(CHECKOUT, "packages/cli/bin/opencorp")
-// The caller's own session (a harness override or config folder, an SSH login) would change what init sets up;
-// `selfSpawnEnv` drops what would change how the office runs.
-const DROPPED = new Set([
-  "OPENCORP_CODEX_BIN",
-  "OPENCORP_CLAUDE_BIN",
-  "OPENCORP_SOCAT_BIN",
-  "CLAUDE_CONFIG_DIR",
-  "SSH_CONNECTION",
-  "SSH_CLIENT",
-  "SSH_TTY",
-])
+// What a test office and the CLI keep of this process's environment: the programs on PATH and the locale a terminal
+// renders in. Everything else (the real home and its config, cache and Codex folders, a harness override, an SSH
+// login) would change what init sets up or reach the owner's own files.
+const KEPT = ["PATH", "LANG", "LC_ALL", "LC_CTYPE"]
+
+/**
+ * The environment an office, the CLI and what they start run with on the temp owner home `home` (made here): `home`
+ * as HOME, its config, cache and Codex folders inside it, git with no system or user config, and of this process's
+ * environment only `KEPT`. Nothing they run reads or writes the real home.
+ */
+export function ownerEnv(home: string): Record<string, string> {
+  fs.mkdirSync(home, { recursive: true, mode: 0o700 })
+  const env: Record<string, string> = {}
+  for (const name of KEPT) {
+    const value = process.env[name]
+    if (value !== undefined) env[name] = value
+  }
+  return {
+    ...env,
+    HOME: home,
+    XDG_CONFIG_HOME: path.join(home, ".config"),
+    XDG_CACHE_HOME: path.join(home, ".cache"),
+    CODEX_HOME: path.join(home, ".codex"),
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: os.devNull,
+  }
+}
 
 /** A command's exit code (null when a signal ended it) and output. */
 export interface Ran {
@@ -97,7 +113,7 @@ function run(
   })
 }
 
-/** A started office on the temp home `root/h`, and how to reach and stop it. */
+/** A started office on the temp home `root/h`, its owner's home `root/owner`, and how to reach and stop it. */
 export class TestOffice {
   /** The temp folder (real path, under /tmp) holding the home; gone after `stop()`. */
   readonly root: string
@@ -125,15 +141,8 @@ export class TestOffice {
     this.#pidfile = paths.pidfile
     this.llm = llm
     this.#ps = ps
-    const env: Record<string, string | undefined> = {}
-    for (const [key, value] of Object.entries(process.env)) {
-      if (key.startsWith("GIT_") || DROPPED.has(key)) continue
-      env[key] = value
-    }
     this.env = selfSpawnEnv({
-      ...env,
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_GLOBAL: os.devNull,
+      ...ownerEnv(path.join(root, "owner")),
       OPENCORP_HOME: this.home,
       // In a checkout, the Bun running this process.
       OPENCORP_BUN: selfCommand()[0],

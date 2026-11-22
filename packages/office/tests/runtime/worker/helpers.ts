@@ -606,8 +606,8 @@ export interface WorkerExit {
 
 /**
  * Starts `opencorp __worker` as the office does: through `selfCommand()`, leading its own process group, in `cwd`,
- * with only `PATH`, `HOME` and `TMPDIR` of this process's env plus `env`. With `channel`, the office's end of the
- * socket at the child's fd 3 is `office`; without, fd 3 is left to Bun. At test end the office end closes and the
+ * with only `PATH` and `TMPDIR` of this process's env, a temp `HOME`, and `env`. With `channel`, the office's end of
+ * the socket at the child's fd 3 is `office`; without, fd 3 is left to Bun. At test end the office end closes and the
  * group is killed if its leader is still the process that started (pid and start time). `exited` waits for stderr
  * to close after `exit`, so a grandchild holding the worker's stderr keeps it pending until the test times out; the
  * test-end kill then skips the group, since its leader is gone (pid and start time no longer match).
@@ -624,7 +624,7 @@ export function spawnWorker({
   const [command, ...args] = selfCommand()
   const child = spawn(command, [...args, "__worker"], {
     cwd,
-    env: selfSpawnEnv({ PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...env }),
+    env: selfSpawnEnv({ PATH: process.env.PATH, HOME: tempDir(), TMPDIR: process.env.TMPDIR, ...env }),
     detached: true,
     stdio: ["ignore", "pipe", "pipe", channel ? "pipe" : "ignore"],
   })
