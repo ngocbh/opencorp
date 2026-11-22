@@ -6,7 +6,7 @@ import path from "node:path"
 import { Readable, Writable } from "node:stream"
 import { fileURLToPath } from "node:url"
 import { isDeepStrictEqual } from "node:util"
-import { expect, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import type { Device } from "@opencorp/protocol"
 import { lockFile } from "@ngocbh/yian/platform"
 import { stringify } from "yaml"
@@ -36,6 +36,9 @@ import { git, gitEnv } from "../../company/helpers.ts"
 import { request } from "../../server/helpers.ts"
 import { shortDir, tempDir } from "../../helpers.ts"
 import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
+
+// Most tests publish a company and clone it with git; under a busy machine's load that has taken over 5 s.
+setDefaultTimeout(30_000)
 
 const PROVIDER_JSON = '{"llm_config": {"provider": "openai"}}'
 const PASSWORD = "pw-sentinel-77ab"
