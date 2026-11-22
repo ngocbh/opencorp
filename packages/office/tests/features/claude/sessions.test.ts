@@ -118,8 +118,8 @@ test("an employee allowed an MCP server gets only its definition, in a 0600 file
   await h.sessions.prompt(id, "Who am I?", { by: "minh" })
   await waitFor(() => heard.said().includes("You are minh.") && status(h, id) === "idle", { what: "the turn" })
   // The server's tool is the session's, not one beyond the allowlist, and it ran unasked.
-  const results = h.fake.log().filter((e) => e.dir === "out" && e.msg?.type === "user" && e.msg.message?.content?.[0]?.type === "tool_result")
-  expect(results.map((e) => e.msg!.message.content[0].is_error ?? false)).toEqual([false])
+  const blocks = h.fake.log().flatMap((e) => (e.dir === "out" && e.msg?.type === "user" ? [e.msg.message.content[0]] : []))
+  expect(blocks.filter((b) => b?.type === "tool_result").map((b) => b.is_error ?? false)).toEqual([false])
   expect(h.lines).toEqual([
     `claude session ${id}: @minh's allowed MCP server linear isn't defined in your Claude Code config ` +
       `(${path.join(home, ".claude.json")}), or that file can't be read, so it doesn't load`,

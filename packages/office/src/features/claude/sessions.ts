@@ -451,7 +451,8 @@ export class ClaudeSessions {
     // Names only, each plain (`employeePermission` keeps no other): never a definition.
     const { missing } = started.mcp
     if (missing.length > 0) {
-      const [servers, are, load] = missing.length === 1 ? ["server", "isn't", "it doesn't"] : ["servers", "aren't", "they don't"]
+      const one = missing.length === 1
+      const [servers, are, load] = one ? ["server", "isn't", "it doesn't"] : ["servers", "aren't", "they don't"]
       this.log(
         `claude session ${live.sessionId}: @${live.person}'s allowed MCP ${servers} ${missing.join(", ")} ${are} ` +
           `defined in your Claude Code config (${config}), or that file can't be read, so ${load} load`,

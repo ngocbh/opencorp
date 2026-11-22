@@ -1284,11 +1284,11 @@ test("the private folder holding a start's MCP definitions is closed to Claude C
   )
   // Nothing else of the start changes.
   const plain = claudeStart(permission())
-  const without = (s: Record<string, any>): Record<string, unknown> => ({
-    ...s,
-    sandbox: { ...s.sandbox, filesystem: { ...s.sandbox.filesystem, denyRead: s.sandbox.filesystem.denyRead.filter((x: string) => x !== secrets) } },
-    permissions: { ...s.permissions, deny: s.permissions.deny.filter((x: string) => !x.includes(secrets)) },
-  })
+  const without = (s: Record<string, any>): Record<string, unknown> => {
+    const denyRead = s.sandbox.filesystem.denyRead.filter((x: string) => x !== secrets)
+    const deny = s.permissions.deny.filter((x: string) => !x.includes(secrets))
+    return { ...s, sandbox: { ...s.sandbox, filesystem: { ...s.sandbox.filesystem, denyRead } }, permissions: { ...s.permissions, deny } }
+  }
   expect(without(settings)).toEqual(plain.settings)
 
   // In, or holding, a folder its commands may read: the session's folder, its temp folder or a listed folder.

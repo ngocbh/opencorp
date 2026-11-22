@@ -316,7 +316,7 @@ test("a session's employee permission comes from their person at the session's p
     { path: "~/tools", access: "read" },
     { path: "~/gone", access: "write" },
   ]
-  const policy = { sandbox: "workspace-write", network: true, folders }
+  const policy = { sandbox: "workspace-write", network: true, folders, mcp_servers: ["github"] }
   const h = makeCodex({
     files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"], harness_policy: policy }) },
   })
@@ -339,6 +339,7 @@ test("a session's employee permission comes from their person at the session's p
     office: h.office.guards,
     // At head, minh's own writable listing too: a session of theirs started there may write it.
     othersWritable: [path.join(home, "gone")],
+    allowedMcp: ["github"],
   })
   expect(h.lines).toContain(`@minh's listed folder "~/gone" isn't there, so their harness mounts nothing for it`)
 })

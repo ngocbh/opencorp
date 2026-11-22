@@ -326,12 +326,11 @@ test("with no MCP server allowed, or none of those allowed defined, nothing is w
   expect(fs.readdirSync(secrets)).toEqual([])
   // A config that can't be read loads none of them.
   fs.writeFileSync(config, "{not json")
-  const unread = claudeSession(permission({ allowedMcp: ["github"], secrets }), { claude: fake.claude, configDir, claudeJson: config })
+  const options = { claude: fake.claude, configDir, claudeJson: config }
+  const unread = claudeSession(permission({ allowedMcp: ["github"], secrets }), options)
   expect(unread.mcp).toEqual({ file: null, servers: [], missing: ["github"] })
   // Allowed servers need the private folder their definitions go in.
-  expect(() => claudeSession(permission({ allowedMcp: ["github"] }), { claude: fake.claude, configDir, claudeJson: config })).toThrow(
-    /private folder/,
-  )
+  expect(() => claudeSession(permission({ allowedMcp: ["github"] }), options)).toThrow(/private folder/)
 })
 
 test("a turn may list the tools of the MCP servers its start loaded, and nothing else beyond the allowlist", () => {

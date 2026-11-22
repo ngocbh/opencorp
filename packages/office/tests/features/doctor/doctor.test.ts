@@ -1502,7 +1502,8 @@ test("the MCP line lists each employee's allowed servers and whether each is def
 test("doctor's MCP line reads the names Codex's check found and the owner's .claude.json, never a definition", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)
-  const minh = person("minh", { harnesses: ["composer", "codex", "claude"], harness_policy: { mcp_servers: ["github", "docs"] } })
+  const policy = { mcp_servers: ["github", "docs"] }
+  const minh = person("minh", { harnesses: ["composer", "codex", "claude"], harness_policy: policy })
   fs.mkdirSync(path.join(paths.company, "people/minh"), { recursive: true })
   fs.writeFileSync(path.join(paths.company, "people/minh/person.yaml"), writeYaml(minh))
   const servers = { github: { command: "gh-mcp", env: { GITHUB_TOKEN: "ghp_decoy-token" } } }
@@ -1540,7 +1541,9 @@ test("doctor's MCP line reads the names Codex's check found and the owner's .cla
   fs.mkdirSync(work)
   fs.writeFileSync(path.join(work, ".claude.json"), JSON.stringify({ mcpServers: { docs: { command: "docs-mcp" } } }))
   const elsewhere = byName(await run({ CLAUDE_CONFIG_DIR: work })).mcp!
-  expect(elsewhere.detail).toContain("@minh: github (Codex: not defined, Claude Code: not defined), docs (Codex: defined, Claude Code: defined)")
+  expect(elsewhere.detail).toContain(
+    "@minh: github (Codex: not defined, Claude Code: not defined), docs (Codex: defined, Claude Code: defined)",
+  )
 })
 
 test("a thread that starts but can't be used fails the check, saying why", async () => {

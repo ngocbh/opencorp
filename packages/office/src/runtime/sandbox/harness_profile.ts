@@ -404,8 +404,8 @@ function checked(p: EmployeePermission): Checked {
   const programReads = (p.programReads ?? []).map((dir) =>
     readFolder(dir, [...writable, ...others], [home, officeHome, ...byName], sockets),
   )
-  const readable = [workspace, tmpdir, ...folders.map((f) => f.path), ...(programs === null ? [] : [programs]), ...programReads]
-  const secrets = p.secrets === undefined ? null : secretsFolder(p.secrets, readable)
+  const readable = [workspace, tmpdir, ...folders.map((f) => f.path), ...(programs === null ? [] : [programs])]
+  const secrets = p.secrets === undefined ? null : secretsFolder(p.secrets, [...readable, ...programReads])
   const all = [workspace, tmpdir, fence, home, ...folders.map((f) => f.path), ...denied, ...held.map((h) => h.path)]
   if (secrets !== null) all.push(secrets)
   for (const resolved of all) {
