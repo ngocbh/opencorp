@@ -13,9 +13,9 @@ export function handleProblem(handle: string): string | null {
 }
 
 /** A name a person's `harness_policy.mcp_servers` allows a server by: letters, digits, `-` and `_`, the names Claude
- *  Code's `claude mcp add` takes, which its tool names (`mcp__<server>__<tool>`) keep as they are. Any other allows
- *  nothing. */
-export const MCP_SERVER_NAME = /^[A-Za-z0-9_-]+$/
+ *  Code's `claude mcp add` takes, which its tool names (`mcp__<server>__<tool>`) keep as they are; and no `__`, which
+ *  would make one server's tools read as another's. Any other allows nothing. */
+export const MCP_SERVER_NAME = /^(?!.*__)[A-Za-z0-9_-]+$/
 
 /** A name a model can call a tool by: yian refuses a run that would show a model any other. */
 export const TOOL_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/

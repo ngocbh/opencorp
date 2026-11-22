@@ -832,23 +832,26 @@ test("each MCP server a person allows is a lint warning that it runs as the owne
 })
 
 test("an MCP server name that isn't plain, or is listed twice, fails lint and allows nothing", async () => {
-  const mcp_servers = ["github", "", "a.b", "my server", "mcp__x", "*", "../x", "x\0y", "github"]
+  const mcp_servers = ["github", "", "a.b", "my server", "mcp__x", "gh__evil", "*", "../x", "x\0y", "my_docs-2", "github"]
   const root = makeCompany({ "people/minh/person.yaml": person("minh", { harness_policy: { mcp_servers } }) })
   const found = (await withCode(root, "person.mcp_server_invalid")).map((i) => [i.path, i.message, i.severity])
-  const plain = "isn't a server name: write it with letters, digits, - and _ only, as your Codex or Claude Code config names it"
+  const plain =
+    "isn't a server name: write it with letters, digits, - and _ only, and no __, as your Codex or Claude Code config names it"
   const file = "people/minh/person.yaml"
   expect(found).toEqual([
     [file, `MCP server "" ${plain}`, "error"],
     [file, `MCP server "a.b" ${plain}`, "error"],
     [file, `MCP server "my server" ${plain}`, "error"],
+    // Claude Code reads the server's name in a tool's name up to the first __.
+    [file, `MCP server "mcp__x" ${plain}`, "error"],
+    [file, `MCP server "gh__evil" ${plain}`, "error"],
     [file, `MCP server "*" ${plain}`, "error"],
     [file, `MCP server "../x" ${plain}`, "error"],
     [file, `MCP server "x\\u0000y" ${plain}`, "error"],
     [file, `MCP server "github" is listed twice`, "error"],
   ])
-  // A name that only looks like a tool's is still a plain name.
   const unguarded = (await withCode(root, "person.mcp_server_unguarded")).map((i) => i.message.split(" runs as you")[0])
-  expect(unguarded).toEqual([`MCP server "github"`, `MCP server "mcp__x"`])
+  expect(unguarded).toEqual([`MCP server "github"`, `MCP server "my_docs-2"`])
 })
 
 test("a * that isn't a rule pattern's last word on its own is a lint warning", async () => {
@@ -907,6 +910,27 @@ test("every listed folder is a lint warning saying it is unguarded, and none is 
   ])
 })
 
+test("a folder that holds or lies in the harnesses' private folder under /tmp fails lint, /tmp itself included", async () => {
+  const top = `/tmp/opencorp-${process.getuid!()}`
+  const folders: { path: string; access: "read" | "write" }[] = [
+    { path: "/tmp", access: "read" },
+    { path: `${top}/claude/s1`, access: "read" },
+    { path: `/private${top}`, access: "read" },
+    { path: "/tmp/../tmp/x/..", access: "read" },
+    // Beside it is fine.
+    { path: "/tmp/opencorp-shared", access: "write" },
+  ]
+  const root = makeCompany({ "people/minh/person.yaml": person("minh", { harness_policy: { folders } }) })
+  const found = (await withCode(root, "person.folder_invalid")).map((i) => i.message)
+  const why = `, where the harnesses keep every session's private folders; list a folder outside it`
+  expect(found).toEqual([
+    `folder "/tmp" holds ${top}${why}`,
+    `folder "${top}/claude/s1" lies in ${top}${why}`,
+    `folder "/private${top}" lies in /private${top}${why}`,
+    `folder "/tmp/../tmp/x/.." holds ${top}${why}`,
+  ])
+})
+
 test("a folder the harness won't start with fails lint: the whole disk, one listed twice, a pattern, or a ':' on PATH", async () => {
   const folders: { path: string; access: "read" | "write" }[] = [
     { path: "/", access: "write" },
@@ -921,7 +945,7 @@ test("a folder the harness won't start with fails lint: the whole disk, one list
   const root = makeCompany({ "people/minh/person.yaml": person("minh", { harness_policy: { folders } }) })
   const found = (await withCode(root, "person.folder_invalid")).map((i) => i.message)
   expect(found).toEqual([
-    `folder "/" is the whole disk, which no harness starts with; list the folders in it you need`,
+    `folder "/" is the whole disk, which no harness starts with; list only the folders in it you need`,
     `folder "~/.cargo/" is listed twice`,
     `folder "/data/env*" holds *, ?, [, ], { or }, which the harnesses read as a pattern`,
     `folder "/data/{a,b}" holds *, ?, [, ], { or }, which the harnesses read as a pattern`,

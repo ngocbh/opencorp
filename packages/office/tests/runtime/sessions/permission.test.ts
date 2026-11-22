@@ -179,6 +179,17 @@ test("the employee's harness may use the MCP servers their person allows, each p
   expect(permission({ minh: minh(null) }).allowedMcp).toEqual([])
 })
 
+test("a server revoked at head isn't allowed, whatever the session's commit allows, nor one granted only at head", () => {
+  const { permission } = layout()
+  const pinned = { minh: minh({ mcp_servers: ["github", "linear", "docs"] }) }
+  const head = company({ minh: minh({ mcp_servers: ["linear", "web", "github"] }) })
+  // The order is the session's commit's.
+  expect(permission(pinned, "minh", { repos: [head] }).allowedMcp).toEqual(["github", "linear"])
+  // minh gone at head, or with no policy there: nothing.
+  expect(permission(pinned, "minh", { repos: [company({ minh: null })] }).allowedMcp).toEqual([])
+  expect(permission(pinned, "minh", { repos: [company({ minh: minh(null) })] }).allowedMcp).toEqual([])
+})
+
 test("with no harness policy the folder is read-only and offline, and a path that isn't absolute is refused at start", () => {
   const { ws, install, permission } = layout()
   const bare = permission({ minh: minh(null) })

@@ -543,9 +543,10 @@ function* checkDevices(repo: CompanyRepo): Iterable<RepoIssue> {
 }
 
 /** Each folder a person's `harness_policy` lists is one their harness starts with: absolute or starting with `~/`,
- *  the owner's home; not the whole disk, listed once, with no pattern character, and, read-only, no `:` (its `bin`
- *  goes on PATH). Each one that is gets a warning that it is unguarded: the office mounts it for the person's harness
- *  commands as listed, whatever it holds. */
+ *  the owner's home; not the whole disk, listed once, with no pattern character, neither holding nor in the harnesses'
+ *  private folder under `/tmp` (`harnessTemps`), and, read-only, no `:` (its `bin` goes on PATH). Each one that is
+ *  gets a warning that it is unguarded: the office mounts it for the person's harness commands as listed, whatever it
+ *  holds. */
 function* checkFolders(repo: CompanyRepo): Iterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
     const seen = new Set<string>()
@@ -573,10 +574,19 @@ function folderProblem(folder: { path: string; access: "read" | "write" }, seen:
   if (p.includes("\0")) return ": embedded null byte"
   if (!path.isAbsolute(p) && !p.startsWith("~/")) return " isn't absolute; write it as /… or as ~/… in your home"
   const key = p.replace(/(?<=.)\/+$/, "")
-  if (/^\/+$/.test(key)) return " is the whole disk, which no harness starts with; list the folders in it you need"
+  if (/^\/+$/.test(key)) return " is the whole disk, which no harness starts with; list only the folders in it you need"
   if (seen.has(key)) return " is listed twice"
   seen.add(key)
   if (/[*?[\]{}]/.test(p)) return " holds *, ?, [, ], { or }, which the harnesses read as a pattern"
+  if (path.isAbsolute(p)) {
+    const resolved = path.resolve(p)
+    for (const top of harnessTemps()) {
+      const where = within(resolved, top) ? "lies in" : within(top, resolved) ? "holds" : null
+      if (where !== null) {
+        return ` ${where} ${top}, where the harnesses keep every session's private folders; list a folder outside it`
+      }
+    }
+  }
   if (folder.access === "read" && p.includes(":")) {
     return " holds a ':', which can't go on PATH, where a read-only folder's bin goes"
   }
@@ -593,7 +603,7 @@ function* checkMcpServers(repo: CompanyRepo): Iterable<RepoIssue> {
       const shown = JSON.stringify(name)
       if (!MCP_SERVER_NAME.test(name)) {
         yield repoIssue(personPath(handle), "person.mcp_server_invalid", `MCP server ${shown} isn't a server name:`
-          + " write it with letters, digits, - and _ only, as your Codex or Claude Code config names it")
+          + " write it with letters, digits, - and _ only, and no __, as your Codex or Claude Code config names it")
         continue
       }
       if (seen.has(name)) {
@@ -606,6 +616,18 @@ function* checkMcpServers(repo: CompanyRepo): Iterable<RepoIssue> {
         + " whatever it can with your credentials", "warning")
     }
   }
+}
+
+/** The harnesses' private folder under `/tmp` (`/tmp/opencorp-<uid>`, which holds every session's temp folder and
+ *  the programs its sandbox runs), and the same through macOS's `/private/tmp`. */
+function harnessTemps(): string[] {
+  const top = `/tmp/opencorp-${process.getuid?.() ?? 0}`
+  return [top, `/private${top}`]
+}
+
+/** Whether `p` is `root` or inside it (both resolved). */
+function within(p: string, root: string): boolean {
+  return p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`)
 }
 
 /** The company's `rules.yaml` and each person's `people/<handle>/rules.yaml` load, read as the office reads them at a
