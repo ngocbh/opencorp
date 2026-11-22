@@ -1,7 +1,7 @@
 /** A main chat's Claude Code instrument: the employee drives Claude Code sessions, each the chat's child session
  *  under the employee's permission, listed as the chat's instrument with its record in the chat's `claude/` folder;
  *  the owner's messages to Claude Code reach the employee's next reply; Esc and a stopped run reach a running turn;
- *  on the fake Claude Code. */
+ *  after an office restart, a session goes on from its record with `--resume`; on the fake Claude Code. */
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
@@ -12,7 +12,8 @@ import { readClaudeRecord } from "../../../src/tools/claude/instrument.ts"
 import type { FakeClaudeScript } from "../../../src/testing/fake_claude.ts"
 import { waitFor } from "../../helpers.ts"
 import { fakeLlm, makeHarness } from "./helpers.ts"
-import { type Claude, allGone, chatOf, makeClaude } from "../claude/helpers.ts"
+import type { SessionRecord } from "../../../src/runtime/store/store.ts"
+import { type Claude, allGone, chatOf, makeClaude, reopened } from "../claude/helpers.ts"
 
 setDefaultTimeout(30_000)
 afterAll(allGone)
@@ -20,6 +21,11 @@ afterAll(allGone)
 /** minh's main chat in `h.workspace`, opened by ngocbh, and its Claude Code instrument. */
 async function employee(h: Claude) {
   const chat = await chatOf(h)
+  return { chat, ...(await instrumentOf(h, chat)) }
+}
+
+/** `chat`'s Claude Code instrument on `h`'s sessions, and a call of its tools. */
+async function instrumentOf(h: Claude, chat: SessionRecord) {
   const repo = loadRepo(await h.office.git.pin(chat.repo_commit))
   const claude = new EmployeeClaude({
     chat,
@@ -31,8 +37,22 @@ async function employee(h: Claude) {
   const tools = claude.tools()
   const call = async (name: keyof typeof tools, args: Record<string, unknown>, options = {}) =>
     JSON.parse(String(await tools[name].call(args, options))) as Record<string, any>
-  return { chat, claude, call }
+  return { claude, call }
 }
+
+/** The office's stop and its next start, as the daemon runs them: the Claude Code sessions stop, then the chat's
+ *  instrument keeps them; the next office's sessions (`options` changed) restore theirs, and the chat's new instrument
+ *  takes its calls. */
+async function restart(h: Claude, claude: EmployeeClaude, chat: SessionRecord, options = {}) {
+  await h.sessions.closeAll()
+  await claude.suspend()
+  const r = reopened(h, options)
+  await r.sessions.restore()
+  return { r, ...(await instrumentOf(r, chat)) }
+}
+
+/** The fake's starts, in order. */
+const starts = (h: Claude) => h.fake.log().filter((e) => e.dir === "start")
 
 const OWNER = "Hong Ngoc Bui (owner)"
 
@@ -175,4 +195,67 @@ test("a worker that dies while the employee waits on Claude Code stops the Claud
   h.registry.get(s.id)!.kill()
   await waitFor(() => interrupted(h), { what: "Claude Code's interrupt" })
   await waitFor(() => h.office.instruments.list(s.id)[0]?.status === "idle", { what: "the turn's end" })
+})
+
+test("after an office restart, history reads the Claude Code session's record, and send resumes it", async () => {
+  const h = makeClaude({ script: { turns: [[{ say: "The build is fixed." }], [{ say: "The tests pass too." }]] } })
+  const { chat, claude, call } = await employee(h)
+  await call("start", { message: "Fix the build." })
+  const [listed] = h.office.instruments.list(chat.id)
+  const session = h.store.getSession(listed!.id)!
+  const dir = path.join(h.office.paths.sessionDir(chat.id), "claude", listed!.id)
+  const { r, call: next } = await restart(h, claude, chat)
+  expect([r.store.getSession(listed!.id)!.status, h.office.instruments.list(chat.id)]).toEqual(["ended", []])
+  expect(readClaudeRecord(dir)).toMatchObject({ state: "interrupted", harnessSessionId: session.harness_session_id })
+  expect((await next("history", { claude: "claude 1", from: 0 })).output).toEqual([
+    { author: "@minh", text: "Fix the build." },
+    { author: "claude", text: "The build is fixed." },
+  ])
+  const reply = await next("send", { claude: "claude 1", message: "Run the tests." })
+  expect(reply).toMatchObject({ claude: "claude 1", status: "idle" })
+  expect(reply.output).toEqual([
+    { author: "@minh", text: "Run the tests." },
+    { author: "claude", text: "The tests pass too." },
+  ])
+  // The same Claude Code session, resumed by the start's own path, with the speakers' instructions.
+  const [, resumed] = starts(h)
+  expect(resumed!.flags!.resume).toBe(session.harness_session_id)
+  expect(resumed!.flags!["session-id"]).toBeUndefined()
+  expect(resumed!.appended).toContain("Two people write to you in this session")
+  expect(resumed!.env!.TMPDIR).toBe(path.join(r.sessions.root(), listed!.id))
+  expect(r.store.getSession(listed!.id)).toMatchObject({ status: "idle", instrument_of: chat.id })
+  expect(h.office.instruments.list(chat.id)).toMatchObject([{ id: listed!.id, name: "claude 1", status: "idle" }])
+  expect(readClaudeRecord(dir)!.state).toBe("running")
+})
+
+test("a Claude Code turn an office restart cut off is marked interrupted in the record, naming whose it was", async () => {
+  const h = makeClaude({ script: { turns: [[{ say: "Started." }], [{ say: "Working." }, { sleep: 30 }], [{ say: "Back." }]] } })
+  const { chat, claude, call } = await employee(h)
+  await call("start", { message: "Look around." })
+  const [listed] = h.office.instruments.list(chat.id)
+  // The owner's turn, from the session's own chat.
+  await h.sessions.prompt(listed!.id, "Run the long check.", { by: "ngocbh" })
+  await waitFor(() => h.fake.log().some((e) => e.dir === "out" && e.msg?.message?.content?.[0]?.text === "Working."), {
+    what: "Claude Code's words",
+  })
+  const { call: next } = await restart(h, claude, chat)
+  const read = await next("history", { claude: "claude 1" })
+  const said = (read.output as { author: string; text: string }[]).map((e) => [e.author, e.text])
+  expect(said[0]).toEqual([OWNER, "Run the long check."])
+  expect(said.at(-1)![1]).toContain(`The office restarted while Claude Code worked on a turn ${OWNER} started`)
+  const reply = await next("send", { claude: "claude 1", message: "Go on." })
+  expect(reply.output.at(-1)).toEqual({ author: "claude", text: "Back." })
+})
+
+test("a resume goes through a start's checks: with no socat for the sandbox, it fails the session, saying how to fix it", async () => {
+  const h = makeClaude({ platform: "linux", script: { turns: [[{ say: "The build is fixed." }]] } })
+  const { chat, claude, call } = await employee(h)
+  await call("start", { message: "Fix the build." })
+  const [listed] = h.office.instruments.list(chat.id)
+  const { r, call: next } = await restart(h, claude, chat, { socat: null })
+  const reply = await next("send", { claude: "claude 1", message: "Run the tests." })
+  expect(reply.status).toBe("failed")
+  expect(reply.error).toContain("socat")
+  expect(starts(h)).toHaveLength(1)
+  expect(r.store.getSession(listed!.id)!.status).toBe("failed")
 })

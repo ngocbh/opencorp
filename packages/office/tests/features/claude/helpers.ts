@@ -67,22 +67,32 @@ export function makeClaude({
   fs.mkdirSync(local, { recursive: true, mode: 0o755 })
   const socat = path.join(local, "socat")
   fs.writeFileSync(socat, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
-  const sessions = new ClaudeSessions(office, {
+  const settings = {
     claude: fake.claude,
     socat,
     env: () => ({ PATH: "/usr/bin:/bin", HOME: home }),
     environ: {},
     tmpBase,
     closeGraceMs: 500,
-    log: (line) => lines.push(line),
+    log: (line: string) => void lines.push(line),
     ...options,
-  })
+  }
+  const sessions = new ClaudeSessions(office, settings)
   office.claude = sessions
   office.onStop.push(() => sessions.closeAll())
-  return { office, store, sessions, fake, workspace: fs.realpathSync(tempDir()), home, tmpBase, lines, events }
+  return { office, store, sessions, fake, workspace: fs.realpathSync(tempDir()), home, tmpBase, lines, events, settings }
 }
 
 export type Claude = ReturnType<typeof makeClaude>
+
+/** A second `ClaudeSessions` over `h`'s office, as a restarted office builds it: the same fake, environment and log,
+ *  plus `options`. It becomes the office's, and the office's stop closes it too. */
+export function reopened(h: Claude, options: ClaudeSessionsOptions = {}): Claude {
+  const sessions = new ClaudeSessions(h.office, { ...h.settings, ...options })
+  h.office.claude = sessions
+  h.office.onStop.push(() => sessions.closeAll())
+  return { ...h, sessions }
+}
 
 /** minh's main chat in `h.workspace`, opened by ngocbh, at the company's head. */
 export async function chatOf(h: Claude): Promise<SessionRecord> {

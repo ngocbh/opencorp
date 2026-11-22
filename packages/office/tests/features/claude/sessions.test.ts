@@ -1,6 +1,7 @@
 /** The office's Claude Code sessions, each an employee chat's instrument and its child session, on the fake Claude
  *  Code: a start under the employee's permission with the speakers' instructions, both speakers' messages labelled and
- *  sent as `next`, Esc, the end, the idle stop and the resume, a crash, a start that can't, and an office restart. */
+ *  sent as `next`, Esc, the end, the idle stop and the resume, a crash, a start that can't, an office restart, and the
+ *  chat's next instrument continuing a session after it. */
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
@@ -12,7 +13,7 @@ import { HarnessRecord } from "../../../src/tools/harness/record.ts"
 import { person } from "../../company/helpers.ts"
 import { startTime } from "../../../src/util/proc.ts"
 import { isGone, tempDir, waitFor } from "../../helpers.ts"
-import { type Claude, Heard, allGone, chatOf, label, makeClaude } from "./helpers.ts"
+import { type Claude, Heard, allGone, chatOf, label, makeClaude, reopened } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 afterAll(allGone)
@@ -217,9 +218,11 @@ test("a session's cost cap, model and mode aren't Claude Code's to change, and i
 
 test("an office stop ends every session, and a restart ends what a crash left live, its record interrupted", async () => {
   const h = makeClaude()
-  const { id, chat } = await started(h)
+  const { id, chat, heard } = await started(h)
   await h.sessions.closeAll()
   expect(status(h, id)).toBe("ended")
+  // Not told to its instrument, which keeps the session to continue after the restart.
+  expect(heard.states).toEqual(["idle"])
   // A crash leaves one live, with its record running.
   const left = h.store.createSession({ ...h.store.getSession(id)!, id: "01JA1H0000000000000000CA04", status: "busy" })
   const dir = h.sessions.recordDir(chat.id, left.id)
@@ -441,4 +444,47 @@ test("a socat that doesn't run is refused before Claude Code starts, saying so",
   expect(error.message).toContain("doesn't run")
   expect(error.message).toContain("libssl.so.3")
   expect(starts(h)).toEqual([])
+})
+
+test("after a restart, the chat's instrument continues its session with --resume, by the start's path", async () => {
+  const h = makeClaude({ script: { turns: [[{ say: "First." }], [{ say: "Second." }]] } })
+  const { chat, heard, id, session } = await started(h)
+  await h.sessions.prompt(id, "One.", { by: "minh" })
+  await waitFor(() => heard.said().includes("First.") && status(h, id) === "idle", { what: "the first turn" })
+  await h.sessions.closeAll()
+  const r = reopened(h)
+  await r.sessions.restore()
+  // What the first office counted of its turns.
+  const counted = { input_tokens: 10, cached_input_tokens: 2, output_tokens: 5 }
+  r.store.updateSession(id, { harness_usage: counted })
+  const again = new Heard()
+  const resumed = await r.sessions.resumeInstrument(chat, id, session.harness_session_id!, { observer: again, label, owner: "ngocbh" })
+  expect(resumed).toMatchObject({ id, status: "idle", instrument_of: chat.id })
+  await r.sessions.prompt(id, "Two.", { by: "minh" })
+  await waitFor(() => again.said().includes("Second."), { what: "the resumed turn" })
+  const [, start] = starts(h)
+  expect(start!.flags!.resume).toBe(session.harness_session_id)
+  expect(start!.flags!["session-id"]).toBeUndefined()
+  expect(start!.appended).toContain("Two people write to you in this session")
+  // Its token counts go on from the first office's (the fake counts none of its own).
+  await waitFor(() => status(r, id) === "idle", { what: "the turn's end" })
+  expect(r.store.getSession(id)!.harness_usage).toEqual(counted)
+})
+
+test("a continue is refused for a session that isn't the chat's, for one live here, and once the chat ended", async () => {
+  const h = makeClaude()
+  const { chat, id, session } = await started(h)
+  const claudeId = session.harness_session_id!
+  const resume = (c: Claude, row = chat, sid = claudeId) =>
+    c.sessions.resumeInstrument(row, id, sid, { observer: new Heard(), label, owner: "ngocbh" })
+  await expect(resume(h)).rejects.toMatchObject({ status: 409, code: "live" })
+  await h.sessions.closeAll()
+  const r = reopened(h)
+  await r.sessions.restore()
+  await expect(resume(r, chat, "01JA1H0000000000000000OTHR")).rejects.toMatchObject({ status: 409, code: "not_resumable" })
+  expect(r.lines.some((l) => l.includes(id) && l.includes("doesn't match"))).toBe(true)
+  r.store.updateSession(chat.id, { status: "ended" })
+  await expect(resume(r)).rejects.toMatchObject({ status: 409, code: "not_live" })
+  expect(starts(h)).toHaveLength(1)
+  expect(status(r, id)).toBe("ended")
 })

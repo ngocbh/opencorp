@@ -52,6 +52,10 @@ class Session implements HarnessThread {
   async stop(): Promise<void> {
     queueMicrotask(() => this.events.state("ended"))
   }
+
+  harnessSessionId(): string {
+    return `claude-${this.id}`
+  }
 }
 
 class Host implements HarnessHost {
@@ -75,9 +79,18 @@ class Host implements HarnessHost {
     return session
   }
 
+  recordsDir(): string {
+    const dir = path.join(this.root, "claude")
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    return dir
+  }
+
+  /** Where session `sessionId`'s record is. */
   recordDir(sessionId: string): string {
     return path.join(this.root, "claude", sessionId)
   }
+
+  log(): void {}
 
   list(instrument: HarnessListing): void {
     this.listed.set(instrument.id, instrument)

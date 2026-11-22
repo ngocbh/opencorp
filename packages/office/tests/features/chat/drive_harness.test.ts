@@ -1,7 +1,7 @@
 /** The template's SOP "drive a harness" (`shared/flows/drive_harness.yaml`): an employee hands a task to Codex or
  *  Claude Code, the chat's instrument, and sees it through; a resume replays what the harness did, and never starts a
- *  second session or sends a message again. Each runs in an in-process worker on the fake model, with the fake Codex
- *  app-server or the fake Claude Code behind the employee's instrument. */
+ *  second session or sends a message again, after an office restart too. Each runs in an in-process worker on the fake
+ *  model, with the fake Codex app-server or the fake Claude Code behind the employee's instrument. */
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
@@ -14,13 +14,14 @@ import { loadConfined } from "../../../src/company/flows.ts"
 import { loadRepo } from "../../../src/company/loader.ts"
 import { speakers } from "../../../src/runtime/sessions/speakers.ts"
 import type { OfficeTool } from "../../../src/runtime/worker/rpc.ts"
+import type { SessionRecord } from "../../../src/runtime/store/store.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
 import type { FakeLLM } from "../../../src/testing/fake_llm.ts"
 import { session as sessionRow } from "../../runtime/store/helpers.ts"
 import { tempDir } from "../../helpers.ts"
 import { advanceJob, makeJob, Recorder, run } from "../../runtime/worker/helpers.ts"
-import { allGone as claudesGone, makeClaude } from "../claude/helpers.ts"
-import { allGone as codexesGone, makeCodex } from "../codex/helpers.ts"
+import { allGone as claudesGone, makeClaude, reopened as reopenedClaude } from "../claude/helpers.ts"
+import { allGone as codexesGone, makeCodex, reopened as reopenedCodex } from "../codex/helpers.ts"
 import { fakeLlm, ROOT } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -35,40 +36,64 @@ const TASK = "Fix the failing build in packages/app."
 type Kind = "codex" | "claude"
 
 /** minh's main chat, opened by ngocbh, with the instrument of `kind` an SOP run's host binds: on the fake app-server
- *  or the fake Claude Code, whose one scripted turn answers "The build is fixed.". `sessions` counts the harness
- *  sessions started, and `messages` the messages sent to them. */
+ *  or the fake Claude Code, whose scripted turns answer "The build is fixed.", then "The tests pass too.". `sessions`
+ *  counts the harness sessions started, `resumes` the starts that resumed one, and `messages` the messages sent to
+ *  them. `restart` is an office restart between two of the run's calls: the harness sessions stop, the instrument
+ *  keeps them, the next office's sessions restore theirs, and the chat's next instrument takes the calls. */
 async function rig(kind: Kind) {
   if (kind === "codex") {
     const h = makeCodex()
-    h.fake.script([fc.agentMessage("a1", "The build is fixed.")])
+    h.fake.script([fc.agentMessage("a1", "The build is fixed."), fc.agentMessage("a2", "The tests pass too.")])
     const cwd = fs.realpathSync(h.workspace)
-    const { chat, instrument } = await employee(h, cwd, (o) => new EmployeeCodex(o))
-    return {
+    const make = (o: ConstructorParameters<typeof EmployeeCodex>[0]) => new EmployeeCodex(o)
+    const { chat, instrument } = await employee(h, cwd, make)
+    const r = {
       h, chat, instrument,
-      sessions: () => h.fake.calls("thread/start").length + h.fake.calls("thread/resume").length,
+      sessions: () => h.fake.calls("thread/start").length,
+      resumes: () => h.fake.calls("thread/resume").length,
       messages: () => h.fake.calls("turn/start").length + h.fake.calls("turn/steer").length,
+      async restart() {
+        await r.h.sessions.closeAll()
+        await r.instrument.suspend()
+        r.h = reopenedCodex(r.h)
+        await r.h.sessions.restore()
+        r.instrument = (await employee(r.h, cwd, make, chat)).instrument
+      },
     }
+    return r
   }
-  const h = makeClaude({ script: { turns: [[{ say: "The build is fixed." }]] } })
-  const { chat, instrument } = await employee(h, h.workspace, (o) => new EmployeeClaude(o))
+  const h = makeClaude({ script: { turns: [[{ say: "The build is fixed." }], [{ say: "The tests pass too." }]] } })
+  const make = (o: ConstructorParameters<typeof EmployeeClaude>[0]) => new EmployeeClaude(o)
+  const { chat, instrument } = await employee(h, h.workspace, make)
   const log = () => h.fake.log()
-  return {
+  const r = {
     h, chat, instrument,
     sessions: () => log().filter((e) => e.dir === "start" && e.flags?.["session-id"] !== undefined).length,
+    resumes: () => log().filter((e) => e.dir === "start" && e.flags?.resume !== undefined).length,
     messages: () => log().filter((e) => e.dir === "in" && e.msg?.type === "user").length,
+    async restart() {
+      await r.h.sessions.closeAll()
+      await r.instrument.suspend()
+      r.h = reopenedClaude(r.h)
+      await r.h.sessions.restore()
+      r.instrument = (await employee(r.h, h.workspace, make, chat)).instrument
+    },
   }
+  return r
 }
 
 type Office = ReturnType<typeof makeCodex> | ReturnType<typeof makeClaude>
 
-/** minh's main chat in `cwd`, and its instrument made by `make`. */
+/** minh's main chat in `cwd` (`chat`, when given), and its instrument made by `make`. */
 async function employee(
   h: Office,
   cwd: string,
   make: (o: ConstructorParameters<typeof EmployeeCodex>[0]) => EmployeeInstrument,
+  given?: SessionRecord,
 ) {
   const head = await h.office.git.head()
-  const chat = h.store.createSession(sessionRow({ cwd, repo_commit: head, opened_by: "ngocbh", connection: "office" }))
+  const chat =
+    given ?? h.store.createSession(sessionRow({ cwd, repo_commit: head, opened_by: "ngocbh", connection: "office" }))
   const repo = loadRepo(await h.office.git.pin(head))
   const instrument = make({
     chat,
@@ -239,5 +264,60 @@ test.each(["codex", "claude"] as const)(
     expect(toolResult(fake, 3, "c2")).toContain("The build is fixed.")
     expect([r.sessions(), r.messages()]).toEqual([1, 1])
     expect(r.h.office.instruments.list(r.chat.id)).toHaveLength(1)
+  },
+)
+
+test.each(["codex", "claude"] as const)(
+  "a resumed SOP whose office restarted between its calls goes on in the %s session it started, and starts no second",
+  async (kind) => {
+    const fake = await fakeLlm()
+    const r = await rig(kind)
+    fake.script(calls(kind, "start", { message: TASK, wait: 120 }, "c1"), { content: "Done." })
+    const rec = handlers(kind, r.instrument)
+    const job = makeJob(where(), SOP, { inputs: { task: TASK, harness: kind } }, rec)
+    await run(job, rec, { env: fake.env() })
+    // The run stopped after the start's result was recorded, and the office restarted before it resumed.
+    const started = [...iterRunRecords(job.log, { payloads: true })].find(resultOf("c1"))!.seq
+    const log = cutBefore(job.log, (entry) => entry.seq > started, tempDir())
+    await r.restart()
+    fake.script(
+      calls(kind, "send", { [kind]: `${kind} 1`, message: "Run the tests too.", wait: 120 }, "c2"),
+      calls(kind, "stop", { [kind]: `${kind} 1` }, "c3"),
+      { content: "Fixed and tested." },
+    )
+    const resumed = handlers(kind, r.instrument)
+    await run(advanceJob(job, { log }), resumed, { env: fake.env() })
+    expect(resumed.outcome).toMatchObject({ status: "succeeded", output: "Fixed and tested." })
+    const sent = JSON.parse(toolResult(fake, 3, "c2"))
+    expect(sent).toMatchObject({ [kind]: `${kind} 1`, status: "idle" })
+    expect(sent.output).toContainEqual({ author: kind, text: "The tests pass too." })
+    // One session, continued once on the harness's own resume, and each message sent once.
+    expect([r.sessions(), r.resumes(), r.messages()]).toEqual([1, 1, 2])
+    const listed = r.h.office.instruments.list(r.chat.id)
+    expect(listed).toMatchObject([{ kind, name: `${kind} 1`, status: "ended" }])
+    expect(conversation(r, kind)).toContain("The build is fixed.")
+    expect(conversation(r, kind)).toContain("The tests pass too.")
+  },
+)
+
+test.each(["codex", "claude"] as const)(
+  "a resumed SOP whose office restarted mid-call reads the %s session's record from before the restart, and starts no second",
+  async (kind) => {
+    const fake = await fakeLlm()
+    const r = await rig(kind)
+    fake.script(calls(kind, "start", { message: TASK, wait: 120 }, "c1"), { content: "Done." })
+    const rec = handlers(kind, r.instrument)
+    const job = makeJob(where(), SOP, { inputs: { task: TASK, harness: kind } }, rec)
+    await run(job, rec, { env: fake.env() })
+    // The office went down while the start waited: its model call is recorded, its result isn't.
+    const log = cutBefore(job.log, resultOf("c1"), tempDir())
+    await r.restart()
+    fake.script(calls(kind, "history", { [kind]: `${kind} 1`, from: 0 }, "c2"), { content: "It was already fixed." })
+    const resumed = handlers(kind, r.instrument)
+    await run(advanceJob(job, { log }), resumed, { env: fake.env() })
+    expect(resumed.outcome).toMatchObject({ status: "succeeded", output: "It was already fixed." })
+    expect(toolResult(fake, 2, "c1")).toContain("its outcome is unknown")
+    expect(toolResult(fake, 3, "c2")).toContain("The build is fixed.")
+    expect([r.sessions(), r.resumes(), r.messages()]).toEqual([1, 0, 1])
   },
 )
