@@ -98,6 +98,12 @@ servers but those you [allow them](#mcp-servers), and so is web search when the 
 the session takes no message until you remove it or start a new session, which turns it off; one you allow them that
 Codex reaches by URL is fine.
 
+Codex runs each command in its sandbox through its own program. Codex's own installer (`codex update`, or its
+`install.sh`) puts that program in `~/.codex`, which your employee's commands can't read. So the office runs such a
+Codex from its own private copy of the install, in `/tmp/opencorp-<uid>/codex/`: a few hundred MB, made the first time
+a session starts on that Codex version and shared by every session after. The office removes a copy when it starts,
+once that version is gone. A Codex installed elsewhere (with npm or Homebrew, say) runs where it is.
+
 **Claude Code** asks you nothing either: what its permission doesn't allow is refused. Its only tools are its file
 tools, Bash and ToolSearch: none that acts on your claude.ai account (routines, Claude Design, push notifications),
 reaches outside its sandbox or runs on after the turn. A Claude Code that offers more is stopped before it uses them.
