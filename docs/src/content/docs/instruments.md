@@ -100,9 +100,12 @@ Codex reaches by URL is fine.
 
 Codex runs each command in its sandbox through its own program. Codex's own installer (`codex update`, or its
 `install.sh`) puts that program in `~/.codex`, which your employee's commands can't read. So the office runs such a
-Codex from its own private copy of the install, in `/tmp/opencorp-<uid>/codex/`: a few hundred MB, made the first time
-a session starts on that Codex version and shared by every session after. The office removes a copy when it starts,
-once that version is gone. A Codex installed elsewhere (with npm or Homebrew, say) runs where it is.
+Codex from its own private copy of the install, in `~/.cache/opencorp/codex/` (or `$XDG_CACHE_HOME/opencorp/codex/`):
+a few hundred MB, made the first time a session starts on that Codex version, shared by every session after, and put
+right by the next session's start if a file of it goes missing. Once you update Codex, the next session removes the
+copies of earlier versions that no session still runs. A Codex installed elsewhere (with npm or Homebrew, say) runs
+where it is. Your employee's Codex sessions are refused if that cache folder lies in their project folder or a
+folder they list.
 
 **Claude Code** asks you nothing either: what its permission doesn't allow is refused. Its only tools are its file
 tools, Bash and ToolSearch: none that acts on your claude.ai account (routines, Claude Design, push notifications),
