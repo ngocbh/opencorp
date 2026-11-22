@@ -2,7 +2,6 @@ import { createMemo, For, Show, createEffect, onMount, onCleanup } from "solid-j
 import { createStore } from "solid-js/store"
 import { TextAttributes, ScrollBoxRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
-import { useRoute, useRouteData } from "../../../context/route"
 import { useOffice } from "../../../context/office"
 import { selectedForeground, useTheme } from "../../../context/theme"
 import { useBindings, useCommandShortcut } from "../../../keymap"
@@ -22,13 +21,12 @@ const STATUS: Record<ChildState, string> = { running: "Running", idle: "Idle", e
 
 const useFilter = filterMemory()
 
-/** The picker's Sessions tab: the chat's Codex and Claude Code sessions, each its child session. */
-export function SessionsTab(props: { sessionID: string }) {
+/** The picker's Sessions tab: the chat's Codex and Claude Code sessions, each its child session. Enter or a click
+ *  opens one in the right pane and closes the picker, as the upstream TUI's Terminals tab opens a terminal. */
+export function SessionsTab(props: { sessionID: string; visibleID?: string; onOpen: (id: string) => void }) {
   const renderer = useRenderer()
-  const route = useRouteData("session")
   const office = useOffice()
   const { theme } = useTheme()
-  const navigate = useRoute().navigate
   const composer = useComposerTab()
   const tuiConfig = useTuiConfig()
   const toast = useToast()
@@ -40,10 +38,20 @@ export function SessionsTab(props: { sessionID: string }) {
 
   const entries = createMemo<SessionEntry[]>(() =>
     harnessFamily(office.state, props.sessionID)
-      .map((entry) => ({ ...entry, current: entry.sessionID === route.sessionID }))
-      // The session you're in always shows, so a child's picker has its own row.
+      .map((entry) => ({
+        ...entry,
+        current: entry.sessionID === props.sessionID || entry.sessionID === props.visibleID,
+      }))
+      // The session you're in, or the one the pane shows, always shows, so a child's picker has its own row.
       .filter((entry) => entry.current || filter().active === (entry.state === "running")),
   )
+
+  /** Opens `entry` in the right pane, closing the picker first; the session you're in is open already. */
+  function open(entry: SessionEntry | undefined) {
+    if (!entry || entry.sessionID === props.sessionID) return
+    composer.close()
+    props.onOpen(entry.sessionID)
+  }
 
   let selectedSessionID = ""
   let wasActive = false
@@ -62,10 +70,10 @@ export function SessionsTab(props: { sessionID: string }) {
       return
     }
     const list = entries()
-    if (selectedSessionID !== route.sessionID && list.length > 0) {
+    if (selectedSessionID !== props.sessionID && list.length > 0) {
       const currentIdx = list.findIndex((e) => e.current)
       const next = currentIdx >= 0 ? currentIdx : 0
-      selectedSessionID = route.sessionID
+      selectedSessionID = props.sessionID
       setStore("selected", next)
       const scrollCurrentIntoView = () => scrollToIndex(next, true)
       scrollCurrentIntoView()
@@ -143,8 +151,7 @@ export function SessionsTab(props: { sessionID: string }) {
         title: "Open the session",
         category: "Composer",
         run() {
-          const entry = entries()[store.selected]
-          if (entry) navigate({ type: "session", sessionID: entry.sessionID })
+          open(entries()[store.selected])
         },
       },
       {
@@ -205,7 +212,7 @@ export function SessionsTab(props: { sessionID: string }) {
                   onMouseMove={() => setStore("selected", index())}
                   onMouseUp={() => {
                     setStore("selected", index())
-                    navigate({ type: "session", sessionID: entry.sessionID })
+                    open(entry)
                   }}
                 >
                   <box flexGrow={1} minWidth={0} flexDirection="row">

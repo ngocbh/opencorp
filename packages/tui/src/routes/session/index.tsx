@@ -1,5 +1,4 @@
 import {
-  batch,
   createContext,
   createEffect,
   createMemo,
@@ -10,7 +9,6 @@ import {
   onCleanup,
   Show,
   Switch,
-  untrack,
   useContext,
 } from "solid-js"
 import { createStore } from "solid-js/store"
@@ -31,15 +29,7 @@ import { SplitBorder } from "../../ui/border"
 import { useTuiPaths } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
 import { useTheme } from "../../context/theme"
-import {
-  BoxRenderable,
-  CliRenderEvents,
-  MouseEvent,
-  ScrollBoxRenderable,
-  TextAttributes,
-  RGBA,
-  type Renderable,
-} from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, TextAttributes, type RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import { Locale } from "../../util/locale"
 import { Dynamic, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
@@ -49,11 +39,11 @@ import { DialogMessage } from "./dialog-message"
 import { DialogMode } from "./dialog-mode"
 import { DialogRules } from "./dialog-rules"
 import { PermissionPrompt } from "./permission"
-import { costLabel, Sidebar } from "./sidebar"
+import { costLabel } from "./sidebar"
 import { filetype } from "../../util/filetype"
 import { errorMessage } from "../../util/error"
 import { interruptible } from "../../util/status"
-import { Toast, useToast } from "../../ui/toast"
+import { useToast } from "../../ui/toast"
 import { useCostCap } from "../../component/cost-cap"
 import { useKV } from "../../context/kv.tsx"
 import { usePromptRef } from "../../context/prompt"
@@ -66,7 +56,7 @@ import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseShellOutput, collapseToolOutput } from "../../util/collapse-tool-output"
-import { OPENCORP_BASE_MODE, useBindings, useOpenCorpKeymap } from "../../keymap"
+import { OPENCORP_BASE_MODE, useBindings } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { usePermission } from "../../context/permission"
@@ -77,23 +67,15 @@ import { HarnessCard } from "../chat/harness-card"
 import { SideChat, SideHeader } from "../chat/side"
 import { freeze, frozenList, unfreeze, type Freeze } from "../chat/freeze"
 import { display } from "../../util/printable"
-import { InteractivityProvider } from "../../context/interactivity"
-import { clampPaneWidth, createPaneResize } from "../../ui/pane-resize"
-import { PaneResizeHandle } from "../../ui/pane-resize-handle"
-import { DialogInstrumentView } from "./dialog-instruments"
-import { waitingInstrument } from "./instrument-line"
-import { InstrumentView, nextPlacement, PLACEMENTS, type InstrumentPlacement } from "./instrument-view"
+import { useLocal } from "../../context/local"
 import { Composer } from "./composer"
 import { busyCounts, busyTab, childState, harnessFamily } from "./composer/tabs"
 import { sessionOwner, speakerLabel } from "./speakers"
-import { endsLine } from "./keys"
 import { NoteLine } from "./note-line"
-import { LIVE } from "./terminal-pane"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
 const sessionBindingCommands = [
-  "session.sidebar.toggle",
   "session.toggle.conceal",
   "session.toggle.timestamps",
   "session.toggle.actions",
@@ -157,7 +139,27 @@ function messageText(message: Message) {
     .trim()
 }
 
-export function Session() {
+export type SessionProps = {
+  sessionID: string
+  /** Set when it shows in the right pane beside a chat: no header, since the pane's names it; no epilogue; and the
+   *  ways back to the chat close the pane (`close`) or give the chat the keys (`leave`). */
+  pane?: { close: () => void; leave: () => void }
+  /** Its width, which the frame measures; the screen's when not given. */
+  width?: number
+  scrollRef?: (scroll: ScrollBoxRenderable | undefined) => void
+  /** The chat's shells, as its picker lists them. */
+  shells?: readonly Instrument[]
+  /** The instrument the pane shows, which the picker marks. */
+  visibleID?: string
+  /** Opens instrument `id`, a shell or a Codex or Claude Code session, in the right pane. */
+  onOpen?: (id: string) => void
+  /** Takes what opens the picker on its busiest tab, for the pane's key that goes back to it. */
+  onPicker?: (show: (() => void) | undefined) => void
+  /** Whether the owner's keys are dropped until Enter, after a shell they were typing into closed. */
+  keysDropped?: boolean
+}
+
+export function Session(props: SessionProps) {
   const setEpilogue = useEpilogue()
   const clipboard = useClipboard()
   const writeExport = async (file: string, content: string) => {
@@ -171,22 +173,21 @@ export function Session() {
   const tuiConfig = useTuiConfig()
   const kv = useKV()
   const { theme } = useTheme()
+  const local = useLocal()
   const promptRef = usePromptRef()
-  const session = createMemo(() => office.state.sessions.find((s) => s.id === route.sessionID))
-  const cards = createMemo(() => openQuestions(office.state, route.sessionID))
+  const session = createMemo(() => office.state.sessions.find((s) => s.id === props.sessionID))
+  const cards = createMemo(() => openQuestions(office.state, props.sessionID))
   const question = createMemo(() => cards()[0])
   // A Codex session shows every open card above a prompt that stays; the first card or the prompt has the keys.
   const codex = createMemo(() => session()?.harness === "codex")
   // A Codex or Claude Code session: a harness of its own, which takes a message mid-turn into the running turn.
   const harnessed = createMemo(() => session()?.harness === "codex" || session()?.harness === "claude")
-  // The open card is an approval card, which shows as the permission prompt.
-  const approval = createMemo(() => !codex() && question()?.source === "approval")
   // A card on the chat (an approval, a question), which takes what room it needs and scrolls in the rest.
   const card = createMemo(() => !codex() && question() !== undefined)
   const permission = usePermission()
   // Whether the chat's mode can be switched here. Never while a card is open: the card hides the prompt and its mode
   // label, and a switch to dontAsk would answer an approval card.
-  const switchable = () => permission.mode(route.sessionID) !== null && !question()
+  const switchable = () => permission.mode(props.sessionID) !== null && !question()
   const [focus, setFocus] = createSignal<"card" | "prompt">("card")
   const cardFocused = createMemo(() => codex() && cards().length > 0 && focus() === "card")
   // Cards opening when none were open take the keys, unless the prompt holds a draft: keys typed for the prompt must
@@ -205,7 +206,7 @@ export function Session() {
   })
   const sideSession = createMemo(() => office.state.sessions.find((s) => s.id === sideQuestion()?.side_session_id))
   // Until its first message the side session doesn't exist, so the side view starts empty.
-  const viewID = createMemo(() => (sideOf() ? sideQuestion()?.side_session_id : route.sessionID))
+  const viewID = createMemo(() => (sideOf() ? sideQuestion()?.side_session_id : props.sessionID))
   const messages = createMemo(() => {
     const id = viewID()
     return id ? (office.state.messages[id] ?? []) : []
@@ -275,15 +276,15 @@ export function Session() {
   })
   const person = createMemo(() => personLabel(office.state.people, session()?.person ?? ""))
 
-  createEffect(() => {
-    const current = session()
-    setEpilogue(sessionEpilogue({ title: current ? `${person()} · ${current.cwd}` : "", sessionID: current?.id }))
-  })
-  onCleanup(() => setEpilogue())
+  if (!props.pane) {
+    createEffect(() => {
+      const current = session()
+      setEpilogue(sessionEpilogue({ title: current ? `${person()} · ${current.cwd}` : "", sessionID: current?.id }))
+    })
+    onCleanup(() => setEpilogue())
+  }
 
   const dimensions = useTerminalDimensions()
-  const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "auto")
-  const [sidebarOpen, setSidebarOpen] = createSignal(false)
   const [conceal, setConceal] = createSignal(true)
   const [timestamps, setTimestamps] = kv.signal<"hide" | "show">("timestamps", "hide")
   const [showDetails, setShowDetails] = kv.signal("tool_details_visibility", true)
@@ -291,65 +292,7 @@ export function Session() {
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
-  // This device's choice of how an instrument opens; the open one, how it shows and whether it opened itself; and
-  // whether it has the keys.
-  const [instrumentView, setInstrumentView] = kv.signal<InstrumentPlacement>("instrument_view", "floating")
-  const defaultPlacement = () => (PLACEMENTS.includes(instrumentView()) ? instrumentView() : "floating")
-  const [opened, setOpened] = createSignal<{ id: string; view: InstrumentPlacement; itself?: true } | null>(null)
-  const [instrumentFocused, setInstrumentFocused] = createSignal(false)
-  const split = () => opened()?.view === "split"
-  // The chat's own keys, which the open instrument mutes while it has the keys, as the provider mutes the chat's view.
-  const chatKeys = () => !instrumentFocused()
-  // A split starts at half the screen; its handle drags it.
-  const [paneWidth, setPaneWidth] = createSignal<number>()
-  const defaultPaneWidth = () => Math.max(1, Math.floor(dimensions().width / 2))
-  const paneResize = createPaneResize({
-    value: () => paneWidth() ?? defaultPaneWidth(),
-    defaultValue: defaultPaneWidth,
-    clamp: (width) => clampPaneWidth(width, dimensions().width),
-    fromMouse: (event) => dimensions().width - event.x - 1,
-    contains: (event, width) => event.x >= dimensions().width - width - 1 && event.x <= dimensions().width - width,
-    onCommit: (width) => setPaneWidth(width),
-  })
-  let resizeRelease = false
-  const finishPaneResize = (event: MouseEvent) => {
-    if (paneResize.resizing()) {
-      // A captured drag-end can be followed by mouse-up on the focus overlay.
-      resizeRelease = true
-      queueMicrotask(() => {
-        resizeRelease = false
-      })
-    }
-    paneResize.onMouseUp(event)
-  }
-  /** Where the open instrument sits: 80% of the screen, centred, floating; the right pane of a split; or all of the
-   *  screen but the line under the prompt and the row below it. */
-  const placement = createMemo(() => {
-    const { width, height } = dimensions()
-    const view = opened()?.view
-    if (view === "split") return { width: paneResize.size(), height: undefined, left: undefined, top: undefined }
-    if (view === "full") return { width, height: Math.max(1, height - 2), left: 0, top: 0 }
-    const w = Math.floor(width * 0.8)
-    const h = Math.floor(height * 0.8)
-    return { width: w, height: h, left: Math.floor((width - w) / 2), top: Math.floor((height - h) / 2) }
-  })
-  // An ended or failed shell stays in the list, with its scrollback, until the session next goes idle.
-  const [retired, setRetired] = createSignal<ReadonlySet<string>>(new Set())
-  const instruments = createMemo(() =>
-    (office.state.instruments[route.sessionID] ?? []).filter((i) => i.kind === "terminal" && !retired().has(i.id)),
-  )
-  createEffect(
-    on(
-      () => session()?.status,
-      (status, prev) => {
-        if (status !== "idle" || prev === undefined || prev === "idle") return
-        const ended = (office.state.instruments[route.sessionID] ?? []).filter(
-          (i) => i.status === "ended" || i.status === "failed",
-        )
-        if (ended.length) setRetired((r) => new Set([...r, ...ended.map((i) => i.id)]))
-      },
-    ),
-  )
+  const instruments = () => props.shells ?? []
   // In a child session (a Codex or Claude Code session an employee's chat drives), the chat that drives it.
   const parentID = createMemo(() => session()?.instrument_of ?? undefined)
   // A child whose session ended takes no message: in its prompt's place the picker, as the upstream TUI shows a
@@ -362,11 +305,14 @@ export function Session() {
   const openingTab = () =>
     busyTab(
       busyCounts({
-        family: harnessFamily(office.state, route.sessionID),
-        shells: office.state.instruments[route.sessionID] ?? [],
-        sessionID: route.sessionID,
+        family: harnessFamily(office.state, props.sessionID),
+        shells: office.state.instruments[props.sessionID] ?? [],
+        sessionID: props.sessionID,
       }),
     )
+  // The pane's key that goes back to the picker opens it here, as the upstream TUI's opens its Terminals tab.
+  props.onPicker?.(() => setComposer({ open: true, tab: openingTab() }))
+  onCleanup(() => props.onPicker?.(undefined))
   // A child's picker lists its chat's Codex and Claude Code sessions, which the chat's list names: the chat is loaded
   // too when the child opened first.
   createEffect(
@@ -389,63 +335,23 @@ export function Session() {
       tokens: tokens > 0 ? `${Locale.number(tokens)} tokens` : undefined,
     }
   })
-  // The open instrument, kept while it closes.
-  const openInstrument = createMemo<Instrument | undefined>((last) => {
-    const id = opened()?.id
-    if (!id) return undefined
-    return instruments().find((i) => i.id === id) ?? (last?.id === id ? last : undefined)
-  })
-  // It closes when it leaves the list: its host removed it, or its turn ended after it did.
-  createEffect(() => {
-    const id = opened()?.id
-    if (id && !instruments().some((i) => i.id === id)) closeInstrument()
-  })
-  // The session's approver, the one person whose keys its shells take (`sessionOwner`). Whether that is who this TUI
-  // acts as.
+  // The session's approver, whose word wins in it (`sessionOwner`).
   const approver = () => sessionOwner(session(), office.state.people)
-  const approving = () => !!office.person && office.person === approver()
   // In a Codex or Claude Code session an employee's chat drives, both the owner and the employee write to the
   // harness: each message is labelled with who sent it.
   const speaker = (message: Message) =>
     session()?.instrument_of ? speakerLabel(message.author, approver(), office.state.people) : undefined
-  // Whether the owner has typed text into the open shell since their last Enter, Ctrl-C or Ctrl-D.
-  const [midLine, setMidLine] = createSignal(false)
-  // A PTY shell waiting for the approver's password opens itself when none is open: with the keys, in the default view,
-  // or, while the prompt holds a draft, beside it with the draft keeping them. It goes back to the list once the wait
-  // ends and the owner has finished the line they were typing into it, a password's rest that must not reach the
-  // chat, unless the owner has since moved it on.
-  const secretWait = (i: Instrument) => i.interactive && i.status === "waiting" && i.waiting === "secret"
-  createEffect(
-    on(
-      () => (approving() ? instruments().find(secretWait)?.id : undefined),
-      (id) => {
-        if (!id || untrack(opened)) return
-        if (untrack(() => promptRef.current?.current.input)) return setOpened({ id, view: "split", itself: true })
-        setOpened({ id, view: defaultPlacement(), itself: true })
-        focusInstrument()
-      },
-    ),
-  )
-  createEffect(() => {
-    const current = opened()
-    if (!current?.itself) return
-    const shell = instruments().find((i) => i.id === current.id)
-    if (shell && (secretWait(shell) || midLine())) return
-    untrack(closeInstrument)
-  })
-
-  const wide = createMemo(() => dimensions().width > 120)
-  const sidebarVisible = createMemo(() => {
-    // A split takes the sidebar's place while it shows.
-    if (split()) return false
-    if (sidebarOpen()) return true
-    if (sidebar() === "auto" && wide()) return true
-    return false
-  })
+  // Its left border takes the speaker's colour, as the upstream TUI's takes a subagent's: the employee's for theirs,
+  // the owner's for a message with no other author.
+  const speakerColor = (message: Message) => {
+    if (!session()?.instrument_of) return undefined
+    const owner = approver()
+    return local.person.color(message.author && message.author !== owner ? message.author : owner)
+  }
   const showTimestamps = createMemo(() => timestamps() === "show")
-  const contentWidth = createMemo(
-    () => dimensions().width - (sidebarVisible() ? 42 : 0) - (split() ? paneResize.size() : 0) - 4,
-  )
+  // In the pane, the chat's sides take one column each, not two.
+  const gutter = () => (props.pane ? 1 : 2)
+  const contentWidth = createMemo(() => (props.width ?? dimensions().width) - gutter() * 2)
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const toast = useToast()
@@ -453,12 +359,12 @@ export function Session() {
 
   createEffect(
     on(
-      () => route.sessionID,
+      () => props.sessionID,
       (sessionID) => {
         office
           .syncSession(sessionID)
           .then(() => {
-            if (route.sessionID !== sessionID) return
+            if (props.sessionID !== sessionID) return
             toBottom()
             // A turn may have started before this view opened (the first message is sent from home): it
             // began at the last user message, or begins after what is here now.
@@ -469,14 +375,15 @@ export function Session() {
           })
           .catch((error) => {
             // An office that is down loads the session when it comes back.
-            if (route.sessionID !== sessionID || error instanceof OfficeUnavailable) return
+            if (props.sessionID !== sessionID || error instanceof OfficeUnavailable) return
             const missing = error instanceof OfficeError && error.code === "not_found"
             toast.show({
               message: missing ? `Session not found: ${sessionID}` : errorMessage(error),
               variant: "error",
               duration: 5000,
             })
-            navigate({ type: "home" })
+            // The pane closes on its own once the chat's list drops the session.
+            if (!props.pane) navigate({ type: "home" })
           })
       },
     ),
@@ -484,7 +391,9 @@ export function Session() {
 
   let seeded = false
   let scroll: ScrollBoxRenderable
+  // The app's prompt ref is the chat's: the pane's prompt leaves it alone, so the chat's keeps its place.
   const bind = (r: PromptRef | undefined) => {
+    if (props.pane) return
     promptRef.set(r)
     if (seeded || !route.prompt || !r) return
     seeded = true
@@ -493,113 +402,7 @@ export function Session() {
   const dialog = useDialog()
   const renderer = useRenderer()
 
-  let chatNode: BoxRenderable | undefined
-  let viewNode: BoxRenderable | undefined
-  // What gives the open shell's terminal the keys again, while it has one.
-  let focusView: (() => void) | undefined
-  // What had the keys in the chat when the open instrument took them, given back after.
-  let chatFocus: Renderable | null = null
-  function focusInstrument() {
-    if (instrumentFocused()) return
-    const current = renderer.currentFocusedRenderable
-    if (current && within(current, chatNode)) {
-      chatFocus = current
-      current.blur()
-    }
-    setInstrumentFocused(true)
-  }
-  function focusChat() {
-    if (!instrumentFocused()) return
-    const current = renderer.currentFocusedRenderable
-    if (current && within(current, viewNode)) current.blur()
-    setInstrumentFocused(false)
-    if (!dropping()) giveChatFocus()
-  }
-  /** Gives back what had the keys in the chat when the open instrument took them. */
-  function giveChatFocus() {
-    const saved = chatFocus
-    chatFocus = null
-    if (saved && !saved.isDestroyed && within(saved, chatNode)) saved.focus()
-  }
-  // A view that goes while the owner is mid-line in its shell, however it goes, leaves the rest of that line (a
-  // password's, perhaps) going nowhere: the keys are dropped until its Enter, Ctrl-C or Ctrl-D, and only then does
-  // the chat get them.
-  const [dropping, setDropping] = createSignal(false)
-  const keymap = useOpenCorpKeymap()
-  onCleanup(
-    keymap.intercept(
-      "key",
-      ({ event, consume }) => {
-        if (!dropping()) return
-        consume()
-        if (!endsLine(event)) return
-        setDropping(false)
-        giveChatFocus()
-      },
-      { priority: 200 },
-    ),
-  )
-  /** Starts dropping the owner's keys when the open view goes while they are mid-line in its shell. */
-  function leaving() {
-    if (untrack(midLine)) setDropping(true)
-  }
-  // Focus that lands in the open instrument gives it the keys. While it has them, focus that lands in the chat (a
-  // dialog handing it back to the prompt) goes back to the instrument.
-  const onFocused = () => {
-    const current = renderer.currentFocusedRenderable
-    if (!current || !opened()) return
-    if (within(current, viewNode)) focusInstrument()
-    else if (instrumentFocused() && within(current, chatNode)) {
-      current.blur()
-      if (dialog.stack.length === 0) focusView?.()
-    }
-  }
-  renderer.on(CliRenderEvents.FOCUSED_RENDERABLE, onFocused)
-  onCleanup(() => renderer.off(CliRenderEvents.FOCUSED_RENDERABLE, onFocused))
-
-  /** Opens instrument `id` in `view`, the setting's unless given, with the keys unless `keys` is false. */
-  function showInstrument(id: string, view = defaultPlacement(), keys = true) {
-    if (opened() && opened()!.id !== id) leaving()
-    setOpened({ id, view })
-    if (keys) focusInstrument()
-    else focusChat()
-  }
-  /** Puts the open instrument back in the list; the chat gets the keys, once the owner has ended a line they were
-   *  typing into it. */
-  function closeInstrument() {
-    if (!opened()) return
-    leaving()
-    setOpened(null)
-    focusChat()
-  }
-  /** The live shell the open approval card's terminal command would run in, if it names one. */
-  const cardShell = createMemo(() => {
-    const held = approval() ? question()?.approval : undefined
-    if (!held || (held.tool !== "terminal_run" && held.tool !== "terminal_type")) return undefined
-    const name = held.args?.shell
-    return instruments().find((i) => i.name === name && LIVE.includes(i.status))
-  })
-  /** Opens the shell an open approval card would run in, beside the card, which keeps the keys; else the shell
-   *  waiting on the owner, else the one that changed last. With one open, moves it to its next view, and after full
-   *  screen back to the list. */
-  function cycleInstrument() {
-    const current = opened()
-    if (!current) {
-      const beside = cardShell()
-      if (beside) return showInstrument(beside.id, "split", false)
-      const list = instruments()
-      const next =
-        waitingInstrument(list) ??
-        list.reduce<Instrument | undefined>((a, b) => (!a || b.updated_at >= a.updated_at ? b : a), undefined)
-      if (next) showInstrument(next.id)
-      return
-    }
-    const view = nextPlacement(current.view)
-    if (!view) return closeInstrument()
-    setOpened({ id: current.id, view })
-    // Full screen leaves no chat to keep the keys.
-    if (view === "full" || instrumentFocused()) focusInstrument()
-  }
+  onCleanup(() => props.scrollRef?.(undefined))
 
   /** The id of the next or previous message with text, relative to the scroll position. */
   const findNextVisibleMessage = (direction: "next" | "prev"): string | null => {
@@ -647,7 +450,7 @@ export function Session() {
         dialog.clear()
         // The office interrupts a busy session before it ends it.
         office.client.sessions
-          .end(route.sessionID)
+          .end(props.sessionID)
           .then(() => toast.show({ message: "Ending the session", variant: "info" }))
           .catch((error) =>
             isNotImplemented(error)
@@ -661,14 +464,14 @@ export function Session() {
       value: "session.cost_cap",
       category: "Session",
       slash: { name: "cost-cap" },
-      run: () => costCap.ask(route.sessionID),
+      run: () => costCap.ask(props.sessionID),
     },
     {
       title: "Switch the chat's mode…",
       value: "session.mode",
       category: "Session",
       enabled: switchable(),
-      run: () => dialog.replace(() => <DialogMode sessionID={route.sessionID} />),
+      run: () => dialog.replace(() => <DialogMode sessionID={props.sessionID} />),
     },
     {
       // The upstream TUI's "Toggle subagent picker". A click on the line under the prompt names the tab to open on.
@@ -690,9 +493,11 @@ export function Session() {
       category: "Session",
       enabled: !!parentID(),
       run: () => {
+        dialog.clear()
+        // In the pane the chat is beside it.
+        if (props.pane) return props.pane.leave()
         const parent = parentID()
         if (parent) navigate({ type: "session", sessionID: parent })
-        dialog.clear()
       },
     },
     {
@@ -700,20 +505,7 @@ export function Session() {
       value: "session.rules",
       category: "Session",
       slash: { name: "rules" },
-      run: () => dialog.replace(() => <DialogRules sessionID={route.sessionID} />),
-    },
-    {
-      title: sidebarVisible() ? "Hide sidebar" : "Show sidebar",
-      value: "session.sidebar.toggle",
-      category: "Session",
-      run: () => {
-        batch(() => {
-          const isVisible = sidebarVisible()
-          setSidebar(() => (isVisible ? "hide" : "auto"))
-          setSidebarOpen(!isVisible)
-        })
-        dialog.clear()
-      },
+      run: () => dialog.replace(() => <DialogRules sessionID={props.sessionID} />),
     },
     {
       title: conceal() ? "Disable code concealment" : "Enable code concealment",
@@ -760,15 +552,6 @@ export function Session() {
         setShowGenericToolOutput((prev) => !prev)
         dialog.clear()
       },
-    },
-    {
-      title: "Choose how instruments open…",
-      value: "session.instrument.view",
-      category: "Session",
-      run: () =>
-        dialog.replace(() => (
-          <DialogInstrumentView current={defaultPlacement()} onPick={(view) => setInstrumentView(() => view)} />
-        )),
     },
     ...(
       [
@@ -905,7 +688,7 @@ export function Session() {
         title: "Move between the open card and the prompt",
         category: "Session",
         hidden: true,
-        enabled: chatKeys() && codex() && cards().length > 0 && dialog.stack.length === 0,
+        enabled: codex() && cards().length > 0 && dialog.stack.length === 0,
         run: () => setFocus((f) => (f === "card" ? "prompt" : "card")),
       },
     ],
@@ -922,75 +705,27 @@ export function Session() {
         title: "Cycle the chat's mode",
         category: "Session",
         hidden: true,
-        enabled: chatKeys() && switchable() && dialog.stack.length === 0,
+        enabled: switchable() && dialog.stack.length === 0,
         run: () =>
           void permission
-            .cycle(route.sessionID)
+            .cycle(props.sessionID)
             .catch((e) => toast.show({ message: errorMessage(e), variant: "error" })),
       },
     ],
     bindings: tuiConfig.keybinds.gather("session.mode", ["session.mode.cycle"]),
   }))
 
-  // No mode, so they work from a card as from the prompt; above the prompt's Esc, which clears a draft or interrupts.
   useBindings(() => ({
-    priority: 2,
-    commands: [
-      {
-        name: "session.instrument.cycle",
-        title: "Open an instrument, or switch how it shows",
-        category: "Session",
-        hidden: true,
-        enabled: dialog.stack.length === 0 && (opened() !== null || instruments().length > 0),
-        run: cycleInstrument,
-      },
-      {
-        name: "session.instrument.close",
-        title: "Put the open instrument back in the list",
-        category: "Session",
-        hidden: true,
-        enabled: opened() !== null && instrumentFocused() && dialog.stack.length === 0,
-        run: closeInstrument,
-      },
-      {
-        name: "session.instrument.focus.chat",
-        title: "Give the chat the keys, the open instrument staying open",
-        category: "Session",
-        hidden: true,
-        // Full screen leaves no chat to type in.
-        enabled: opened() !== null && opened()?.view !== "full" && instrumentFocused() && dialog.stack.length === 0,
-        run: focusChat,
-      },
-      {
-        name: "session.instrument.focus",
-        title: "Give the open instrument the keys",
-        category: "Session",
-        hidden: true,
-        enabled: opened() !== null && !instrumentFocused() && dialog.stack.length === 0,
-        run: focusInstrument,
-      },
-    ],
-    bindings: tuiConfig.keybinds.gather("session.instrument", [
-      "session.instrument.cycle",
-      "session.instrument.close",
-      "session.instrument.focus.chat",
-      "session.instrument.focus",
-    ]),
-  }))
-
-  useBindings(() => ({
-    enabled: chatKeys(),
     bindings: tuiConfig.keybinds.gather("session.global", sessionGlobalBindingCommands),
   }))
 
   useBindings(() => ({
-    enabled: () => chatKeys() && renderer.currentFocusedEditor === null,
+    enabled: () => renderer.currentFocusedEditor === null,
     bindings: tuiConfig.keybinds.gather("session.global.unfocused", sessionGlobalUnfocusedBindingCommands),
   }))
 
   useBindings(() => ({
     mode: OPENCORP_BASE_MODE,
-    enabled: chatKeys(),
     bindings: tuiConfig.keybinds.gather("session", sessionBindingCommands),
   }))
 
@@ -1002,7 +737,7 @@ export function Session() {
         get width() {
           return contentWidth()
         },
-        sessionID: route.sessionID,
+        sessionID: props.sessionID,
         conceal,
         showTimestamps,
         showDetails,
@@ -1012,320 +747,227 @@ export function Session() {
       }}
     >
       <box
-        flexDirection="row"
         flexGrow={1}
+        minWidth={0}
         minHeight={0}
-        position="relative"
-        onMouseDrag={paneResize.onMouseDrag}
-        onMouseDragEnd={finishPaneResize}
-        onMouseUp={finishPaneResize}
+        paddingBottom={1}
+        paddingLeft={gutter()}
+        paddingRight={gutter()}
+        gap={1}
       >
-        <box
-          ref={(r: BoxRenderable) => (chatNode = r)}
-          flexGrow={1}
-          minWidth={0}
-          minHeight={0}
-          paddingBottom={1}
-          paddingLeft={2}
-          paddingRight={2}
-          gap={1}
-        >
-          {/* While the open instrument has the keys, the chat's prompt and cards have none. */}
-          <InteractivityProvider enabled={!instrumentFocused()}>
-            <Show when={session()}>
-              {(current) => (
-                <>
-                  <Show when={sideQuestion()}>{(q) => <SideHeader question={q()} session={sideSession()} />}</Show>
-                  <box flexShrink={0} paddingTop={1} visible={!sideOf()}>
-                    <text fg={theme.text} wrapMode="none">
-                      <b>{person()}</b>
-                      <span
-                        style={{ fg: ["busy", "waiting"].includes(current().status) ? theme.warning : theme.textMuted }}
-                      >
-                        {" "}
-                        · {statusLabel(current())}
-                      </span>
-                      <Show when={costLabel(current(), office.connections())}>
-                        {(cost) => <span style={{ fg: theme.textMuted }}> · {cost()}</span>}
-                      </Show>
-                      <span style={{ fg: theme.textMuted }}>
-                        {" · "}
-                        {display(modelLabel(current(), office.connections()))}
-                      </span>
-                    </text>
-                    {/* A child session: which of the chat's sessions it is, who drives it and its harness's tokens. */}
-                    <Show when={childInfo()}>
-                      {(child) => (
-                        <text fg={theme.textMuted} wrapMode="none">
-                          <span style={{ fg: theme.text }}>
-                            <b>{child().label}</b>
-                          </span>
-                          {" · "}driven by @{display(current().person)}
-                          <Show when={child().tokens}>{(tokens) => <> · {tokens()}</>}</Show>
-                        </text>
-                      )}
-                    </Show>
-                    <Show when={current().model_note}>
-                      {(note) => (
-                        <text fg={theme.warning} wrapMode="word">
-                          {display(note())}
-                        </text>
-                      )}
-                    </Show>
-                  </box>
-                  <scrollbox
-                    ref={(r) => (scroll = r)}
-                    viewportOptions={{
-                      paddingRight: showScrollbar() ? 1 : 0,
-                    }}
-                    verticalScrollbarOptions={{
-                      paddingLeft: 1,
-                      visible: showScrollbar(),
-                      trackOptions: {
-                        backgroundColor: theme.backgroundElement,
-                        foregroundColor: theme.border,
-                      },
-                    }}
-                    stickyScroll={true}
-                    stickyStart="bottom"
-                    flexGrow={1}
-                    // Under a card the transcript takes what the card leaves, and keeps a few rows.
-                    flexBasis={card() ? 0 : "auto"}
-                    minHeight={card() ? 3 : 0}
-                    scrollAcceleration={scrollAcceleration()}
+        <Show when={session()}>
+          {(current) => (
+            <>
+              <Show when={sideQuestion()}>{(q) => <SideHeader question={q()} session={sideSession()} />}</Show>
+              {/* In the pane, the pane's header names it. */}
+              <box flexShrink={0} paddingTop={1} visible={!sideOf() && !props.pane}>
+                <text fg={theme.text} wrapMode="none">
+                  <b>{person()}</b>
+                  <span
+                    style={{ fg: ["busy", "waiting"].includes(current().status) ? theme.warning : theme.textMuted }}
                   >
-                    <For each={shown()}>
-                      {(message, index) => (
-                        <Switch>
-                          <Match when={isInstrumentNote(message)}>
-                            <NoteLine message={message} index={index()} />
-                          </Match>
-                          <Match when={message.role === "user"}>
-                            <UserMessage
-                              index={index()}
-                              speaker={speaker(message)}
-                              onMouseUp={() => {
-                                if (renderer.getSelection()?.getSelectedText()) return
-                                dialog.replace(() => <DialogMessage messageID={message.id} sessionID={route.sessionID} />)
-                              }}
-                              message={message}
-                            />
-                          </Match>
-                          <Match when={message.role === "assistant"}>
-                            <AssistantMessage message={message} last={lastAssistant()?.id === message.id} />
-                          </Match>
-                        </Switch>
-                      )}
-                    </For>
-                  </scrollbox>
-                  <Show when={dropping()}>
-                    <text fg={theme.warning} flexShrink={0} wrapMode="word">
-                      The shell closed: keys are dropped until Enter
-                    </text>
+                    {" "}
+                    · {statusLabel(current())}
+                  </span>
+                  <Show when={costLabel(current(), office.connections())}>
+                    {(cost) => <span style={{ fg: theme.textMuted }}> · {cost()}</span>}
                   </Show>
-                  {/* A card may shrink to what the chat leaves it: its body scrolls in what remains. */}
-                  <box flexShrink={card() && !composerVisible() ? 1 : 0}>
-                    <Show when={readOnly() ? childInfo() : undefined}>
-                      {(child) => (
-                        <text fg={theme.textMuted} wrapMode="word" paddingBottom={1}>
-                          This {child().said} session ended. It takes no more messages.
-                        </text>
-                      )}
-                    </Show>
-                    <Composer
-                      sessionID={route.sessionID}
-                      open={composerVisible()}
-                      defaultTab={composer.tab ?? (readOnly() ? "subagents" : undefined)}
-                      onClose={() => {
-                        // A child that ended has no prompt to go back to: its picker closes to the chat.
-                        const parent = parentID()
-                        if (readOnly() && parent) return navigate({ type: "session", sessionID: parent })
-                        setComposer("open", false)
-                      }}
-                      shells={instruments()}
-                      onOpenShell={(id) => showInstrument(id)}
-                    />
-                    <Show when={!composerVisible()}>
+                  <span style={{ fg: theme.textMuted }}>
+                    {" · "}
+                    {display(modelLabel(current(), office.connections()))}
+                  </span>
+                </text>
+                {/* A child session: which of the chat's sessions it is, who drives it and its harness's tokens. */}
+                <Show when={childInfo()}>
+                  {(child) => (
+                    <text fg={theme.textMuted} wrapMode="none">
+                      <span style={{ fg: theme.text }}>
+                        <b>{child().label}</b>
+                      </span>
+                      {" · "}driven by @{display(current().person)}
+                      <Show when={child().tokens}>{(tokens) => <> · {tokens()}</>}</Show>
+                    </text>
+                  )}
+                </Show>
+                <Show when={current().model_note}>
+                  {(note) => (
+                    <text fg={theme.warning} wrapMode="word">
+                      {display(note())}
+                    </text>
+                  )}
+                </Show>
+              </box>
+              <scrollbox
+                ref={(r) => {
+                  scroll = r
+                  props.scrollRef?.(r)
+                }}
+                viewportOptions={{
+                  paddingRight: showScrollbar() ? 1 : 0,
+                }}
+                verticalScrollbarOptions={{
+                  paddingLeft: 1,
+                  visible: showScrollbar(),
+                  trackOptions: {
+                    backgroundColor: theme.backgroundElement,
+                    foregroundColor: theme.border,
+                  },
+                }}
+                stickyScroll={true}
+                stickyStart="bottom"
+                flexGrow={1}
+                // Under a card the transcript takes what the card leaves, and keeps a few rows.
+                flexBasis={card() ? 0 : "auto"}
+                minHeight={card() ? 3 : 0}
+                scrollAcceleration={scrollAcceleration()}
+              >
+                <For each={shown()}>
+                  {(message, index) => (
+                    <Switch>
+                      <Match when={isInstrumentNote(message)}>
+                        <NoteLine message={message} index={index()} />
+                      </Match>
+                      <Match when={message.role === "user"}>
+                        <UserMessage
+                          index={index()}
+                          speaker={speaker(message)}
+                          speakerColor={speakerColor(message)}
+                          onMouseUp={() => {
+                            if (renderer.getSelection()?.getSelectedText()) return
+                            dialog.replace(() => <DialogMessage messageID={message.id} sessionID={props.sessionID} />)
+                          }}
+                          message={message}
+                        />
+                      </Match>
+                      <Match when={message.role === "assistant"}>
+                        <AssistantMessage message={message} last={lastAssistant()?.id === message.id} />
+                      </Match>
+                    </Switch>
+                  )}
+                </For>
+              </scrollbox>
+              <Show when={props.keysDropped}>
+                <text fg={theme.warning} flexShrink={0} wrapMode="word">
+                  The shell closed: keys are dropped until Enter
+                </text>
+              </Show>
+              {/* A card may shrink to what the chat leaves it: its body scrolls in what remains. */}
+              <box flexShrink={card() && !composerVisible() ? 1 : 0}>
+                <Show when={readOnly() ? childInfo() : undefined}>
+                  {(child) => (
+                    <text fg={theme.textMuted} wrapMode="word" paddingBottom={1}>
+                      This {child().said} session ended. It takes no more messages.
+                    </text>
+                  )}
+                </Show>
+                <Composer
+                  sessionID={props.sessionID}
+                  open={composerVisible()}
+                  defaultTab={composer.tab ?? (readOnly() ? "subagents" : undefined)}
+                  onClose={() => {
+                    // A child that ended has no prompt to go back to: its picker closes to the chat, or closes the
+                    // pane it shows in.
+                    const parent = parentID()
+                    if (readOnly() && props.pane) return props.pane.close()
+                    if (readOnly() && parent) return navigate({ type: "session", sessionID: parent })
+                    setComposer("open", false)
+                  }}
+                  shells={instruments()}
+                  visibleID={props.visibleID}
+                  onOpen={(id) => props.onOpen?.(id)}
+                />
+                <Show when={!composerVisible()}>
+                  <Show
+                    when={harnessed()}
+                    fallback={
                       <Show
-                        when={harnessed()}
+                        when={question()?.id}
+                        keyed
                         fallback={
-                          <Show
-                            when={question()?.id}
-                            keyed
-                            fallback={
-                              <Prompt
-                                visible={true}
-                                ref={bind}
-                                onSend={lift}
-                                onSubmit={() => toBottom()}
-                                onInterrupt={interrupt}
-                                sessionID={route.sessionID}
-                              />
-                            }
-                          >
-                            {/* Keyed and untracked: a card's source never changes, so the choice is made once. */}
-                            {(_id) =>
-                              question()?.source === "approval" ? (
-                                <PermissionPrompt question={question()} />
-                              ) : (
-                                <>
-                                  <QuestionCard
-                                    question={question()}
-                                    hidden={!!sideOf()}
-                                    onChat={() => setSideOf(question()?.id)}
-                                  />
-                                  <Show when={sideQuestion()}>
-                                    {(q) => (
-                                      <SideChat
-                                        question={q()}
-                                        session={sideSession()}
-                                        onBack={() => setSideOf(undefined)}
-                                        onSend={() => {
-                                          const undo = lift()
-                                          toBottom()
-                                          return undo
-                                        }}
-                                        onInterrupt={interrupt}
-                                      />
-                                    )}
-                                  </Show>
-                                </>
-                              )
-                            }
-                          </Show>
+                          <Prompt
+                            visible={true}
+                            ref={bind}
+                            onSend={lift}
+                            onSubmit={() => toBottom()}
+                            onInterrupt={interrupt}
+                            sessionID={props.sessionID}
+                          />
                         }
                       >
-                        {/* Keyed by id, so a card whose question is re-read (a reconnect) keeps its state. */}
-                        <For each={cards().map((q) => q.id)}>
-                          {(id, i) => (
-                            <Show when={office.state.questions[id]}>
-                              {(q) => (
-                                <HarnessCard
-                                  question={q()}
-                                  active={i() === 0 && cardFocused()}
-                                  waiting={i() > 0}
-                                  onInterrupt={interrupt}
-                                />
-                              )}
-                            </Show>
-                          )}
-                        </For>
-                        <Prompt
-                          visible={true}
-                          inactive={cardFocused()}
-                          ref={bind}
-                          onSend={lift}
-                          onSubmit={() => toBottom()}
-                          onInterrupt={interrupt}
-                          sessionID={route.sessionID}
-                        />
+                        {/* Keyed and untracked: a card's source never changes, so the choice is made once. */}
+                        {(_id) =>
+                          question()?.source === "approval" ? (
+                            <PermissionPrompt question={question()} />
+                          ) : (
+                            <>
+                              <QuestionCard
+                                question={question()}
+                                hidden={!!sideOf()}
+                                onChat={() => setSideOf(question()?.id)}
+                              />
+                              <Show when={sideQuestion()}>
+                                {(q) => (
+                                  <SideChat
+                                    question={q()}
+                                    session={sideSession()}
+                                    onBack={() => setSideOf(undefined)}
+                                    onSend={() => {
+                                      const undo = lift()
+                                      toBottom()
+                                      return undo
+                                    }}
+                                    onInterrupt={interrupt}
+                                  />
+                                )}
+                              </Show>
+                            </>
+                          )
+                        }
                       </Show>
-                    </Show>
-                  </box>
-                </>
-              )}
-            </Show>
-          </InteractivityProvider>
-          {/* A click in the chat beside a split gives it the keys; over a floating view it does nothing. */}
-          <Show when={opened() && instrumentFocused()}>
-            <box
-              position="absolute"
-              left={0}
-              top={0}
-              width="100%"
-              height="100%"
-              zIndex={1}
-              onMouseScroll={(event) => {
-                if (!scroll || scroll.isDestroyed) return
-                const viewport = scroll.viewport
-                if (event.x < viewport.x || event.x >= viewport.x + viewport.width) return
-                if (event.y < viewport.y || event.y >= viewport.y + viewport.height) return
-                // Keep the focus-only click guard, but let the transcript handle its own wheel events.
-                event.stopPropagation()
-                scroll.processMouseEvent(new MouseEvent(scroll, event))
-              }}
-              // Consume the release before revealing permission buttons underneath.
-              onMouseUp={() => {
-                if (paneResize.resizing() || resizeRelease) return
-                if (split()) focusChat()
-              }}
-            />
-          </Show>
-        </box>
-        {/* Keyed by the instrument, so cycling its views keeps its screen. */}
-        <Show when={opened()?.id} keyed>
-          {(_id) => (
-            <box
-              ref={(r: BoxRenderable) => (viewNode = r)}
-              position={split() ? "relative" : "absolute"}
-              zIndex={split() ? 0 : 2000}
-              flexShrink={0}
-              left={placement().left}
-              top={placement().top}
-              width={placement().width}
-              height={placement().height}
-            >
-              <Show when={openInstrument()}>
-                {(instrument) => (
-                  <InstrumentView
-                    sessionID={route.sessionID}
-                    instrument={instrument()}
-                    view={opened()?.view ?? "floating"}
-                    // A dialog over it has the keys while it shows.
-                    focused={instrumentFocused() && dialog.stack.length === 0}
-                    approver={approving()}
-                    onFocus={focusInstrument}
-                    onFocusRequest={(focus) => (focusView = focus)}
-                    onLine={setMidLine}
-                  />
-                )}
-              </Show>
-            </box>
+                    }
+                  >
+                    {/* Keyed by id, so a card whose question is re-read (a reconnect) keeps its state. */}
+                    <For each={cards().map((q) => q.id)}>
+                      {(id, i) => (
+                        <Show when={office.state.questions[id]}>
+                          {(q) => (
+                            <HarnessCard
+                              question={q()}
+                              active={i() === 0 && cardFocused()}
+                              waiting={i() > 0}
+                              onInterrupt={interrupt}
+                            />
+                          )}
+                        </Show>
+                      )}
+                    </For>
+                    <Prompt
+                      visible={true}
+                      inactive={cardFocused()}
+                      ref={bind}
+                      onSend={lift}
+                      onSubmit={() => toBottom()}
+                      onInterrupt={interrupt}
+                      sessionID={props.sessionID}
+                    />
+                  </Show>
+                </Show>
+              </box>
+            </>
           )}
         </Show>
-        <Show when={split() && dimensions().width >= 3}>
-          <PaneResizeHandle resize={paneResize} left={dimensions().width - paneResize.size() - 1} highlight="right" />
-        </Show>
-        <Show when={sidebarVisible()}>
-          <Switch>
-            <Match when={wide()}>
-              <Sidebar sessionID={route.sessionID} />
-            </Match>
-            <Match when={!wide()}>
-              <box
-                position="absolute"
-                top={0}
-                left={0}
-                right={0}
-                bottom={0}
-                alignItems="flex-end"
-                backgroundColor={RGBA.fromInts(0, 0, 0, 70)}
-              >
-                <Sidebar sessionID={route.sessionID} />
-              </box>
-            </Match>
-          </Switch>
-        </Show>
-        {/* Beside the open instrument, not in the chat under it, so it shows over a floating view; in a column the
-            width of the screen, as the chat is, so it lays out as it did there. It has no height: clicks pass by. */}
-        <box position="absolute" left={0} top={0} width="100%" zIndex={2500}>
-          <Toast />
-        </box>
       </box>
     </context.Provider>
   )
 }
 
-/** Whether `node` is `root` or inside it. */
-function within(node: Renderable | null | undefined, root: Renderable | undefined) {
-  if (!root) return false
-  for (let current = node; current; current = current.parent) {
-    if (current === root) return true
-  }
-  return false
-}
-
-function UserMessage(props: { message: Message; onMouseUp: () => void; index: number; speaker?: string }) {
+function UserMessage(props: {
+  message: Message
+  onMouseUp: () => void
+  index: number
+  speaker?: string
+  speakerColor?: RGBA
+}) {
   const ctx = use()
   const text = createMemo(() =>
     props.message.parts
@@ -1343,7 +985,7 @@ function UserMessage(props: { message: Message; onMouseUp: () => void; index: nu
         id={props.message.id}
         ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
         border={["left"]}
-        borderColor={theme.secondary}
+        borderColor={props.speakerColor ?? theme.secondary}
         customBorderChars={SplitBorder.customBorderChars}
         marginTop={props.index === 0 ? 0 : 1}
       >

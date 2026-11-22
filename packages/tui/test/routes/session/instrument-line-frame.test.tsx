@@ -140,14 +140,19 @@ test("a waiting shell shows what waits for you on the right, in place of the sho
       waiting: "secret",
       command: "ssh nhb25@misha.ycrc.yale.edu -t tmux attach",
     })
-    let f = await app.until((f) => line(f).includes("is waiting for you"))
+    // It opens itself for the password, full screen on a screen this narrow; ctrl+x ↑ closes it, and it waits on.
+    await app.until((f) => f.includes("┌") && f.includes("type your password here"))
+    app.input.pressKey("x", { ctrl: true })
+    await app.setup.renderOnce()
+    app.input.pressArrow("up")
+    let f = await app.until((f) => !f.includes("┌") && line(f).includes("is waiting for you"))
     expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · ↓ 1 shell +${SSH_WAITS}`))
     expect(line(f)).not.toContain("shift+tab mode")
     expect(line(f)).not.toContain("commands")
     expect(fgOf(app, "⚠")?.equals(theme.warning)).toBe(true)
     expect(fgOf(app, "is waiting for you")?.equals(theme.warning)).toBe(true)
 
-    // Once it no longer waits, the shortcuts come back. It opened itself and took the view's size, so the change
+    // Once it no longer waits, the shortcuts come back. It opened itself and took the pane's size, so the change
     // comes after that.
     add(office, sid, { ...ssh, status: "running", waiting: null, updated_at: new Date(Date.now() + 1).toISOString() })
     f = await app.until((f) => line(f).includes(SHORTCUTS))
@@ -165,7 +170,12 @@ test("a waiting shell shows what waits for you on the right, in place of the sho
       command: "sudo apt update",
       updated_at: new Date(Date.now() + 1).toISOString(),
     })
-    f = await app.until((f) => line(f).includes("⚠ sudo apt update is waiting for you"))
+    // It opens itself again, and is closed again.
+    await app.until((f) => f.includes("┌") && f.includes("sudo apt update"))
+    app.input.pressKey("x", { ctrl: true })
+    await app.setup.renderOnce()
+    app.input.pressArrow("up")
+    f = await app.until((f) => !f.includes("┌") && line(f).includes("⚠ sudo apt update is waiting for you"))
     expect(line(f)).toMatch(/· ↓ 2 shells +⚠ sudo apt update is waiting for you$/)
   } finally {
     await app.stop()

@@ -231,7 +231,7 @@ describe.skipIf(!TMUX)("an employee's approval cards on a real office, in the TU
   })
 
   // Its command must run, so it needs the sandbox.
-  test.skipIf(!sandboxRuns())("the approver opens the employee's shell with <leader>o and Ctrl-C stops its command", async () => {
+  test.skipIf(!sandboxRuns())("the approver opens the employee's shell from the picker, ctrl+x o shows it full screen, and Ctrl-C stops its command", async () => {
     const { t, sid, client } = await chat()
     office.llm.script(
       shell("call_sleep", "sleep 31.41", 1),
@@ -245,17 +245,25 @@ describe.skipIf(!TMUX)("an employee's approval cards on a real office, in the TU
     await t.see("1 shell")
     const [listed] = await client.sessions.instruments(sid)
     expect(listed).toMatchObject({ kind: "terminal", name: "shell 1", status: "running", command: "sleep 31.41" })
-    // The leader, then o, opens it with the keys.
+    // ↓ opens the picker on its Shell tab; Enter opens the shell in the pane beside the chat, with the keys.
+    t.keys("Down")
+    await t.see("shell 1 · sleep 31.41")
+    t.keys("Enter")
+    await t.see("@minh is driving")
+    await t.see("ctrl+x o full screen")
+    // The leader, then o, shows it full screen.
     t.keys("C-x")
     t.keys("o")
-    await t.see("sleep 31.41")
+    await t.see("ctrl+x o split")
     t.keys("C-c")
     await until(async () => (await client.sessions.instruments(sid))[0]?.status === "idle", "the shell idle")
     await until(() => sleeping("31.41").length === 0, "the command's end", 10_000)
     // Ctrl-C in the shell stopped its command, not the employee, who hears from the shell that it ended and answers;
-    // the chat shows the note's line beside the open shell.
+    // with the pane closed, the chat shows the note's line.
     await until(() => requests().some((r) => r.includes('author=\\"shell 1\\"')), "the shell's note")
     await until(async () => (await client.sessions.get(sid)).status === "idle", "the chat idle")
+    t.keys("C-x")
+    t.keys("Up")
     await t.see("↳ shell")
   })
 

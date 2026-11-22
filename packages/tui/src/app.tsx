@@ -42,7 +42,8 @@ import { DialogPeople, usePickerOnStart } from "./routes/picker/dialog-people"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
 import { Profile, useProfileCommands } from "./routes/profile"
-import { Session } from "./routes/session"
+import { SessionFrame } from "./component/session-frame"
+import { PanelProvider, usePanel } from "./context/panel"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
@@ -253,7 +254,9 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
                                                     <PromptHistoryProvider>
                                                       <PromptRefProvider>
                                                         <EditorContextProvider>
-                                                          <App onSnapshot={input.onSnapshot} />
+                                                          <PanelProvider>
+                                                            <App onSnapshot={input.onSnapshot} />
+                                                          </PanelProvider>
                                                         </EditorContextProvider>
                                                       </PromptRefProvider>
                                                     </PromptHistoryProvider>
@@ -311,6 +314,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const exit = useExit()
   const promptRef = usePromptRef()
   const clipboard = useClipboard()
+  const panels = usePanel()
   useProfileCommands()
   usePickerOnStart()
 
@@ -341,6 +345,14 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const [terminalTitleEnabled, setTerminalTitleEnabled] = createSignal(kv.get("terminal_title_enabled", true))
   const [pasteSummaryEnabled, setPasteSummaryEnabled] = createSignal(kv.get("paste_summary_enabled", true))
   const [startOnLastPick, setStartOnLastPick] = kv.signal("start_on_last_pick", false)
+
+  // Measure the prospective split layout, and close the pane once its session is left.
+  createEffect(() => panels.setWidth(dimensions().width))
+  createEffect(() => {
+    const current = panels.current()
+    if (!current || (route.data.type === "session" && route.data.sessionID === current.sessionID)) return
+    panels.close()
+  })
 
   // Update terminal window title based on current route and session
   createEffect(() => {
@@ -734,7 +746,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           </Match>
           <Match when={route.data.type === "session"}>
             <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
-              {(_) => <Session />}
+              {(sessionID) => <SessionFrame sessionID={sessionID} />}
             </Show>
           </Match>
         </Switch>

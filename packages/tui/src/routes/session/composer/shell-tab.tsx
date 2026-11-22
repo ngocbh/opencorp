@@ -26,10 +26,15 @@ const STATUS: Record<Instrument["status"], string> = {
 const useFilter = filterMemory()
 
 /**
- * The picker's Shell tab: the chat's shells, each by its name and the command it runs. Enter opens one in the session
- * view's instrument view; ctrl+d sends it Ctrl-C, the office's one way to stop its command.
+ * The picker's Shell tab: the chat's shells, each by its name and the command it runs. Enter opens one in the right
+ * pane, whose row is then marked; ctrl+d sends it Ctrl-C, the office's one way to stop its command.
  */
-export function ShellTab(props: { sessionID: string; shells: readonly Instrument[]; onOpen: (id: string) => void }) {
+export function ShellTab(props: {
+  sessionID: string
+  shells: readonly Instrument[]
+  visibleID?: string
+  onOpen: (id: string) => void
+}) {
   const office = useOffice()
   const { theme } = useTheme()
   const composer = useComposerTab()
@@ -172,7 +177,9 @@ export function ShellTab(props: { sessionID: string; shells: readonly Instrument
                   flexDirection="row"
                   paddingLeft={1}
                   paddingRight={1}
-                  backgroundColor={active() ? theme.primary : undefined}
+                  backgroundColor={
+                    active() ? theme.primary : shell.id === props.visibleID ? theme.backgroundElement : undefined
+                  }
                   onMouseMove={() => setStore("selected", index())}
                   onMouseUp={() => {
                     setStore("selected", index())

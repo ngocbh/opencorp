@@ -3,6 +3,7 @@ import { createEffect, createMemo, For, onCleanup, Show } from "solid-js"
 import { TextAttributes } from "@opentui/core"
 import { useTheme } from "../../../context/theme"
 import { SplitBorder } from "../../../ui/border"
+import { useInteractivity } from "../../../context/interactivity"
 import { useBindings, useOpenCorpModeStack } from "../../../keymap"
 import { SessionsTab } from "./sessions-tab"
 import { ShellTab } from "./shell-tab"
@@ -16,8 +17,10 @@ export type ComposerProps = {
   onClose?: () => void
   /** The chat's shells, as the session view lists them. */
   shells: readonly Instrument[]
-  /** Opens shell `id` in the session view's instrument view. */
-  onOpenShell: (id: string) => void
+  /** The instrument the right pane shows, whose row is marked. */
+  visibleID?: string
+  /** Opens instrument `id`, a shell or a Codex or Claude Code session, in the right pane. */
+  onOpen: (id: string) => void
 }
 
 /**
@@ -45,8 +48,11 @@ export function Composer(props: ComposerProps) {
   }
 
   const modes = useOpenCorpModeStack()
+  // Its mode is the keymap's while its side has the keys: an ended session's picker in the pane leaves the chat's
+  // keys alone.
+  const interactive = useInteractivity()
   createEffect(() => {
-    if (!props.open) return
+    if (!props.open || !interactive()) return
     const popMode = modes.push("composer")
     onCleanup(popMode)
   })
@@ -114,8 +120,13 @@ export function Composer(props: ComposerProps) {
                 esc
               </text>
             </box>
-            <SessionsTab sessionID={props.sessionID} />
-            <ShellTab sessionID={props.sessionID} shells={props.shells} onOpen={props.onOpenShell} />
+            <SessionsTab sessionID={props.sessionID} visibleID={props.visibleID} onOpen={props.onOpen} />
+            <ShellTab
+              sessionID={props.sessionID}
+              shells={props.shells}
+              visibleID={props.visibleID}
+              onOpen={props.onOpen}
+            />
             <box flexDirection="row" gap={2} paddingLeft={1} flexShrink={0}>
               <For each={footerHints()}>
                 {(hint) => (
