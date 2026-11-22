@@ -761,6 +761,35 @@ test("--permission-prompts none asks the host nothing, --no-session-persistence 
   expect([missing.status, missing.stdout]).toEqual([1, ""])
 })
 
+test("an --mcp-config file's servers are read at the start, their tools listed whatever --tools says, and run only where an allow rule names them", async () => {
+  const servers = { github: { command: "gh-mcp", env: { GITHUB_TOKEN: "t" } } }
+  const step = { tool: "mcp__github__get_me", input: {}, result: "me" }
+  const { fake, work } = fakeClaude({ mcp_tools: { github: ["get_me"], docs: ["search"] }, turns: [[step], [step]] })
+  const config = path.join(work, "mcp.json")
+  fs.writeFileSync(config, JSON.stringify({ mcpServers: servers }))
+  const allow = JSON.stringify({ permissions: { allow: ["mcp__github__*"] } })
+  const base = ["--strict-mcp-config", `--mcp-config=${config}`, "--tools=Bash", "--permission-prompts=none"]
+  const allowed = new Claude(fake, [...base, "--settings", allow], work)
+  allowed.send(user("Who am I?", "u-1"))
+  const lines = await allowed.turn()
+  const init = lines.find((m) => m.subtype === "init")!
+  expect(init.tools).toEqual(["Bash", "mcp__github__get_me"])
+  expect(init.mcp_servers).toEqual([{ name: "github", status: "connected" }])
+  expect(verdicts(lines)).toEqual(["ran"])
+  expect(await allowed.close()).toBe(0)
+  expect(fake.log().filter((e) => e.dir === "start").at(-1)!.mcp).toEqual([{ path: config, servers }])
+  // With no allow rule, nothing approves it here.
+  const asked = new Claude(fake, base, work)
+  asked.send(user("Who am I?", "u-2"))
+  expect(verdicts(await asked.turn())).toEqual(["refused"])
+  expect(await asked.close()).toBe(0)
+  // A file that isn't there stops the start; a JSON string isn't modelled.
+  const missing = runOnce(fake, [...STREAM, `--mcp-config=${path.join(work, "none.json")}`], work)
+  expect([missing.status, missing.stdout]).toEqual([1, ""])
+  const inline = runOnce(fake, [...STREAM, "--mcp-config", JSON.stringify({ mcpServers: servers })], work)
+  expect(inline.status).toBe(FAKE_CLAUDE_UNMODELLED)
+})
+
 test("--resume goes on with the session's turns", async () => {
   const { fake, work } = fakeClaude({ turns: [[{ say: "one" }], [{ say: "two" }]] })
   const first = new Claude(fake, ["--session-id", "s-1"], work)

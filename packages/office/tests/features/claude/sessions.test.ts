@@ -77,6 +77,64 @@ test("a start is the chat's child session, under the employee's permission, told
   expect(start!.flags!.settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true })
   expect(start!.flags!["setting-sources"]).toBe("")
   expect(start!.env!.TMPDIR).toBe(path.join(h.sessions.root(), session.id))
+  // No MCP server is allowed: none loads, and no folder for their definitions is made.
+  expect(start!.flags!["strict-mcp-config"]).toBe(true)
+  expect(start!.flags!["mcp-config"]).toBeUndefined()
+  expect(fs.existsSync(path.join(h.sessions.root(), `${session.id}.mcp`))).toBe(false)
+})
+
+/** The owner's user-scope MCP servers, two holding a token, as `.claude.json` keeps them. */
+const SERVERS = {
+  github: { type: "stdio", command: "gh-mcp", args: [], env: { GITHUB_TOKEN: "ghp_decoy-token" } },
+  docs: { type: "http", url: "https://docs.example/mcp", headers: { Authorization: "Bearer decoy-bearer" } },
+}
+const TOKENS = ["ghp_decoy-token", "decoy-bearer"]
+
+test("an employee allowed an MCP server gets only its definition, in a 0600 file in a private folder their commands can't read, never on the command line or in a log; its tools run, the file goes when Claude Code stops, the folder with the session", async () => {
+  const home = tempDir()
+  fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ numStartups: 2, mcpServers: SERVERS }))
+  const policy = { sandbox: "workspace-write", network: false, mcp_servers: ["github", "linear"] }
+  const minh = person("minh", { harnesses: ["composer", "claude"], harness_policy: policy })
+  const call = { tool: "mcp__github__get_me", input: {}, result: "you are minh" }
+  const h = makeClaude({
+    home,
+    files: { "people/minh/person.yaml": minh },
+    idleMs: 300,
+    script: { mcp_tools: { github: ["get_me"], docs: ["search"] }, turns: [[call, { say: "You are minh." }]] },
+  })
+  const { heard, id } = await started(h)
+  const folder = path.join(h.sessions.root(), `${id}.mcp`)
+  const file = path.join(folder, "opencorp.mcp.json")
+  const [start] = starts(h)
+  expect(start!.mcp).toEqual([{ path: file, servers: { github: SERVERS.github } }])
+  expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+  expect(fs.statSync(folder).mode & 0o777).toBe(0o700)
+  // Beside the session's temp folder, which its commands may read and write, and closed to them by name.
+  expect(file.startsWith(start!.env!.TMPDIR + "/")).toBe(false)
+  expect(start!.flags!.settings.sandbox.filesystem.denyRead).toContain(folder)
+  expect(start!.flags!.settings.permissions.allow).toEqual(["mcp__github__*"])
+  for (const token of TOKENS) expect(start!.argv!.join("\n"), token).not.toContain(token)
+
+  await h.sessions.prompt(id, "Who am I?", { by: "minh" })
+  await waitFor(() => heard.said().includes("You are minh.") && status(h, id) === "idle", { what: "the turn" })
+  // The server's tool is the session's, not one beyond the allowlist, and it ran unasked.
+  const results = h.fake.log().filter((e) => e.dir === "out" && e.msg?.type === "user" && e.msg.message?.content?.[0]?.type === "tool_result")
+  expect(results.map((e) => e.msg!.message.content[0].is_error ?? false)).toEqual([false])
+  expect(h.lines).toEqual([
+    `claude session ${id}: @minh's allowed MCP server linear isn't defined in your Claude Code config ` +
+      `(${path.join(home, ".claude.json")}), or that file can't be read, so it doesn't load`,
+  ])
+  const proc = h.sessions.get(id)!.proc!
+  await waitFor(() => !proc.alive, { what: "the idle stop" })
+  expect(fs.existsSync(file)).toBe(false)
+  expect(fs.existsSync(folder)).toBe(true)
+  await h.sessions.end(id)
+  expect(fs.existsSync(folder)).toBe(false)
+  const output = fs.readFileSync(path.join(h.office.paths.runDir(id), "claude.log"), "utf8")
+  for (const token of TOKENS) {
+    expect(output, token).not.toContain(token)
+    expect(h.lines.join("\n"), token).not.toContain(token)
+  }
 })
 
 test("each message goes inside its author's label as next, and a message mid-turn joins the turn", async () => {

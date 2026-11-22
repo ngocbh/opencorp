@@ -18,10 +18,12 @@ import {
   STREAM_ARGS,
   claudeArgs,
   claudeCommand,
+  CLAUDE_TOOLS,
   claudeSession,
   nativeClaude,
   refusal,
   signedIn,
+  toolsBeyond,
 } from "../../../src/tools/claude/claude.ts"
 import { isGone, tempDir, waitFor } from "../../helpers.ts"
 import { startTime } from "../../../src/util/proc.ts"
@@ -240,6 +242,119 @@ test("a session's start passes the owner's and the project's CLAUDE.md from a fi
   const text2 = fs.readFileSync(both.instructions!, "utf8")
   expect(text2.startsWith("Two people write to you.\n\n")).toBe(true)
   expect(text2).toContain("Owner says: be brief.")
+})
+
+/** The owner's user-scope MCP servers, two holding a token, as `.claude.json` keeps them. */
+const SERVERS = {
+  github: { type: "stdio", command: "gh-mcp", args: [], env: { GITHUB_TOKEN: "ghp_decoy-token" } },
+  docs: { type: "http", url: "https://docs.example/mcp", headers: { Authorization: "Bearer decoy-bearer" } },
+}
+const TOKENS = ["ghp_decoy-token", "decoy-bearer"]
+
+/** The settings a command line passes (`--settings <json>`). */
+function settingsOf(command: readonly string[]): Obj {
+  return JSON.parse(command[command.indexOf("--settings") + 1]!)
+}
+
+test("the MCP servers an employee may use reach Claude Code in a 0600 file in the start's private folder, holding only those defined, never on its command line, and the file goes when Claude Code exits", async () => {
+  const { root, home, fake, permission } = layout()
+  const secrets = path.join(root, "s1.mcp")
+  fs.mkdirSync(secrets, { mode: 0o700 })
+  fs.chmodSync(secrets, 0o700)
+  const config = path.join(home, ".claude.json")
+  fs.writeFileSync(config, JSON.stringify({ mcpServers: SERVERS, projects: {} }))
+  // linear isn't defined: it allows nothing.
+  const p = permission({ allowedMcp: ["github", "linear"], secrets })
+  const session = claudeSession(p, { claude: fake.claude, configDir: path.join(home, ".claude"), claudeJson: config })
+  const file = path.join(secrets, "opencorp.mcp.json")
+  expect(session.mcp).toEqual({ file, servers: ["github"], missing: ["linear"] })
+  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ mcpServers: { github: SERVERS.github } })
+  const stat = fs.statSync(file)
+  expect([stat.mode & 0o777, stat.uid]).toEqual([0o600, process.getuid!()])
+  // Only that file's servers load; the allowlist of tools stays as it is, since it doesn't reach MCP tools, and the
+  // server's tools run unasked.
+  const strict = session.command.indexOf("--strict-mcp-config")
+  expect(session.command[strict + 1]).toBe(`--mcp-config=${file}`)
+  expect(session.command).toContain(`--tools=${CLAUDE_TOOLS.join(",")}`)
+  expect(settingsOf(session.command).permissions.allow).toEqual(["mcp__github__*"])
+  expect(settingsOf(session.command).permissions.deny).toEqual(expect.arrayContaining([`Read(/${secrets})`]))
+  for (const token of TOKENS) {
+    expect(session.command.join("\n")).not.toContain(token)
+    expect(Object.values(session.env).join("\n")).not.toContain(token)
+  }
+  const logged: string[] = []
+  const claude = new ClaudeProcess({
+    command: session.command,
+    cwd: p.workspace,
+    env: { ...BASE, ...session.env },
+    log: path.join(root, "claude.log"),
+    instructions: session.instructions,
+    mcp: session.mcp,
+    onMessage() {},
+    onExit() {},
+    logLine: (line) => logged.push(line),
+  })
+  expect(claude.mcpServers).toEqual(["github"])
+  await claude.start()
+  expect(started(fake).mcp).toEqual([{ path: file, servers: { github: SERVERS.github } }])
+  await claude.close(2000)
+  expect(fs.existsSync(file)).toBe(false)
+  expect(logged).toEqual([])
+  const output = fs.readFileSync(path.join(root, "claude.log"), "utf8")
+  for (const token of TOKENS) expect(output).not.toContain(token)
+})
+
+test("with no MCP server allowed, or none of those allowed defined, nothing is written and no server loads", () => {
+  const { root, home, fake, permission } = layout()
+  const secrets = path.join(root, "s1.mcp")
+  fs.mkdirSync(secrets, { mode: 0o700 })
+  fs.chmodSync(secrets, 0o700)
+  const config = path.join(home, ".claude.json")
+  fs.writeFileSync(config, JSON.stringify({ mcpServers: SERVERS }))
+  const configDir = path.join(home, ".claude")
+  const none = claudeSession(permission(), { claude: fake.claude, configDir, claudeJson: config })
+  expect(none.mcp).toEqual({ file: null, servers: [], missing: [] })
+  expect(none.command.slice(1)).toEqual(claudeArgs(claudeStart(permission())))
+  const undefinedOnly = claudeSession(permission({ allowedMcp: ["linear"], secrets }), {
+    claude: fake.claude,
+    configDir,
+    claudeJson: config,
+  })
+  expect(undefinedOnly.mcp).toEqual({ file: null, servers: [], missing: ["linear"] })
+  expect(undefinedOnly.command.some((arg) => arg.startsWith("--mcp-config"))).toBe(false)
+  expect(settingsOf(undefinedOnly.command).permissions.allow).toBeUndefined()
+  expect(fs.readdirSync(secrets)).toEqual([])
+  // A config that can't be read loads none of them.
+  fs.writeFileSync(config, "{not json")
+  const unread = claudeSession(permission({ allowedMcp: ["github"], secrets }), { claude: fake.claude, configDir, claudeJson: config })
+  expect(unread.mcp).toEqual({ file: null, servers: [], missing: ["github"] })
+  // Allowed servers need the private folder their definitions go in.
+  expect(() => claudeSession(permission({ allowedMcp: ["github"] }), { claude: fake.claude, configDir, claudeJson: config })).toThrow(
+    /private folder/,
+  )
+})
+
+test("a turn may list the tools of the MCP servers its start loaded, and nothing else beyond the allowlist", () => {
+  const tools = [...CLAUDE_TOOLS, "mcp__github__create_issue", "mcp__github__get_me"]
+  expect(toolsBeyond({ type: "system", subtype: "init", tools }, ["github"])).toEqual([])
+  expect(toolsBeyond({ type: "system", subtype: "init", tools })).toEqual(["mcp__github__create_issue", "mcp__github__get_me"])
+  const more = [...tools, "mcp__docs__search", "mcp__claude_ai_Gmail__send", "RemoteTrigger"]
+  expect(toolsBeyond({ type: "system", subtype: "init", tools: more }, ["github"])).toEqual([
+    "mcp__docs__search",
+    "mcp__claude_ai_Gmail__send",
+    "RemoteTrigger",
+  ])
+})
+
+test("the MCP servers a start loads go after --strict-mcp-config, their tools allowed by the flag settings, which are copied", () => {
+  const start = { settings: { permissions: { deny: ["WebFetch"] } }, addDirs: [] }
+  const args = claudeArgs(start, { mcp: { file: "/private/s.mcp/opencorp.mcp.json", servers: ["github", "reports__v2"] } })
+  const strict = args.indexOf("--strict-mcp-config")
+  expect(args[strict + 1]).toBe("--mcp-config=/private/s.mcp/opencorp.mcp.json")
+  expect(settingsOf(args).permissions).toEqual({ deny: ["WebFetch"], allow: ["mcp__github__*", "mcp__reports__v2__*"] })
+  expect(start.settings).toEqual({ permissions: { deny: ["WebFetch"] } })
+  // None loaded: the command line is as with none given.
+  expect(claudeArgs(start, { mcp: { file: null, servers: [] } })).toEqual(claudeArgs(start))
 })
 
 test("a session resumed or new, and its model, go on the command line", () => {

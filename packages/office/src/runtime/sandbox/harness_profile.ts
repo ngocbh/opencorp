@@ -59,6 +59,10 @@ export interface EmployeePermission {
   /** The folders those programs run from and load libraries from, each checked as a program's install folder is:
    *  readable in the sandbox where a deny would hide them, and only those exact folders. */
   programReads?: readonly string[]
+  /** A private folder of the office's (0700, the user's, not a link) holding what Claude Code itself reads at its
+   *  start but its commands and file tools mustn't: the definitions of the MCP servers the employee may use, which can
+   *  hold the owner's tokens. Denied by name, and refused if it lies in or holds a folder they may read. */
+  secrets?: string
 }
 
 /** The system folders that start every harness PATH. Both harnesses run `git`, `rg` and (Codex, on Linux) `bwrap`
@@ -140,6 +144,8 @@ interface Checked {
   programs: string | null
   /** `programReads`, resolved. */
   programReads: string[]
+  /** `secrets`, resolved. */
+  secrets: string | null
 }
 
 /** A path kept read-only, and whether it is a folder (Claude Code's edit deny then covers what is in it). */
@@ -239,7 +245,7 @@ export function claudeStart(p: EmployeePermission): {
   const sockets = [...new Set(SOCKET_ROOTS.filter((p) => fs.existsSync(p)).map((p) => realPath(p)))].filter(
     (root) => !covered(root),
   )
-  const denyRead = [...(covered(c.home) ? [] : [c.home]), ...sockets, ...c.denied]
+  const denyRead = [...(covered(c.home) ? [] : [c.home]), ...sockets, ...c.denied, ...(c.secrets ? [c.secrets] : [])]
   const settings = {
     sandbox: {
       enabled: true,
@@ -275,6 +281,7 @@ export function claudeStart(p: EmployeePermission): {
         ...readOnly.flatMap((folder) => rules("Edit", folder, true)),
         ...[...c.kept, ...c.held].flatMap((kept) => rules("Edit", kept.path, kept.folder)),
         ...mirrored.flatMap((denied) => rules("Read", denied, true)),
+        ...(c.secrets ? rules("Read", c.secrets, true) : []),
         // Both reach the web from Claude Code itself, outside its sandbox.
         "WebFetch",
         "WebSearch",
@@ -350,6 +357,7 @@ function checked(p: EmployeePermission): Checked {
     ...p.folders.map((folder): [string, string] => ["listed folder", folder.path]),
     ...(p.harnessHomes ?? []).map((dir): [string, string] => ["harness's config folder", dir]),
     ...(p.othersWritable ?? []).map((dir): [string, string] => ["other person's writable folder", dir]),
+    ...(p.secrets === undefined ? [] : ([["private folder", p.secrets]] as [string, string][])),
   ]
   for (const [what, given] of named) {
     if (given.includes("\0")) {
@@ -396,7 +404,10 @@ function checked(p: EmployeePermission): Checked {
   const programReads = (p.programReads ?? []).map((dir) =>
     readFolder(dir, [...writable, ...others], [home, officeHome, ...byName], sockets),
   )
+  const readable = [workspace, tmpdir, ...folders.map((f) => f.path), ...(programs === null ? [] : [programs]), ...programReads]
+  const secrets = p.secrets === undefined ? null : secretsFolder(p.secrets, readable)
   const all = [workspace, tmpdir, fence, home, ...folders.map((f) => f.path), ...denied, ...held.map((h) => h.path)]
+  if (secrets !== null) all.push(secrets)
   for (const resolved of all) {
     if (PATTERN.test(resolved)) throw new UnsafeProfile(`the harness would read ${resolved} as a pattern`)
   }
@@ -417,6 +428,7 @@ function checked(p: EmployeePermission): Checked {
     path: [...(programs === null ? [] : [programs]), pathOf(folders, [...writable, ...others])].join(":"),
     programs,
     programReads: [...new Set(programReads)],
+    secrets,
   }
 }
 
@@ -444,6 +456,21 @@ function readFolder(dir: string, offLimits: readonly string[], kept: readonly st
   const socket = sockets.find((root) => within(root, real) || (within(real, root) && !within(real, home)))
   if (socket !== undefined) throw new UnsafeProfile(`${what} is or lies in ${socket}, where the owner's sockets are`)
   if (PATTERN.test(real)) throw new UnsafeProfile(`the harness would read ${real} as a pattern`)
+  return real
+}
+
+/** `secrets` resolved, if it is a folder (not a link), the user's and private (0700), and neither in nor holding any
+ *  of `readable` (the folders the harness's commands may read); else `UnsafeProfile`. */
+function secretsFolder(secrets: string, readable: readonly string[]): string {
+  const what = `the harness's private folder ${secrets}`
+  const stat = fs.lstatSync(secrets, { throwIfNoEntry: false })
+  if (stat === undefined || stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new UnsafeProfile(`${what} isn't a folder (a link is refused)`)
+  }
+  if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) throw new UnsafeProfile(`${what} isn't private`)
+  const real = realPath(secrets)
+  const near = readable.find((dir) => within(real, dir) || within(dir, real))
+  if (near !== undefined) throw new UnsafeProfile(`${what} lies in or holds ${near}, which the employee may read`)
   return real
 }
 

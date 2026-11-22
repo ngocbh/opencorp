@@ -1269,6 +1269,51 @@ test("a programs folder goes first on the harness PATH and is read in Claude Cod
   }
 })
 
+test("the private folder holding a start's MCP definitions is closed to Claude Code's commands and file tools by name; one the employee may read, a link, or one others may open is refused", () => {
+  const { root, ws, tmp, permission } = layout()
+  const secrets = path.join(root, "s1.mcp")
+  fs.mkdirSync(secrets, { mode: 0o700 })
+  fs.chmodSync(secrets, 0o700)
+  const p = permission({ secrets })
+  const { settings } = claudeStart(p)
+  const fsRules = (settings.sandbox as { filesystem: Record<string, string[]> }).filesystem
+  expect(fsRules.denyRead).toContain(secrets)
+  for (const key of ["allowRead", "allowWrite"]) expect(fsRules[key], key).not.toContain(secrets)
+  expect((settings.permissions as { deny: string[] }).deny).toEqual(
+    expect.arrayContaining([`Read(/${secrets})`, `Read(/${secrets}/**)`]),
+  )
+  // Nothing else of the start changes.
+  const plain = claudeStart(permission())
+  const without = (s: Record<string, any>): Record<string, unknown> => ({
+    ...s,
+    sandbox: { ...s.sandbox, filesystem: { ...s.sandbox.filesystem, denyRead: s.sandbox.filesystem.denyRead.filter((x: string) => x !== secrets) } },
+    permissions: { ...s.permissions, deny: s.permissions.deny.filter((x: string) => !x.includes(secrets)) },
+  })
+  expect(without(settings)).toEqual(plain.settings)
+
+  // In, or holding, a folder its commands may read: the session's folder, its temp folder or a listed folder.
+  const listed = path.join(root, "listed")
+  fs.mkdirSync(listed)
+  for (const [inside, folders, why] of [
+    [path.join(ws, "s.mcp"), [], /may read/],
+    // The temp folder must be empty too.
+    [path.join(tmp, "s.mcp"), [], /isn't empty/],
+    [path.join(listed, "s.mcp"), [{ path: listed, access: "read" as const }], /may read/],
+  ] as const) {
+    fs.mkdirSync(inside, { mode: 0o700 })
+    expect(() => checkPermission(permission({ secrets: inside, folders })), inside).toThrow(why)
+    fs.rmSync(inside, { recursive: true })
+  }
+  expect(() => checkPermission(permission({ secrets: root }))).toThrow(/may read/)
+  fs.chmodSync(secrets, 0o750)
+  expect(() => checkPermission(p)).toThrow(/isn't private/)
+  fs.chmodSync(secrets, 0o700)
+  const link = path.join(root, "s1-link")
+  fs.symlinkSync(secrets, link)
+  expect(() => checkPermission(permission({ secrets: link }))).toThrow(/a link is refused/)
+  expect(() => checkPermission(permission({ secrets: "rel/s.mcp" }))).toThrow(/isn't absolute/)
+})
+
 test("socat's check returns the real file it checked, which is what a session copies", () => {
   const { root, permission } = layout()
   const dir = path.join(root, "socat-install")
