@@ -164,8 +164,9 @@ interface Kept {
  *  is unique per session, since the layer is deep-merged with any other layer defining the same id; a subagent
  *  inherits its parent's profile.
  *
- *  `install` is the folder Codex is installed in (the one holding the `bin` of its resolved binary): its sandboxed
- *  commands run Codex's own binary, so the profile reads it, and it is refused if the employee can write it.
+ *  `install` is the folder Codex runs from (the one holding the `bin` of the binary the office spawns): its sandboxed
+ *  commands run Codex's own binary, so the profile reads it, and it is refused if the employee can write it, or if it
+ *  lies in a folder the profile denies (`deniedHolding`), where the sandbox couldn't run it.
  *  `mcpServers` are the owner's MCP servers: each but those `p` allows is turned off (`mcpServersOff`). Of those
  *  allowed, each that Codex starts as a program (`stdio`, as against one it reaches by URL, where Codex takes no
  *  folder) starts in the office's empty folder (`mcpCwd`), never the employee's, where a launcher (npx, uvx, python)
@@ -183,11 +184,20 @@ export function codexThread(
   // A `:` name is one of Codex's built-in profiles.
   if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`a Codex profile id is letters, digits, - and _; got ${id}`)
   const c = checked(p)
+  const installed = installFolder(install, [...c.writableRoots, ...c.others], CODEX.folder)
+  const held = holding(c.denied, installed)
+  if (held !== null) {
+    throw new UnsafeProfile(
+      `${CODEX.folder} ${JSON.stringify(install)} lies in ${held}, which the employee's permission denies, so Codex's ` +
+        "sandbox couldn't run its own binary from there",
+    )
+  }
   // No `:root` entry, so nothing is readable but what is listed. On equally specific entries deny beats write beats
-  // read, and a more specific entry beats a broader one.
+  // read, and a more specific write or read entry beats a broader one. A deny doesn't, on Linux at least: its mount
+  // goes over the others', so a read entry inside a denied folder stays hidden.
   const filesystem: Record<string, string> = {
     ":minimal": "read",
-    [installFolder(install, [...c.writableRoots, ...c.others], CODEX.folder)]: "read",
+    [installed]: "read",
     [c.workspace]: c.writable ? "write" : "read",
   }
   filesystem[c.tmpdir] = "write"
@@ -229,6 +239,19 @@ export function codexThread(
   // Codex's own web search reaches the web from the harness, outside the sandbox.
   if (!c.network) config.web_search = "disabled"
   return { permissions: id, config }
+}
+
+/** The folder `p` denies by name (`<OPENCORP_HOME>`, a credential folder or a harness's own config folder, less any a
+ *  listed folder covers) that is or holds `dir`, resolved, or null. Codex's sandbox hides a denied folder whole (on
+ *  Linux at least), so a Codex installed in one (its standalone installer puts it in `~/.codex`) can't run its
+ *  sandboxed commands from there. Throws as `checkPermission` does. */
+export function deniedHolding(p: EmployeePermission, dir: string): string | null {
+  return holding(checked(p).denied, realPath(dir))
+}
+
+/** The one of `denied` that is or holds `real`, or null. */
+function holding(denied: readonly string[], real: string): string | null {
+  return denied.find((d) => within(real, d)) ?? null
 }
 
 /** The `mcp_servers` override that turns each of `defined` off: exactly the names the owner's Codex config defines,

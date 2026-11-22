@@ -13,6 +13,7 @@ import {
   checkSocatInstall,
   claudeStart,
   codexThread,
+  deniedHolding,
   type EmployeePermission,
   gitRootOf,
   harnessHomes,
@@ -23,7 +24,7 @@ import { mcpFolder } from "../../../src/runtime/sandbox/harness_temp.ts"
 import { UnsafeProfile, UnsafeWorkspace } from "../../../src/runtime/sandbox/policy.ts"
 import { nativeCodex } from "../../../src/tools/codex/codex.ts"
 import { tempDir } from "../../helpers.ts"
-import { sandboxAvailable } from "./helpers.ts"
+import { sandboxAvailable, standaloneCodex } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -321,6 +322,36 @@ test("Codex reads its own install folder, which the employee can't write", () =>
   >
   expect(read["opencorp-s1"]!.filesystem[install]).toBe("read")
   expect(thread(permission({ writable: false })).config.permissions).toBeDefined()
+})
+
+test("an install folder in a folder the permission denies is refused, naming both: Codex's sandbox hides a denied folder whole, a read entry inside it too", () => {
+  const { root, home, officeHome, install, permission } = layout()
+  // Where Codex's own standalone installer puts it.
+  const release = path.join(home, ".codex/packages/standalone/releases/0.171.0-x86_64-unknown-linux-musl")
+  fs.mkdirSync(path.join(release, "bin"), { recursive: true })
+  for (let dir = path.join(release, "bin"); dir !== home; dir = path.dirname(dir)) fs.chmodSync(dir, 0o755)
+  const codexDir = path.join(home, ".codex")
+  expect(deniedHolding(permission(), release)).toBe(codexDir)
+  expect(deniedHolding(permission(), codexDir)).toBe(codexDir)
+  expect(() => codexThread(permission(), "opencorp-s1", { install: release })).toThrow(UnsafeProfile)
+  expect(() => codexThread(permission(), "opencorp-s1", { install: release })).toThrow(
+    `Codex's install folder "${release}" lies in ${codexDir}, which the employee's permission denies, so Codex's ` +
+      "sandbox couldn't run its own binary from there",
+  )
+  // A harness's own config folder set apart, and the office's home, likewise.
+  const codexHome = path.join(root, "codex-home")
+  fs.mkdirSync(path.join(codexHome, "pkg/bin"), { recursive: true })
+  expect(deniedHolding(permission({ harnessHomes: [codexHome] }), path.join(codexHome, "pkg"))).toBe(codexHome)
+  expect(deniedHolding(permission(), path.join(officeHome, "office"))).toBe(officeHome)
+  // Outside every denied folder, or where a listed folder lifts the deny, none holds it, and it is read.
+  expect(deniedHolding(permission(), install)).toBeNull()
+  const listed = permission({ folders: [{ path: codexDir, access: "read" }] })
+  expect(deniedHolding(listed, release)).toBeNull()
+  const read = codexThread(listed, "opencorp-s1", { install: release }).config.permissions as Record<
+    string,
+    { filesystem: Record<string, string> }
+  >
+  expect(read["opencorp-s1"]!.filesystem[release]).toBe("read")
 })
 
 test("codex as the office runs it is refused before it runs where anyone but the user could change it", () => {
@@ -1043,13 +1074,24 @@ function toml(value: unknown): string {
 function codexSandbox(p: EmployeePermission, codexHome: string, script: string) {
   checkCodexVersion()
   const { permissions, config } = codexThread(p, "opencorp-t", { install: testCodex().install })
+  return sandboxRun(testCodex().run, p, codexHome, { permissions, config }, script)
+}
+
+/** Runs `script` with `sh` under the sandbox of the Codex `run`, with profile `permissions` of the override `config`
+ *  as `-c` flags, and only the temp home, a scratch CODEX_HOME and the harness PATH in its environment. */
+function sandboxRun(
+  run: string,
+  p: EmployeePermission,
+  codexHome: string,
+  { permissions, config }: { permissions: string; config: Record<string, unknown> },
+  script: string,
+) {
   const flags = Object.entries(config).flatMap(([key, value]) => ["-c", `${key}=${toml(value)}`])
-  return runCodex(["sandbox", "-P", permissions, "-C", p.workspace, ...flags, "--", "sh", "-c", script], {
-    home: p.home,
-    codexHome,
-    path: harnessPath(p),
+  return spawnSync(run, ["sandbox", "-P", permissions, "-C", p.workspace, ...flags, "--", "sh", "-c", script], {
     cwd: p.workspace,
-    env: { TMPDIR: p.tmpdir },
+    env: { HOME: p.home, CODEX_HOME: codexHome, PATH: harnessPath(p), TMPDIR: p.tmpdir },
+    encoding: "utf8",
+    timeout: 60_000,
   })
 }
 
@@ -1160,6 +1202,34 @@ test.skipIf(NO_CODEX)(
     expect(git("status", "--porcelain").stdout).toBe("")
   },
   60_000,
+)
+
+test.skipIf(NO_CODEX)(
+  "Codex's sandbox can't run its own binary from a folder inside a denied one, whichever order the profile lists them in: the deny hides the read entry inside it",
+  () => {
+    const { root, home, install, permission } = layout()
+    checkCodexVersion()
+    // Codex as its standalone installer lays it out, in the home's .codex, which every employee's permission denies.
+    const { run, install: release } = nativeCodex(standaloneCodex(home, testCodex().install))
+    const codexHome = path.join(root, "codex")
+    fs.mkdirSync(codexHome)
+    for (const first of [false, true]) {
+      // Each run in a fresh temp folder, which Codex's sandbox leaves its mount targets in.
+      const tmpdir = path.join(root, `tmp-${first}`)
+      fs.mkdirSync(tmpdir, { mode: 0o700 })
+      fs.chmodSync(tmpdir, 0o700)
+      const p = permission({ tmpdir })
+      // The profile with its install folder read inside the denied ~/.codex, the read entry after the deny or before.
+      const { permissions, config } = codexThread(p, "opencorp-t", { install })
+      const profile = (config.permissions as Record<string, { filesystem: Record<string, string> }>)[permissions]!
+      const { [install]: _, ...rest } = profile.filesystem
+      profile.filesystem = first ? { [release]: "read", ...rest } : { ...rest, [release]: "read" }
+      const result = sandboxRun(run, p, codexHome, { permissions, config }, "echo ran")
+      const output = result.stdout + result.stderr
+      expect(result.stdout, output).not.toContain("ran")
+      expect(output).toMatch(/execvp \S*\/bin\/codex: Permission denied/)
+    }
+  },
 )
 
 test.skipIf(NO_CODEX)("in a folder with no .git, Codex's sandbox can't start a repository and plant its config", () => {

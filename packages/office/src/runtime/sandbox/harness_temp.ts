@@ -122,13 +122,13 @@ function removeTree(dir: string): void {
 }
 
 /** Removes each folder in `root` (`harnessRoot`'s) that is the user's and no link, and that `stale` names or that is a
- *  doctor probe's (`doctor-<pid>`) whose process is gone; a failure is passed to `log`, named by the harness. What
- *  another office keeps there is left alone, unless `stale` names it. */
+ *  doctor probe's (`doctor-<pid>`) or a half-made copy (`<name>.<pid>.part`) whose process is gone; a failure is
+ *  passed to `log`, named by the harness. What another office keeps there is left alone, unless `stale` names it. */
 export function sweepTemp(root: string, stale: (name: string) => boolean, log: (line: string) => void): void {
   const uid = process.getuid!()
   for (const name of fs.readdirSync(root)) {
-    const probe = /^doctor-(\d+)$/.exec(name)
-    if (!(probe !== null ? gone(Number(probe[1])) : stale(name))) continue
+    const owner = /^doctor-(\d+)$/.exec(name) ?? /^.+\.(\d+)\.part$/.exec(name)
+    if (!(owner !== null ? gone(Number(owner[1])) : stale(name))) continue
     const stat = fs.lstatSync(path.join(root, name), { throwIfNoEntry: false })
     if (stat === undefined || stat.isSymbolicLink() || !stat.isDirectory() || stat.uid !== uid) continue
     try {

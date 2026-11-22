@@ -99,7 +99,7 @@ export function nativeCodex(codex: string): { run: string; install: string } {
 }
 
 /** Whether `file` starts with `#!`. */
-function isScript(file: string): boolean {
+export function isScript(file: string): boolean {
   const fd = fs.openSync(file, "r")
   try {
     const head = Buffer.alloc(2)

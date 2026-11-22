@@ -7,7 +7,6 @@ import path from "node:path"
 import {
   type EmployeePermission,
   type HarnessInstall,
-  checkCodexInstall,
   codexThread,
   harnessHomes,
   harnessPath,
@@ -17,6 +16,7 @@ import { UnsafeProfile, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
 import { runCommand } from "../../runtime/service/launch.ts"
 import { APP_SERVER_ARGS, CodexProcess, CodexStartError, threadLoad } from "../../tools/codex/codex.ts"
 import { type JsonRpc, RpcClosed, RpcError, nameOf } from "../../tools/codex/rpc.ts"
+import { threadCodex } from "./install.ts"
 
 /** Milliseconds `config/read` has to answer. */
 const CONFIG_READ_MS = 30_000
@@ -130,14 +130,15 @@ export type Probed = { failed: { why: string; log: string } | null; projectConfi
 /** The most trusted projects the probe looks at. */
 const PROJECTS_MAX = 50
 
-/** Whether a Codex thread under an employee's permission can be used. It checks Codex as the office would run it
- *  (`checkCodexInstall`), starts it as a session does, loads an ephemeral thread in a fresh read-only folder with no
- *  network, then lists the thread's MCP servers, which reloads its config as each turn does: a thread can start under
- *  a config no turn could load. Then it runs one command in Codex's sandbox under the thread's profile and override
- *  (`sandboxArgs`), so a sandbox that can't run Codex's own binary, or can't start, fails here and not at an employee's
- *  first command. Then, for each project the owner's Codex config trusts (up to 50), whether its own config would
- *  load. No model turn runs; the probe's folders are removed, and Codex's output stays in `doctor-codex.log` beside
- *  the fence. The MCP servers its load turned off are the owner's, named for doctor. */
+/** Whether a Codex thread under an employee's permission can be used. It takes Codex as a session would run it
+ *  (`threadCodex`: checked, and the office's copy when it is installed in a denied folder), starts it as a session
+ *  does, loads an ephemeral thread in a fresh read-only folder with no network, then lists the thread's MCP servers,
+ *  which reloads its config as each turn does: a thread can start under a config no turn could load. Then it runs one
+ *  command in Codex's sandbox under the thread's profile and override (`sandboxArgs`), so a sandbox that can't run
+ *  Codex's own binary, or can't start, fails here and not at an employee's first command. Then, for each project the
+ *  owner's Codex config trusts (up to 50), whether its own config would load. No model turn runs; the probe's folders
+ *  are removed, and Codex's output stays in `doctor-codex.log` beside the fence. The MCP servers its load turned off
+ *  are the owner's, named for doctor. */
 export async function threadProbe(options: ProbeOptions): Promise<Probed> {
   const root = harnessTemp(options.base)
   const name = `doctor-${process.pid}`
@@ -165,8 +166,8 @@ export async function threadProbe(options: ProbeOptions): Promise<Probed> {
       harnessHomes: harnessHomes(options.environ),
       othersWritable: options.othersWritable ?? [],
     }
-    checkCodexInstall(p, options.codex)
-    const codex = options.codex
+    step = "the copy of Codex"
+    const codex = await threadCodex(p, options.codex, root)
     const started: CodexProcess = (proc = new CodexProcess({
       command: [codex.run, ...APP_SERVER_ARGS],
       cwd: ws,

@@ -721,6 +721,20 @@ test.skipIf(NO_CODEX)(
 )
 
 test.skipIf(NO_CODEX)(
+  "doctor's probe of a real codex its standalone installer put in ~/.codex runs a command in its sandbox, from the office's copy",
+  async () => {
+    const { options } = realHome()
+    const found = standaloneCodex(options.home, options.codex.install)
+    expect(await threadProbe({ ...options, codex: { ...nativeCodex(found), found } })).toEqual({
+      failed: null,
+      projectConfigs: [],
+      mcpServers: ["probe"],
+    })
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
   "doctor's probe fails a real codex whose binary its sandbox can't run: a wrapper outside ~/.codex running the one in it",
   async () => {
     const { root, options } = realHome()

@@ -25,7 +25,7 @@ import * as fc from "../../../src/testing/fake_codex.ts"
 import { fakeLlm, makeHarness } from "../chat/helpers.ts"
 import { person } from "../../company/helpers.ts"
 import { envEntries, isGone, tempDir, waitFor } from "../../helpers.ts"
-import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import { sandboxAvailable, standaloneCodex } from "../../runtime/sandbox/helpers.ts"
 import {
   type Codex,
   YES,
@@ -199,6 +199,35 @@ test("a codex app server runs with the harness PATH and its own fresh temp folde
   await h.sessions.end(sid)
   await waitFor(() => status(h, sid) === "ended", { what: "the end" })
   expect(fs.existsSync(tmp)).toBe(false)
+})
+
+test("a session on a codex its standalone installer put in ~/.codex loads its thread from the office's copy, which the office's next start sweeps once that codex is gone", async () => {
+  const h = makeCodex()
+  // A native program in Codex's place (bun, which runs the fake), laid out as the standalone installer lays Codex out.
+  const release = path.join(h.home, ".codex/packages/standalone/releases/0.171.0-x86_64-unknown-linux-musl")
+  fs.mkdirSync(path.join(release, "bin"), { recursive: true })
+  fs.copyFileSync(process.execPath, path.join(release, "bin/codex"))
+  for (let p = path.join(release, "bin/codex"); p !== h.home; p = path.dirname(p)) fs.chmodSync(p, 0o755)
+  const r = reopened(h, { command: () => [path.join(release, "bin/codex"), ...h.fake.command().slice(1)] })
+  const { id: sid } = await r.sessions.startSession("minh", h.workspace, { openedBy: "ngocbh" })
+  await waitFor(() => status(h, sid) === "idle", { what: "the Codex session to load" })
+  const root = harnessTemp(h.tmpBase)
+  const copies = fs.readdirSync(root).filter((name) => name.startsWith("install-"))
+  expect(copies).toHaveLength(1)
+  const copy = path.join(root, copies[0]!)
+  expect(fs.readFileSync(path.join(copy, "bin/codex")).equals(fs.readFileSync(process.execPath))).toBe(true)
+  const [load] = h.fake.calls("thread/start") as Record<string, any>[]
+  const filesystem = load!.config.permissions[`opencorp-${sid}`].filesystem
+  expect(filesystem[copy]).toBe("read")
+  expect(filesystem[release]).toBeUndefined()
+  expect(filesystem[path.join(h.home, ".codex")]).toBe("deny")
+  // The copy outlives the session, for the next; once its codex is gone, the office's next start sweeps it.
+  await r.sessions.end(sid)
+  await waitFor(() => status(h, sid) === "ended", { what: "the end" })
+  expect(fs.existsSync(copy)).toBe(true)
+  fs.rmSync(release, { recursive: true })
+  await reopened(h).sessions.restore()
+  expect(fs.existsSync(copy)).toBe(false)
 })
 
 test("a codex the employee could change is refused before it runs as the owner", async () => {
@@ -1367,6 +1396,32 @@ test.skipIf(NO_CODEX)(
     await h.sessions.end(sid)
     await waitFor(() => status(h, sid) === "ended", { what: "the end" })
     await waitFor(first.gone, { timeout: 5_000, what: "the server to stop with the session" })
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
+  "on a real codex its standalone installer put in ~/.codex, a session's command runs in its sandbox, from the office's copy",
+  async () => {
+    if (CODEX === undefined) throw new Error("OPENCORP_TEST_SANDBOX is set: set OPENCORP_TEST_CODEX to a Codex 0.167.0+")
+    const model = await standInModel([{ run: "echo ran > ran.txt", waitMs: 10_000 }, { say: "It ran." }])
+    const codexHome = fs.realpathSync(tempDir())
+    fs.writeFileSync(
+      path.join(codexHome, "config.toml"),
+      `model = "stand-in"\nmodel_provider = "stand_in"\n\n[model_providers.stand_in]\nname = "stand-in"\n` +
+        `base_url = "${model.url}"\nwire_api = "responses"\n`,
+    )
+    let found = ""
+    const h = makeCodex({ command: () => [nativeCodex(found).run, ...APP_SERVER_ARGS], environ: { CODEX_HOME: codexHome } })
+    found = standaloneCodex(h.home, nativeCodex(CODEX).install)
+    const sid = await start(h, h.workspace)
+    await h.sessions.prompt(sid, "Run it.")
+    await waitFor(() => texts(h, sid).includes("It ran.") && status(h, sid) === "idle", {
+      timeout: 60_000,
+      what: "the turn",
+    })
+    expect(fs.readFileSync(path.join(h.workspace, "ran.txt"), "utf8")).toBe("ran\n")
+    expect(fs.readdirSync(harnessTemp(h.tmpBase)).filter((name) => name.startsWith("install-"))).toHaveLength(1)
   },
   120_000,
 )
