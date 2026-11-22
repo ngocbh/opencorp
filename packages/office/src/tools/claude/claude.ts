@@ -149,21 +149,24 @@ export function claudeArgs(
 }
 
 /** What a session under employee permission `p` runs: `claude`, with `claudeArgs` of `claudeStart(p)` and, when
- *  there are any, the owner's and the project's instructions (`claudeInstructions`, from `configDir`, Claude Code's
- *  config folder), written to `opencorp.instructions.md` in the session's own temp folder (fresh, private and the
- *  user's, as `claudeStart` checked it; the file 0600) for `--append-system-prompt-file`; and its environment. The
- *  file goes when the temp folder does, and the process removes it once Claude Code exits (`instructions`). Throws
- *  as `claudeStart` does. */
+ *  there are any, the office's own words for the session (`prompt`) and then the owner's and the project's
+ *  instructions (`claudeInstructions`, from `configDir`, Claude Code's config folder), written to
+ *  `opencorp.instructions.md` in the session's own temp folder (fresh, private and the user's, as `claudeStart`
+ *  checked it; the file 0600) for `--append-system-prompt-file`; and its environment. The file goes when the temp
+ *  folder does, and the process removes it once Claude Code exits (`instructions`). Throws as `claudeStart` does. */
 export function claudeSession(
   p: EmployeePermission,
   {
     claude,
     configDir,
+    prompt,
     ...rest
-  }: { claude: string; configDir: string; sessionId?: string; resume?: string; model?: string },
+  }: { claude: string; configDir: string; prompt?: string; sessionId?: string; resume?: string; model?: string },
 ): { command: string[]; env: Record<string, string>; instructions: string | null } {
   const start = claudeStart(p)
-  const text = claudeInstructions({ configDir, workspace: p.workspace, gitRoot: p.gitRoot })
+  const found = claudeInstructions({ configDir, workspace: p.workspace, gitRoot: p.gitRoot })
+  const parts = [prompt === undefined ? null : `${prompt.trim()}\n`, found].filter((t): t is string => t !== null)
+  const text = parts.length === 0 ? null : parts.join("\n")
   const instructions = text === null ? null : writeInstructions(start.env.TMPDIR!, "opencorp", text)
   const args = claudeArgs(start, { ...rest, ...(instructions === null ? {} : { instructions }) })
   return { command: [claude, ...args], env: start.env, instructions }
@@ -332,10 +335,13 @@ export class ClaudeProcess {
   }
 
   /** Sends `text` as a user message, delivered as written: no `/command` runs and no `@path` is read from it
-   *  (`client_composed`). `priority` says when a message sent mid-turn reaches Claude. Resolves with its uuid once
+   *  (`client_composed`). `priority` says when a message sent mid-turn reaches Claude; `uuid` is its id (a fresh one
+   *  by default), which a sender names to follow its lifecycle from before it is written. Resolves with its uuid once
    *  written. */
-  async send(text: string, { priority }: { priority?: "now" | "next" | "later" } = {}): Promise<string> {
-    const uuid = randomUUID()
+  async send(
+    text: string,
+    { priority, uuid = randomUUID() }: { priority?: "now" | "next" | "later"; uuid?: string } = {},
+  ): Promise<string> {
     await this.#stream().send({
       type: "user",
       uuid,
@@ -347,9 +353,12 @@ export class ClaudeProcess {
     return uuid
   }
 
-  /** Stops the running turn; resolves with Claude Code's answer (`still_queued`, the messages that wait). */
-  interrupt(): Promise<Msg> {
-    return this.#stream().request("interrupt", {}, { timeout: CONTROL_TIMEOUT_MS })
+  /** Stops the running turn; resolves with Claude Code's answer (`still_queued`, the messages that wait). With
+   *  `cancelQueued` (Claude Code 2.1.219 and later, `interrupt_cancel_queued_v1`), the messages sent that no turn has
+   *  started are cancelled too, none of them runs, and the answer lists them under `cancelled`. */
+  interrupt({ cancelQueued = false }: { cancelQueued?: boolean } = {}): Promise<Msg> {
+    const body = cancelQueued ? { cancel_queued: true } : {}
+    return this.#stream().request("interrupt", body, { timeout: CONTROL_TIMEOUT_MS })
   }
 
   /** Closes stdin, gives it `graceMs`, then stops it (`kill`). */

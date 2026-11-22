@@ -50,3 +50,19 @@ test("a Codex session shows Codex's model and its tokens as unpriced", () => {
   expect(costLabel({ ...codex, harness_usage: long })).toBe("1.2M in · 1.0M out (Codex login, unpriced)")
   expect(modelLabel({ ...codex, harness_model: null })).toBe("Codex")
 })
+
+test("a Claude Code session shows Claude Code's model and its tokens as unpriced", () => {
+  const claude = {
+    harness: "claude",
+    harness_model: "claude-opus-5-5",
+    cost: 0,
+    cost_cap_usd: null,
+    connection: "office",
+    model: null,
+    harness_usage: { input_tokens: 4200, cached_input_tokens: 0, output_tokens: 310 },
+  } as const
+  expect(modelLabel(claude)).toBe("claude-opus-5-5 (Claude Code)")
+  expect(costLabel(claude)).toBe("4.2k in · 310 out (Claude Code login, unpriced)")
+  expect(costLabel({ ...claude, harness_usage: null })).toBe("Claude Code login, unpriced")
+  expect(modelLabel({ ...claude, harness_model: null })).toBe("Claude Code")
+})

@@ -40,6 +40,7 @@ import type { RunOptions } from "../../../src/runtime/sandbox/run.ts"
 import { baseFiles, person } from "../../company/helpers.ts"
 import { CEO, makeOffice } from "../../server/helpers.ts"
 import { type Codex, makeCodex } from "../codex/helpers.ts"
+import { type Claude, makeClaude } from "../claude/helpers.ts"
 import { goldenPolicy } from "../../runtime/sandbox/helpers.ts"
 import { pipesResult } from "../../tools/terminal/helpers.ts"
 import { NO_GROUP, tempDir, waitFor } from "../../helpers.ts"
@@ -172,7 +173,7 @@ export const PERSON = { name: "Minh", handle: "minh", title: "Engineer", company
 
 /** The groups each template flow names; `ask_user` is the worker's own tool. */
 export const GROUPS: Record<string, string[]> = {
-  chat: ["toolbox", "workspace", "terminal", "codex", "company"],
+  chat: ["toolbox", "workspace", "terminal", "codex", "claude", "company"],
   side_chat: ["workspace", "work_items"],
   profile_manager: ["profile"],
 }
@@ -1032,6 +1033,8 @@ export function listed(listings: Record<string, string[]>): Lister {
  * `folder` is a folder to chat in. `connections` (`{name: model}`) adds connections on `fake`, each on `model`. With
  * `codex`, the office is `makeCodex`'s and its Codex sessions over a fake app-server are `office.codex`, on the
  * harness's hooks (minh may then use Codex unless `files` replace him); `codex` is what `makeCodex` returned. With
+ * `claude`, the office is `makeClaude`'s and its Claude Code sessions over the fake Claude Code are `office.claude`
+ * (minh may then use Claude Code unless `files` replace him); `claude` is what `makeClaude` returned. With
  * `questions`, the questions extension is registered on each harness (`office.cards`).
  * The harness's start choice lists models through `lister`, else `listed(listings)`, never the network, and
  * waits `chooseDeadlineMs` if given. Auto's check asks once it runs past `checkTimeoutMs`, if given.
@@ -1043,6 +1046,7 @@ export async function makeHarness(
   fake: FakeLLM,
   {
     codex = false,
+    claude = false,
     scheduler = realScheduler,
     questions = false,
     listings = {},
@@ -1052,6 +1056,7 @@ export async function makeHarness(
     ...options
   }: Omit<NonNullable<Parameters<typeof chatOffice>[1]>, "office"> & {
     codex?: boolean
+    claude?: boolean
     scheduler?: Scheduler
     questions?: boolean
     listings?: Record<string, string[]>
@@ -1064,12 +1069,15 @@ export async function makeHarness(
   // Registered first, so it runs before the registries stop and the store closes.
   onTestFinished(() => harness?.closeAll())
   let c: Codex | undefined
+  let cl: Claude | undefined
   const o = await chatOffice(fake, {
     ...options,
     ...(codex ? { office: (files: Record<string, unknown>) => (c = makeCodex({ files })).office } : {}),
+    ...(claude ? { office: (files: Record<string, unknown>) => (cl = makeClaude({ files })).office } : {}),
   })
   const { office } = o
   const codexed = c as Codex | undefined
+  const clauded = cl as Claude | undefined
   const hooks = codexed?.hooks ?? o.hooks
   office.codex = codexed?.sessions
   // The office's one transcript and relay, which the harness's actors share with these helpers.
@@ -1112,8 +1120,9 @@ export async function makeHarness(
     harness: make(o.registry),
     store: office.store,
     hooks,
-    folder: codexed?.workspace ?? tempDir(),
+    folder: codexed?.workspace ?? clauded?.workspace ?? tempDir(),
     codex: codexed,
+    claude: clauded,
     async reopen(): Promise<ChatHarness> {
       // The office's stop, in its order: the harness, then its cards.
       await h.harness.closeAll()

@@ -29,7 +29,7 @@ import {
 } from "../../tools/claude/claude.ts"
 import { probeStart } from "../../tools/claude/probe.ts"
 import { type Probed, threadProbe } from "../codex/thread.ts"
-import { writableFolders } from "../codex/permission.ts"
+import { writableFolders } from "../../runtime/sessions/permission.ts"
 import { checkHarnessBinary } from "../../runtime/sandbox/harness_profile.ts"
 import { SANDBOX_FIX } from "../../tools/terminal/terminal.ts"
 import { selfCommand, tuiAssetRoot } from "../../platform.ts"

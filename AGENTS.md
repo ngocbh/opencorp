@@ -82,12 +82,12 @@ Before designing a feature, during brainstorming:
 - Never edit `packages/yian/`. Yian changes go to the yian repo.
 - Keep the rules in `ARCHITECTURE.md` ("Rules that must not break"): imports go one way, down the
   office's layers; only `platform.ts` uses Bun; only the worker hosts yian runs; secrets never reach
-  argv or logs. OpenCorp adds no scrubbing to an instrument's view or record (the terminal and Codex
-  now, Claude Code later); the sandbox and the command reader's credential check keep the model's
-  key and other credentials out of a shell's reach. A harness runs as the owner, with its own login and
-  config (Codex writes its own `~/.codex`); its own sandbox holds its commands to the employee's
-  permission, which can't read the home's credentials, the harnesses' config or `~/.opencorp`, and
-  nothing escalates. The existing redactions stay: the monitor's of asset secrets in tool results,
+  argv or logs. OpenCorp adds no scrubbing to an instrument's view or record (the terminal, Codex
+  and Claude Code); the sandbox and the command reader's credential check keep the model's key and
+  other credentials out of a shell's reach. A harness runs as the owner, with its own login and
+  config (Codex writes its own `~/.codex`, Claude Code its own `~/.claude`); its own sandbox holds
+  its commands to the employee's permission, which can't read the home's credentials, the
+  harnesses' config or `~/.opencorp`, and nothing escalates. The existing redactions stay: the monitor's of asset secrets in tool results,
   and the session actor's of the model key.
 - OpenCorp is MIT-licensed. When you copy or substantially port code from another project, credit
   it in `THIRD_PARTY_NOTICES.md` (project, license, upstream paths and commit, our paths).

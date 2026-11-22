@@ -224,6 +224,18 @@ test("a session's start passes the owner's and the project's CLAUDE.md from a fi
   // The rest is the permission's start, as claudeArgs builds it.
   expect(bare.command.slice(1)).toEqual(claudeArgs(claudeStart(p)))
   expect(bare.env).toEqual(claudeStart(p).env)
+
+  // The office's own words for the session come first, with no CLAUDE.md too.
+  const told = claudeSession(p, { claude: fake.claude, configDir: config, prompt: "Two people write to you." })
+  expect(told.instructions).toBe(file)
+  expect(fs.readFileSync(file, "utf8")).toBe("Two people write to you.\n")
+  // Each start's temp folder is fresh.
+  fs.rmSync(file)
+  fs.writeFileSync(path.join(config, "CLAUDE.md"), "Owner says: be brief.\n")
+  const both = claudeSession(p, { claude: fake.claude, configDir: config, prompt: "Two people write to you." })
+  const text2 = fs.readFileSync(both.instructions!, "utf8")
+  expect(text2.startsWith("Two people write to you.\n\n")).toBe(true)
+  expect(text2).toContain("Owner says: be brief.")
 })
 
 test("a session resumed or new, and its model, go on the command line", () => {
@@ -351,6 +363,11 @@ test("a message goes as written, never as a command or a file mention, and its t
   const next = await claude.send("and this", { priority: "next" })
   const joined = await waitFor(() => sent(fake).find((m) => m.uuid === next), { what: "the second message" })
   expect(joined.priority).toBe("next")
+  // A sender may name the message's uuid, to follow its lifecycle from before it is written.
+  expect(await claude.send("and that", { uuid: "6f1d2c3b-0000-4000-8000-000000000001" })).toBe(
+    "6f1d2c3b-0000-4000-8000-000000000001",
+  )
+  await waitFor(() => sent(fake).some((m) => m.uuid === "6f1d2c3b-0000-4000-8000-000000000001"), { what: "the third" })
   await claude.close(2000)
 })
 
@@ -363,6 +380,25 @@ test("an interrupt ends the running turn as Claude Code does", async () => {
   expect(await claude.interrupt()).toEqual({ still_queued: [] })
   await waitFor(() => lines.some((m) => m.type === "result"), { what: "the interrupted result" })
   expect(lines.find((m) => m.type === "result")!.subtype).toBe("error_during_execution")
+  await claude.close(2000)
+})
+
+test("an interrupt that cancels what waits takes the messages sent mid-turn out too, and none of them runs", async () => {
+  const { root, fake, permission } = layout({ turns: [[{ say: "working" }, { sleep: 20 }], [{ say: "never" }]] })
+  const { claude, lines } = proc(root, fake, permission())
+  await claude.start()
+  await claude.send("go")
+  await waitFor(() => lines.some((m) => m.type === "assistant"), { what: "the turn to start" })
+  const waiting = await claude.send("and this", { priority: "next" })
+  await waitFor(() => lines.some((m) => m.type === "command_lifecycle" && m.command_uuid === waiting), {
+    what: "the second message queued",
+  })
+  expect(await claude.interrupt({ cancelQueued: true })).toEqual({ still_queued: [], cancelled: [waiting] })
+  const sent = fake.log().find((e) => e.dir === "in" && e.msg?.request?.subtype === "interrupt")!
+  expect(sent.msg!.request).toEqual({ subtype: "interrupt", cancel_queued: true })
+  await waitFor(() => lines.some((m) => m.type === "result"), { what: "the interrupted result" })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  expect(lines.some((m) => m.type === "assistant" && m.message?.content?.[0]?.text === "never")).toBe(false)
   await claude.close(2000)
 })
 

@@ -1,5 +1,6 @@
 /** The chat harness: the office's one session harness, which checks each request, runs each yian chat through its
- *  session actor and hands a Codex session's calls to the Codex sessions. */
+ *  session actor and hands a Codex session's calls to the Codex sessions, and a Claude Code session's to the Claude
+ *  Code sessions. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -10,14 +11,8 @@ import { loadRepo, missingPerson } from "../../company/loader.ts"
 import { readRules, removeRule as removeAgentRule, RulesRefused } from "../../company/rules.ts"
 import type { Bus } from "../../runtime/bus.ts"
 import type { LiveRelay } from "./live.ts"
-import {
-  type CodexSessions,
-  checkFolder,
-  checkOverlap,
-  folderOf,
-  notSupported,
-  unsafeWorkspace,
-} from "../codex/sessions.ts"
+import { type CodexSessions, notSupported } from "../codex/sessions.ts"
+import { checkFolder, checkOverlap, folderOf, unsafeWorkspace } from "../../runtime/sessions/folder.ts"
 import type { Monitor } from "../../runtime/permissions/monitor.ts"
 import { MANAGER_FLOW, profileTools } from "../profile/manager.ts"
 import { GitProfileStore } from "../../company/profile.ts"
@@ -41,7 +36,9 @@ import { type ActorContext, KEEP_MS, SessionActor, named, ownModel } from "./ses
 import { HarnessError, notAnAgent } from "../../runtime/sessions/state.ts"
 import { EmployeeTerminal } from "./terminal.ts"
 import { EmployeeCodex } from "./codex.ts"
-import { speakers } from "../codex/instrument.ts"
+import { EmployeeClaude } from "./claude.ts"
+import type { ClaudeSessions } from "../claude/sessions.ts"
+import { speakers } from "../../runtime/sessions/speakers.ts"
 import type { Transcript } from "./transcript.ts"
 
 /** How long, in milliseconds, the stop waits for worker requests, office tool bodies and actor jobs still running. */
@@ -67,6 +64,8 @@ export interface ChatOffice {
   readonly guards: SandboxOfficePaths
   /** The office's live Codex sessions, which calls on a Codex session go to. */
   readonly codex: CodexSessions | undefined
+  /** The office's live Claude Code sessions, which calls on a Claude Code session go to. */
+  readonly claude: ClaudeSessions | undefined
   readonly transcript: Transcript | undefined
   readonly live: LiveRelay | undefined
   /** Each session's live instruments: a main chat's shells are listed there. */
@@ -97,7 +96,9 @@ export type ChatHarnessOptions = {
  * at the first call after an office restart, and dropped once its session ended with no worker left.
  *
  * A call on a Codex session goes to `office.codex`, the Codex sessions; without them it answers 409 `not_live`, a
- * cost cap or model 422 `not_supported`, and a Codex start or continuation 422 `unsupported_harness`. Every call
+ * cost cap or model 422 `not_supported`, and a Codex start or continuation 422 `unsupported_harness`. A call on a
+ * Claude Code session, an employee chat's instrument, goes to `office.claude`, the Claude Code sessions (409
+ * `not_live` without them); its cost cap, model and mode are 422 `not_supported`, and it isn't continued. Every call
  * answers 503 `stopping` once `closeAll` has begun.
  */
 export class ChatHarness implements SessionHarness {
@@ -359,8 +360,8 @@ export class ChatHarness implements SessionHarness {
    * under a sandbox over the session's folder, checked again (422 when it is gone or unsafe), with a private tmp dir
    * under the session's folder: a main chat's as the person's `harness_policy` says, a side chat's read-only and
    * offline whatever it says. A main chat's commands run in its terminal, the pipes shell in that same sandbox
-   * (`EmployeeTerminal`), and an employee who uses the codex harness drives Codex sessions as its instrument
-   * (`EmployeeCodex`); a side chat has neither. A side chat's runs see its question, if it has one. A profile manager
+   * (`EmployeeTerminal`), and an employee who uses the codex or claude harness drives Codex or Claude Code sessions as
+   * its instruments (`EmployeeCodex`, `EmployeeClaude`); a side chat has none of them. A side chat's runs see its question, if it has one. A profile manager
    * has only its profile tools, over the person's profile, and no workspace.
    */
   async spec(session: SessionRecord): Promise<RunSpec> {
@@ -393,18 +394,23 @@ export class ChatHarness implements SessionHarness {
       store,
       mode: () => store.getSession(session.id)?.mode ?? session.mode,
     })
-    const sessions = this.office.codex
+    const harnesses = repo.people.get(session.person)?.harnesses ?? []
+    const instrument = {
+      chat: session,
+      folder: this.office.paths.sessionDir(session.id),
+      instruments: this.office.instruments,
+      speakers: speakers(repo, session),
+    }
+    const { codex: codexes, claude: claudes } = this.office
     const codex =
-      sessions !== undefined && repo.people.get(session.person)?.harnesses.includes("codex")
-        ? new EmployeeCodex({
-            chat: session,
-            sessions,
-            folder: this.office.paths.sessionDir(session.id),
-            instruments: this.office.instruments,
-            speakers: speakers(repo, session),
-          })
+      codexes !== undefined && harnesses.includes("codex")
+        ? new EmployeeCodex({ ...instrument, sessions: codexes })
         : undefined
-    return mainSpec({ store, git, repo, session, workspace, terminal, codex, monitor, carried })
+    const claude =
+      claudes !== undefined && harnesses.includes("claude")
+        ? new EmployeeClaude({ ...instrument, sessions: claudes })
+        : undefined
+    return mainSpec({ store, git, repo, session, workspace, terminal, codex, claude, monitor, carried })
   }
 
   /** The workspace tools of `session`'s folder, checked again (422 when it is gone or unsafe), under a sandbox
@@ -435,32 +441,45 @@ export class ChatHarness implements SessionHarness {
     this.#running()
     const old = this.store.getSession(sessionId)
     if (old === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    const claude = this.#claudeFor(sessionId)
+    if (claude) return claude.continueSession(sessionId)
     if (old.harness !== "codex") throw new HarnessError(422, "not_continuable", "only a Codex session can be continued")
     return this.#codexOrUnsupported().continueSession(sessionId, { by })
   }
 
   async prompt(sessionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<string> {
+    const claude = this.#claudeFor(sessionId)
+    if (claude) return claude.prompt(sessionId, text, { by })
     const codex = this.#codexFor(sessionId)
     return codex ? codex.prompt(sessionId, text, { by }) : this.#actor(sessionId).prompt(text, { by })
   }
 
   async steer(sessionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<string> {
+    const claude = this.#claudeFor(sessionId)
+    if (claude) return claude.steer(sessionId, text, { by })
     const codex = this.#codexFor(sessionId)
     return codex ? codex.steer(sessionId, text, { by }) : this.#actor(sessionId).steer(text, { by })
   }
 
   async end(sessionId: string): Promise<void> {
+    const claude = this.#claudeFor(sessionId)
+    if (claude) return claude.end(sessionId)
     const codex = this.#codexFor(sessionId)
     return codex ? codex.end(sessionId) : this.#actor(sessionId).end()
   }
 
   async interrupt(sessionId: string, options: { question?: string | null } = {}): Promise<void> {
+    const claude = this.#claudeFor(sessionId)
+    // A Claude Code session has no cards, so no question reaches it.
+    if (claude) return claude.interrupt(sessionId)
     const codex = this.#codexFor(sessionId)
     // A Codex card has no stop, so no question reaches Codex.
     return codex ? codex.interrupt(sessionId) : this.#actor(sessionId).interrupt(options)
   }
 
   async setCostCap(sessionId: string, usd: number): Promise<SessionRecord> {
+    const claude = this.#claudeFor(sessionId)
+    if (claude) return claude.notSupported(sessionId)
     const codex = this.#codexFor(sessionId, notSupported)
     return codex ? codex.setCostCap(sessionId, usd) : this.#actor(sessionId).setCostCap(usd)
   }
@@ -474,6 +493,8 @@ export class ChatHarness implements SessionHarness {
    * on this office; 409 `connection_unusable` for one that can't be used now.
    */
   async setModel(sessionId: string, connection: string, model: string): Promise<SessionRecord> {
+    const claude = this.#claudeFor(sessionId)
+    if (claude) return claude.notSupported(sessionId)
     const codex = this.#codexFor(sessionId, notSupported)
     if (codex !== undefined) return codex.setModel(sessionId, connection, model)
     const session = this.store.getSession(sessionId)!
@@ -512,6 +533,8 @@ export class ChatHarness implements SessionHarness {
     mode: SessionRecord["mode"],
     { by = null }: { by?: string | null } = {},
   ): Promise<SessionRecord> {
+    const claude = this.#claudeFor(sessionId)
+    if (claude) return claude.notSupported(sessionId)
     const codex = this.#codexFor(sessionId, notSupported)
     if (codex !== undefined) return codex.setMode(sessionId, mode, { by })
     const live = () => {
@@ -543,7 +566,7 @@ export class ChatHarness implements SessionHarness {
     this.#running()
     const session = this.store.getSession(sessionId)
     if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
-    if (session.harness === "codex") return { rules: [], errors: [] }
+    if (session.harness !== "composer") return { rules: [], errors: [] }
     const actor = this.#actors.get(sessionId)
     return actor !== undefined ? actor.rules() : readRules(this.office.git, session.person)
   }
@@ -564,9 +587,9 @@ export class ChatHarness implements SessionHarness {
     const actor = this.#actors.get(sessionId)
     let removed = false
     try {
-      if (session.harness !== "codex" && actor !== undefined) removed = await actor.removeRule(rule, by)
+      if (session.harness === "composer" && actor !== undefined) removed = await actor.removeRule(rule, by)
       // With no actor the session's own rules are gone; the agent's file is still the repo's.
-      else if (session.harness !== "codex" && rule.source !== "session") {
+      else if (session.harness === "composer" && rule.source !== "session") {
         removed = await removeAgentRule(this.office.git, session.person, { ...rule, source: rule.source }, by)
       }
     } catch (error) {
@@ -586,6 +609,8 @@ export class ChatHarness implements SessionHarness {
    *  read on first in slices that yield to the event loop (`Transcript.refresh`), so a long log doesn't hold it; 404
    *  `not_found` without the session. */
   async messages(sessionId: string): Promise<Message[]> {
+    const claude = this.#claudeFor(sessionId)
+    if (claude) return claude.messages(sessionId)
     const codex = this.#codexFor(sessionId)
     if (codex) return codex.messages(sessionId)
     const before = this.store.getSession(sessionId)
@@ -616,6 +641,8 @@ export class ChatHarness implements SessionHarness {
     const sid = question.session_id
     const session = sid ? this.store.getSession(sid) : undefined
     if (session?.harness === "codex") return this.#codexFor(session.id)!.answer(questionId, value, kind, { by })
+    // A Claude Code session asks nothing, so no card of its is answered here.
+    if (session?.harness === "claude") throw new HarnessError(409, "not_open", `question ${questionId} isn't open`)
     if (session !== undefined && LIVE.includes(session.status)) {
       return this.#actor(session.id).answer(questionId, value, kind, { by })
     }
@@ -661,7 +688,8 @@ export class ChatHarness implements SessionHarness {
 
   /**
    * At office start, after the run sweep: each live yian chat's actor restores its session from where yian's log
-   * says its run stands (`SessionActor.restore`), one at a time; then the Codex sessions restore theirs. An actor
+   * says its run stands (`SessionActor.restore`), one at a time; then the Codex sessions restore theirs, and the
+   * Claude Code sessions end theirs. An actor
    * fails its own session when it can't restore it, so one session never stops another or the office's start: a
    * throw (503 `stopping`) is logged by its type and the next session goes on. Stops once the harness is closed.
    */
@@ -677,6 +705,8 @@ export class ChatHarness implements SessionHarness {
     }
     if (this.#closed) return
     await this.office.codex?.restore()
+    if (this.#closed) return
+    await this.office.claude?.restore()
   }
 
   /**
@@ -697,6 +727,9 @@ export class ChatHarness implements SessionHarness {
     this.#stopping = true
     await this.#step("the codex sessions didn't close", async () => {
       await this.office.codex?.closeAll()
+    })
+    await this.#step("the claude sessions didn't close", async () => {
+      await this.office.claude?.closeAll()
     })
     await this.#step("the workers didn't close", () => this.registry.closeAll())
     this.#refusing = true
@@ -959,6 +992,19 @@ export class ChatHarness implements SessionHarness {
     if (session.harness !== "codex") return undefined
     if (this.office.codex === undefined) throw without()
     return this.office.codex
+  }
+
+  /** The Claude Code sessions for a call on `sessionId` if it is a Claude Code session, else undefined: 404 for no
+   *  session, 409 `not_live` for a Claude Code session with no Claude Code sessions, and 503 once closed. */
+  #claudeFor(sessionId: string): ClaudeSessions | undefined {
+    this.#running()
+    const session = this.store.getSession(sessionId)
+    if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    if (session.harness !== "claude") return undefined
+    if (this.office.claude === undefined) {
+      throw new HarnessError(409, "not_live", `session ${sessionId} has no live run`)
+    }
+    return this.office.claude
   }
 
   /** The Codex sessions, or 422 `unsupported_harness` without them. */

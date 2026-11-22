@@ -637,7 +637,7 @@ test("turn text takes only a str and skips the exit command", async () => {
   expect(seen).toEqual(["hi"])
 })
 
-test("a main run offers toolbox workspace terminal codex and company in that order", async () => {
+test("a main run offers toolbox workspace terminal codex claude and company in that order", async () => {
   const h = await makeHarness(await fakeLlm())
   const s = await stored(h)
   const groups = (await h.harness.spec(s)).groups({ session: s, runId: "run-1" })
@@ -645,8 +645,9 @@ test("a main run offers toolbox workspace terminal codex and company in that ord
     ["toolbox", ["fake__echo"]],
     ["workspace", ["read_file", "write_file", "edit_file", "list", "search"]],
     ["terminal", ["run", "type", "read", "interrupt", "close"]],
-    // Empty: minh doesn't use the codex harness.
+    // Empty: minh uses neither the codex harness nor the claude one.
     ["codex", []],
+    ["claude", []],
     ["company", ["ask_manager", "create_work_item", "comment"]],
   ])
 })
@@ -656,6 +657,14 @@ test("a main run of an employee who uses the codex harness offers the codex grou
   const s = await stored(h)
   const groups = (await h.harness.spec(s)).groups({ session: s, runId: "run-1" })
   expect(Object.keys(groups.codex!)).toEqual(["start", "send", "interrupt", "stop", "history"])
+})
+
+test("a main run of an employee who uses the claude harness offers the claude group's five tools", async () => {
+  const h = await makeHarness(await fakeLlm(), { claude: true })
+  const s = await stored(h)
+  const groups = (await h.harness.spec(s)).groups({ session: s, runId: "run-1" })
+  expect(Object.keys(groups.claude!)).toEqual(["start", "send", "interrupt", "stop", "history"])
+  expect(groups.codex).toEqual({})
 })
 
 test("the run spec keeps its tmp dir private under the session folder", async () => {

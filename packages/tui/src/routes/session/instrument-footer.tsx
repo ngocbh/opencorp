@@ -7,7 +7,7 @@ import { SplitBorder } from "../../ui/border"
 import { Locale } from "../../util/locale"
 import { display } from "../../util/printable"
 
-/** The Codex sessions an employee's chat drives (its child sessions), oldest first. */
+/** The Codex and Claude Code sessions an employee's chat drives (its child sessions), oldest first. */
 export function childSessions(sessions: readonly Session[], chat: string | undefined): Session[] {
   if (!chat) return []
   return sessions
@@ -16,9 +16,10 @@ export function childSessions(sessions: readonly Session[], chat: string | undef
 }
 
 /**
- * Above the prompt of a child session, a Codex session an employee's chat drives: its name in the chat's list, which of
- * the chat's Codex sessions it is, who drives it and the tokens Codex reported; then Parent, Prev and Next with their
- * keys, each a button too. The upstream TUI's subagent footer, for a child session that the owner can also write in.
+ * Above the prompt of a child session, a Codex or Claude Code session an employee's chat drives: its name in the chat's
+ * list, which of the chat's sessions it is, who drives it and the tokens its harness reported; then Parent, Prev and
+ * Next with their keys, each a button too. The upstream TUI's subagent footer, for a child session that the owner can
+ * also write in.
  */
 export function InstrumentFooter(props: { session: Session }) {
   const office = useOffice()
@@ -34,7 +35,11 @@ export function InstrumentFooter(props: { session: Session }) {
     const siblings = childSessions(office.state.sessions, chat)
     const listed = chat ? office.state.instruments[chat]?.find((i) => i.id === props.session.id) : undefined
     return {
-      label: listed ? display(listed.name) : "Codex session",
+      label: listed
+        ? display(listed.name)
+        : props.session.harness === "claude"
+          ? "Claude Code session"
+          : "Codex session",
       index: siblings.findIndex((s) => s.id === props.session.id) + 1,
       total: siblings.length,
     }

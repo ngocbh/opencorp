@@ -10,12 +10,17 @@ export function sessionModel(session: Pick<Session, "connection" | "model">, lis
   return { connection, model }
 }
 
-/** `model (connection)`, or the connection alone while its model is unknown; a Codex session names Codex's model. */
+/** The harnesses that run on their own login and model, by `Session.harness`, as the owner reads their names. */
+export const HARNESS_NAMES: Readonly<Record<string, string>> = { codex: "Codex", claude: "Claude Code" }
+
+/** `model (connection)`, or the connection alone while its model is unknown; a Codex or Claude Code session names its
+ *  harness's own model. */
 export function modelLabel(
   session: Pick<Session, "connection" | "model"> & Partial<Pick<Session, "harness" | "harness_model">>,
   list?: ConnectionList,
 ) {
-  if (session.harness === "codex") return session.harness_model ? `${session.harness_model} (Codex)` : "Codex"
+  const harness = HARNESS_NAMES[session.harness ?? ""]
+  if (harness !== undefined) return session.harness_model ? `${session.harness_model} (${harness})` : harness
   const { connection, model } = sessionModel(session, list)
   return model ? `${model} (${connection})` : connection
 }

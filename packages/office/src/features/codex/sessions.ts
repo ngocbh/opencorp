@@ -12,14 +12,13 @@ import { loadRepo, missingPerson } from "../../company/loader.ts"
 import type { Bus } from "../../runtime/bus.ts"
 import type { Tools } from "../../runtime/service/programs.ts"
 import type { AnswerKind, SessionHarness } from "../../runtime/sessions/harness.ts"
-import { type EmployeePermission, checkCodexInstall } from "../../runtime/sandbox/harness_profile.ts"
 import {
-  type OfficePaths as SandboxOfficePaths,
-  UnsafeWorkspace,
-  checkClearOf,
-  checkWorkspace,
-  realPath,
-} from "../../runtime/sandbox/policy.ts"
+  type EmployeePermission,
+  checkCodexInstall,
+  gitRootOf,
+  harnessHomes,
+} from "../../runtime/sandbox/harness_profile.ts"
+import type { OfficePaths as SandboxOfficePaths } from "../../runtime/sandbox/policy.ts"
 import {
   InvalidTransition,
   LIVE,
@@ -41,14 +40,15 @@ import {
   nativeCodex,
 } from "../../tools/codex/codex.ts"
 import { nameOf } from "../../tools/codex/rpc.ts"
-import { type HarnessThread, employeePermission } from "./permission.ts"
+import { type HarnessThread, employeePermission } from "../../runtime/sessions/permission.ts"
+import { checkFolder } from "../../runtime/sessions/folder.ts"
 import { CodexSession, END_WAIT_MS, type InstrumentOf, REPLY_WAIT_MS, STOP_WAIT_MS } from "./session.ts"
-import { instructions } from "./instrument.ts"
+import { instructions } from "../../runtime/sessions/speakers.ts"
 import type { ThreadEvents } from "../../tools/codex/instrument.ts"
 import { markInterrupted } from "../../tools/codex/record.ts"
 import { authoredText } from "@ngocbh/yian"
 import { fenceIn, freshFolder, removeFolder, sweepTemp } from "../../runtime/sandbox/harness_temp.ts"
-import { gitRootOf, harnessHomes, harnessTemp, threadEnv } from "./thread.ts"
+import { harnessTemp, threadEnv } from "./thread.ts"
 
 /** What a yian chat's session calls answer, until the chat harness serves them. */
 const NOT_SERVED = "yian chats are not served yet"
@@ -65,9 +65,6 @@ export interface CodexOffice {
   /** What every workspace must stay clear of. */
   readonly guards: SandboxOfficePaths
 }
-
-/** What the session-folder checks use of the office: the guards and the office's own paths. */
-export type FolderOffice = Pick<CodexOffice, "guards" | "paths">
 
 /** What `CodexSessions.launch` needs of a session. */
 export type Launchable = Pick<CodexSession, "sessionId" | "cwd" | "launchingAs" | "notified" | "requested" | "exited">
@@ -789,55 +786,6 @@ export class CodexSessions implements SessionHarness {
   }
 }
 
-/** The realpath of `cwd`, a new session's folder, once it is checked: 422 `invalid_body` when it isn't an absolute path
- *  to a folder, is too long for the system to name, or can't be opened by the office, and 422 `unsafe_workspace`
- *  (`log` gets why) when `checkWorkspace` refuses it or it overlaps the office's own files. */
-export function checkFolder(office: FolderOffice, cwd: string, log: (line: string) => void): string {
-  const real = folderOf(cwd)
-  try {
-    checkWorkspace(real, office.guards)
-  } catch (error) {
-    if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error, log)
-    throw error
-  }
-  checkOverlap(office, real, log)
-  return real
-}
-
-/** The realpath of `cwd`: 422 `invalid_body` when it isn't an absolute path to a folder, is too long for the system to
- *  name, or can't be opened by the office. */
-export function folderOf(cwd: string): string {
-  // A 422 never echoes the request's path: it may not be a folder at all.
-  if (!path.isAbsolute(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not an absolute path")
-  const problem = folderProblem(cwd)
-  if (problem !== null) throw new HarnessError(422, "invalid_body", problem)
-  // Clients match folders by their resolved path (/tmp is /private/tmp on macOS).
-  return realPath(cwd)
-}
-
-/** 422 `unsafe_workspace` (`log` gets why) when `real`, a resolved folder, overlaps the office's own files. */
-export function checkOverlap(office: FolderOffice, real: string, log: (line: string) => void): void {
-  try {
-    // The workspace check guards ~/.opencorp; this office's home may be elsewhere.
-    checkClearOf(real, [office.paths.company, office.paths.office])
-  } catch (error) {
-    if (error instanceof UnsafeWorkspace) throw unsafeWorkspace(error, log)
-    throw error
-  }
-}
-
-/** The 422 `unsafe_workspace` for the refusal `refused`: the reply gets its reason, and `log` its message, which names
- *  paths; a 422 names the field, not its value. */
-export function unsafeWorkspace(refused: UnsafeWorkspace, log: (line: string) => void): HarnessError {
-  // Quoted, so a folder name with a newline can't add a line to the log.
-  log(`a session folder was refused: ${JSON.stringify(refused.message)}`)
-  return new HarnessError(
-    422,
-    "unsafe_workspace",
-    `cwd can't be a workspace: ${refused.reason} (the office log has the paths)`,
-  )
-}
-
 /** The 422 `not_supported` a Codex session's cost cap, model or mode call answers. */
 export function notSupported(): HarnessError {
   return new HarnessError(422, "not_supported", "a Codex session runs on Codex's own model and login")
@@ -868,21 +816,6 @@ export async function startConnection(
     fallback = OFFICE
   }
   return requested && names.includes(requested) ? requested : fallback
-}
-
-/** Why `p` can't be a session's folder, or null when it is a folder: it isn't one (missing, a file, below a file, a
- *  link loop, a NUL byte), it is too long to name, or the office may not reach it. Any other error is thrown. */
-function folderProblem(p: string): string | null {
-  try {
-    return fs.statSync(p).isDirectory() ? null : "cwd is not a folder"
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code ?? ""
-    if (["ENOENT", "ENOTDIR", "ELOOP", "EBADF", "ERR_INVALID_ARG_VALUE"].includes(code)) return "cwd is not a folder"
-    if (code === "ENAMETOOLONG") return "cwd is too long for this system"
-    if (code === "EACCES" || code === "EPERM") return "cwd can't be opened by the office"
-    // Such as EIO or EMFILE: trouble on the office's side, not in the request.
-    throw error
-  }
 }
 
 /** Folds a message, part or delta into `live`'s current turn, as a client folds the live events: a user message that

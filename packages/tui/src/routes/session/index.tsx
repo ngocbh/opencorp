@@ -167,6 +167,8 @@ export function Session() {
   const question = createMemo(() => cards()[0])
   // A Codex session shows every open card above a prompt that stays; the first card or the prompt has the keys.
   const codex = createMemo(() => session()?.harness === "codex")
+  // A Codex or Claude Code session: a harness of its own, which takes a message mid-turn into the running turn.
+  const harnessed = createMemo(() => session()?.harness === "codex" || session()?.harness === "claude")
   // The open card is an approval card, which shows as the permission prompt.
   const approval = createMemo(() => !codex() && question()?.source === "approval")
   // A card on the chat (an approval, a question), which takes what room it needs and scrolls in the rest.
@@ -233,8 +235,8 @@ export function Session() {
   )
   /** Esc: freezes the view; the turn after the stopped one starts from what it shows now. */
   function interrupt() {
-    // A Codex steer joins the live turn, so the next message after it can still be the stopped turn's.
-    setFrozen(freeze(messages(), frozen(), codex() ? undefined : turnStart))
+    // A harness steer joins the live turn, so the next message after it can still be the stopped turn's.
+    setFrozen(freeze(messages(), frozen(), harnessed() ? undefined : turnStart))
     turnStart = assistantIds(messages())
   }
   /**
@@ -338,7 +340,8 @@ export function Session() {
       },
     ),
   )
-  // The chat's Codex sessions, each its own child session, which open as a chat; in a child, its chat and siblings.
+  // The chat's Codex and Claude Code sessions, each its own child session, which open as a chat; in a child, its chat
+  // and siblings.
   const harnesses = createMemo(() =>
     (office.state.instruments[route.sessionID] ?? []).filter((i) => i.kind !== "terminal"),
   )
@@ -351,7 +354,7 @@ export function Session() {
     dialog.clear()
     navigate({ type: "session", sessionID })
   }
-  /** Moves to the next (1) or previous (-1) Codex session of the chat, round its list. */
+  /** Moves to the next (1) or previous (-1) Codex or Claude Code session of the chat, round its list. */
   function moveChild(direction: number) {
     const list = children()
     if (list.length < 2) return
@@ -651,34 +654,34 @@ export function Session() {
           <DialogInstruments
             instruments={[...instruments(), ...harnesses()]}
             current={opened()?.id}
-            // A Codex session is a child session: it opens as a chat.
+            // A Codex or Claude Code session is a child session: it opens as a chat.
             onOpen={(id) => (harnesses().some((i) => i.id === id) ? enterChild(id) : showInstrument(id))}
           />
         )),
     },
     {
-      title: "Go to the chat's first Codex session",
+      title: "Go to the chat's first Codex or Claude Code session",
       value: "session.child.first",
       category: "Session",
       enabled: !parentID() && firstChild() !== undefined,
       run: () => enterChild(firstChild()!),
     },
     {
-      title: "Go back to the chat that drives this Codex session",
+      title: "Go back to the chat that drives this Codex or Claude Code session",
       value: "session.parent",
       category: "Session",
       enabled: !!parentID(),
       run: () => enterChild(parentID()!),
     },
     {
-      title: "Next Codex session of the chat",
+      title: "Next Codex or Claude Code session of the chat",
       value: "session.child.next",
       category: "Session",
       enabled: !!parentID() && children().length > 1,
       run: () => moveChild(1),
     },
     {
-      title: "Previous Codex session of the chat",
+      title: "Previous Codex or Claude Code session of the chat",
       value: "session.child.previous",
       category: "Session",
       enabled: !!parentID() && children().length > 1,
@@ -1099,7 +1102,7 @@ export function Session() {
                   {/* A card may shrink to what the chat leaves it: its body scrolls in what remains. */}
                   <box flexShrink={card() ? 1 : 0}>
                     <Show
-                      when={codex()}
+                      when={harnessed()}
                       fallback={
                         <Show
                           when={question()?.id}
@@ -1147,7 +1150,8 @@ export function Session() {
                         </Show>
                       }
                     >
-                      {/* A child session: the Codex session an employee's chat drives, with the way back to it. */}
+                      {/* A child session: the Codex or Claude Code session an employee's chat drives, with the way
+                          back to it. */}
                       <Show when={parentID() ? current() : undefined}>
                         {(child) => <InstrumentFooter session={child()} />}
                       </Show>
@@ -1499,6 +1503,25 @@ export function toolView(
       return { view: "shell", input }
     case "ask_user":
       return { view: "question", input }
+    case "claude.Bash":
+      return { view: "shell", input }
+    case "claude.Read":
+      return { view: "read", input: pick(input, { filePath: "file_path", offset: "offset", limit: "limit" }) }
+    case "claude.Write":
+      return { view: "write", input: pick(input, { filePath: "file_path", content: "content" }) }
+    case "claude.Edit":
+      return {
+        view: "edit",
+        input: pick(input, {
+          filePath: "file_path",
+          oldString: "old_string",
+          newString: "new_string",
+          replaceAll: "replace_all",
+        }),
+      }
+    case "claude.Glob":
+    case "claude.Grep":
+      return { view: "search", input: pick(input, { pattern: "pattern", path: "path", include: "glob" }) }
     case "codex.command":
       return { view: "shell", input }
     case "codex.file_change":
