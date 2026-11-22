@@ -1,7 +1,7 @@
 // A note from the office in the transcript, such as a command of the employee's that ended: one line, `↳` and the
 // note's first line, as the upstream TUI shows a background command's end; a click opens the whole note under it and
 // closes it again.
-import { type Message, OFFICE } from "@opencorp/protocol"
+import type { Message } from "@opencorp/protocol"
 import type { CapturedLine } from "@opentui/core"
 import { expect, test } from "bun:test"
 import { DEFAULT_THEME, DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
@@ -22,9 +22,16 @@ const NOTE = [
   "[You haven't read its output before these lines: call terminal_read on shell 1 from 120.]",
 ].join("\n")
 
-/** A message of session `sid`: from the owner, the employee, or the office. */
-function message(sid: string, id: string, role: "user" | "assistant", text: string, author: string | null = null): Message {
-  return { id, session_id: sid, role, author, created_at: AT, parts: [{ id: `${id}:0`, type: "text", text }] }
+/** A message of session `sid`: from the owner, the employee, or, with `instrument`, the shell it is about. */
+function message(
+  sid: string,
+  id: string,
+  role: "user" | "assistant",
+  text: string,
+  author: string | null = null,
+  instrument: Message["instrument"] = null,
+): Message {
+  return { id, session_id: sid, role, author, instrument, created_at: AT, parts: [{ id: `${id}:0`, type: "text", text }] }
 }
 
 /** Boots session 0 with the owner's message, the employee's reply, the office's note and the employee's next reply,
@@ -35,7 +42,7 @@ async function boot(width = 100) {
   office.state.messages[s.id] = [
     message(s.id, "M1", "user", "run the tests", "ngocbh"),
     message(s.id, "M2", "assistant", "Started them; I'll wait."),
-    message(s.id, "M3", "user", NOTE, OFFICE),
+    message(s.id, "M3", "user", NOTE, null, { id: "01JA1X0000000000000000000A", name: "shell 1" }),
     message(s.id, "M4", "assistant", "The tests failed in app.test.ts."),
   ]
   const app = await bootFrame(createStub(office), { sessionID: s.id }, { width, height: 30 })
@@ -63,7 +70,7 @@ test("a note shows as one line in the info colour, and a click opens the whole n
     // One line: the rest of the note stays closed, and no person's box or name is drawn for it.
     expect(f).not.toContain("It ran for 4m12s")
     expect(f).not.toContain("FAIL src/app.test.ts")
-    expect(f).not.toContain("@office")
+    expect(f).not.toContain("┃  shell 1")
     expect(fg(app.setup.captureSpans().lines, HEADING)).toEqual(theme.info)
     const line = at(f, HEADING)
     await app.setup.mockMouse.click(line.x + 2, line.y)

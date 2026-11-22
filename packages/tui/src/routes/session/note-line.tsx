@@ -5,7 +5,7 @@ import { useTheme } from "../../context/theme"
 import { display } from "../../util/printable"
 
 /**
- * A note from the office to the employee about their own work, such as a command of theirs that ended: one line in
+ * An instrument's note to the employee about their own work, such as a command of theirs that ended: one line in
  * the info colour, `↳` and the note's first line, cut to the screen's width, as the upstream TUI shows a background
  * command's end. A click opens the rest of the note under it, and closes it again.
  */

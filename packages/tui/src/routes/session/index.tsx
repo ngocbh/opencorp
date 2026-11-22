@@ -19,7 +19,7 @@ import {
   type ErrorPart,
   type FilePart,
   type Instrument,
-  isOfficeNote,
+  isInstrumentNote,
   type Message,
   type TextPart,
   type ToolPart,
@@ -798,7 +798,7 @@ export function Session() {
       category: "Session",
       hidden: true,
       run: () => {
-        const message = messages().findLast((m) => m.role === "user" && !isOfficeNote(m) && hasText(m))
+        const message = messages().findLast((m) => m.role === "user" && !isInstrumentNote(m) && hasText(m))
         const child = message && scroll.getChildren().find((child) => child.id === message.id)
         if (child) scroll.scrollBy(child.y - scroll.y - 1)
       },
@@ -1086,7 +1086,7 @@ export function Session() {
                     <For each={shown()}>
                       {(message, index) => (
                         <Switch>
-                          <Match when={isOfficeNote(message)}>
+                          <Match when={isInstrumentNote(message)}>
                             <NoteLine message={message} index={index()} />
                           </Match>
                           <Match when={message.role === "user"}>

@@ -235,11 +235,13 @@ export const INTERRUPTED_CALL = "interrupted; outcome unknown"
  *  reply, or queued for a later turn. */
 export type MessageReply = "turn" | "answer" | "steer" | "queued"
 
-/** A note from the office about the agent's own work, as `note` takes it: its text, the key its send carries, and the
- *  key of the note the terminal's record owes (`owed`, cleared once the run has it), if any. */
+/** An instrument's note about the agent's own work, as `note` takes it: its text, the key its send carries, the
+ *  instrument it is signed by (`author`, the shell's name as the chat lists it), and the key of the note the terminal's
+ *  record owes (`owed`, cleared once the run has it), if any. */
 interface Note {
   readonly text: string
   readonly key: string
+  readonly author: string
   readonly owed: string | null
 }
 
@@ -1033,16 +1035,17 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * A note from the office about the agent's own work, `text` (a command it was told runs on has ended), sent to the
-   * run's inbox as a message whose author is `office`, under `key`, so a retry or a replay never sends it twice. It is
+   * A note about the agent's own work, `text` (a command it was told runs on has ended), sent to the run's inbox as a
+   * message signed by the shell it is about (`author`, `shell 1`), under `key`, so a retry or a replay never sends it
+   * twice; yian labels the author, and only the office sends under a key, which marks it as the shell's. It is
    * never an answer to the model's open question. A running reply reads it as a steer, a run at rest takes it as a new
    * turn, and over the cost cap it waits for a raise, as a message does; it opens no cap item. After Esc it waits for
    * the next person's message. Notes that come together go to the run in one job, so one turn reads them all. Dropped
    * once the session is ending, finished or closed: there is no one left to tell.
    */
-  note(text: string, key: string): void {
+  note(text: string, key: string, author: string): void {
     if (this.#closed || this.#finished) return
-    this.#notes.push({ text, key, owed: key })
+    this.#notes.push({ text, key, author, owed: key })
     if (this.#notesDue) return
     this.#notesDue = true
     // A turn of the event loop later, so the notes of commands that end together go in one job.
@@ -1065,14 +1068,14 @@ export class SessionActor implements LiveCalls {
     await this.#giveNotes(session, notes)
   }
 
-  /** Gives each of `notes` to the run as a `send` from `office` with its key, as `#give` gives a message; with `spawn`,
-   *  a worker starts for them when none runs. Without, the delivery after them starts it. */
+  /** Gives each of `notes` to the run as a `send` signed by its shell, with its key, as `#give` gives a message; with
+   *  `spawn`, a worker starts for them when none runs. Without, the delivery after them starts it. */
   async #giveNotes(session: SessionRecord, notes: readonly Note[], { spawn = true } = {}): Promise<void> {
     if (notes.length === 0) return
     const { inbox } = (await this.#specOf(session)).chat
     let due = false
     for (const note of notes) {
-      const event = { role: "user", parts: [{ type: "text", text: note.text }], author: OFFICE }
+      const event = { role: "user", parts: [{ type: "text", text: note.text }], author: note.author }
       const delivery: Delivery = { id: newId(), op: "send", inbox, event, key: note.key }
       this.#notesUnread = true
       due = (await this.#give(new Pending(delivery, undefined, { note }))) || due
@@ -1110,19 +1113,21 @@ export class SessionActor implements LiveCalls {
       if (this.#rehomed.has(`${runId}:${seq}`)) continue
       this.#rehomed.add(`${runId}:${seq}`)
       this.#publishRemoved(messageId(runId, seq))
-      const key = `withdrawn:${runId}:${seq}`
-      if (message.author !== OFFICE) {
-        back.push(new Pending({ id: newId(), op: "send", inbox, event: message, key }))
+      // A note was sent under its shell's key: it goes back under that key too, so it stays the shell's.
+      const owed = sentAs === null ? null : (/^terminal:[^:/]+:\d+/.exec(sentAs)?.[0] ?? null)
+      if (owed === null) {
+        back.push(new Pending({ id: newId(), op: "send", inbox, event: message, key: `withdrawn:${runId}:${seq}` }))
         continue
       }
       const text = message.parts.findLast((part) => part.type === "text") as { text: string } | undefined
       if (text === undefined) continue
-      const note: Note = { text: text.text, key, owed: sentAs?.startsWith("terminal:") ? sentAs : null }
+      const author = message.author || "shell"
+      const note: Note = { text: text.text, key: `${owed}:withdrawn:${runId}:${seq}`, author, owed }
       if (this.#hushed) {
         this.#heldNotes.push(note)
       } else {
-        const event = { role: "user", parts: [{ type: "text", text: note.text }], author: OFFICE }
-        back.push(new Pending({ id: newId(), op: "send", inbox, event, key }, undefined, { note }))
+        const event = { role: "user", parts: [{ type: "text", text: note.text }], author }
+        back.push(new Pending({ id: newId(), op: "send", inbox, event, key: note.key }, undefined, { note }))
       }
     }
     this.#next.unshift(...back)
@@ -2633,7 +2638,7 @@ export class SessionActor implements LiveCalls {
       if (p.questionId !== null) this.#consume(p.questionId)
       // The stored status is busy, and a message shown, before the caller hears back.
       this.#trySettle("after a reply")
-      if (op === "send") this.#publishMessage(run.runId, reply.seq as number, p.delivery.event)
+      if (op === "send") this.#publishMessage(run.runId, reply.seq as number, p.delivery.event, p.delivery.key)
       if (op === "withdraw") this.#post("withdrawn", () => this.#withdrawn(run.runId))
       if (p.note !== null) this.#delivered(p.note)
       p.resolve(p.acked)
@@ -2701,8 +2706,8 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  #publishMessage(runId: string, seq: number, sent: unknown): void {
-    const message = userMessage(this.sessionId, runId, { seq, at: now(), message: sent as RunMessage })
+  #publishMessage(runId: string, seq: number, sent: unknown, key: string | undefined): void {
+    const message = userMessage(this.sessionId, runId, { seq, at: now(), message: sent as RunMessage, key })
     try {
       this.#ctx.bus.publishLive({ type: "message.updated", session_id: this.sessionId, data: message })
     } catch (error) {
@@ -3463,7 +3468,7 @@ export class SessionActor implements LiveCalls {
     if (this.#spec === null) {
       const spec = await this.#ctx.spec(session)
       this.#spec = spec
-      spec.terminal?.onEnded((ended) => this.note(ended.text, ended.key))
+      spec.terminal?.onEnded((ended) => this.note(ended.text, ended.key, ended.shell))
       const due = this.#reconcileDue
       this.#reconcileDue = null
       if (due !== null && due === this.#runId && !this.#finished && !this.#closed) {

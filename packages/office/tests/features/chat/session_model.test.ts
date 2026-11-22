@@ -1001,7 +1001,7 @@ test("on a subscription over the cap, a note is held and no model call starts", 
   first.handlers.result(first.worker, waitingResult(actor.runId!))
   first.handlers.exited(first.worker, 0)
   await waitFor(() => !actor.hasWorker && session(o, sid).capped, { what: "the session capped at rest" })
-  actor.note("shell 1: `make` ended, exit 0", "terminal:sh:1")
+  actor.note("shell 1: `make` ended, exit 0", "terminal:sh:1", "shell 1")
   await waitFor(() => workers.length === 2, { what: "the note's job" })
   // It only delivers: no model call may start over the cap.
   expect(workers[1]!.job).toMatchObject({ kind: "advance", advance: false })

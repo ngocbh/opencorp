@@ -1,12 +1,12 @@
 /** The notes of commands that ended: a command the agent was told runs on tells the session when it ends, as a message
- *  from `office`. A running reply reads it as a steer, a run at rest takes it as a new turn, notes that end together
+ *  signed by its shell. A running reply reads it as a steer, a run at rest takes it as a new turn, notes that end together
  *  share one model call, Esc holds them for the next person's message, the cost cap holds them for a raise, a note is
  *  never sent twice and never answers the model's question, and nothing is left once the chat ends. */
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { stringify } from "yaml"
-import { OFFICE } from "@opencorp/protocol"
+import { isInstrumentNote } from "@opencorp/protocol"
 import type { SessionActor } from "../../../src/features/chat/session_actor.ts"
 import type { WorkerHandlers } from "../../../src/runtime/worker/rpc.ts"
 import type { Worker } from "../../../src/runtime/worker/spawn.ts"
@@ -62,20 +62,20 @@ async function notesOffice(fake: Awaited<ReturnType<typeof fakeLlm>>, connection
   return { o, end }
 }
 
-/** The notes session `sid`'s transcript shows: its user messages from `office`, by their text. */
+/** The notes session `sid`'s transcript shows: its user messages the office marks as an instrument's, by their text. */
 function notes(o: ChatOffice, sid: string): string[] {
   return o.transcript
     .messages(sid, session(o, sid).run_ids)
-    .filter((message) => message.role === "user" && message.author === OFFICE)
+    .filter((message) => isInstrumentNote(message))
     .flatMap((message) => message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])))
 }
 
-/** The log lines of the run `runId` of `o` that commit a message from `office` to an inbox: its notes. */
+/** The log lines of the run `runId` of `o` that commit a note to an inbox: a send under a terminal's key. */
 function loggedNotes(o: ChatOffice, runId: string): string[] {
   return fs
     .readFileSync(path.join(o.office.paths.runs, runId, "log.jsonl"), "utf8")
     .split("\n")
-    .filter((line) => line.includes('"kind":"pool_commit"') && line.includes(`"author":"${OFFICE}"`))
+    .filter((line) => line.includes('"kind":"pool_commit"') && line.includes('"send_key":"terminal:'))
 }
 
 /** Whether the model's request `n` (from 1) holds `text`. */
@@ -112,8 +112,8 @@ test("a command that ends while the agent's reply runs reaches it as a steer bef
   const [note] = notes(o, sid)
   expect(note!.split("\n")[0]).toBe(heading("shell 1", "make all", 0))
   expect(note).toContain("built")
-  const shown = o.transcript.messages(sid, session(o, sid).run_ids).map((m) => `${m.role}:${m.author ?? ""}`)
-  expect(shown.slice(-3)).toEqual(["assistant:", `user:${OFFICE}`, "assistant:"])
+  const shown = o.transcript.messages(sid, session(o, sid).run_ids).map((m) => `${m.role}:${m.instrument?.name ?? ""}`)
+  expect(shown.slice(-3)).toEqual(["assistant:", "user:shell 1", "assistant:"])
   expect(session(o, sid).turns).toBe(1)
 })
 
@@ -125,12 +125,14 @@ test("a command that ends while the agent rests starts a new turn with its note"
   end("make all", 2, "error: no rule\n")
   await waitFor(() => texts(o, sid).includes("It failed.") && status(o, sid) === "idle", { what: "the woken reply" })
   expect(fake.requests()).toHaveLength(3)
-  // The model reads it labelled as the office's.
-  expect(asked(fake, 3, `author="${OFFICE}"`)).toBe(true)
+  // The model reads it signed by its shell, never by the office.
+  expect(asked(fake, 3, 'author="shell 1"')).toBe(true)
+  expect(asked(fake, 3, 'author="office"')).toBe(false)
   expect(notes(o, sid).map((note) => note.split("\n")[0])).toEqual([heading("shell 1", "make all", 2)])
-  // The protocol carries it as a user message whose author is the office.
-  const message = o.transcript.messages(sid, session(o, sid).run_ids).find((m) => m.author === OFFICE)
-  expect(message).toMatchObject({ role: "user", author: OFFICE, parts: [{ type: "text" }] })
+  // The protocol carries it as a user message the office marks as its shell's.
+  const message = o.transcript.messages(sid, session(o, sid).run_ids).find((m) => isInstrumentNote(m))
+  const [shell] = o.office.instruments.list(sid)
+  expect(message).toMatchObject({ role: "user", author: null, instrument: { id: shell!.id, name: "shell 1" } })
 })
 
 test("two commands that end together send two notes, which one model call reads", async () => {
@@ -216,8 +218,8 @@ test("a note sent again, or a run resumed after a crash, never doubles it", asyn
   // The same note again, under its key, as a host sending it twice would: the run already has it.
   const [note] = notes(o, sid)
   const [shellId] = fs.readdirSync(path.join(o.office.paths.sessionDir(sid), "terminal"))
-  actor.note(note!, `terminal:${shellId}:1`)
-  actor.note(note!, `terminal:${shellId}:1`)
+  actor.note(note!, `terminal:${shellId}:1`, "shell 1")
+  actor.note(note!, `terminal:${shellId}:1`, "shell 1")
   await Bun.sleep(300)
   // The worker dies in the woken turn's model call: the run resumes, and reads its note once.
   o.registry.get(sid)!.kill()

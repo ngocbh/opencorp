@@ -71,8 +71,8 @@ export function auditInterrupted(
 
 /** The notes a restart may have cost the session at `folder`: one (`restoredNote`) for each command of its terminal's
  *  records whose note the agent is still owed, oldest shell first, under that note's key, so a note the run already
- *  has is never sent twice. A record that can't be read gives none. */
-export function restoreNotes(folder: string): { text: string; key: string }[] {
+ *  has is never sent twice, and signed by its shell's name. A record that can't be read gives none. */
+export function restoreNotes(folder: string): { text: string; key: string; author: string }[] {
   const dir = path.join(folder, "terminal")
   let names: string[]
   try {
@@ -92,7 +92,9 @@ export function restoreNotes(folder: string): { text: string; key: string }[] {
   files.sort((a, b) => a.started.localeCompare(b.started))
   return files.flatMap((file) =>
     file.commands.flatMap((command) =>
-      command.told === undefined ? [] : [{ text: restoredNote(file.name, command), key: command.told }],
+      command.told === undefined
+        ? []
+        : [{ text: restoredNote(file.name, command), key: command.told, author: file.name }],
     ),
   )
 }
