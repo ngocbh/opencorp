@@ -81,9 +81,11 @@ the listed folders.
 back to Codex. In your employee's Codex threads your MCP servers, hooks, `notify`, apps and plugins are off, and so
 is web search when the network is off, and your `~/.codex/config.toml` is left as it is.
 
-**Claude Code** asks you nothing either: what its permission doesn't allow is refused. Neither your Claude Code
-settings nor the project's load: your hooks, plugins, MCP servers, skills, permission rules and default model don't
-apply there, and auto memory is off. Only a `/login` sign-in reaches it: an API key in your shell or your
+**Claude Code** asks you nothing either: what its permission doesn't allow is refused. Its only tools are its file
+tools, Bash, TaskStop and ToolSearch: none that acts on your claude.ai account (routines, Claude Design, push
+notifications), reaches outside its sandbox or runs on after the turn. A Claude Code that offers more is stopped before
+it uses them. Neither your Claude Code settings nor the project's load: your hooks, plugins, MCP servers, skills,
+permission rules and default model don't apply there, and auto memory is off. Only a `/login` sign-in reaches it: an API key in your shell or your
 settings doesn't. OpenCorp passes it your `~/.claude/CLAUDE.md` and the project's `CLAUDE.md` (at the folder and at
 its repository's root, or its `AGENTS.md` when there's none) as text; an `@` import in them isn't followed. It
 doesn't take messages from your other Claude Code sessions, and can't message or list them. Claude Code doesn't hold

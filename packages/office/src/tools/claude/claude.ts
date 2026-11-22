@@ -8,8 +8,9 @@
  *  it would otherwise run as the owner outside that sandbox is off: no settings file loads (`--setting-sources=`, so
  *  no hooks, plugins, MCP servers, skills or CLAUDE.md from the owner's or the project's settings), no MCP server but
  *  the ones the command line names (`--strict-mcp-config`, and it names none), no plugin directory, and hooks off in
- *  the flag settings. It asks nothing (`--permission-mode=acceptEdits` with the sandbox's auto-allow, and
- *  `--permission-prompts=none`): what would ask is refused, and so is any request it sends the office. */
+ *  the flag settings. Only the tools the office allows are on (`--tools`, `CLAUDE_TOOLS`). It asks nothing
+ *  (`--permission-mode=acceptEdits` with the sandbox's auto-allow, and `--permission-prompts=none`): what would ask
+ *  is refused, and so is any request it sends the office. */
 import { type ChildProcess, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import fs from "node:fs"
@@ -24,6 +25,22 @@ import { type Msg, StreamJson, isObj, nameOf } from "./stream.ts"
  *  running unsandboxed, and 2.1.325 fixed a Linux `bwrap: Can't create file` failure when the working folder lies
  *  under an `allowRead` inside a `denyRead`, as an employee's permission lays it out. */
 export const CLAUDE_FLOOR = "2.1.325"
+
+/** The only tools Claude Code has in an employee's session (`--tools`): its file tools, Bash, and TaskStop and
+ *  ToolSearch, which act on nothing outside it. The rest are off: they act on the owner's claude.ai account
+ *  (RemoteTrigger, DesignSync, PushNotification, and the skills that drive them), reach outside the sandbox (Monitor's
+ *  WebSocket), or keep running after the turn (Task, Workflow, the Cron tools, ScheduleWakeup). */
+export const CLAUDE_TOOLS = [
+  "Bash",
+  "Read",
+  "Edit",
+  "Write",
+  "NotebookEdit",
+  "Glob",
+  "Grep",
+  "TaskStop",
+  "ToolSearch",
+] as const
 
 /** How the office talks to Claude Code: stream-json both ways, every message written out. */
 export const STREAM_ARGS = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"] as const
@@ -137,6 +154,7 @@ export function claudeArgs(
     "--strict-mcp-config",
     "--permission-mode=acceptEdits",
     "--permission-prompts=none",
+    `--tools=${CLAUDE_TOOLS.join(",")}`,
     "--settings",
     JSON.stringify(start.settings),
     ...start.addDirs.map((dir) => `--add-dir=${dir}`),
@@ -170,6 +188,14 @@ export function claudeSession(
   const instructions = text === null ? null : writeInstructions(start.env.TMPDIR!, "opencorp", text)
   const args = claudeArgs(start, { ...rest, ...(instructions === null ? {} : { instructions }) })
   return { command: [claude, ...args], env: start.env, instructions }
+}
+
+/** The tools a turn's `system`/`init` line lists beyond `CLAUDE_TOOLS`, MCP tools among them; a list that isn't
+ *  one counts as one such tool, since what it holds can't be checked. Empty when the session has only those. */
+export function toolsBeyond(init: Msg): string[] {
+  if (!Array.isArray(init.tools)) return ["(its tools, which it didn't list)"]
+  const allowed = new Set<unknown>(CLAUDE_TOOLS)
+  return init.tools.filter((tool) => !allowed.has(tool)).map((tool) => String(tool).slice(0, 100))
 }
 
 /** Whether `initialize`'s `account` (Claude Code's `AccountInfo`) has a sign-in: a token from a login, or an API

@@ -311,3 +311,21 @@ test("an end while Claude Code resumes for a message stops that start and ends t
   expect(await sending).toMatchObject({ status: 409 })
   expect(wrote(h, "Never.")).toBe(false)
 })
+
+test("a Claude Code whose first turn lists a tool outside the office's allowlist is stopped before it acts, and the session fails saying why", async () => {
+  const h = makeClaude()
+  // The model's first call takes a moment, as a real one does: the stop comes before it.
+  h.fake.set({ tools_added: ["RemoteTrigger"], turns: [[{ sleep: 2 }, { tool: "Bash", input: { command: "touch acted" } }]] })
+  const { heard, id } = await started(h)
+  const [leader] = leaders(h)
+  await h.sessions.prompt(id, "Go.", { by: "minh" }).catch(() => {})
+  await waitFor(() => status(h, id) === "failed", { what: "the session to fail" })
+  expect(processOf(leader!).gone()).toBe(true)
+  expect(fs.existsSync(path.join(h.workspace, "acted"))).toBe(false)
+  expect(heard.states.at(-1)).toBe("failed")
+  const errors = heard.events.flatMap((e) =>
+    e.type === "message" ? e.message.parts.flatMap((p) => (p.type === "error" ? [p.message] : [])) : [],
+  )
+  expect(errors.at(-1)).toContain("RemoteTrigger")
+  expect(errors.at(-1)).toContain("act on your account or outside your employee's permission")
+})

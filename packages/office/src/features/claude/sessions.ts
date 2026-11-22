@@ -44,6 +44,7 @@ import {
   ClaudeStartError,
   claudeSession,
   nativeClaude,
+  toolsBeyond,
 } from "../../tools/claude/claude.ts"
 import { markClaudeInterrupted } from "../../tools/claude/instrument.ts"
 import { type Msg, nameOf } from "../../tools/claude/stream.ts"
@@ -643,9 +644,14 @@ export class ClaudeSession {
     return new HarnessError(409, "not_live", `Claude Code session ${this.sessionId} has ended`)
   }
 
-  /** Each line `proc` writes: how each message fares, then the line as transcript events. */
+  /** Each line `proc` writes: how each message fares, then the line as transcript events. A turn whose tools reach
+   *  beyond the office's allowlist stops the session before Claude Code acts. */
   line(proc: ClaudeProcess, msg: Msg): void {
     if (proc !== this.proc || this.#finished) return
+    if (msg.type === "system" && msg.subtype === "init") {
+      const beyond = toolsBeyond(msg)
+      if (beyond.length > 0) return void this.#beyond(beyond)
+    }
     if (msg.type === "command_lifecycle") {
       this.#lifecycle = true
       if ((msg.state === "completed" || msg.state === "cancelled") && typeof msg.command_uuid === "string") {
@@ -661,6 +667,23 @@ export class ClaudeSession {
     }
     this.translator.line(msg)
     this.#update()
+  }
+
+  /** Claude Code started a turn with tools beyond the allowlist (`--tools` didn't hold, as a newer Claude Code's may
+   *  not): it is stopped at once, before its first model call answers, and the session fails saying why. */
+  async #beyond(tools: string[]): Promise<void> {
+    if (this.#finished) return
+    const named = tools.join(", ")
+    this.#owner.log(`claude session ${this.sessionId}: Claude Code offered tools beyond the allowlist: ${named}`)
+    // Before anything else: the stop comes first.
+    void this.proc?.kill()
+    this.translator.abort()
+    this.translator.error(
+      `Claude Code started with tools OpenCorp doesn't allow (${named}): they act on your account or outside your ` +
+        "employee's permission, so the session stopped before Claude Code used them. This Claude Code may be newer " +
+        "than OpenCorp knows; update OpenCorp, or use Codex.",
+    )
+    await this.finish("failed")
   }
 
   /** `proc` exited. Its own exit (a crash) has its group killed, marks the turn interrupted and says the next

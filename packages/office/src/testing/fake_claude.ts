@@ -30,8 +30,9 @@
  *    account, `{tokenSource: "none", apiProvider: "firstParty"}` when the script is `signed_out`. Hooks aren't
  *    modelled: no recording of 2.1.330 holds them, and the office registers none.
  *  - **Its tools.** `system`/`init` lists them as recorded: `--tools`' names (`""` none, `default` the default set),
- *    else the default set (`Task` first, then the rest by name), less each tool a bare deny rule names. A tool step for
- *    a tool not listed gets the recorded `No such tool available` error.
+ *    else the default set (`Task` first, then the rest by name), less each tool a bare deny rule names, plus the
+ *    script's `tools_added` (as a Claude Code that adds tools of its own would). A tool step for a tool not listed gets
+ *    the recorded `No such tool available` error.
  *  - **A turn.** A `user` line, when no turn runs, starts one: the line's
  *    `command_lifecycle` queued and started (a line with no `uuid` gets none), `system`/`init`, the script's next turn
  *    of steps, then `completed` for the lines that joined, the `result`, and `completed` for the first line. A
@@ -126,6 +127,8 @@ export interface FakeClaudeScript {
   models?: Obj[]
   /** The sandbox can't start here: settings that enable it with `failIfUnavailable` stop the start. */
   sandbox_unavailable?: boolean
+  /** Tools `system`/`init` lists whatever `--tools` and the deny rules say. */
+  tools_added?: string[]
   /** Seconds `initialize` waits before its answer, as a Claude Code slow to start. */
   slow_start?: number
   /** Seconds the run stays open after stdin ends, as background work keeps Claude Code open. */
@@ -864,7 +867,7 @@ class Fake {
     const named = flags.tools
     const base =
       named === undefined || named === "default" ? DEFAULT_TOOLS : splitRules(String(named)).filter((t) => t !== "")
-    const listed = new Set([...base.filter((t) => !policy.removes(t))])
+    const listed = new Set([...base.filter((t) => !policy.removes(t)), ...(script.tools_added ?? [])])
     this.tools = [...listed].sort((a, b) => (a === "Task" ? -1 : b === "Task" ? 1 : a < b ? -1 : a > b ? 1 : 0))
   }
 

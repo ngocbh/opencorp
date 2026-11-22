@@ -243,7 +243,7 @@ test("a turn writes the message's lifecycle, init, the scripted text and a succe
 })
 
 test("init lists the default tools, or --tools' names, less those a bare deny rule names, as 2.1.330 did", async () => {
-  const { fake, work } = fakeClaude({ turns: [[{ say: "a" }], [{ say: "b" }]] })
+  const { fake, work } = fakeClaude({ turns: [[{ say: "a" }], [{ say: "b" }], [{ say: "c" }]] })
   const tools = async (args: string[]) => {
     const claude = new Claude(fake, args, work)
     claude.send(user("Hi."))
@@ -258,6 +258,8 @@ test("init lists the default tools, or --tools' names, less those a bare deny ru
   ])
   const deny = JSON.stringify({ permissions: { deny: ["Edit", "Write", "Read(/secret)"] } })
   expect(await tools(["--tools=Bash,Read,Edit,Write,Glob", "--settings", deny])).toEqual(["Bash", "Glob", "Read"])
+  fake.set({ tools_added: ["RemoteTrigger"], turns: [[{ say: "d" }]] })
+  expect(await tools(["--tools=Bash"])).toEqual(["Bash", "RemoteTrigger"])
 })
 
 test("a tool the session doesn't list gets the recorded no-such-tool error, and a hook isn't modelled", async () => {
