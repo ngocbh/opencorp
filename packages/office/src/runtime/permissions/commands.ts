@@ -7,7 +7,8 @@
  * covered: by an allow rule; by a form it knows to be read-only (`auto`, `default`, `dontAsk`); by a plain push of a
  * feature branch (`auto`, `dontAsk`); or, inside the workspace sandbox, by a file operation on paths inside the
  * workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it: inside
- * substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too.
+ * substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. Where it can't see, it marks the
+ * line unreadable, and while a deny rule is in force such a line asks in every mode and Auto's check never judges it.
  * The reader asks, in every mode, before a command that names a credential path anywhere in the line (an operand,
  * an option's value, an assignment, a `for` list, a here-string or a redirect), one the host marks
  * (`Where.credentials`), or a folder that holds them. On the SSH-only profile and over ssh, where credentials are

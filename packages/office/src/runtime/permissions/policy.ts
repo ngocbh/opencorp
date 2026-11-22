@@ -7,9 +7,13 @@
  * part of it is covered: by an allow rule; by a form it knows to be read-only (`auto`, `default`, `dontAsk`); by a
  * plain push of a feature branch (`auto`, `dontAsk`); or, inside the workspace sandbox, by a file operation on
  * paths inside the workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it:
- * inside substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. The reader reads no line
- * over 1000 bytes: a typed one is refused, and a command asks in every mode (`dontAsk` refuses it), as too long to
- * check; no rule covers it and Auto's check never judges it, since no deny rule could see into it.
+ * inside substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. Where it can't see, while
+ * any deny rule of the action's kind is in force (the company's `rules.yaml` or the agent's), a line it can't fully
+ * read (a substitution, `eval`, `sh -c` of a variable, a here-document, an unclosed quote, a keyword, or anything else
+ * it marks unreadable) asks in every mode and `dontAsk` refuses it, saying so; Auto's check never judges it, since a
+ * denied command could hide there. With no deny rule in force, such a line is decided as any uncovered one is. The
+ * reader reads no line over 1000 bytes: a typed one is refused, and a command asks in every mode (`dontAsk` refuses
+ * it), as too long to check, deny rules or not; no rule covers it and Auto's check never judges it.
  * The reader asks, in every mode, before a command that names a credential path anywhere in the line (an operand,
  * an option's value, an assignment, a `for` list, a here-string or a redirect), one the host marks
  * (`Where.credentials`), or a folder that holds them. Where credentials are reachable (the SSH-only profile, a
@@ -108,6 +112,8 @@ const DONT_ASK = "this session doesn't ask (dontAsk mode): "
 const MAX_LINE_BYTES = 1000
 /** Why a command past `MAX_LINE_BYTES` asks: nothing checked it, so the owner must read it whole. */
 const TOO_LONG = `it is too long to check (over ${MAX_LINE_BYTES} bytes): read all of it before you say Yes`
+/** Why a line the reader can't read asks while a deny rule of its kind is in force, before why it can't read it. */
+const UNCHECKED = "deny rules are in force and it can't be read to check them: "
 /** A prompt's short answer: a menu choice, yes or no, quit, or Enter alone. */
 const PROMPT_ANSWER = /^(\d{1,6}|y|n|yes|no|q|)$/
 /** Programs whose second word names what they do; a suggested rule keeps it. */
@@ -186,6 +192,8 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
   if (path) return held(path)
   const asked = first("ask")
   if (asked) return held(`an ask rule: ${asked.pattern}`)
+  // A deny rule can't be matched against the commands the reader couldn't see, so no check may judge such a line.
+  if (read.unreadable !== null && own.some((r) => r.effect === "deny")) return held(UNCHECKED + read.unreadable)
 
   const allows = own.filter((r) => r.effect === "allow")
   const moves = parts.some((p) => MOVES.has(programOf(p)[0] ?? ""))

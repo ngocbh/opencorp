@@ -338,6 +338,72 @@ test("a command over 1000 bytes asks in every mode, too long to check, and dontA
   }
 })
 
+/** Permissions in `mode` whose only rule denies `rm *`, with a check that says run and records each call. */
+function denying(mode: Mode) {
+  const book = new RuleBook()
+  book.add(deny("rm *"))
+  return holding(mode, { book, check: async () => ({ verdict: "run", reason: "fine" }) })
+}
+
+test("with a deny rule in force, a line the reader can't read asks in every mode and dontAsk refuses it; Auto's check never judges it", async () => {
+  // A deny rule can't be matched against commands the reader can't see, so a line that may hide one must not reach a
+  // check that could say run.
+  const lines = [
+    "$(printf rm) -rf x", "`printf rm` -rf x", 'sh -c "$CMD"', 'eval "$CMD"', "$X -rf x", "echo 'rm -rf x",
+    'echo "rm -rf x', "cat <<EOF\nhi\nEOF", 'bash <<< "$CMD"', 'ssh h "$(printf rm) -rf x"', "echo ${!x}",
+    "if true; then $X; fi", "{ $X; }", "echo $((x))", "alias ls=rm", "echo \x01",
+  ]
+  for (const text of lines) {
+    const unreadable = readCommand(text).unreadable
+    expect([text, unreadable]).not.toEqual([text, null])
+    const why = `deny rules are in force and it can't be read to check them: ${unreadable}`
+    for (const mode of ["auto", "default", "ask"] as const)
+      table(mode, [[cmd(text), [deny("rm *"), allow("*")], W, { verdict: "ask", reason: why, rules: [] }]])
+    table("dontAsk", [[cmd(text), [deny("rm *")], W, { verdict: "deny", reason: DONT + why }]])
+    for (const mode of MODES) {
+      const { perms, held, checked } = denying(mode)
+      const gated = await gate(perms, cmd(text), call())
+      expect([text, mode, gated.run, checked]).toEqual([text, mode, false, []])
+      expect(held.map((h) => h.card.reason)).toEqual(mode === "dontAsk" ? [] : [why])
+      if (mode === "dontAsk") expect(gated).toEqual({ run: false, result: `Not run: ${DONT}${why}.` })
+    }
+  }
+  // What the reader does see in an unreadable line, a deny rule still refuses first.
+  for (const mode of MODES)
+    table(mode, [
+      [cmd('eval "r""m -rf x"'), [deny("rm *")], W, { verdict: "deny", reason: "a deny rule: rm *" }],
+      [cmd("echo $(rm -rf x)"), [deny("rm *")], W, { verdict: "deny", reason: "a deny rule: rm *" }],
+    ])
+  const { perms, checked } = denying("auto")
+  expect(await gate(perms, cmd('eval "r""m -rf x"'), call())).toEqual({ run: false, result: "Not run: a deny rule: rm *." })
+  expect(checked).toEqual([])
+})
+
+test("a typed line the reader can't read asks while an input deny rule is in force; a command deny rule doesn't apply to it", () => {
+  const why = "deny rules are in force and it can't be read to check them: it runs text as a command: eval"
+  for (const mode of ["auto", "default", "ask"] as const)
+    table(mode, [
+      [input('eval "$X"'), [deny("rm *", "input")], S, { verdict: "ask", reason: why, rules: [] }],
+      [input('eval "$X"', true), [deny("rm *", "input")], S, { verdict: "ask", reason: why, rules: [] }],
+    ])
+  table("dontAsk", [[input('eval "$X"'), [deny("rm *", "input")], S, { verdict: "deny", reason: DONT + why }]])
+  table("auto", [[input('eval "$X"'), [deny("rm *")], S, { verdict: "check", rules: [] }]])
+})
+
+test("with no deny rule in force, a line the reader can't read is decided as before", () => {
+  for (const rules of [[], [allow("echo *"), ask("make *")], [deny("rm *", "input")]]) {
+    table("auto", [
+      [cmd("$(printf rm) -rf x"), rules, W, { verdict: "check", rules: [] }],
+      [cmd('sh -c "$CMD"'), rules, W, { verdict: "check", rules: [] }],
+      [cmd("echo 'x"), rules, W, { verdict: "check", rules: [] }],
+    ])
+    table("dontAsk", [[cmd('eval "$CMD"'), rules, W, { verdict: "check", rules: [] }]])
+    table("default", [[cmd("echo $(id)"), rules, W,
+      { verdict: "ask", reason: "Default mode asks: it has a command substitution", rules: [] }]])
+    table("ask", [[cmd("echo $(id)"), rules, W, askMode([])]])
+  }
+})
+
 test("a deny rule refuses what sudo, doas, find -exec, trap, case and a program named by its path run", () => {
   const denied: Decision = { verdict: "deny", reason: "a deny rule: rm *" }
   for (const mode of MODES)
