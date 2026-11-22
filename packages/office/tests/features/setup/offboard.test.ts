@@ -16,12 +16,12 @@ import { CONFIRM, Declined, KEEP, launchers, OffboardError, offboard, REMOVE } f
 import { makeDevice, makeHome } from "../../../src/features/setup/onboard.ts"
 import { sameProcess } from "../../../src/util/proc.ts"
 import * as service from "../../../src/runtime/service/service.ts"
-import { selfSpawnEnv } from "../../../src/platform.ts"
 import { CHECKOUT } from "../../../src/util/checkout.ts"
 import { type Env, which } from "../../../src/util/env.ts"
-import { git, gitEnv } from "../../company/helpers.ts"
+import { git } from "../../company/helpers.ts"
 import { shortDir, tempDir } from "../../helpers.ts"
 import { daemonHost, killedAtEnd, makeHost, Runner, Script } from "./helpers.ts"
+import { ownerEnv } from "../../../src/testing/office.ts"
 
 /** An office's folders. */
 interface Paths {
@@ -79,7 +79,7 @@ function gitOnly(dir: string): Env {
   if (!fs.existsSync(path.join(bin, "git"))) {
     fs.symlinkSync(fs.realpathSync(which("git", process.env.PATH)!), path.join(bin, "git"))
   }
-  return { ...gitEnv(process.env), PATH: bin }
+  return { ...ownerEnv(tempDir()), PATH: bin }
 }
 
 test("offboard says what it will remove and no keeps everything", async () => {
@@ -279,7 +279,7 @@ test(
     const paths = await office(path.join(dir, "home"))
     // Python's `no_web_port`: HQ stays off its TCP port, which the owner's own office holds.
     fs.writeFileSync(path.join(paths.office, "hq.json"), '{"tcp": false}')
-    const environ = { ...gitEnv(selfSpawnEnv(process.env)), HOME: tempDir() }
+    const environ = ownerEnv(tempDir())
     const run = launch(paths.home, { environ, userHome: dir })
     const host = daemonHost(dir, spawned)
     try {
@@ -308,7 +308,7 @@ test(
     const dir = shortDir()
     const paths = await office(path.join(dir, "home"))
     fs.writeFileSync(path.join(paths.office, "hq.json"), '{"tcp": false}')
-    const environ = { ...gitEnv(selfSpawnEnv(process.env)), HOME: tempDir() }
+    const environ = ownerEnv(tempDir())
     const run = launch(paths.home, { environ, userHome: dir })
     const host = daemonHost(dir, spawned)
     await service.install(run, host, "background")

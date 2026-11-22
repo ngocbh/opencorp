@@ -290,6 +290,8 @@ export interface CompanyGitOptions {
   log?: (line: string) => void
   /** Monotonic ms for the pin window (default `performance.now`). */
   clock?: () => number
+  /** Where a private index is made for an export (default `os.tmpdir()`). */
+  tmpdir?: string
 }
 
 interface GitResult {
@@ -311,6 +313,7 @@ export class CompanyGit {
   readonly #env: Record<string, string>
   readonly #log: (line: string) => void
   readonly #clock: () => number
+  readonly #tmpdir: string | undefined
   /** When `pin` last handed out each sha's dir, by `#clock`. */
   readonly #lastPinned = new Map<string, number>()
   /** The shas whose pins `prune` is removing right now; `pin` takes the locked path for them. */
@@ -334,6 +337,7 @@ export class CompanyGit {
     this.#env = gitEnv(options.env ?? process.env)
     this.#log = options.log ?? noop
     this.#clock = options.clock ?? (() => performance.now())
+    this.#tmpdir = options.tmpdir
   }
 
   /**
@@ -993,7 +997,7 @@ export class CompanyGit {
   async exportTree(commit: string, dir: string, overlay: readonly string[] = []): Promise<void> {
     const sha = await this.resolve(commit)
     // A private index, so the clone's own index is never read or written.
-    const scratch = await fs.promises.mkdtemp(path.join(os.tmpdir(), "opencorp-index-"))
+    const scratch = await fs.promises.mkdtemp(path.join(this.#tmpdir ?? os.tmpdir(), "opencorp-index-"))
     try {
       const env = { GIT_INDEX_FILE: path.join(scratch, "index") }
       await this.#run(["read-tree", sha], { env })

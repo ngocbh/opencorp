@@ -31,11 +31,11 @@ import {
 import * as fallback from "../../../src/runtime/service/fallback.ts"
 import { launch } from "../../../src/runtime/service/launch.ts"
 import { OnboardError, TRIES, TtyPrompter } from "../../../src/features/setup/prompts.ts"
-import { selfSpawnEnv } from "../../../src/platform.ts"
 import { git, gitEnv } from "../../company/helpers.ts"
 import { request } from "../../server/helpers.ts"
 import { shortDir, tempDir } from "../../helpers.ts"
 import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, Script } from "./helpers.ts"
+import { ownerEnv } from "../../../src/testing/office.ts"
 
 // Most tests publish a company and clone it with git; under a busy machine's load that has taken over 5 s.
 setDefaultTimeout(30_000)
@@ -71,7 +71,7 @@ function base(dir: string): OnboardOptions {
   return {
     listers: NO_LISTING,
     checkModel: async () => null,
-    environ: gitEnv(process.env),
+    environ: ownerEnv(tempDir()),
     host: makeHost(dir, new Runner()),
     loginDefaults: () => ["Someone", "someone-unlisted"],
   }
@@ -208,10 +208,9 @@ async function onboardRunning(dir: string, home: string, more: Partial<OnboardOp
   return ask.seen
 }
 
-/** The caller's env without OPENCORP_HOME. */
+/** The caller's env without OPENCORP_HOME, on a temp home. */
 function noHomeEnv(): Record<string, string> {
-  const { OPENCORP_HOME: _, ...rest } = gitEnv(process.env)
-  return rest
+  return ownerEnv(tempDir())
 }
 
 test("--from on a home that has a company says it was ignored", async () => {
@@ -890,7 +889,7 @@ test(
     // Python's `no_web_port`: HQ stays off its TCP port, which the owner's own office holds.
     fs.mkdirSync(path.join(dir, "office"), { mode: 0o700 })
     fs.writeFileSync(path.join(dir, "office", "hq.json"), '{"tcp": false}')
-    const environ = { ...gitEnv(selfSpawnEnv(process.env)), HOME: tempDir() }
+    const environ = ownerEnv(tempDir())
     try {
       await onboard(dir, new Script(["lan", "openai", "2", "", ""]), {
         source,
@@ -916,7 +915,7 @@ test(
 test("a repo url with credentials is never shown", async () => {
   const dir = tempDir()
   // A proxy would take the connection that port 9 refuses.
-  const environ = Object.fromEntries(Object.entries(gitEnv(process.env)).filter(([name]) => !/_proxy$/i.test(name)))
+  const environ = ownerEnv(tempDir())
   const error = await rejection(
     onboard(path.join(dir, "home"), new Script(), {
       ...base(dir),

@@ -17,6 +17,7 @@ import { CodexSessions } from "../../features/codex/sessions.ts"
 import { ClaudeSessions } from "../../features/claude/sessions.ts"
 import { attach } from "../hq/core.ts"
 import { daemonArgs, daemonEnv, requireCompany, resolveHome, wantedHome } from "../../runtime/service/launch.ts"
+import type { Env } from "../../util/env.ts"
 import { args, isDaemonLine, startTime } from "../../util/proc.ts"
 import { type Tools, resolveTools, workspaceGuards } from "../../runtime/service/programs.ts"
 import { Monitor } from "../../runtime/permissions/monitor.ts"
@@ -324,8 +325,8 @@ function openStore<T>(file: string, step: () => T): T {
 }
 
 /** Opens the store and the company clone (run by `tools.git`), kills the processes an earlier office left, and
- *  assembles the office with its tools, its workspace guards, its worker registry (each worker's exit updates the
- *  run index; the one-reply model check runs over it), its run transcript and live relay (for the session actors;
+ *  assembles the office with its tools, its workspace guards, its worker registry (its workers start from `environ`,
+ *  the daemon's; each worker's exit updates the run index; the one-reply model check runs over it), its run transcript and live relay (for the session actors;
  *  the relay's viewers end on stop), its Codex sessions on the chat hooks, and the chat harness over the registry
  *  with a `Monitor`: the harness is the office's workers and its session harness, so the office's stop closes it
  *  first (the Codex sessions, then the workers). On start: the terminal records an earlier office left running marked
@@ -336,7 +337,7 @@ function openStore<T>(file: string, step: () => T): T {
  *  store can't be opened or read (`storeProblem`). */
 export function buildOffice(
   paths: OfficePaths,
-  { tools, guards, write }: { tools: Tools; guards: SandboxOfficePaths; write: Write },
+  { tools, guards, write, environ }: { tools: Tools; guards: SandboxOfficePaths; write: Write; environ: Env },
 ): Office {
   if (tools.git === undefined) throw new OfficeStartError(NO_GIT)
   const log = officeLogger(write)
@@ -351,7 +352,7 @@ export function buildOffice(
     const workers = new WorkerRegistry(store, {
       log: (level, line) => log(level, "opencorp.worker.spawn")(line),
       // The daemon's own environment, which its workers start from.
-      environ: process.env,
+      environ,
       // Neither rejects. An exit may free its session's pin.
       onExit: () => {
         void office.runIndex.update()
@@ -466,7 +467,12 @@ async function refuseLiveDaemon(paths: OfficePaths, pid: number | null, ps: stri
  */
 async function run(
   paths: OfficePaths,
-  { extensions, write, tools: given }: { extensions: readonly Extension[]; write: Write; tools?: Tools },
+  {
+    extensions,
+    write,
+    tools: given,
+    environ,
+  }: { extensions: readonly Extension[]; write: Write; tools?: Tools; environ: Env },
 ): Promise<void> {
   const log = officeLogger(write)
   // First, unlike design §2.3's order (office dir, lock, then this check), so a start on a home without a company
@@ -475,7 +481,7 @@ async function run(
   makeOfficeDir(paths.office)
   checkSocketPath(paths.socket)
   // `main` can run without `pinDaemon` (tests); after the pin this filter changes nothing.
-  const env = daemonEnv(process.env)
+  const env = daemonEnv(environ)
   const tools = given ?? resolveTools(env)
   const pidfile = new PidFile(paths.pidfile, paths.lock)
   // Before the pidfile is written and before buildOffice: its reap would kill a live office's workers, and its
@@ -490,7 +496,7 @@ async function run(
       // A tool's install folder is write-denied in every sandboxed call, so it must not take in the office's
       // worktrees, the sessions' tmpdirs or the temp folder the calls' canaries go in.
       const guards = workspaceGuards(tools, env, selfCommand(), [os.homedir(), paths.home, os.tmpdir()])
-      const office = buildOffice(paths, { tools, guards, write })
+      const office = buildOffice(paths, { tools, guards, write, environ })
       try {
         try {
           loadExtensions(office, extensions)
@@ -561,6 +567,9 @@ export interface MainOptions {
   write?: Write
   /** The programs the daemon runs, as the absolute paths found on the daemon's PATH (default `resolveTools`). */
   tools?: Tools
+  /** The daemon's environment (default `process.env`): the home's default, the PATH its tools are found on and what
+   *  its workers start from. */
+  environ?: Env
 }
 
 /**
@@ -575,7 +584,7 @@ export interface MainOptions {
  */
 export async function main(
   argv: string[],
-  { extensions = EXTENSIONS, write = writeStderr, tools }: MainOptions = {},
+  { extensions = EXTENSIONS, write = writeStderr, tools, environ = process.env }: MainOptions = {},
 ): Promise<number> {
   let value: string | undefined
   try {
@@ -586,14 +595,14 @@ export async function main(
     return 2
   }
   try {
-    const wanted = wantedHome(value, process.env)
+    const wanted = wantedHome(value, environ)
     let home: string
     try {
       home = resolveHome(wanted)
     } catch (error) {
       throw new OfficeStartError(`can't resolve the home ${wanted}: ${messageOf(error)}`)
     }
-    await run(new OfficePaths(home), { extensions, write, tools })
+    await run(new OfficePaths(home), { extensions, write, tools, environ })
     return 0
   } catch (error) {
     if (error instanceof AlreadyRunning) {

@@ -40,10 +40,9 @@ import { CHANGE, CONFIRM, CREATE, summary } from "../../../src/features/setup/to
 import type { BuiltinSession } from "../../../src/runtime/sessions/builtin.ts"
 import { OWNER } from "../../../src/server/local/host.ts"
 import { redactUrls } from "../../../src/util/redact.ts"
-import { selfSpawnEnv } from "../../../src/platform.ts"
 import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
-import { git, gitEnv } from "../../company/helpers.ts"
+import { git } from "../../company/helpers.ts"
 import { shortDir, tempDir, waitFor } from "../../helpers.ts"
 import {
   accepting,
@@ -56,6 +55,7 @@ import {
   Runner,
   Script,
 } from "./helpers.ts"
+import { ownerEnv } from "../../../src/testing/office.ts"
 
 // Hashing the password with scrypt and the company's git take a while.
 setDefaultTimeout(30_000)
@@ -93,7 +93,7 @@ function base(dir: string): InitOptions {
   return {
     listers: NO_LISTING,
     checkModel: async () => null,
-    environ: gitEnv(process.env),
+    environ: ownerEnv(tempDir()),
     host: stopping(dir),
     loginDefaults: () => ["Me", "me"],
   }
@@ -774,7 +774,7 @@ test("a push that fails is a warning with the retry and init goes on", async () 
 test("a token in the remote url is never shown", async () => {
   const dir = tempDir()
   // A proxy would take the connection that port 9 refuses.
-  const environ = Object.fromEntries(Object.entries(gitEnv(process.env)).filter(([name]) => !/_proxy$/i.test(name)))
+  const environ = ownerEnv(tempDir())
   const url = "http://x-access-token:ghp_sentinel42@127.0.0.1:9/acme.git"
   const ask = scripted(url)
   await expect(runInit(dir, ask, FLAGS, { environ })).rejects.toThrow(STOP)
@@ -872,7 +872,7 @@ function realOffice(spawned: ReturnType<typeof killedAtEnd>) {
   // Python's `no_web_port`: HQ stays off its TCP port, which the owner's own office holds.
   fs.mkdirSync(path.join(dir, "office"), { mode: 0o700 })
   fs.writeFileSync(path.join(dir, "office", "hq.json"), '{"tcp": false}')
-  const environ = { ...gitEnv(selfSpawnEnv(process.env)), HOME: tempDir() }
+  const environ = ownerEnv(tempDir())
   const options = {
     mode: "background",
     host: daemonHost(dir, spawned),

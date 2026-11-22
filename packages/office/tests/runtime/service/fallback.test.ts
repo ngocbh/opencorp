@@ -8,10 +8,10 @@ import { expect, onTestFinished, test } from "bun:test"
 import { makeOfficeDir } from "../../../src/util/sockets.ts"
 import * as fallback from "../../../src/runtime/service/fallback.ts"
 import { type Completed, type Launch, ServiceError, launch, runCommand } from "../../../src/runtime/service/launch.ts"
-import { selfSpawnEnv } from "../../../src/platform.ts"
 import { which } from "../../../src/util/env.ts"
 import { fifo, isGone, ps, shortDir, startGroup, tempDir, waitFor } from "../../helpers.ts"
 import { Runner, daemonHost, killedAtEnd, makeHost, ownerLaunch, standIn } from "../../features/setup/helpers.ts"
+import { ownerEnv } from "../../../src/testing/office.ts"
 
 const SESSION = "opencorp-office"
 
@@ -105,7 +105,7 @@ test.skipIf(which("tmux", process.env.PATH) === null)(
     })
     makeOfficeDir(one.office)
     const socket = fallback.socket(one)
-    const planted = { ...selfSpawnEnv(process.env), OPENCORP_PLANTED: "planted-0000" }
+    const planted = { ...ownerEnv(dir), OPENCORP_PLANTED: "planted-0000" }
     // Nothing reaches a tmux server other than this test's own.
     const refused: Completed = { code: 1, stdout: "", stderr: "the test refuses another tmux server" }
     const host = makeHost(dir, {

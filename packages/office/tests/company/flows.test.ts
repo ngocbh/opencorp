@@ -187,7 +187,7 @@ function loadInChild(root: string, file: string, env: Record<string, string> = {
   const result = spawnSync(
     process.execPath,
     ["--no-install", "--no-env-file", "--config=/dev/null", "-e", script, root, file],
-    { timeout: 10_000, killSignal: "SIGKILL", encoding: "utf8", env: { ...process.env, ...env } },
+    { timeout: 10_000, killSignal: "SIGKILL", encoding: "utf8", env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: tempDir(), ...env } },
   )
   const out = result.status === 0 ? JSON.parse(result.stdout) as { error: string | null; opens: string[] } : null
   return { status: result.status, stderr: result.stderr, error: out?.error ?? null, opens: out?.opens ?? [] }

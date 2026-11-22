@@ -38,7 +38,7 @@ import { CodexSessions } from "../../../src/features/codex/sessions.ts"
 import { daemonEnv, launch as officeLaunch, resolveHome } from "../../../src/runtime/service/launch.ts"
 import { args, killGroup, sameProcess, startTime } from "../../../src/util/proc.ts"
 import { resolveTools } from "../../../src/runtime/service/programs.ts"
-import { selfCommand, selfSpawnEnv } from "../../../src/platform.ts"
+import { selfCommand } from "../../../src/platform.ts"
 import { OFFICE_STOPPED } from "../../../src/runtime/runs/outcomes.ts"
 import { latestVersion } from "../../../src/runtime/store/migrate.ts"
 import { Store, newId } from "../../../src/runtime/store/store.ts"
@@ -52,7 +52,8 @@ import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir
 import { freePort } from "../hq/helpers.ts"
 import { RUN, chatLog, committed, runStarted, startCommitted, started, succeeded } from "../../runtime/runs/helpers.ts"
 import { question, session } from "../../runtime/store/helpers.ts"
-import { Recorder, base, makeJob } from "../../runtime/worker/helpers.ts"
+import { Recorder, base, makeJob, testEnviron } from "../../runtime/worker/helpers.ts"
+import { ownerEnv } from "../../../src/testing/office.ts"
 import { type Frame, frames, makeOffice, request, served, take, within } from "../helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -315,18 +316,13 @@ test("missing company repo exits 1", async () => {
 
 test("main without a home uses OPENCORP_HOME", async () => {
   const dir = shortDir()
-  const old = process.env.OPENCORP_HOME
-  onTestFinished(() => {
-    if (old === undefined) delete process.env.OPENCORP_HOME
-    else process.env.OPENCORP_HOME = old
-  })
-  process.env.OPENCORP_HOME = dir
   // A stand-in user home, so a daemon that ignored OPENCORP_HOME could never reach the owner's ~/.opencorp.
   const userHome = shortDir()
   const homedir = spyOn(os, "homedir").mockReturnValue(userHome)
   onTestFinished(() => homedir.mockRestore())
   const out = collect()
-  expect(await inProcess(() => main([], { write: out.write }))).toBe(1)
+  const environ = { ...ownerEnv(userHome), OPENCORP_HOME: dir }
+  expect(await inProcess(() => main([], { write: out.write, environ }))).toBe(1)
   expect(out.text()).toContain(`no company repo at ${path.join(resolveHome(dir), "company")}`)
   expect(fs.readdirSync(dir)).toEqual([])
   expect(fs.readdirSync(userHome)).toEqual([])
@@ -494,7 +490,7 @@ test("build office reaps workers left by an earlier office", async () => {
     store.close()
   }
   const rec = recordingGit(tempDir())
-  const office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write: collect().write })
+  const office = buildOffice(paths, { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   try {
     await waitFor(() => isGone(group.pid, group.started), { what: "the left worker to be killed" })
     expect(office.store.listWorkers()).toEqual([])
@@ -508,7 +504,7 @@ test("the office gets the tools the daemon resolved and its company git runs tha
   const rec = recordingGit(tempDir())
   const tools = { git: rec.git, ps: "/bin/ps" }
   const guards = { tools: [rec.git] }
-  const office = buildOffice(paths, { tools, guards, write: collect().write })
+  const office = buildOffice(paths, { environ: testEnviron(tempDir()), tools, guards, write: collect().write })
   try {
     expect(office.tools).toEqual(tools)
     expect(office.guards).toEqual(guards)
@@ -597,7 +593,7 @@ test("build office runs the chat harness", async () => {
     }
   })
   const rec = recordingGit(tempDir())
-  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  office = buildOffice(new OfficePaths(home()), { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   const harness = office.harness as ChatHarness
   expect(harness).toBeInstanceOf(ChatHarness)
   expect(office.workers).toBe(harness)
@@ -655,7 +651,7 @@ test("a bad provider file fails sessions resumed at start but the office starts"
   fs.writeFileSync(path.join(dir, "office", "connections", "office.json"), "{}", { mode: 0o644 })
   const out = collect()
   const git = recordingGit(tempDir()).git
-  office = buildOffice(new OfficePaths(dir), { tools: { git }, guards: {}, write: out.write })
+  office = buildOffice(new OfficePaths(dir), { environ: testEnviron(tempDir()), tools: { git }, guards: {}, write: out.write })
   const cwd = fs.realpathSync(tempDir())
   const head = await office.git.head()
   const made: Record<string, string> = {}
@@ -679,7 +675,7 @@ test("a bad provider file fails sessions resumed at start but the office starts"
 
 test("build office gives the office a worker registry that stops with it", async () => {
   const rec = recordingGit(tempDir())
-  const office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  const office = buildOffice(new OfficePaths(home()), { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   try {
     const workers = (office.harness as ChatHarness).registry
     expect(workers).toBeInstanceOf(WorkerRegistry)
@@ -705,7 +701,7 @@ test("build office puts the live relay on the office", async () => {
     }
   })
   const rec = recordingGit(tempDir())
-  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  office = buildOffice(new OfficePaths(home()), { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   expect(office.transcript).toBeInstanceOf(Transcript)
   expect(office.live).toBeInstanceOf(LiveRelay)
   const close = spyOn(office.live!, "close")
@@ -724,7 +720,7 @@ test("build office runs codex sessions closed on stop", async () => {
     }
   })
   const rec = recordingGit(tempDir())
-  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  office = buildOffice(new OfficePaths(home()), { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   const codex = office.codex!
   expect(codex).toBeInstanceOf(CodexSessions)
   expect(codex.hooks).toBeInstanceOf(Hooks)
@@ -753,7 +749,7 @@ test("build office runs codex sessions closed on stop", async () => {
 
 test("the office runs codex sessions on the harness hooks", async () => {
   const rec = recordingGit(tempDir())
-  const office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  const office = buildOffice(new OfficePaths(home()), { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   try {
     expect(office.harness!.hooks).toBe(office.codex!.hooks)
     // A check added on the harness hooks, as the questions extension adds its own, is one the Codex sessions run.
@@ -784,7 +780,7 @@ test("build office restores codex sessions on start before the cards sweep", asy
     }
   })
   const rec = recordingGit(tempDir())
-  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  office = buildOffice(new OfficePaths(home()), { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
   const head = await office.git.head()
   const busy = office.store.createSession(
@@ -854,7 +850,7 @@ test("a start marks the terminal records an earlier office left running as inter
   fs.writeFileSync(path.join(shells("S3"), "odd", "meta.json"), "{not json")
   const out = collect()
   const rec = recordingGit(tempDir())
-  office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write: out.write })
+  office = buildOffice(paths, { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: out.write })
   spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
   const states: (string | undefined)[] = []
   const harness = office.harness as ChatHarness
@@ -878,7 +874,7 @@ test("a start marks the terminal records an earlier office left running as inter
 
 test("office stop waits for the send backs queued on the office harness and returns", async () => {
   const rec = recordingGit(tempDir())
-  const office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  const office = buildOffice(new OfficePaths(home()), { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   let stopping: Promise<unknown> | undefined
   try {
     spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
@@ -929,7 +925,7 @@ test("build office checks a model in a worker of its registry", async () => {
   const fake = await fakeLlm()
   const key = "sk-test-check-5d1e7a93"
   const rec = recordingGit(tempDir())
-  const office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  const office = buildOffice(new OfficePaths(home()), { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   try {
     await office.start()
     const provider = Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: key }, env: fake.env() })
@@ -968,7 +964,7 @@ test("an add whose check the office stop cuts answers 503 and the stop skips the
   const endpoint = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}/v1`
   const paths = new OfficePaths(home())
   const rec = recordingGit(tempDir())
-  const office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write: collect().write })
+  const office = buildOffice(paths, { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   try {
     await writeIdentity(identityPath(paths.home), new Identity("ngocbh", "mac", newToken()))
     const { sock } = await served(office)
@@ -1005,7 +1001,7 @@ test("build office brings the run index up to date and sweeps on start", async (
   fs.mkdirSync(path.dirname(log), { recursive: true })
   fs.writeFileSync(log, Buffer.concat([runStarted(0), started(1, "a"), committed(2, "a", {}), succeeded(3, "a", 2)]))
   const rec = recordingGit(tempDir())
-  office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write: collect().write })
+  office = buildOffice(paths, { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
   const open = newId()
   const ended = office.store.createSession(session({ status: "ended", run_ids: [open] }))
@@ -1049,7 +1045,7 @@ test("build office updates the run index when a worker exits", async () => {
     }
   })
   const rec = recordingGit(tempDir())
-  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  office = buildOffice(new OfficePaths(home()), { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   await office.start()
   // After the start, so its own update isn't counted.
   const update = spyOn(office.runIndex, "update")
@@ -1071,7 +1067,7 @@ test("build office prunes pins when a worker exits", async () => {
     }
   })
   const rec = recordingGit(tempDir())
-  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  office = buildOffice(new OfficePaths(home()), { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   await office.start()
   // After the start, so its own prune isn't counted.
   const prune = spyOn(office, "prunePins")
@@ -1096,7 +1092,7 @@ test("build office prunes orphan pins on start", async () => {
   fs.mkdirSync(orphan, { recursive: true })
   fs.writeFileSync(path.join(orphan, "x"), "left by an earlier office\n")
   const rec = recordingGit(tempDir())
-  office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write: collect().write })
+  office = buildOffice(paths, { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: collect().write })
   spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
   const prune = spyOn(office, "prunePins")
   await office.start()
@@ -1118,7 +1114,7 @@ test("a failing start sweep does not stop the office start", async () => {
   const key = "sk-test-sweep-3c9f61a2"
   const out = collect()
   const rec = recordingGit(tempDir())
-  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: out.write })
+  office = buildOffice(new OfficePaths(home()), { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write: out.write })
   spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
   spyOn(office.store, "openRuns").mockImplementation(() => {
     throw new Error(`index broken: ${key}`)
@@ -1131,7 +1127,7 @@ test("a failing start sweep does not stop the office start", async () => {
 /** An office over `paths` with one ended session whose run is still open in the store, and the run's id. */
 function officeWithOpenRun(paths: OfficePaths, write: (line: string) => void): { office: Office; open: string } {
   const rec = recordingGit(tempDir())
-  const office = buildOffice(paths, { tools: { git: rec.git }, guards: {}, write })
+  const office = buildOffice(paths, { environ: testEnviron(tempDir()), tools: { git: rec.git }, guards: {}, write })
   spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
   const open = newId()
   const ended = office.store.createSession(session({ status: "ended", run_ids: [open] }))
@@ -1283,7 +1279,7 @@ function launch(
   try {
     child = spawn(bin, args, {
       cwd: cwd ?? path.join(home, "office"),
-      env: env ?? selfSpawnEnv({ ...process.env, HOME: home }),
+      env: env ?? ownerEnv(home),
       detached: true,
       stdio: ["ignore", fd, fd],
     })
@@ -1394,7 +1390,7 @@ test(
     const [bin, ...args] = daemonCommand(dir)
     const second = spawnSync(bin, args, {
       cwd: paths.office,
-      env: selfSpawnEnv({ ...process.env, HOME: dir }),
+      env: ownerEnv(dir),
       encoding: "utf8",
       timeout: 30_000,
       killSignal: "SIGKILL",
@@ -1443,7 +1439,7 @@ test(
 /** A second, in-process start on `home` with the tools a daemon would resolve (ps by its absolute path): its exit
  *  code and what it wrote. */
 async function secondStart(home: string): Promise<{ code: number; text: string }> {
-  const tools = resolveTools(daemonEnv(process.env))
+  const tools = resolveTools(daemonEnv({ PATH: process.env.PATH }))
   expect(path.isAbsolute(tools.ps!)).toBe(true)
   const out = collect()
   const code = await inProcess(() => main(["--home", home], { write: out.write, tools }))
@@ -1930,7 +1926,7 @@ test(
     fs.writeFileSync(path.join(proj, "mark.ts"), append("MARKS"))
     fs.writeFileSync(path.join(proj, "opt.ts"), append("OPTS"))
     const env = {
-      ...selfSpawnEnv({ ...process.env, HOME: dir }),
+      ...ownerEnv(dir),
       OPENAI_API_KEY: NOT_A_KEY,
       BUN_OPTIONS: `--preload ${path.join(proj, "opt.ts")}`,
       PWD: proj,
@@ -1960,8 +1956,7 @@ test(
     const proj = tempDir()
     const l = officeLaunch(dir, {
       environ: {
-        ...selfSpawnEnv(process.env),
-        HOME: dir,
+        ...ownerEnv(dir),
         OPENAI_API_KEY: NOT_A_KEY,
         BUN_OPTIONS: "--preload /nonexistent.ts",
         PWD: proj,
@@ -1986,7 +1981,7 @@ test(
   "under a service the daemon re-execs once",
   async () => {
     const dir = daemonHome()
-    const l = officeLaunch(dir, { environ: { ...selfSpawnEnv(process.env), HOME: dir } })
+    const l = officeLaunch(dir, { environ: ownerEnv(dir) })
     // What launchd and systemd add to a service's env.
     const env = { ...l.env, XPC_SERVICE_NAME: "com.opencorp.test", INVOCATION_ID: "0123" }
     const d = launch(dir, l.argv, { env, cwd: l.cwd })
