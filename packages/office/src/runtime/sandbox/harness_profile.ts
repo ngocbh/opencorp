@@ -65,15 +65,16 @@ const SYSTEM_PATH: readonly string[] = [
 ]
 /** Where the owner's own Unix sockets and temp files live: tmux's, ssh-agent's, D-Bus's (`/run/user/<uid>`), other
  *  Claude Code sessions' inboxes. Claude Code's Bash sandbox reads everything but `denyRead`, and on Linux the seccomp
- *  filter that blocks a Unix socket is optional (no setting requires it, and doctor can't see it without a model
- *  call: O5 checks it), so a command that can read a socket there can connect to it and act as the owner. So they
+ *  filter that blocks a Unix socket is optional (no setting requires it, doctor can't see it without a model call, and
+ *  whether it is in place is unverified with a real Claude Code), so a command that can read a socket there can
+ *  connect to it and act as the owner. So they
  *  are all denied, but what a listed folder covers; the session's folder and temp folder (`allowRead`) are re-opened
  *  inside them. macOS's per-user temp folders are under `/var/folders`.
  *
  *  - When the network may be on, `/run/systemd/resolve` must be re-allowed: `/etc/resolv.conf` often links to its
  *    stub, the local DNS resolver.
- *  - O5 confirms that the temp folder, an `allowRead` under the `/tmp` deny, works, and that the sandbox's proxy
- *    bridge puts its sockets in the session's temp folder (its `TMPDIR`), not in `/tmp`. */
+ *  - Unverified with a real Claude Code: that the temp folder, an `allowRead` under the `/tmp` deny, works, and that
+ *    the sandbox's proxy bridge puts its sockets in the session's temp folder (its `TMPDIR`), not in `/tmp`. */
 const SOCKET_ROOTS: readonly string[] = [
   "/tmp",
   "/var/tmp",
