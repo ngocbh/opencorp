@@ -142,8 +142,6 @@ export const SANDBOX_FIX =
   "the shell needs a sandbox: on Linux, install bubblewrap (bwrap) and allow unprivileged user namespaces; on " +
   "macOS, sandbox-exec comes with the system"
 const STARTING: ShellState = { status: "starting", waiting: null, command: null, exit: null, error: null }
-/** The owner's Ctrl-C, which stops a cut-off call's command. */
-const CTRL_C = "\x03"
 /** How long a cut-off call waits for its stopped command to end before it replies. */
 const STOP_WAIT_MS = 3000
 /** Why a command ended with no exit, for its audit row. */
@@ -445,7 +443,7 @@ export class Terminal {
     if (!running.seen && entry.running === running) entry.running = null
     if (!call.signal.aborted || entry.running !== running) return this.text(entry, shell, reply)
     running.stopped = CUT_OFF
-    shell.ownerKeys(CTRL_C)
+    shell.stop()
     await within(running.ended.promise, STOP_WAIT_MS)
     const { status, exit, waiting } = shell.state()
     return this.text(entry, shell, { ...reply, status, exit, waiting })
