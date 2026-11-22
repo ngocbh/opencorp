@@ -49,6 +49,11 @@ export const Session = z.strictObject({
   question_id: Ulid.nullable().default(null),
   seed: z.string().nullable().default(null),
   cost: z.number().min(0).default(0),
+  /**
+   * The part of `cost` its subscription's model calls make up: what the API would charge for their tokens, which the
+   * cost cap counts and the subscription doesn't pay. Clients show `cost` as at API prices when it is above 0.
+   */
+  subscription_cost: z.number().min(0).default(0),
   /** Null means company.defaults.cost_cap_usd. */
   cost_cap_usd: z.number().min(0).nullable().default(null),
   /**
@@ -153,13 +158,24 @@ export const Message = z.strictObject({
   role: z.enum(["user", "assistant"]),
   /**
    * The human who sent a user message: harness and composer sessions both name the sender. Null for assistant
-   * messages and for a user message whose sender wasn't recorded.
+   * messages, an instrument's note, and a user message whose sender wasn't recorded.
    */
   author: Handle.nullable().default(null),
+  /**
+   * The instrument whose note this user message is (`isInstrumentNote`): one the office wrote to the agent about its
+   * own work, such as a shell's command that ended, signed by that instrument (its id in the chat's instruments and its
+   * name there, `shell 1`). Only the office sets it. Null for every other message.
+   */
+  instrument: z.strictObject({ id: Ulid, name: z.string().min(1) }).nullable().default(null),
   parts: z.array(Part),
   created_at: Timestamp,
 })
 export type Message = z.input<typeof Message>
+
+/** `message.removed` data: a queued message the run took back before anything read it, such as one Esc held or sent
+ *  again, which then shows under its new id. */
+export const MessageRemoved = z.strictObject({ id: ItemId, session_id: Ulid })
+export type MessageRemoved = z.input<typeof MessageRemoved>
 
 export const Permission = z.strictObject({
   id: Ulid,

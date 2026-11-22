@@ -129,6 +129,22 @@ test("a taken handle is refused and names the clash", async () => {
   expect([await git.head(), after]).toEqual([head, minh])
 })
 
+test("a reserved handle is refused, and nothing is written", async () => {
+  const git = makeGit()
+  const hiring = new Hiring(git)
+  const head = await git.head()
+  const preview = await hiring.hire(req({ ...FORM, handle: "office" }), "ngocbh")
+  expect(preview.issues.map((i) => [i.path, i.code, i.message, i.severity])).toEqual([
+    ["people/office/person.yaml", "person.reserved_handle", "@office can't be a person: the handle is reserved for the office itself", "error"],
+  ])
+  expect(preview.diff).toBe("")
+  const error = await refused(hiring.hire(req({ ...FORM, handle: "office" }, true), "ngocbh"))
+  expect([error.code, error.message]).toEqual([
+    "lint_failed", "@office can't be a person: the handle is reserved for the office itself",
+  ])
+  expect([await git.head(), fs.existsSync(path.join(git.root, "people/office"))]).toEqual([head, false])
+})
+
 test("a folder left by hand takes the handle", async () => {
   const git = makeGit()
   fs.mkdirSync(path.join(git.root, "people/lan"))

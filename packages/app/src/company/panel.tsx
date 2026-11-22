@@ -18,7 +18,7 @@ import { ACTIVE } from "../data/snapshot"
 import { DEFAULT_QUERY, hrefOf } from "../runs/query"
 import { flowText, shortId } from "../runs/format"
 import { sourceHref } from "./address"
-import { costText } from "./format"
+import { sessionCost } from "./format"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
 
@@ -198,7 +198,9 @@ export function Panel(props: {
               {(x) => (
                 <li>
                   {/* The office prices composer tokens only; a harness session's spend isn't known here. */}
-                  {statusLabel(x)} · {x.harness === "composer" ? costText(x.cost ?? 0, 0) : "unpriced"} · {x.office}
+                  {statusLabel(x)} ·{" "}
+                  {x.harness === "composer" ? sessionCost(x.cost ?? 0, x.subscription_cost ?? 0) : "unpriced"} ·{" "}
+                  {x.office}
                   <Show when={x.work_item_id ? office.state.workItems[x.work_item_id] : undefined}>
                     {(w) => <> · now doing: {w().title}</>}
                   </Show>

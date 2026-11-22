@@ -13,9 +13,6 @@ export interface CallUsage {
 /** The price of a model the provider file doesn't list: high, so an unknown model hits its cap early. */
 export const DEFAULT_PRICE: Price = Object.freeze({ input: 15, output: 75 })
 
-/** The price of a subscription's model the provider file doesn't list: the subscription already pays for it. */
-export const ZERO_PRICE: Price = Object.freeze({ input: 0, output: 0 })
-
 /** The price of one model call's `usage`; `default` prices a model `prices` doesn't list. */
 export function callUsd(
   prices: Readonly<Record<string, Price>>,

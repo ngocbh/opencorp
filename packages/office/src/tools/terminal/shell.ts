@@ -224,6 +224,18 @@ function folderOf(raw: string | undefined): string | null {
   return folder.startsWith("/") && !/[\x00-\x1f\x7f-\x9f\ufffd]/.test(folder) ? folder : null
 }
 
+/** `view`'s text from `from` to its end, at most its last `max` characters, where that text starts, and `cursor`. */
+export function peekView(
+  view: ModelView,
+  from: number,
+  max: number,
+  cursor: number,
+): { output: string; start: number; cursor: number } {
+  const end = view.length
+  const start = Math.min(end, Math.max(0, from, end - Math.max(0, max)))
+  return { output: start < end ? view.page(start, end - start).output : "", start, cursor }
+}
+
 /** `text`'s UTF-8 bytes as a string of one char per byte, as the shell's output is parsed. */
 const bytesOf = (text: string): string => Buffer.from(text, "utf8").toString("latin1")
 
@@ -768,6 +780,17 @@ export class PtyShell {
       return "a typed line would be over 1000 bytes, and a terminal cuts longer lines"
     }
     return null
+  }
+
+  /** Where the model's view ends now: where a command started here begins. */
+  viewEnd(): number {
+    return this.view.length
+  }
+
+  /** The model's view from `from` to its end, at most its last `max` characters, where that text starts, and where
+   *  the agent reads on from; the agent's place doesn't move. */
+  peek(from: number, max: number): { output: string; start: number; cursor: number } {
+    return peekView(this.view, from, max, this.cursor)
   }
 
   /** The state and the view from `from`; the agent reads on from its `next`. */

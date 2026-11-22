@@ -264,6 +264,24 @@ test("an onboarded office that isnt running is only a warning", async () => {
   expect(doctor.exitCode(found)).toBe(0)
 })
 
+test("a subscription whose model no connection prices warns that the cost cap counts it at the default price", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, PROVIDER)
+  const subscription = { method: "subscription", llm_config: { provider: "openai", model: "gpt-sub" } }
+  await writePrivate(path.join(paths.office, "connections", "chatgpt.json"), JSON.stringify(subscription))
+  expect(byName(await runChecks(dir, paths)).prices).toEqual({
+    name: "prices",
+    status: "warn",
+    detail:
+      "no connection lists a price for chatgpt's gpt-sub, so a chat on it counts toward its cost cap at $15 in and " +
+      "$75 out per million tokens; add its API price to a connection's prices",
+  })
+  // A key's price list prices it.
+  const priced = { ...PROVIDER, prices: { "gpt-sub": { input: 1.25, output: 10 } } }
+  await writePrivate(setupConnectionFile(paths.office), JSON.stringify(priced))
+  expect(byName(await runChecks(dir, paths)).prices).toBeUndefined()
+})
+
 test("a home others can read warns", async () => {
   const dir = tempDir()
   const paths = await onboarded(dir)

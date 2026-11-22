@@ -66,6 +66,18 @@ license, the upstream paths and commit, and our paths.
   `BACKGROUND_INSTRUCTION`, `prepare`'s `permission.assert`, and `cancelled` with `INTERRUPT_WAIT`), read at commit
   `df46f69` (2026-11-16).
 - **Ours:** `packages/office/src/tools/terminal/tools.ts`, `packages/office/src/tools/terminal/terminal.ts`.
+- **What:** a background command's end, as a design: a command still running past its reply goes on, and its end is
+  told to the session once, as a message holding its exit code and its last lines, which a running turn reads at its
+  next step and which wakes a session at rest; its shell tool's wording that the model will be told and must not
+  poll, but end its reply when it has nothing else to do; and the TUI's one line for that end, `↳` in the info colour.
+  The terminal's notes and the session's delivery are our own code; the TUI's line is ported from
+  `SessionNoticeMessageV2`, opening the note where upstream jumps to the call.
+- **Upstream:** `packages/core/src/tool/plugin/shell.ts` (`BACKGROUND_INSTRUCTION`, `notify`),
+  `packages/core/src/shell/result.ts` (`notification`), `packages/core/src/session/session.ts` (the synthetic message
+  and its wake) and `packages/tui/src/routes/session/index.tsx` (`SessionNoticeMessageV2`), read at commit `df46f69`
+  (2026-11-16).
+- **Ours:** `packages/office/src/tools/terminal/terminal.ts`, `packages/office/src/tools/terminal/tools.ts`,
+  `packages/office/src/features/chat/session_actor.ts` (`note`), `packages/tui/src/routes/session/note-line.tsx`.
 - **What:** the line under the prompt keeps the fork's layout: the spinner and `esc interrupt` (or the folder) on the
   left, the shortcuts on the right. The chat's instrument counts follow the left side, and what waits for the owner
   takes the shortcuts' place in the warning colour, as the fork's session footer showed its open permissions

@@ -233,7 +233,12 @@ describe.skipIf(!TMUX)("an employee's approval cards on a real office, in the TU
   // Its command must run, so it needs the sandbox.
   test.skipIf(!sandboxRuns())("the approver opens the employee's shell with <leader>o and Ctrl-C stops its command", async () => {
     const { t, sid, client } = await chat()
-    office.llm.script(shell("call_sleep", "sleep 31.41", 1), after("call_sleep", "It is still running."))
+    office.llm.script(
+      shell("call_sleep", "sleep 31.41", 1),
+      after("call_sleep", "It is still running."),
+      // The employee is told, by the shell, that the command it left running has ended.
+      { match: "shell 1: `sleep 31.41` ended", content: "The sleep was stopped." },
+    )
     t.type("Wait a while")
     await t.see("It is still running.")
     // The office lists the shell under the prompt, its command running.
@@ -247,8 +252,11 @@ describe.skipIf(!TMUX)("an employee's approval cards on a real office, in the TU
     t.keys("C-c")
     await until(async () => (await client.sessions.instruments(sid))[0]?.status === "idle", "the shell idle")
     await until(() => sleeping("31.41").length === 0, "the command's end", 10_000)
-    // The chat goes on: Ctrl-C in the shell stopped its command, not the employee.
-    expect((await client.sessions.get(sid)).status).toBe("idle")
+    // Ctrl-C in the shell stopped its command, not the employee, who hears from the shell that it ended and answers;
+    // the chat shows the note's line beside the open shell.
+    await until(() => requests().some((r) => r.includes('author=\\"shell 1\\"')), "the shell's note")
+    await until(async () => (await client.sessions.get(sid)).status === "idle", "the chat idle")
+    await t.see("↳ shell")
   })
 
   test("in dontAsk a command the check says ask is refused with no card", async () => {

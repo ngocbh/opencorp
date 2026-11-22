@@ -18,6 +18,18 @@ test("priced usage and unpriced harness sessions per person", () => {
   })
 })
 
+test("a subscription's usage counts toward its session's cost cap, and costs nothing in the report", () => {
+  const store = openStore()
+  const minh = store.createSession(session({ person: "minh" }))
+  const ann = store.createSession(session({ person: "ann" }))
+  store.recordUsage({ sessionId: minh.id, runId: "r", model: "gpt-sub", usd: 3, subscription: true })
+  store.recordUsage({ sessionId: minh.id, runId: "r", model: "m", usd: 0.5 })
+  store.recordUsage({ sessionId: ann.id, runId: "r", model: "gpt-sub", usd: 2, subscription: true })
+  expect(store.sessionUsageUsd(minh.id)).toBeCloseTo(3.5)
+  expect(store.listUsage(minh.id).map((u) => u.subscription)).toEqual([true, false])
+  expect(store.costsSince(T0).people).toEqual({ minh: { usd: 0.5, unpriced_sessions: 0 } })
+})
+
 test("usage and sessions before since are left out", () => {
   const store = openStore()
   const s = store.createSession(session({ person: "minh" }))

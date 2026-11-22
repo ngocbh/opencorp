@@ -11,6 +11,7 @@ import { type CompanyGit, CompanyGitError, oneLine } from "./git.ts"
 import { parseFile, repoIssue, type RepoIssue } from "./issues.ts"
 import { lint } from "./lint.ts"
 import { type CompanyRepo, loadRepo, profilePath } from "./loader.ts"
+import { reservedHandle, reservedPerson } from "./naming.ts"
 import { strip } from "../util/redact.ts"
 
 /** What a hire from the short form gets besides its name, handle, title, and manager. */
@@ -147,6 +148,9 @@ export class Hiring {
   async #draft(request: Request): Promise<[Person, Record<string, string>, RepoIssue[]]> {
     const [person, files] = agentFiles(request)
     const base = `people/${person.handle}`
+    if (reservedHandle(person.handle)) {
+      return [person, {}, [repoIssue(`${base}/person.yaml`, "person.reserved_handle", reservedPerson(person.handle))]]
+    }
     const before = loadRepo(this.git.root)
     const root = before.root // the real path, so a linked company folder is checked where it leads
     try {

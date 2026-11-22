@@ -318,7 +318,7 @@ test("a session's model note shows under the header until it is cleared", async 
   })
 })
 
-test("on a subscription connection, the header's cost label says subscription, unpriced", async () => {
+test("on a subscription connection, the header's cost label says it is at API prices, $0 on the subscription", async () => {
   const office = createFakeOffice()
   office.state.connections.push({ name: "chatgpt", provider: "chatgpt", method: "subscription", model: "gpt-5" })
   await run(office, async (app, id) => {
@@ -326,7 +326,7 @@ test("on a subscription connection, the header's cost label says subscription, u
     expect(line(f, "@minh · idle")).not.toContain("subscription")
     office.updateSession(id, { connection: "chatgpt" })
     f = await app.until((f) => f.includes("gpt-5 (chatgpt)"))
-    expect(line(f, "@minh · idle")).toEndWith("· $0.00 (subscription, unpriced) · gpt-5 (chatgpt)")
+    expect(line(f, "@minh · idle")).toEndWith("· ≈$0.00 at API prices, $0 on your subscription · gpt-5 (chatgpt)")
   })
 })
 
@@ -340,7 +340,7 @@ test("the sidebar's cost follows the chat onto a subscription connection", async
       await app.until((f) => f.includes("gpt-4o (office)") && f.includes("Software engineer"))
       office.updateSession(id, { connection: "chatgpt" })
       // The header and the sidebar each say it.
-      await app.until((f) => f.split("(subscription, unpriced)").length === 3)
+      await app.until((f) => f.split("at API prices").length === 3)
     },
     { width: 160 },
   )

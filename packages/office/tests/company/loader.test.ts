@@ -65,6 +65,20 @@ test("unknown field is a schema error", () => {
   expect(loadRepo(root).people.has("minh")).toBe(false)
 })
 
+test("a person with a reserved handle doesn't load, whatever its folder's case", () => {
+  const root = makeCompany({
+    "people/office/person.yaml": person("minh", { handle: "office" }),
+    "people/Yian/person.yaml": person("minh", { handle: "yian" }),
+  })
+  const repo = loadRepo(root)
+  expect(codes(repo)).toContain("people/office/person.yaml person.reserved_handle")
+  expect(codes(repo)).toContain("people/Yian/person.yaml person.reserved_handle")
+  expect(repo.errors.find((e) => e.path === "people/office/person.yaml")!.message).toBe(
+    "@office can't be a person: the handle is reserved for the office itself",
+  )
+  expect([repo.people.has("office"), repo.people.has("yian"), repo.people.has("minh")]).toEqual([false, false, true])
+})
+
 test("handle must match directory", () => {
   const root = makeCompany({ "people/minh/person.yaml": person("minh", { handle: "other" }) })
   const repo = loadRepo(root)

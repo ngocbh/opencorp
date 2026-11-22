@@ -38,6 +38,7 @@ import { checkLlmConfig, loadProvider, Provider, ProviderError } from "../../mod
 import { CompanyGit, CompanyGitError } from "../../company/git.ts"
 import { lint } from "../../company/lint.ts"
 import { type CompanyRepo, loadRepo } from "../../company/loader.ts"
+import { reservedHandle } from "../../company/naming.ts"
 import { type CompanyState, companyState, missingFiles, type Owner, writeCompany } from "../../company/template.ts"
 import { checkSocketPath, makeOfficeDir, OfficeStartError } from "../../util/sockets.ts"
 import { redactUrls, repr } from "../../util/redact.ts"
@@ -1027,9 +1028,11 @@ export function slug(text: string): string {
   return dashed.replace(/^-+|-+$/g, "").slice(0, 32).replace(/^-+|-+$/g, "")
 }
 
-/** The owner's default name and handle: the account's full name and a slug of the login. */
+/** The owner's default name and handle: the account's full name and a slug of the login, or `owner` when the slug
+ *  is empty or a name the office speaks as. */
 export function ownerDefaults(login: string, gecos: string): [name: string, handle: string] {
-  return [gecos.split(",")[0]!.trim() || login, slug(login) || "owner"]
+  const handle = slug(login)
+  return [gecos.split(",")[0]!.trim() || login, handle && !reservedHandle(handle) ? handle : "owner"]
 }
 
 /** The account's full name (its GECOS field's), or "" when it can't be read. */

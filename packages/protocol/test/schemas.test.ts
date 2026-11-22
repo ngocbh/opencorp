@@ -16,7 +16,8 @@ const NAMES = [
   "Id", "Handle", "Ulid", "GitId", "DeviceName", "TokenHash", "Device", "PasswordHash", "ConnectionName",
   "Timestamp", "CompanyDefaults", "Company", "HarnessPolicy", "Sop", "Routine", "Person", "Group",
   "AssetTool", "Grant", "Asset", "WorkItem", "Comment", "Session", "SessionMode", "HarnessUsage", "Message",
-  "Part", "TextPart", "FilePart", "ToolPart", "ErrorPart", "Permission", "QuestionOption", "QuestionPage",
+  "MessageRemoved", "Part", "TextPart", "FilePart", "ToolPart", "ErrorPart", "Permission", "QuestionOption",
+  "QuestionPage",
   "AnswerField", "DiscussionEntry", "Approval", "Question", "Profile", "ProfileProposal", "Event", "LiveEvent",
   "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "SetModeRequest",
   "RepoIssue", "CompanyView", "CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile", "RunSummary",
@@ -272,7 +273,10 @@ test("instrument defs have fixtures", () => {
 test("an instrument and its output are live events, the output with the byte offset of its first byte", () => {
   const session_id = "01JA1S0000000000000000000A"
   expect(Schemas.LiveEvent.shape.type.options).toEqual(
-    ["message.updated", "part.updated", "part.delta", "instrument.updated", "instrument.output", "instrument.removed"])
+    [
+      "message.updated", "message.removed", "part.updated", "part.delta", "instrument.updated", "instrument.output",
+      "instrument.removed",
+    ])
   const instrument = load(FIXTURES, "Instrument") as Record<string, unknown>
   expect(Schemas.LiveEvent.parse({ type: "instrument.updated", session_id, data: instrument }).data).toEqual(instrument)
   const output = load(FIXTURES, "InstrumentOutput") as Record<string, unknown>
@@ -312,6 +316,14 @@ test("a removed instrument is a live event naming it and its session", () => {
   expect(Schemas.LiveEvent.parse(event).data).toEqual(removed)
   expect(required(Schemas.InstrumentRemoved)).toEqual(["id", "session_id"])
   expect(Schemas.InstrumentRemoved.safeParse({ ...removed, status: "ended" }).success).toBe(false)
+})
+
+test("a removed message is a live event naming it and its session", () => {
+  const removed = load(FIXTURES, "MessageRemoved") as Record<string, unknown>
+  const event = { type: "message.removed", session_id: removed.session_id, data: removed }
+  expect(Schemas.LiveEvent.parse(event).data).toEqual(removed)
+  expect(required(Schemas.MessageRemoved)).toEqual(["id", "session_id"])
+  expect(Schemas.MessageRemoved.safeParse({ ...removed, role: "user" }).success).toBe(false)
 })
 
 test("an instrument carries its PTY's size, null for pipes", () => {

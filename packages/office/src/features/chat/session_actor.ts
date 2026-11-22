@@ -71,16 +71,18 @@ import {
   type Connections,
   configHash,
   runRecord,
+  runsOnSubscription,
   runSecrets,
 } from "../../models/connections.ts"
-import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "../../models/cost.ts"
+import { type CallUsage, callUsd, costCap } from "../../models/cost.ts"
 import type { Hooks } from "../../runtime/sessions/hooks.ts"
 import { type Price, type Provider, ProviderError } from "../../models/provider.ts"
 import { chatJob, type RunSpec } from "./run_spec.ts"
 import { ChatApprovals } from "./approvals.ts"
 import type { Mode, Where } from "../../runtime/permissions/policy.ts"
 import { HarnessError, notWaiting, runState, SETTLED, writeState } from "../../runtime/sessions/state.ts"
-import { type LiveCalls, type Transcript, userMessage } from "./transcript.ts"
+import { restoreNotes } from "./terminal.ts"
+import { type LiveCalls, messageId, type Transcript, userMessage, withdrawnSends } from "./transcript.ts"
 import { type ChatFlow, MAIN_CHAT } from "../../company/chat_flow.ts"
 
 /** What every actor of an office shares. */
@@ -233,6 +235,16 @@ export const INTERRUPTED_CALL = "interrupted; outcome unknown"
  *  reply, or queued for a later turn. */
 export type MessageReply = "turn" | "answer" | "steer" | "queued"
 
+/** An instrument's note about the agent's own work, as `note` takes it: its text, the key its send carries, the
+ *  instrument it is signed by (`author`, the shell's name as the chat lists it), and the key of the note the terminal's
+ *  record owes (`owed`, cleared once the run has it), if any. */
+interface Note {
+  readonly text: string
+  readonly key: string
+  readonly author: string
+  readonly owed: string | null
+}
+
 /** A call a waiting run waits on, as a `result` frame lists it. */
 export interface Wait {
   node: string
@@ -270,6 +282,8 @@ class Pending {
   readonly questionId: string | null
   /** The `send` a message's `complete` falls back on when its call settled first. */
   readonly fallback: Delivery | null
+  /** The office's note this `send` carries, if it carries one. */
+  readonly note: Note | null
   /** Settles with the caller's answer: `acked`, or the `HarnessError` the delivery is refused with. */
   readonly answer: Promise<unknown>
   #resolve!: (value: unknown) => void
@@ -278,12 +292,17 @@ class Pending {
   constructor(
     delivery: Delivery,
     acked: unknown = undefined,
-    { questionId = null, fallback = null }: { questionId?: string | null; fallback?: Delivery | null } = {},
+    {
+      questionId = null,
+      fallback = null,
+      note = null,
+    }: { questionId?: string | null; fallback?: Delivery | null; note?: Note | null } = {},
   ) {
     this.delivery = delivery
     this.acked = acked
     this.questionId = questionId
     this.fallback = fallback
+    this.note = note
     this.answer = new Promise((resolve, reject) => {
       this.#resolve = resolve
       this.#reject = reject
@@ -316,8 +335,9 @@ class WorkerRun {
   provider: Provider | null = null
   /** The connection and model (null: the connection's own) that resolved to `provider`. */
   ranOn: { name: string; model: string | null } | null = null
-  /** The price of a model call `provider` doesn't list. */
-  defaultPrice: Price = DEFAULT_PRICE
+  /** The prices its model calls count at toward the cost cap, by model (a model none lists is at `DEFAULT_PRICE`),
+   *  and whether its connection is a subscription, which pays nothing for them (`Connections.capPrices`). */
+  pricing: { prices: Readonly<Record<string, Price>>; subscription: boolean } = { prices: {}, subscription: false }
   /** Whether the cost cap stopped it. */
   capStopped = false
   /** Its job's deliveries, then each one sent to it. */
@@ -494,6 +514,19 @@ export class SessionActor implements LiveCalls {
   readonly #nodes = new OpenNodes()
   /** The session's mode, rules, Auto's check and approval cards, as its runs' tools get them. */
   readonly #approvals: ChatApprovals
+  /** The notes `note` took that its next job hasn't sent yet, and whether that job is due. */
+  readonly #notes: Note[] = []
+  #notesDue = false
+  /** Whether Esc came since the last person's message: notes wait in `#heldNotes` for the next one. */
+  #hushed = false
+  /** Whether a note went to the run since it last rested at its turn with nothing queued: one may wait unread in the
+   *  inbox, which Esc then takes back. */
+  #notesUnread = false
+  /** Esc's withdraw, until its answer comes: a message sent meanwhile waits in `#next`, behind what it takes back. */
+  #withdrawal: Pending | null = null
+  /** The sends withdraws took back that went back to the run or wait with the held notes, by run and seq. */
+  readonly #rehomed = new Set<string>()
+  readonly #heldNotes: Note[] = []
 
   /** The actor of stored session `sessionId`, over its current run. Throws `HarnessError` (`404`) for no such
    *  session. */
@@ -510,7 +543,7 @@ export class SessionActor implements LiveCalls {
       paths: ctx.paths,
       session: () => this.#session(),
       where: () => this.#where(),
-      charge: (runId, model, usd) => this.#chargeCheck(runId, model, usd),
+      charge: (runId, model, usd, subscription) => this.#chargeCheck(runId, model, usd, subscription),
       git: ctx.git,
       handle: session.person,
       log: (line) => this.#log(line),
@@ -621,7 +654,7 @@ export class SessionActor implements LiveCalls {
 
   /**
    * Takes a message from `by` (the owner when null) and resolves once the run has it. The flow's exit command
-   * (`/exit`) is End, and gets `turn`.
+   * (`/exit`) is End, and gets `turn`. The notes held since Esc go to the run with the message.
    *
    * While the model's `ask_user` question is open on the run, the message answers it (`answer`). Otherwise it goes
    * to the run's inbox, and the reply is decided when it is queued: `steer` while a reply node runs, `turn` while the
@@ -639,13 +672,23 @@ export class SessionActor implements LiveCalls {
         if (refusal) throw new HarnessError(422, "refused", String(refusal))
       }
       if (text === (await this.#specOf(session)).chat.exit) {
+        // The chat ends: the notes held since Esc have no one left to tell.
+        this.#heldNotes.length = 0
         await this.#end(session)
         return null
       }
       // A session capped with no charge (a cap of 0, or a side chat reopened at its cap) has no item yet.
       if (this.#capped()) this.#ensureCapItem()
       const { delivery, reply } = await this.#message(session, text, by)
-      return (await this.#answerAsked(session, text, by, delivery)) ?? (await this.#send(delivery, reply))
+      const answered = await this.#answerAsked(session, text, by, delivery)
+      // The notes held since Esc go to the run with the message: after an answer, which takes no note, and before a
+      // message, so one turn reads them all.
+      if (answered !== null) {
+        await this.#releaseNotes(session)
+        return answered
+      }
+      await this.#releaseNotes(session, { spawn: false })
+      return await this.#send(delivery, reply)
     })
     if (pending === null) return "turn"
     const fallback = pending.fallback
@@ -869,6 +912,8 @@ export class SessionActor implements LiveCalls {
       if (stored.call_id !== null && stored.run_id === this.#runId && !this.#finished) {
         if (stored.source === "approval") await this.#approvals.answered(stored)
         else await this.#deliver(this.#complete(stored, undefined))
+        // The agent works again: the notes held since Esc go with the answer.
+        await this.#releaseNotes(this.#session())
       }
       this.#trySettle("after an answer")
       return stored
@@ -917,10 +962,10 @@ export class SessionActor implements LiveCalls {
    * Esc: interrupts the workspace and the terminal (a command the agent waits on stops), answers the office tool
    * calls in flight `INTERRUPTED_CALL`, and interrupts the run: through its worker while one runs it (over the cost
    * cap, unless ending, only while a reply node runs), else, while the agent waits on a model question, through a
-   * worker spawned for it; else nothing runs to stop. Resolves
-   * once the interrupt's reply is handled (the calls it closed are answered) or it was dropped. A card's stop names its
-   * `question`, which must still be open with no other interrupt unanswered. Refused with `404 not_found`, `409
-   * not_live`, `409 not_open` and `409 ending` (with a `question`), `503 stopping` or `503 cant_wake`.
+   * worker spawned for it; else nothing runs to stop. Notes that come after it wait for the next person's message.
+   * Resolves once the interrupt's reply is handled (the calls it closed are answered) or it was dropped. A card's stop
+   * names its `question`, which must still be open with no other interrupt unanswered. Refused with `404 not_found`,
+   * `409 not_live`, `409 not_open` and `409 ending` (with a `question`), `503 stopping` or `503 cant_wake`.
    */
   async interrupt({ question = null }: { question?: string | null } = {}): Promise<void> {
     const pending = await this.#command(async () => {
@@ -934,6 +979,13 @@ export class SessionActor implements LiveCalls {
         if (status !== "open") throw new HarnessError(409, "not_open", `question ${question} is ${status ?? "gone"}`)
         if (this.#interrupting()) throw new HarnessError(409, "not_open", `question ${question} is being interrupted`)
       }
+      // Esc means stop working: notes wait for the person's next message or answer, those not yet sent included.
+      this.#hushed = true
+      for (const p of this.#next.filter((given) => given.note !== null)) {
+        this.#next.splice(this.#next.indexOf(p), 1)
+        this.#heldNotes.push(p.note!)
+        p.resolve(undefined)
+      }
       this.#interruptShells()
       this.#approvals.stop()
       this.#answerCalls()
@@ -943,6 +995,16 @@ export class SessionActor implements LiveCalls {
       const running = live && (this.#ending || !this.#capped() || this.#replying())
       if (!running && !this.#agentWaits()) return null
       const spec = await this.#specOf(session)
+      // Taken back first, so the turn after the stopped reply reads no note queued in the inbox; the people's messages
+      // among them go back after the interrupt (`#withdrawn`).
+      if (this.#notesUnread) {
+        this.#notesUnread = false
+        const withdrawal = new Pending({ id: newId(), op: "withdraw", inbox: spec.chat.inbox })
+        this.#withdrawal = withdrawal
+        // Refused or never answered: what waited behind it goes on.
+        withdrawal.answer.catch(() => this.#post("a withdraw's end", () => this.#withdrawEnded(withdrawal)))
+        await this.#give(withdrawal)
+      }
       const p = new Pending({ id: newId(), op: "interrupt", inbox: spec.chat.inbox })
       this.#interrupt = p
       await this.#deliver(p)
@@ -970,6 +1032,142 @@ export class SessionActor implements LiveCalls {
   /** A steer is a message: the running reply reads it before its next model call, else the next turn does. */
   steer(text: string, options: { by?: string | null } = {}): Promise<MessageReply> {
     return this.prompt(text, options)
+  }
+
+  /**
+   * A note about the agent's own work, `text` (a command it was told runs on has ended), sent to the run's inbox as a
+   * message signed by the shell it is about (`author`, `shell 1`), under `key`, so a retry or a replay never sends it
+   * twice; yian labels the author, and only the office sends under a key, which marks it as the shell's. It is
+   * never an answer to the model's open question. A running reply reads it as a steer, a run at rest takes it as a new
+   * turn, and over the cost cap it waits for a raise, as a message does; it opens no cap item. After Esc it waits for
+   * the next person's message. Notes that come together go to the run in one job, so one turn reads them all. Dropped
+   * once the session is ending, finished or closed: there is no one left to tell.
+   */
+  note(text: string, key: string, author: string): void {
+    if (this.#closed || this.#finished) return
+    this.#notes.push({ text, key, author, owed: key })
+    if (this.#notesDue) return
+    this.#notesDue = true
+    // A turn of the event loop later, so the notes of commands that end together go in one job.
+    setTimeout(() => {
+      this.#notesDue = false
+      this.#post("notes", () => this.#sendNotes(this.#notes.splice(0)))
+    }, 0)
+  }
+
+  /** Sends `notes` to the run (`#giveNotes`), or holds them for the next person's message after Esc; none once the
+   *  session is ending or finished. */
+  async #sendNotes(notes: readonly Note[]): Promise<void> {
+    if (notes.length === 0 || this.#finished || this.#ending || this.#runId === null) return
+    const session = this.#session()
+    if (!LIVE.includes(session.status) || session.status === "ending") return
+    if (this.#hushed) {
+      this.#heldNotes.push(...notes)
+      return
+    }
+    await this.#giveNotes(session, notes)
+  }
+
+  /** Gives each of `notes` to the run as a `send` signed by its shell, with its key, as `#give` gives a message; with
+   *  `spawn`, a worker starts for them when none runs. Without, the delivery after them starts it. */
+  async #giveNotes(session: SessionRecord, notes: readonly Note[], { spawn = true } = {}): Promise<void> {
+    if (notes.length === 0) return
+    const { inbox } = (await this.#specOf(session)).chat
+    let due = false
+    for (const note of notes) {
+      const event = { role: "user", parts: [{ type: "text", text: note.text }], author: note.author }
+      const delivery: Delivery = { id: newId(), op: "send", inbox, event, key: note.key }
+      this.#notesUnread = true
+      due = (await this.#give(new Pending(delivery, undefined, { note }))) || due
+    }
+    if (due && spawn) await this.#spawnQuietly("advance")
+  }
+
+  /** A person's message or answer sets the agent working again: the notes held since Esc, or since a restart, go to
+   *  the run (`#giveNotes`, with `spawn`), and later ones go at once. */
+  async #releaseNotes(session: SessionRecord, { spawn = true } = {}): Promise<void> {
+    this.#hushed = false
+    await this.#giveNotes(session, this.#heldNotes.splice(0), { spawn })
+  }
+
+  /**
+   * Esc's withdraw answered: the sends withdraws took back from run `runId`'s inbox, as its log records them (the log
+   * keeps them though a worker died before it answered, and a withdraw sent again then takes nothing), each once. The
+   * clients drop each; the people's messages go back, in order and unchanged, ahead of any message sent since, which
+   * waited for this; the office's notes go back with them once a person has spoken since Esc, else wait with the
+   * held ones. Each goes under a key of its own, since the run keeps the old one.
+   */
+  async #withdrawn(runId: string): Promise<void> {
+    this.#withdrawal = null
+    if (this.#finished) return
+    const inbox = (await this.#specOf(this.#session())).chat.inbox
+    let taken: ReturnType<typeof withdrawnSends>
+    try {
+      taken = withdrawnSends(this.#logOf(runId), inbox)
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a withdraw's sends can't be read (${errorName(error)})`)
+      taken = []
+    }
+    const back: Pending[] = []
+    for (const { seq, message, key: sentAs } of taken) {
+      if (this.#rehomed.has(`${runId}:${seq}`)) continue
+      this.#rehomed.add(`${runId}:${seq}`)
+      this.#publishRemoved(messageId(runId, seq))
+      // A note was sent under its shell's key: it goes back under that key too, so it stays the shell's.
+      const owed = sentAs === null ? null : (/^terminal:[^:/]+:\d+/.exec(sentAs)?.[0] ?? null)
+      if (owed === null) {
+        back.push(new Pending({ id: newId(), op: "send", inbox, event: message, key: `withdrawn:${runId}:${seq}` }))
+        continue
+      }
+      const text = message.parts.findLast((part) => part.type === "text") as { text: string } | undefined
+      if (text === undefined) continue
+      const author = message.author || "shell"
+      const note: Note = { text: text.text, key: `${owed}:withdrawn:${runId}:${seq}`, author, owed }
+      if (this.#hushed) {
+        this.#heldNotes.push(note)
+      } else {
+        const event = { role: "user", parts: [{ type: "text", text: note.text }], author }
+        back.push(new Pending({ id: newId(), op: "send", inbox, event, key: note.key }, undefined, { note }))
+      }
+    }
+    this.#next.unshift(...back)
+    await this.#flushNext()
+  }
+
+  /** `withdrawal` was refused, or its worker went before it answered: what waited behind it goes on, and what a
+   *  withdraw took back that the log shows comes back. */
+  async #withdrawEnded(withdrawal: Pending): Promise<void> {
+    if (this.#withdrawal !== withdrawal) return
+    const runId = this.#runId
+    if (runId === null) {
+      this.#withdrawal = null
+      await this.#flushNext()
+      return
+    }
+    await this.#withdrawn(runId)
+  }
+
+  /** Gives what waits in `#next` to the run, in order: to a running worker now, else to a job, which starts now when
+   *  no worker runs, or at the lingering worker's exit. */
+  async #flushNext(): Promise<void> {
+    if (this.#next.length === 0) return
+    const run = this.#run
+    if (run === null) {
+      await this.#spawnQuietly("advance")
+      return
+    }
+    if (run.worker === null || run.outcome !== null) return
+    for (const p of this.#next.splice(0)) await this.#give(p)
+  }
+
+  /** The run has `note`: the terminal's record owes it no more, so a restart never sends it again. */
+  #delivered(note: Note): void {
+    if (note.owed === null) return
+    try {
+      this.#spec?.terminal?.delivered(note.owed)
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a note's record can't be updated (${errorName(error)})`)
+    }
   }
 
   /**
@@ -1099,6 +1297,11 @@ export class SessionActor implements LiveCalls {
       return
     }
     const ending = session.status === "ending"
+    // Notes the office's stop may have cost: they wait for the next message or answer, as after Esc.
+    if (!ending) {
+      const owed = restoreNotes(this.#ctx.paths.sessionDir(this.sessionId))
+      this.#heldNotes.push(...owed.map((note) => ({ ...note, owed: note.key })))
+    }
     if (!fs.existsSync(this.#logOf(runId))) {
       const lost = this.#ranStarted(runId)
       if (lost) {
@@ -1371,6 +1574,8 @@ export class SessionActor implements LiveCalls {
     this.#answerCalls()
     const given = [...(this.#starting?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
     this.#answerRest(given, stopping())
+    this.#notes.length = 0
+    this.#heldNotes.length = 0
     return Promise.all([tail, shells]).then(() => {})
   }
 
@@ -1431,6 +1636,11 @@ export class SessionActor implements LiveCalls {
     // The office stopped while the command waited: no worker may start for it.
     if (this.#closed) {
       p.reject(stopping())
+      return false
+    }
+    // Behind Esc's withdraw, which puts what it takes back first (`#withdrawn`).
+    if (this.#withdrawal !== null && p.delivery.op === "send") {
+      this.#next.push(p)
       return false
     }
     const run = this.#run
@@ -1668,7 +1878,7 @@ export class SessionActor implements LiveCalls {
         keep: this.#keepMs() > 0,
       })
       if (run.kind === "chat") store.setRunConfig(runId, runRecord(name, model, provider))
-      const defaultPrice = await this.#defaultPrice(name)
+      const pricing = await this.#pricing(name, provider)
       const handlers = this.#handlers(run, ask, tools, spec.memories)
       // The office may have stopped during the awaits above.
       if (this.#closed) throw stopping()
@@ -1676,7 +1886,7 @@ export class SessionActor implements LiveCalls {
       // Read before the run starts, so a token its first call refreshes away is still scrubbed from its failure.
       runSecrets(provider)
       run.ranOn = { name, model }
-      run.defaultPrice = defaultPrice
+      run.pricing = pricing
       run.seed = seed
       run.worker = await this.#launch(job, handlers, provider.env)
       this.#startedWorker = true
@@ -1816,15 +2026,14 @@ export class SessionActor implements LiveCalls {
     return parked.worker.wait().then(() => {})
   }
 
-  /** The price of a model call connection `name`'s file doesn't list: none for a subscription, which already pays
-   *  for its calls. */
-  async #defaultPrice(name: string): Promise<Price> {
+  /** What connection `name`'s model calls count at toward the cost cap (`Connections.capPrices`); `provider`'s own
+   *  list when the connection was removed or broke since it resolved to `provider`, a subscription still one. */
+  async #pricing(name: string, provider: Provider): Promise<WorkerRun["pricing"]> {
     try {
-      return (await this.#ctx.connections.get(name)).method === "subscription" ? ZERO_PRICE : DEFAULT_PRICE
+      return await this.#ctx.connections.capPrices(name)
     } catch (error) {
-      // Removed or broken since it resolved: the run still has what it resolved.
       if (!(error instanceof ProviderError)) throw error
-      return DEFAULT_PRICE
+      return { prices: provider.prices, subscription: runsOnSubscription(provider) }
     }
   }
 
@@ -2276,18 +2485,25 @@ export class SessionActor implements LiveCalls {
       return
     }
     const model = typeof data.model === "string" ? data.model : null
-    const usd = callUsd(run.provider?.prices ?? {}, model, usage, { default: run.defaultPrice })
-    store.recordUsage({ sessionId: this.sessionId, runId: run.runId, model: model ?? "", usd })
-    store.updateSession(this.sessionId, { cost: store.sessionUsageUsd(this.sessionId) })
+    const { prices, subscription } = run.pricing
+    const usd = callUsd(prices, model, usage)
+    store.recordUsage({ sessionId: this.sessionId, runId: run.runId, model: model ?? "", usd, subscription })
+    store.updateSession(this.sessionId, {
+      cost: store.sessionUsageUsd(this.sessionId),
+      subscription_cost: store.sessionSubscriptionUsd(this.sessionId),
+    })
     this.#overCap()
   }
 
   /** Records `usd`, what Auto's check's run `runId` spent on `model`, as the session's, then acts on the cap as a
    *  model call's charge does. */
-  #chargeCheck(runId: string, model: string | null, usd: number): void {
+  #chargeCheck(runId: string, model: string | null, usd: number, subscription: boolean): void {
     const { store } = this.#ctx
-    store.recordUsage({ sessionId: this.sessionId, runId, model: model ?? "", usd })
-    store.updateSession(this.sessionId, { cost: store.sessionUsageUsd(this.sessionId) })
+    store.recordUsage({ sessionId: this.sessionId, runId, model: model ?? "", usd, subscription })
+    store.updateSession(this.sessionId, {
+      cost: store.sessionUsageUsd(this.sessionId),
+      subscription_cost: store.sessionSubscriptionUsd(this.sessionId),
+    })
     this.#post("a check's cost", () => this.#overCap())
   }
 
@@ -2422,8 +2638,14 @@ export class SessionActor implements LiveCalls {
       if (p.questionId !== null) this.#consume(p.questionId)
       // The stored status is busy, and a message shown, before the caller hears back.
       this.#trySettle("after a reply")
-      if (op === "send") this.#publishMessage(run.runId, reply.seq as number, p.delivery.event)
+      if (op === "send") this.#publishMessage(run.runId, reply.seq as number, p.delivery.event, p.delivery.key)
+      if (op === "withdraw") this.#post("withdrawn", () => this.#withdrawn(run.runId))
+      if (p.note !== null) this.#delivered(p.note)
       p.resolve(p.acked)
+    } else if (p.note !== null && reply.refused === "key_reused") {
+      // A note the run already has under its key, as a restart's note of a command whose note was sent.
+      this.#delivered(p.note)
+      p.resolve(undefined)
     } else if (typeof reply.refused === "string") {
       // The reason only: a delivery never names the message's text.
       this.#log(`session ${this.sessionId}: a ${op} was refused (${reply.refused})`)
@@ -2474,8 +2696,18 @@ export class SessionActor implements LiveCalls {
 
   /** Publishes the user message of the `send` the run took at `seq`, as the transcript will show it. `sent` is the
    *  message `prompt` built. */
-  #publishMessage(runId: string, seq: number, sent: unknown): void {
-    const message = userMessage(this.sessionId, runId, { seq, at: now(), message: sent as RunMessage })
+  /** Tells the session's clients that message `id` is no more: a send the run took back. */
+  #publishRemoved(id: string): void {
+    try {
+      const data = { id, session_id: this.sessionId }
+      this.#ctx.bus.publishLive({ type: "message.removed", session_id: this.sessionId, data })
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a message can't be dropped (${errorName(error)})`)
+    }
+  }
+
+  #publishMessage(runId: string, seq: number, sent: unknown, key: string | undefined): void {
+    const message = userMessage(this.sessionId, runId, { seq, at: now(), message: sent as RunMessage, key })
     try {
       this.#ctx.bus.publishLive({ type: "message.updated", session_id: this.sessionId, data: message })
     } catch (error) {
@@ -2526,7 +2758,14 @@ export class SessionActor implements LiveCalls {
       void runIndex.update().then(changed)
     }
     this.#disarm()
-    if (frame.type === "result" && frame.status === "waiting") this.#waits = waitsOf(frame)
+    if (frame.type === "result" && frame.status === "waiting") {
+      const waits = waitsOf(frame)
+      this.#waits = waits
+      // Resting at its turn with nothing queued: the inbox holds no note.
+      if (waits.length > 0 && waits.every((wait) => this.#chat.isTurn(wait.node) && !wait.settled)) {
+        this.#notesUnread = false
+      }
+    }
     run.turnPending = false
     this.#trySettle("after a result")
   }
@@ -3229,6 +3468,7 @@ export class SessionActor implements LiveCalls {
     if (this.#spec === null) {
       const spec = await this.#ctx.spec(session)
       this.#spec = spec
+      spec.terminal?.onEnded((ended) => this.note(ended.text, ended.key, ended.shell))
       const due = this.#reconcileDue
       this.#reconcileDue = null
       if (due !== null && due === this.#runId && !this.#finished && !this.#closed) {

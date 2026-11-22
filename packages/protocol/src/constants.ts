@@ -3,6 +3,16 @@ import { RulePattern } from "./schemas/rules"
 /** The office's own name: its own connection, set up at onboarding, and the driver of the runs the office starts itself. */
 export const OFFICE = "office"
 
+/** Whether `message` is an instrument's note to the agent about the agent's own work, such as a command of its that
+ *  ended: a user message the office marks with the instrument it is about (`instrument`), never told by its author.
+ *  Its first line says what happened; clients show that line, which opens to the whole note. */
+export function isInstrumentNote(message: {
+  readonly role: string
+  readonly instrument?: { readonly id: string; readonly name: string } | null
+}): boolean {
+  return message.role === "user" && message.instrument != null
+}
+
 /** How long, in ms, a pairing code HQ mints stays valid: HQ refuses it after, and `opencorp hq` deletes the code's
  *  redirect file then. */
 export const PAIR_CODE_TTL_MS = 5 * 60_000

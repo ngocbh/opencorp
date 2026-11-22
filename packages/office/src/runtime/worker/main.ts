@@ -11,6 +11,7 @@ import {
   RunBusyError,
   runFlow,
   send,
+  withdraw,
 } from "@ngocbh/yian"
 import {
   type EventHook,
@@ -80,7 +81,10 @@ export function jobMemory(job: Job, rpc: Rpc): Record<string, RemoteMemory> {
 }
 
 /** A delivery's answer: a `deliver_reply` without its `type` and `id`. */
-type Outcome = { seq: number | null; closed?: string[] } | { refused: string } | { failed: string }
+type Outcome =
+  | { seq: number | null; closed?: string[]; withdrawn?: { seq: number; value: unknown }[] }
+  | { refused: string }
+  | { failed: string }
 
 /** A queued delivery; a `quiet` one is a message moved from the replaced run, which the office never sent. */
 type Queued = { delivery: Delivery; quiet: boolean }
@@ -207,11 +211,15 @@ function applier(
     try {
       switch (delivery.op) {
         case "send":
-          return { seq: await send(log, delivery.inbox, delivery.event, options) }
+          return { seq: await send(log, delivery.inbox, delivery.event, { ...options, key: delivery.key ?? null }) }
         case "complete":
           return { seq: await complete(log, delivery.call_id, delivery.result, options) }
         case "close":
           return { seq: await closeInbox(log, delivery.inbox, options) }
+        case "withdraw": {
+          const taken = await withdraw(log, delivery.inbox, options)
+          return { seq: null, withdrawn: taken.map(({ seq, value }) => ({ seq, value })) }
+        }
         case "interrupt":
           return { seq: null, closed: (await interrupt(log, delivery.inbox, options)).calls.map((call) => call.callId) }
         case "cancel":

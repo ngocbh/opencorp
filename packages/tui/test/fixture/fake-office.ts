@@ -112,7 +112,7 @@ const served = (person: Person): Person => PersonSchema.parse({ ...person, passw
 /** `session` as the office serves it: every field, defaults filled. */
 const servedSession = (session: Session): Session => SessionSchema.parse(session)
 /** `message` as the office serves it: a message with no author has a null one. */
-const servedMessage = (message: Message): Message => ({ author: null, ...message })
+const servedMessage = (message: Message): Message => ({ author: null, instrument: null, ...message })
 
 /** Words a side chat refuses, in any case: only the office ends a side run. */
 const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])

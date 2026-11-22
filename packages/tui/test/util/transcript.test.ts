@@ -72,6 +72,20 @@ describe("formatMessage", () => {
       formatMessage({ ...user, role: "assistant" }, { ...session, person: "gone" }, people, { toolDetails: true }),
     ).toBe("## gone\n\ngo\n\n")
   })
+
+  test("an instrument's note is headed by the instrument", () => {
+    const note: Message = {
+      id: "M2",
+      session_id: "S1",
+      role: "user",
+      instrument: { id: "01JA1X0000000000000000000A", name: "shell 1" },
+      created_at: "t",
+      parts: [{ id: "a", type: "text", text: "shell 1: `make` ended, exit 2" }],
+    }
+    expect(formatMessage(note, session, people, { toolDetails: true })).toBe(
+      "## shell 1\n\nshell 1: `make` ended, exit 2\n\n",
+    )
+  })
 })
 
 describe("formatTranscript", () => {

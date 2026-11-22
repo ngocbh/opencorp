@@ -28,12 +28,14 @@ export interface RecordMeta {
 export type RecordState = "running" | "ended" | "failed" | "interrupted"
 
 /** A command the shell ran: what, who ran it, when, and its exit code once it ended (null for none, as when a signal
- *  ended it). No `exit` means it never ended in the record: still running, or cut off. */
+ *  ended it). No `exit` means it never ended in the record: still running, or cut off. `told` is the key of the note
+ *  the agent is owed of its end, once its reply said it runs on, until something else told the agent of it. */
 export interface RecordedCommand {
   command: string
   by: string
   at: string
   exit?: number | null
+  told?: string
 }
 
 /** What a record's meta.json holds. `error` says why a shell failed or ended; `outputError` says why output.log
@@ -68,8 +70,14 @@ const isText = (value: unknown): value is string => typeof value === "string"
 /** Whether `value` is a command as meta.json holds it. */
 function isCommand(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false
-  const { command, by, at, exit } = value as Record<string, unknown>
-  return isText(command) && isText(by) && isText(at) && (exit === undefined || exit === null || typeof exit === "number")
+  const { command, by, at, exit, told } = value as Record<string, unknown>
+  return (
+    isText(command) &&
+    isText(by) &&
+    isText(at) &&
+    (exit === undefined || exit === null || typeof exit === "number") &&
+    (told === undefined || isText(told))
+  )
 }
 
 /** Whether `value` is a terminal's record, as meta.json holds it. */
@@ -149,6 +157,27 @@ export class InstrumentRecord {
     const last = this.file.commands.at(-1)
     if (this.file.state !== "running" || last === undefined || last.exit !== undefined) return
     last.exit = code
+    this.save()
+  }
+
+  /** Records that the agent is owed a note, under `key`, of the last command's end: its reply said it runs on. */
+  told(key: string): void {
+    const last = this.file.commands.at(-1)
+    if (this.file.state !== "running" || last === undefined) return
+    last.told = key
+    this.save()
+  }
+
+  /** Whether the record still takes writes: its shell hasn't ended. */
+  get running(): boolean {
+    return this.file.state === "running"
+  }
+
+  /** Records that the command owed the note under `key` needs none: something else told the agent of its end. */
+  untold(key: string): void {
+    const command = this.file.commands.find((c) => c.told === key)
+    if (this.file.state !== "running" || command === undefined) return
+    delete command.told
     this.save()
   }
 
@@ -238,6 +267,23 @@ export function readRecord(dir: string): RecordFile | null {
   }
   if (!isRecordFile(parsed)) throw new RecordError("its meta.json isn't a terminal's record")
   return parsed
+}
+
+/** Records in the ended record in `dir` that the command owed the note under `key` needs none any more: the run has
+ *  it. A record still running is its host's to write (`InstrumentRecord.untold`); one that isn't a record's, or owes no
+ *  such note, is left as it is. */
+export function clearTold(dir: string, key: string): void {
+  let file: RecordFile | null
+  try {
+    file = readRecord(dir)
+  } catch (error) {
+    if (error instanceof RecordError) return
+    throw error
+  }
+  const command = file?.commands.find((c) => c.told === key)
+  if (file === null || file.state === "running" || command === undefined) return
+  delete command.told
+  replaceFile(dir, META, metaText(file))
 }
 
 /** Marks each record in `dir`'s folders that is still running as interrupted: its host stopped while the shell ran.

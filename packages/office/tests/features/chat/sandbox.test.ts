@@ -5,7 +5,7 @@ import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import type { ToolPart } from "@opencorp/protocol"
 import { waitFor } from "../../helpers.ts"
-import { gone, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import { ended, ownSleepers, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import { fakeLlm, makeHarness, noWorkersLeft, status } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -40,6 +40,8 @@ test.if(sandboxAvailable())("esc kills a running shell call", async () => {
   fake.script(shell("echo started; sleep 60.1"), { content: "Next." })
   const h = await makeHarness(fake)
   const id = await shellRunning(h)
+  const sleeping = await ownSleepers("60.1")
+  expect(sleeping).toHaveLength(1)
   const began = performance.now()
   await h.harness.interrupt(id)
   await waitFor(() => status(h, id) === "idle", { what: "the next turn" })
@@ -48,7 +50,7 @@ test.if(sandboxAvailable())("esc kills a running shell call", async () => {
   expect(tool).toMatchObject({ tool: "terminal_run", state: "completed" })
   // The reply says its command ended, stopped with no exit, as a killed call ends.
   expect(JSON.parse(String(tool!.output))).toMatchObject({ shell: "shell 1", status: "idle", exit: null })
-  expect(await gone("60.1")).toBe(true)
+  expect(await ended(sleeping)).toBe(true)
   expect(fake.requests()).toHaveLength(1)
   await h.harness.prompt(id, "again")
   await fake.waitForRequests(2)
@@ -66,11 +68,13 @@ test.if(sandboxAvailable())("end kills a running shell call", async () => {
   )
   const h = await makeHarness(fake)
   const id = await shellRunning(h)
+  const sleeping = await ownSleepers("60.3")
+  expect(sleeping).toHaveLength(1)
   const began = performance.now()
   await h.harness.end(id)
   await waitFor(() => status(h, id) === "ended", { what: "the end" })
   expect(performance.now() - began).toBeLessThan(10_000)
-  expect(await gone("60.3")).toBe(true)
+  expect(await ended(sleeping)).toBe(true)
   expect(fs.existsSync(path.join(h.folder, "after_end.txt"))).toBe(false)
 })
 
@@ -79,10 +83,12 @@ test.if(sandboxAvailable())("close all kills a running shell call", async () => 
   fake.script(shell("sleep 41.7"), { content: "x" })
   const h = await makeHarness(fake)
   await shellRunning(h)
+  const sleeping = await ownSleepers("41.7")
+  expect(sleeping).toHaveLength(1)
   const began = performance.now()
   await h.harness.closeAll()
   expect(performance.now() - began).toBeLessThan(5_000)
-  expect(await gone("41.7")).toBe(true)
+  expect(await ended(sleeping)).toBe(true)
 })
 
 test.if(sandboxAvailable())("a killed worker leaves no shell call or tool part running", async () => {
@@ -90,6 +96,8 @@ test.if(sandboxAvailable())("a killed worker leaves no shell call or tool part r
   fake.script(shell("sleep 43.9"), { content: "x" })
   const h = await makeHarness(fake)
   const id = await shellRunning(h)
+  const sleeping = await ownSleepers("43.9")
+  expect(sleeping).toHaveLength(1)
   const spawns = h.kinds.length
   process.kill(-h.registry.get(id)!.pgid, "SIGKILL")
   // One worker per run call: the death's retry is one advance.
@@ -99,5 +107,5 @@ test.if(sandboxAvailable())("a killed worker leaves no shell call or tool part r
     what: "the cut call shown interrupted",
   })
   expect((await tools(h, id))[0]!.tool).toBe("terminal_run")
-  expect(await gone("43.9")).toBe(true)
+  expect(await ended(sleeping)).toBe(true)
 })

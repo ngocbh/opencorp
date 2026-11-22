@@ -5,9 +5,9 @@ import path from "node:path"
 import { OFFICE, type RemoveRuleRequest, type RuleFileError } from "@opencorp/protocol"
 import { CompanyRepoBusy, type CompanyGit } from "../../company/git.ts"
 import { addRules, readRules, removeRule, type Rule as SavedRule, RulesRefused } from "../../company/rules.ts"
-import { type Connections, isSubscription } from "../../models/connections.ts"
-import { callUsd, DEFAULT_PRICE, ZERO_PRICE } from "../../models/cost.ts"
-import type { Provider } from "../../models/provider.ts"
+import { type Connections, runsOnSubscription } from "../../models/connections.ts"
+import { callUsd } from "../../models/cost.ts"
+import { type Price, ProviderError } from "../../models/provider.ts"
 import { Check, type CheckRecord, type CheckWorkers, inWorker } from "../../runtime/permissions/classifier.ts"
 import {
   decide, dontAskRefusal, type Permissions, type Rule, RuleBook, type Where,
@@ -73,7 +73,7 @@ export class ChatApprovals {
   readonly #store: Store
   readonly #session: () => SessionRecord
   readonly #where: () => Where
-  readonly #charge: (runId: string, model: string | null, usd: number) => void
+  readonly #charge: (runId: string, model: string | null, usd: number, subscription: boolean) => void
   readonly #host: ApprovalHost
   readonly #check: Check
   readonly #git: CompanyGit
@@ -89,8 +89,8 @@ export class ChatApprovals {
   #applied = 0
   /** Why each session rule an "always" couldn't save to the agent's file stays in the session, by `ruleKey`. */
   readonly #unsaved = new Map<string, string>()
-  /** The office connection the last check resolved, whose prices its usage is charged at. */
-  #provider: Provider | null = null
+  /** What the last check's usage counts at toward the cost cap: the office connection's `capPrices`. */
+  #pricing: { prices: Readonly<Record<string, Price>>; subscription: boolean } = { prices: {}, subscription: false }
   /** The approved actions the office runs now, by card id, each stopped by its controller. */
   readonly #running = new Map<string, AbortController>()
 
@@ -104,8 +104,9 @@ export class ChatApprovals {
     /** Where a new shell of the session's terminal runs: what a card is decided again by. The terminal's own reading,
      *  through the actor; the terminal never reads it back. */
     where: () => Where
-    /** Records a check's usage as the session's: the actor's charge (`recordUsage`, the session's cost, its cap). */
-    charge(runId: string, model: string | null, usd: number): void
+    /** Records a check's usage as the session's: the actor's charge (`recordUsage`, the session's cost, its cap);
+     *  `subscription` when it ran on one. */
+    charge(runId: string, model: string | null, usd: number, subscription: boolean): void
     /** What the cards need of the session's actor. */
     host: ApprovalHost
     /** The company repo the agent's and the company's rules files are read from, and the agent's go to. */
@@ -120,14 +121,18 @@ export class ChatApprovals {
     this.#store = o.store
     this.#session = o.session
     this.#where = o.where
-    this.#charge = (runId, model, usd) => o.charge(runId, model, usd)
+    this.#charge = (runId, model, usd, subscription) => o.charge(runId, model, usd, subscription)
     this.#host = o.host
     this.#git = o.git
     this.#handle = o.handle
     this.#log = (line) => o.log(line)
     const model = async () => {
       const provider = await o.connections.resolve(OFFICE, null)
-      this.#provider = provider
+      this.#pricing = await o.connections.capPrices(OFFICE).catch((error: unknown) => {
+        // Broken since it resolved: its own list, a subscription still counted as one.
+        if (!(error instanceof ProviderError)) throw error
+        return { prices: provider.prices, subscription: runsOnSubscription(provider) }
+      })
       return { llm_config: provider.llm_config ?? {}, env: provider.env }
     }
     const logDir = path.join(o.paths.sessionDir(o.session().id), "checks")
@@ -383,11 +388,8 @@ export class ChatApprovals {
       detail: entry.reason.slice(0, DETAIL_CHARS),
     })
     if (entry.usage === null || entry.runId === null) return
-    const provider = this.#provider
-    // A subscription already pays for a model its file doesn't price.
-    const price = provider !== null && isSubscription(provider) ? ZERO_PRICE : DEFAULT_PRICE
-    const usd = callUsd(provider?.prices ?? {}, entry.model, entry.usage, { default: price })
-    this.#charge(entry.runId, entry.model, usd)
+    const { prices, subscription } = this.#pricing
+    this.#charge(entry.runId, entry.model, callUsd(prices, entry.model, entry.usage), subscription)
   }
 }
 

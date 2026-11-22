@@ -33,6 +33,7 @@ const KINDS: ReadonlySet<string> = new Set([
   "node_failed",
   "run_cancelled",
   "run_failed",
+  "inbox_withdrawn",
 ])
 
 /** The longest log line the transcript parses (Run Logs' HUGE_LINE): yian's reader holds a line whole, and parsing it
@@ -59,12 +60,18 @@ export function tooLargeText(size: number): string {
   return `(too large to show: ${(size / 2 ** 20).toFixed(1)} MiB)`
 }
 
-/** A message sent to the chat's inbox: its send commit's seq and time, and what the transcript shows of it. */
+/** A message sent to the chat's inbox: its send commit's seq and time, what the transcript shows of it, and the key the
+ *  office sent it under, if any. */
 interface Send {
   seq: number
   at: string
   message: Pick<RunMessage, "author" | "parts">
+  key?: string | null
 }
+
+/** The key of a shell's note, as the office sends it: the shell's id, the command's number there, then, for a note sent
+ *  again, more. Only the office sends under a key, so it marks the note as the shell's. */
+const NOTE_KEY = /^terminal:([0-9A-HJKMNP-TV-Z]{26}):\d+(?::|$)/
 
 /** A step a node recorded: as the log holds it (ints as bigints) when folded, then the copy `slim` keeps. */
 type Step = Readonly<Record<string, unknown>>
@@ -124,7 +131,7 @@ function safeRunId(runId: string): boolean {
 }
 
 /** A message's id: its run and the seq of the record that opens it, the seq padded so ids sort in log order. */
-function messageId(runId: string, seq: number): string {
+export function messageId(runId: string, seq: number): string {
   return `${runId}:${String(seq).padStart(12, "0")}`
 }
 
@@ -498,7 +505,7 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
       // Its last text part is all that shows: earlier ones are the turn's context.
       const text = message.parts.findLast((part) => part.type === "text") as { text: string } | undefined
       const shown = { author: message.author, parts: text === undefined ? [] : [{ type: "text", text: text.text }] }
-      state.sends.set(seq, keep(state, { seq, at, message: shown as Send["message"] }))
+      state.sends.set(seq, keep(state, { seq, at, message: shown as Send["message"], key: record.sendKey }))
     } else if (record.take !== null && record.take.inbox === inbox && MAIN_CHAT.isTurn(record.nodeId)) {
       state.takes.set(seq, keep(state, record.take.events.map(Number)))
     }
@@ -530,6 +537,10 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
     }
   } else if (kind === "run_cancelled" || kind === "run_failed") {
     state.ended = true
+  } else if (kind === "inbox_withdrawn") {
+    // Taken back before anything read them: they show no more, and one sent again shows under its new seq.
+    const { inbox: from, events } = record as { inbox: string; events: readonly number[] }
+    if (from === inbox) for (const event of events) state.sends.delete(Number(event))
   }
 }
 
@@ -647,22 +658,65 @@ function render(
 /** The assistant message the record at `seq` (at `at`) of the run `runId` opens, with no parts yet. */
 function assistantMessage(sessionId: string, runId: string, seq: number, at: string): Message {
   const id = messageId(runId, seq)
-  return { id, session_id: sessionId, role: "assistant", author: null, parts: [], created_at: at }
+  return { id, session_id: sessionId, role: "assistant", author: null, instrument: null, parts: [], created_at: at }
 }
 
-/** The user message of `send` in the run `runId`: its last text part, since earlier ones are the turn's context. */
+/** The user message of `send` in the run `runId`: its last text part, since earlier ones are the turn's context. A
+ *  send under a shell's note key (`NOTE_KEY`) is that shell's note, signed by it; any other names its human author. */
 export function userMessage(sessionId: string, runId: string, send: Send): Message {
   const id = messageId(runId, send.seq)
   const text = send.message.parts.findLast((part) => part.type === "text") as { text: string } | undefined
-  const author = Handle.safeParse(send.message.author)
+  const shell = send.key ? NOTE_KEY.exec(send.key)?.[1] : undefined
+  const name = send.message.author
+  const instrument = shell !== undefined && typeof name === "string" && name !== "" ? { id: shell, name } : null
+  const author = instrument === null ? Handle.safeParse(name) : null
   return {
     id,
     session_id: sessionId,
     role: "user",
-    author: author.success ? author.data : null,
+    author: author?.success ? author.data : null,
+    instrument,
     parts: text === undefined ? [] : [{ id: `${id}:0`, type: "text", text: text.text }],
     created_at: send.at,
   }
+}
+
+/** A send Esc's withdraw took back from a run's inbox, as its log records it: its seq, its message, and the key it
+ *  was sent under, if any. */
+export interface WithdrawnSend {
+  readonly seq: number
+  readonly message: RunMessage
+  readonly key: string | null
+}
+
+/**
+ * The sends of the inbox `inbox` that withdraws took back in the run log `log`, in send order: each `inbox_withdrawn`
+ * record names their seqs, and the send records before it hold their messages and keys. The log is the record of
+ * what a withdraw took, even when its worker died before it answered. A send whose value isn't a message is left out.
+ */
+export function withdrawnSends(log: string, inbox: string): WithdrawnSend[] {
+  const sends = new Map<number, { message: RunMessage; key: string | null }>()
+  const taken: number[] = []
+  for (const entry of iterRunRecords(log)) {
+    const record = entry.envelope.record
+    if (entry.kind === "pool_commit" && record instanceof PoolCommitRecord && record.value !== null) {
+      if (record.key !== `${record.nodeId}.${inbox}`) continue
+      try {
+        sends.set(entry.seq, { message: checkMessage(TypedValue.fromWire(record.value).toObject()), key: record.sendKey })
+      } catch (error) {
+        if (!(error instanceof RangeError)) throw error
+      }
+    } else if (entry.kind === "inbox_withdrawn") {
+      const { inbox: from, events } = record as { inbox: string; events: readonly number[] }
+      if (from === inbox) taken.push(...events.map(Number))
+    }
+  }
+  return taken
+    .sort((a, b) => a - b)
+    .flatMap((seq) => {
+      const send = sends.get(seq)
+      return send === undefined ? [] : [{ seq, ...send }]
+    })
 }
 
 /** True for an object that is a plain `{}` record. */

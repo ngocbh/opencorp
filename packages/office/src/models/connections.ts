@@ -12,6 +12,7 @@ import {
   checkLlmConfig,
   type LlmConfig,
   loadProvider,
+  type Price,
   Provider,
   ProviderError,
   providerSchema,
@@ -115,6 +116,11 @@ export class ConnectionFile extends Provider {
 /** Whether `provider` signs in to a ChatGPT subscription. */
 export function isSubscription(provider: Provider): provider is ConnectionFile {
   return provider instanceof ConnectionFile && provider.method === "subscription"
+}
+
+/** Whether `provider`, as `Connections.resolve` gave it for a run, runs on a subscription: it carries its sign-in. */
+export function runsOnSubscription(provider: Provider): boolean {
+  return isSubscription(provider) || typeof provider.env[AUTH_FILE_ENV] === "string"
 }
 
 /** What a run was started on: its connection and model, and a hash of what they gave it; the values
@@ -250,6 +256,30 @@ export class Connections {
    *  with `ProviderError` when `_default.json` isn't a private regular file, or isn't a default. */
   async default(): Promise<string> {
     return this.#default(await this.names())
+  }
+
+  /**
+   * The prices the cost cap counts connection `name`'s model calls at, by model, and whether it is a subscription. A
+   * key's are its own list. A subscription pays nothing, but its chats' cap counts what the same tokens would cost
+   * on the API: its own list over the keys' lists, `office` first. A model none lists is the caller's default price.
+   * Rejects as `get` does for `name`; a key that can't be read lends no prices.
+   */
+  async capPrices(name: string): Promise<{ prices: Record<string, Price>; subscription: boolean }> {
+    const conn = await this.get(name)
+    if (conn.method !== "subscription") return { prices: { ...conn.prices }, subscription: false }
+    const keys: Record<string, Price> = {}
+    for (const other of (await this.names()).reverse()) {
+      if (other === name) continue
+      let file: ConnectionFile
+      try {
+        file = await this.get(other)
+      } catch (error) {
+        if (error instanceof ProviderError) continue
+        throw error
+      }
+      if (file.method !== "subscription") Object.assign(keys, file.prices)
+    }
+    return { prices: { ...keys, ...conn.prices }, subscription: true }
   }
 
   /** The connection and model a chat on `connection` and `model` runs on, and whether it moved. A chat whose

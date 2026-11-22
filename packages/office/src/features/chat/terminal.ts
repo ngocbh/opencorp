@@ -3,7 +3,9 @@
  *  `terminal/` folder; every command goes through the permissions of the run whose tools were last built (its mode,
  *  rules, Auto's check and cards); and each command the gate holds or refuses, and each one that ran, once it ends, is
  *  an audit row of the session's, of the run it started in. A command an office crash cut off gets its row at the
- *  next start (`auditInterrupted`). */
+ *  next start (`auditInterrupted`). The note of a command the agent was told runs on, once it ends, goes to the
+ *  session's actor (`onEnded`), and after a restart the actor holds a note of each one still owed (`restoreNotes`). */
+import fs from "node:fs"
 import path from "node:path"
 import { now } from "@opencorp/protocol"
 import { REASON_CHARS } from "../../runtime/permissions/monitor.ts"
@@ -11,10 +13,10 @@ import type { ApprovalCard, CheckInput, Mode, Permissions, Where } from "../../r
 import type { Instruments } from "../../runtime/sessions/instruments.ts"
 import type { Store } from "../../runtime/store/store.ts"
 import { shellInstrument } from "../../tools/terminal/instrument.ts"
-import { InstrumentRecord, type RecordFile } from "../../tools/terminal/record.ts"
+import { clearTold, InstrumentRecord, readRecord, RecordError, type RecordFile } from "../../tools/terminal/record.ts"
 import type { ShellState } from "../../tools/terminal/shell.ts"
 import {
-  Terminal, type TerminalAudit, type TerminalProfile, type TerminalShells,
+  type CommandEnded, restoredNote, Terminal, type TerminalAudit, type TerminalProfile, type TerminalShells,
 } from "../../tools/terminal/terminal.ts"
 import { newId } from "../../util/ids.ts"
 import { checkFolder, makePrivateFolder } from "../../util/private_files.ts"
@@ -67,6 +69,36 @@ export function auditInterrupted(
   }
 }
 
+/** The notes a restart may have cost the session at `folder`: one (`restoredNote`) for each command of its terminal's
+ *  records whose note the agent is still owed, oldest shell first, under that note's key, so a note the run already
+ *  has is never sent twice, and signed by its shell's name. A record that can't be read gives none. */
+export function restoreNotes(folder: string): { text: string; key: string; author: string }[] {
+  const dir = path.join(folder, "terminal")
+  let names: string[]
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return []
+  }
+  const files = names.flatMap((name) => {
+    try {
+      const file = readRecord(path.join(dir, name))
+      return file === null ? [] : [file]
+    } catch (error) {
+      if (error instanceof RecordError) return []
+      throw error
+    }
+  })
+  files.sort((a, b) => a.started.localeCompare(b.started))
+  return files.flatMap((file) =>
+    file.commands.flatMap((command) =>
+      command.told === undefined
+        ? []
+        : [{ text: restoredNote(file.name, command), key: command.told, author: file.name }],
+    ),
+  )
+}
+
 /** What an employee's terminal is made from; the agent sets none of it. */
 export interface EmployeeTerminalOptions {
   /** The workspace's pipes (`WorkspaceTools.pipes`). */
@@ -96,6 +128,10 @@ export class EmployeeTerminal {
   #permissions: Permissions | null = null
   /** The run each shell's running command started in, by shell name: its row, whenever it ends, is that run's. */
   readonly #startedIn = new Map<string, string | null>()
+  /** Who gets the notes of commands that ended: the session's actor. */
+  #onEnded: ((note: CommandEnded) => void) | null = null
+  /** The records of the shells it made, by shell id. */
+  readonly #records = new Map<string, InstrumentRecord>()
 
   constructor(o: EmployeeTerminalOptions) {
     this.#o = o
@@ -105,7 +141,24 @@ export class EmployeeTerminal {
       permissions: this.#forwarded(),
       shellHost: (name, profile) => this.#shellHost(name, profile),
       audit: (row) => this.#audit(row),
+      ended: (note) => this.#onEnded?.(note),
     })
+  }
+
+  /** Gives `listener` (the session's actor) the note of each command the agent was told runs on, once it ends; it
+   *  replaces any listener before it. */
+  onEnded(listener: (note: CommandEnded) => void): void {
+    this.#onEnded = listener
+  }
+
+  /** The run has the note under `key` (`terminal:<shell id>:<n>`): the shell's record, this terminal's or one an
+   *  earlier office left, owes it no more, so a restart never sends it again. */
+  delivered(key: string): void {
+    const shell = /^terminal:([^:/]+):\d+$/.exec(key)?.[1]
+    if (shell === undefined) return
+    const record = this.#records.get(shell)
+    if (record?.running) record.untold(key)
+    else clearTold(path.join(this.#o.folder, "terminal", shell), key)
   }
 
   /** The model-facing tools: the `terminal` group. */
@@ -187,6 +240,7 @@ export class EmployeeTerminal {
     const record = new InstrumentRecord(path.join(records, id), {
       id, name, kind: "terminal", profile, driver: person, started: now(),
     })
+    this.#records.set(id, record)
     const terminal = this.#terminal
     const shell = () => terminal.shell(id)
     const listing = shellInstrument({ sessionId, id, name, driver: person, profile, interactive: false, shell })

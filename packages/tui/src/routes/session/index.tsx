@@ -15,7 +15,15 @@ import {
 } from "solid-js"
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
-import type { ErrorPart, FilePart, Instrument, Message, Part, TextPart, ToolPart } from "@opencorp/protocol"
+import {
+  type ErrorPart,
+  type FilePart,
+  type Instrument,
+  isInstrumentNote,
+  type Message,
+  type TextPart,
+  type ToolPart,
+} from "@opencorp/protocol"
 import { createTwoFilesPatch } from "diff"
 import { useRoute, useRouteData } from "../../context/route"
 import { SplitBorder } from "../../ui/border"
@@ -77,6 +85,7 @@ import { InstrumentView, nextPlacement, PLACEMENTS, type InstrumentPlacement } f
 import { childSessions, InstrumentFooter } from "./instrument-footer"
 import { sessionOwner, speakerLabel } from "./speakers"
 import { endsLine } from "./keys"
+import { NoteLine } from "./note-line"
 import { LIVE } from "./terminal-pane"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
@@ -789,7 +798,7 @@ export function Session() {
       category: "Session",
       hidden: true,
       run: () => {
-        const message = messages().findLast((m) => m.role === "user" && hasText(m))
+        const message = messages().findLast((m) => m.role === "user" && !isInstrumentNote(m) && hasText(m))
         const child = message && scroll.getChildren().find((child) => child.id === message.id)
         if (child) scroll.scrollBy(child.y - scroll.y - 1)
       },
@@ -1077,6 +1086,9 @@ export function Session() {
                     <For each={shown()}>
                       {(message, index) => (
                         <Switch>
+                          <Match when={isInstrumentNote(message)}>
+                            <NoteLine message={message} index={index()} />
+                          </Match>
                           <Match when={message.role === "user"}>
                             <UserMessage
                               index={index()}

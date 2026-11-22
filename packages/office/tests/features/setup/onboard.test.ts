@@ -48,6 +48,8 @@ const OFFICE = fileURLToPath(new URL("../../..", import.meta.url))
 test("the owner defaults come from the login", () => {
   expect(ownerDefaults("ngocbh", "Hong Ngoc Bui,,,")).toEqual(["Hong Ngoc Bui", "ngocbh"])
   expect(ownerDefaults("Ngoc_Bui", "")).toEqual(["Ngoc_Bui", "ngoc-bui"])
+  // A login the office speaks as is no handle to suggest.
+  expect(ownerDefaults("office", "")).toEqual(["office", "owner"])
 })
 
 /** A company at `home` made as `opencorp init` makes it, with `handle` as CEO and no device. */
@@ -127,6 +129,20 @@ test("lint errors stop onboarding before anything runs", async () => {
   expect(run.calls).toEqual([])
   expect(fs.existsSync(path.join(home, "office", "install.json"))).toBe(false)
   expect(fs.existsSync(setupConnectionFile(path.join(home, "office")))).toBe(false)
+})
+
+test("a company with a person whose handle is reserved stops onboarding", async () => {
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  const root = await company(home)
+  fs.mkdirSync(path.join(root, "people", "office"))
+  const office = { handle: "office", name: "Office", kind: "human", title: "Desk", manager: "me" }
+  fs.writeFileSync(path.join(root, "people", "office", "person.yaml"), stringify(office))
+  const run = new Runner()
+  const error = await rejection(onboard(home, new Script(), { ...base(dir), host: makeHost(dir, run) }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("person.reserved_handle")
+  expect(run.calls).toEqual([])
 })
 
 test("an existing company without an identity suggests login", async () => {

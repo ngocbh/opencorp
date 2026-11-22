@@ -216,6 +216,21 @@ test("instrument.removed drops a session's instrument", () => {
   expect(s.instruments.OTHER).toBeUndefined()
 })
 
+test("message.removed drops a session's message", () => {
+  const s = synced()
+  for (const id of ["M1", "M2"]) {
+    const message = { id, session_id: S, role: "user", author: null, created_at: "t", parts: [] }
+    applyLive(s, live("message.updated", message))
+  }
+  applyLive(s, live("message.removed", { id: "M1", session_id: S }))
+  expect(s.messages[S].map((m) => m.id)).toEqual(["M2"])
+  // One it doesn't have, one named for another session, and malformed data change nothing.
+  applyLive(s, live("message.removed", { id: "M9", session_id: S }))
+  applyLive(s, live("message.removed", { id: "M2", session_id: "OTHER" }))
+  applyLive(s, live("message.removed", { id: 2, session_id: S }))
+  expect(s.messages[S].map((m) => m.id)).toEqual(["M2"])
+})
+
 test("an instrument of a kind the client doesn't know isn't kept", () => {
   const s = synced()
   applyLive(s, live("instrument.updated", instrument("I1", { kind: "browser" as Instrument["kind"] })))
@@ -289,6 +304,32 @@ test("instrument.output is handed to listeners, not kept in the store", async ()
   const s = synced()
   applyLive(s, output)
   expect(s).toEqual(synced())
+  sync.stop()
+})
+
+test("an instrument's note is cleaned as a message is, its instrument's name too; its id stays as sent", async () => {
+  const note: Message = {
+    id: "N1",
+    session_id: S,
+    role: "user",
+    author: null,
+    instrument: { id: "01JA1X0000000000000000000A", name: "shell 1" },
+    parts: [{ id: "n1", type: "text", text: "shell 1: `make` ended, exit 2" }],
+    created_at: "t",
+  }
+  const routes: Record<string, () => unknown> = {
+    [`GET /sessions/${S}`]: () => session(),
+    [`GET /sessions/${S}/messages`]: () => [note],
+    [`GET /questions?session=${S}`]: () => [] as Question[],
+    [`GET /sessions/${S}/instruments`]: () => [],
+  }
+  const { state, sync, send, online } = stubSync(routes)
+  await online()
+  await sync.syncSession(S)
+  const cleaned = { ...note, instrument: { id: "01JA1X0000000000000000000A", name: "SHELL 1" } }
+  expect(state.messages[S]).toEqual([{ ...cleaned, parts: [{ id: "n1", type: "text", text: "SHELL 1: `MAKE` ENDED, EXIT 2" }] }])
+  send({ type: "live", event: live("message.updated", { ...note, id: "N2" }) })
+  expect(state.messages[S]![1]!.instrument).toEqual({ id: "01JA1X0000000000000000000A", name: "SHELL 1" })
   sync.stop()
 })
 

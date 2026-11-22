@@ -34,6 +34,11 @@ test("clean repo has no issues", async () => {
   expect(await lint(loadRepo(company()))).toEqual([])
 })
 
+test("a person with a reserved handle is a lint error", async () => {
+  const root = makeCompany({ "people/opencorp/person.yaml": person("minh", { handle: "opencorp" }) })
+  expect(await issues(root)).toContain("person.reserved_handle people/opencorp/person.yaml")
+})
+
 test("unknown manager", async () => {
   const root = makeCompany({ "people/minh/person.yaml": person("minh", { manager: "ghost" }) })
   expect(await issues(root)).toContain("person.unknown_manager people/minh/person.yaml")
