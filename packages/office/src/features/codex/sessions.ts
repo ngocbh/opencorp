@@ -122,7 +122,7 @@ export class CodexSessions implements SessionHarness {
   /** The tail of the continuations' serial section. */
   #continuing: Promise<unknown> = Promise.resolve()
   /** How the owner's message continues each instrument session an office restart cut off (`resumable`). */
-  readonly #resumers = new Map<string, () => Promise<void>>()
+  readonly #resumers = new Map<string, (by: string | null) => Promise<void>>()
 
   constructor(office: CodexOffice, hooks: Hooks, options: CodexSessionsOptions = {}) {
     this.office = office
@@ -354,13 +354,13 @@ export class CodexSessions implements SessionHarness {
     const session = this.#codexSession(sessionId)
     for (const refusal of this.hooks.fire("promptCheck", session, text))
       if (refusal) throw new HarnessError(422, "refused", String(refusal))
-    if (!this.#live.has(sessionId)) await continueFirst(this.#resumers.get(sessionId))
+    if (!this.#live.has(sessionId)) await continueFirst(this.#resumers.get(sessionId), by)
     return this.#must(sessionId).prompt(text, { by })
   }
 
   /** Lets a message to instrument session `id`, which an office restart cut off, continue it first through `resume`
    *  (its chat's instrument); null takes that away. */
-  resumable(id: string, resume: (() => Promise<void>) | null): void {
+  resumable(id: string, resume: ((by: string | null) => Promise<void>) | null): void {
     if (resume === null) this.#resumers.delete(id)
     else this.#resumers.set(id, resume)
   }

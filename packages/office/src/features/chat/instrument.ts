@@ -32,7 +32,7 @@ export interface InstrumentSessions {
     o: { observer: ThreadEvents; label: (author: string | null) => string; owner: string | null },
   ): Promise<unknown>
   /** Lets the owner's message to session `id`, which an office restart cut off, continue it through `resume`. */
-  resumable(id: string, resume: (() => Promise<void>) | null): void
+  resumable(id: string, resume: ((by: string | null) => Promise<void>) | null): void
   prompt(sessionId: string, text: string, options: { by: string | null }): Promise<unknown>
   interrupt(sessionId: string): Promise<void>
   end(sessionId: string): Promise<void>

@@ -142,7 +142,7 @@ export class ClaudeSessions {
   readonly #libraries: ((file: string) => string[]) | undefined
   readonly #live = new Map<string, ClaudeSession>()
   /** How the owner's message continues each instrument session an office restart cut off (`resumable`). */
-  readonly #resumers = new Map<string, () => Promise<void>>()
+  readonly #resumers = new Map<string, (by: string | null) => Promise<void>>()
   #closed = false
 
   constructor(office: ClaudeOffice, options: ClaudeSessionsOptions = {}) {
@@ -302,13 +302,13 @@ export class ClaudeSessions {
    *  office restart cut off continues it first, through its chat's instrument. 404 for no session, 409 `not_live` for
    *  one that has ended. */
   async prompt(sessionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<string> {
-    if (!this.#live.has(sessionId)) await continueFirst(this.#resumers.get(sessionId))
+    if (!this.#live.has(sessionId)) await continueFirst(this.#resumers.get(sessionId), by)
     return this.#must(sessionId).prompt(text, by)
   }
 
   /** Lets a message to session `id`, which an office restart cut off, continue it first through `resume` (its
    *  chat's instrument); null takes that away. */
-  resumable(id: string, resume: (() => Promise<void>) | null): void {
+  resumable(id: string, resume: ((by: string | null) => Promise<void>) | null): void {
     if (resume === null) this.#resumers.delete(id)
     else this.#resumers.set(id, resume)
   }

@@ -104,9 +104,10 @@ export interface HarnessHost {
   recordsDir(): string
   /** Where a warning goes: a record refused. */
   log(line: string): void
-  /** Lets the owner's message to session `id`, one an earlier office left, continue it through `resume` first, as
-   *  the driver's `send` would; null takes that away. `resume` rejects, saying why, when it can't. */
-  resumable(id: string, resume: (() => Promise<void>) | null): void
+  /** Lets a message `by` someone to session `id`, one an earlier office left, continue it through `resume` first, as
+   *  the driver's `send` would, when `by` is the owner; null takes that away. `resume` rejects, saying why, when it
+   *  doesn't continue it. */
+  resumable(id: string, resume: ((by: string | null) => Promise<void>) | null): void
   /** Lists `instrument` as the chat's; publishes a change of `id`; takes `id` out of the list. */
   list(instrument: HarnessListing): void
   changed(id: string): void
@@ -291,13 +292,18 @@ export class HarnessInstrument {
       } catch (error) {
         host.log(`${harness.kind} session ${entry.id} of chat ${host.sessionId} isn't listed (${(error as Error).name})`)
       }
-      if (entry.restored) host.resumable(entry.id, () => this.ownerWrites(entry))
+      if (entry.restored) host.resumable(entry.id, (by) => this.ownerWrites(entry, by))
     }
   }
 
-  /** The owner wrote to `entry`'s session, one an earlier office left: it continues first, as the driver's `send`
-   *  would, the owner's word never held back by the live sessions' cap. Rejects, saying why, when it can't. */
-  private ownerWrites(entry: Entry): Promise<void> {
+  /** `by` wrote to `entry`'s session, one an earlier office left: when `by` is the owner it continues first, as the
+   *  driver's `send` would, the owner's word never held back by the live sessions' cap. Rejects, saying why, for
+   *  anyone else, and when it can't. */
+  private ownerWrites(entry: Entry, by: string | null): Promise<void> {
+    const { owner } = this.host
+    if (owner === null || by !== owner) {
+      return Promise.reject(new Error(`only ${this.host.label(owner)} may write in this ${this.harness.title} session`))
+    }
     return this.queue(entry, async () => {
       if (!entry.restored) return
       if (this.closed) throw new Error(this.notes.closed)
@@ -474,7 +480,7 @@ export class HarnessInstrument {
         entry.record.suspend()
         if (!this.suspended) {
           this.host.changed(entry.id)
-          this.host.resumable(entry.id, () => this.ownerWrites(entry))
+          this.host.resumable(entry.id, (by) => this.ownerWrites(entry, by))
         }
         return { refused: this.notes.stopping }
       }

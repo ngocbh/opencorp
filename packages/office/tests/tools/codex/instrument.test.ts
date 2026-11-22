@@ -104,8 +104,8 @@ class Host implements CodexHost {
   /** Each session opened to resume one an earlier office left: its id, and the Codex thread it resumes. */
   readonly resumes: { id: string; resume: string }[] = []
   readonly lines: string[] = []
-  /** How the owner's message continues each session an earlier office left, by its id. */
-  readonly resumers = new Map<string, () => Promise<void>>()
+  /** How a message continues each session an earlier office left, by its id, given who wrote it. */
+  readonly resumers = new Map<string, (by: string | null) => Promise<void>>()
   /** What `open` rejects with, when set; what it waits for before it opens, when set. */
   failOpen: Error | null = null
   hold: Promise<void> | null = null
@@ -142,7 +142,7 @@ class Host implements CodexHost {
     this.lines.push(line)
   }
 
-  resumable(sessionId: string, resume: (() => Promise<void>) | null): void {
+  resumable(sessionId: string, resume: ((by: string | null) => Promise<void>) | null): void {
     if (resume === null) this.resumers.delete(sessionId)
     else this.resumers.set(sessionId, resume)
   }
@@ -678,7 +678,11 @@ test("the owner's message to a restored session continues it through the host's 
   const r = await restarted(m)
   for (let i = 0; i < MAX_LIVE; i++) await started(r, `New job ${i}.`)
   const [id] = [...r.host.resumers.keys()]
-  await r.host.resumers.get(id!)!()
+  // Anyone else's message continues nothing, and isn't let past the cap.
+  await expect(r.host.resumers.get(id!)!("lan")).rejects.toThrow("Ngoc (owner)")
+  await expect(r.host.resumers.get(id!)!(null)).rejects.toThrow("Ngoc (owner)")
+  expect(r.host.resumes).toEqual([])
+  await r.host.resumers.get(id!)!(OWNER)
   expect(r.host.resumes).toEqual([{ id: id!, resume: `thr-${id}` }])
   expect(r.host.listed.get(id!)!.info()).toMatchObject({ name: "codex 1", status: "idle" })
   // It continued: no longer the owner's to wake, and the driver's next send goes straight to it.

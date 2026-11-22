@@ -32,7 +32,8 @@ to Claude Code if it lists claude.
 
 - **Sessions.** The line under the prompt counts their Codex and Claude Code sessions. "Open an instrument…" in the
   command list (ctrl+p), or ctrl+x down, opens one as a chat of its own, where you watch the harness work and write
-  to it too; ctrl+x up goes back. A chat has at most four live sessions of each harness.
+  to it too; ctrl+x up goes back. Only the chat's opener (its company's CEO for a chat nobody opened) writes there
+  besides your employee. A chat has at most four live sessions of each harness.
 - **Two speakers.** The session shows who sent each message, and the harness reads each one with its author and is
   told your word wins: your employee reads what you told it with its next answer, and can't interrupt or stop a turn
   you started. A message you or your employee send while Claude Code works joins its turn once its running tool calls

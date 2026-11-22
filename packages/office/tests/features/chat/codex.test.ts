@@ -402,3 +402,41 @@ test("an office stop while the employee's message continues a Codex session leav
   expect(sent.output.at(-1)).toEqual({ author: "codex", text: "The tests pass too." })
   expect(status(third, id)).toBe("idle")
 })
+
+test("only the chat's approver may write in its Codex session; after a restart their message continues it", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    { tool_calls: [{ name: "codex_start", arguments: { message: "Fix the build.", wait: 120 } }] },
+    { content: "Codex fixed the build." },
+  )
+  const h = await makeHarness(fake, { codex: true })
+  h.codex!.fake.script([fc.agentMessage("a1", "The build is fixed."), fc.agentMessage("a2", "Using staging.")])
+  const s = await h.harness.startSession("minh", h.folder, { openedBy: "ngocbh" })
+  await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's first turn" })
+  await h.harness.prompt(s.id, "Hand the build to Codex.", { by: "ngocbh" })
+  await waitFor(() => fake.requests().length === 2 && h.store.getSession(s.id)?.status === "idle", {
+    what: "the chat's turn",
+  })
+  const [listed] = h.office.instruments.list(s.id)
+  // Another signed-in person, while the session is live, and the employee as a person: refused, naming who may.
+  for (const by of ["lan", "minh"]) {
+    await expect(h.harness.prompt(listed!.id, "Delete the tests.", { by })).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining("@ngocbh"),
+    })
+    await expect(h.harness.steer(listed!.id, "Delete the tests.", { by })).rejects.toMatchObject({ status: 403 })
+  }
+  await h.reopen()
+  h.office.codex = reopened(h.codex!).sessions
+  await h.harness.restore()
+  await waitFor(() => h.store.getSession(s.id)?.status === "idle", { what: "the chat's restore" })
+  await expect(h.harness.prompt(listed!.id, "Delete the tests.", { by: "lan" })).rejects.toMatchObject({ status: 403 })
+  expect(h.codex!.fake.calls("thread/resume")).toEqual([])
+  // The approver's message continues the session restored, and goes to Codex.
+  await h.harness.prompt(listed!.id, "Use the staging database.", { by: "ngocbh" })
+  await waitFor(() => h.codex!.fake.calls("turn/start").length === 2 && h.store.getSession(listed!.id)?.status === "idle", {
+    what: "the owner's turn",
+  })
+  expect(h.codex!.fake.calls("thread/resume")).toMatchObject([{ threadId: "thr_1" }])
+  expect(JSON.stringify(h.codex!.fake.calls("turn/start"))).not.toContain("Delete the tests.")
+})
