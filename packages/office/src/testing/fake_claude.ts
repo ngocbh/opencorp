@@ -3,12 +3,13 @@
  *  and the SDK's `pathToClaudeCodeExecutable` alike. It never touches a real `claude`, its config or the network: its
  *  state is the folder `installFakeClaude` is given.
  *
- *  Every line it writes has the keys of a line real Claude Code wrote (`tests/fixtures/claude/stream.jsonl`, from the
- *  upstream TUI's recordings, 2.1.301 to 2.1.309), except where "unrecorded" says no recording holds it. What it
+ *  Every line it writes has the keys of a line real Claude Code wrote (`tests/fixtures/claude/stream-2.1.330.jsonl`,
+ *  O5's recordings of 2.1.330 under an employee's start; `stream.jsonl`, the upstream TUI's of 2.1.302 and 2.1.309,
+ *  for an API error and a mode change), except where "unrecorded" says no recording holds it. What it
  *  doesn't model at all it doesn't guess: it exits `FAKE_CLAUDE_UNMODELLED`, saying "not modelled: …" on stderr and
  *  in the log, so no test passes by relying on a guess.
  *
- *  What it guesses, from Claude Code's docs, to re-record in O5: the read-only commands (the docs' list; a real one
+ *  What it guesses, from Claude Code's docs: the read-only commands (the docs' list; a real one
  *  has more, so a command the fake refuses may run unasked for real); the protected paths (`.git` and `.claude`);
  *  which Bash commands a `Read` or `Edit` rule reaches (redirects, `cat`, `head`, `tail`, `tee`, `sed` and the file
  *  operations); `permissions.additionalDirectories`, and a JSON `--settings`' `/` rules, anchored at the working
@@ -17,7 +18,7 @@
  *  - **Start.** `--version` prints the version. Any other run needs `--input-format stream-json --output-format
  *    stream-json`, else it exits 2. It reads `--session-id`, `--resume`, `--permission-mode`,
  *    `--permission-prompt-tool`, `--permission-prompts` (`host` or `none`), `--model`, `--settings` (JSON, or a JSON
- *    file), `--setting-sources`, `--allowedTools`, `--disallowedTools`, `--add-dir`, `--append-system-prompt` and
+ *    file), `--setting-sources`, `--tools`, `--allowedTools`, `--disallowedTools`, `--add-dir`, `--append-system-prompt` and
  *    `--append-system-prompt-file` (read whole at the start, logged as `appended`; one it can't read stops the start,
  *    its wording unrecorded), as `--flag v` or `--flag=v`, and the bare `--strict-mcp-config`, `--verbose`,
  *    `--dangerously-skip-permissions` and `--no-session-persistence` (no session kept). Any other flag, and any
@@ -26,30 +27,31 @@
  *    and a stderr line (its wording unrecorded); without `failIfUnavailable` it goes on unsandboxed, as Claude Code
  *    does.
  *  - **`initialize`** is answered, after the script's `slow_start` seconds if it has them, with the version, models, `commands: []`, the permission mode, the pid and the
- *    account, `{tokenSource: "none", apiProvider: "firstParty"}` when the script is `signed_out`; `hooks_applied`
- *    when the request registers hooks, which may be `PreToolUse` and `PostToolUse` only.
- *  - **A turn.** A `user` line, when no turn runs, starts one: `session_state_changed` running, the line's
+ *    account, `{tokenSource: "none", apiProvider: "firstParty"}` when the script is `signed_out`. Hooks aren't
+ *    modelled: no recording of 2.1.330 holds them, and the office registers none.
+ *  - **Its tools.** `system`/`init` lists them as recorded: `--tools`' names (`""` none, `default` the default set),
+ *    else the default set (`Task` first, then the rest by name), less each tool a bare deny rule names. A tool step for
+ *    a tool not listed gets the recorded `No such tool available` error.
+ *  - **A turn.** A `user` line, when no turn runs, starts one: the line's
  *    `command_lifecycle` queued and started (a line with no `uuid` gets none), `system`/`init`, the script's next turn
- *    of steps, then `completed` for the lines that joined, the `result`, `completed` for the first line, and idle. A
+ *    of steps, then `completed` for the lines that joined, the `result`, and `completed` for the first line. A
  *    line sent during a turn is `queued` at once; with `priority: "next"`, or with none, it joins the turn at the next
  *    step (`started` then), and with `priority: "later"` it waits for the turn to end, as the Agent SDK's docs give
  *    them (`SDKUserMessage.priority`; unrecorded). `priority: "now"`, which interrupts or backgrounds the turn, isn't
  *    modelled, nor is any other value. Steps:
  *    - `{"say": text}` writes an assistant text; the last is the result's `result`;
- *    - `{"tool": name, "input", "result"?, "is_error"?}` writes the `tool_use`, asks as below, runs it, gives each
- *      `PostToolUse` hook the host registered a `hook_callback` unless it failed (an answer other than `{}` isn't
- *      modelled), then writes the `tool_result`. A `Bash` with no `result` runs its `command` for real under
+ *    - `{"tool": name, "input", "result"?, "is_error"?}` writes the `tool_use`, asks as below, runs it, then writes
+ *      the `tool_result`. A `Bash` with no `result` runs its `command` for real under
  *      `/bin/sh -c` in the fake's folder, not sandboxed, in a process group that ends with the step, so nothing it
  *      starts outlives it; its result is the output, stdout then stderr, with "Exit code N" first when it fails (the
- *      text and `tool_use_result`'s fields unrecorded). Another tool with no `result` returns "";
+ *      text and `tool_use_result`'s fields unrecorded); one with `run_in_background` isn't modelled. Another tool
+ *      with no `result` returns "";
  *    - `{"sleep": seconds}`; `{"fail": text, "status"?}` ends the turn with an API error as recorded;
  *      `{"exit": code}` exits at once, as a crash would, leaving what `spawn` started;
  *    - `{"spawn": seconds}` starts `sleep <seconds>` in the fake's own process group, as a command Claude Code runs
  *      may be, logs its pid as `{"dir": "spawn", "pid": n}`, and leaves it running: only the group's kill ends it.
- *  - **How it asks before a tool,** in the order Claude Code's docs give (all unrecorded, from the docs; O5
- *    re-records it):
- *    1. each `PreToolUse` hook whose `matcher` takes the tool gets a `hook_callback`; a `deny` refuses, and an
- *       `allow` or `ask` still meets the rules;
+ *  - **How it asks before a tool,** in the order Claude Code's docs give (unrecorded, from the docs):
+ *    1. a tool the session doesn't list is refused;
  *    2. the deny rules, from `--disallowedTools` and the settings' `permissions.deny`: in every mode;
  *    3. the ask rules, `permissions.ask`, ask even in `bypassPermissions`; a bare `Bash` one gives way to the sandbox;
  *    4. the sandbox's auto-allow runs `Bash` in every mode: the sandbox enabled and up, `autoAllowBashIfSandboxed` on
@@ -64,24 +66,25 @@
  *       write or a read;
  *    6. else, unless the mode is `dontAsk`, with `--permission-prompt-tool stdio` the host gets `can_use_tool` and
  *       answers `{behavior: "allow", updatedInput?}` or `{behavior: "deny", message}`; anything else is refused, as
- *       a headless Claude Code with no way to ask.
+ *       a headless Claude Code with no way to ask: with `--permission-prompts none` as recorded, a
+ *       `system`/`permission_denied` line first and its text as the result (what required approval unrecorded).
  *
  *    `blockReadsOutsideWorkingDirectories` and `blockWritesOutsideWorkingDirectories` refuse a file tool's path
  *    outside the working folders in every mode. Rules are `Tool`, `Tool(*)`, tool-name globs, `Bash(pattern)` with
  *    `*` and `:*`, and `Read(path)` and `Edit(path)` with the `//`, `~/`, `/` and relative anchors and `*`, `**` and
  *    `?`; a refusal is an error `tool_result` and a `permission_denials` entry (its text and meta unrecorded). Not
- *    modelled: the `plan` and `auto` modes, other rule forms, negated or bracketed paths, a hook's `defer`,
- *    `decision` or `continue`, a `can_use_tool` answer's `interrupt` or `updatedPermissions`, `sed` under
+ *    modelled: the `plan` and `auto` modes, other rule forms, negated or bracketed paths, a `can_use_tool` answer's
+ *    `interrupt` or `updatedPermissions`, `sed` under
  *    `acceptEdits`, the removal of a critical path, a command behind a wrapper where a rule or the read-only set must
  *    judge it, and a command the fake can't parse (substitutions, subshells, groups, here-docs, control flow) where it
  *    must judge it.
  *  - **Interrupts.** Mid-turn, `interrupt` is answered `{still_queued}`, then `[Request interrupted by user]` and an
  *    `error_during_execution` result; while a tool waits on the host or runs, that tool's `tool_result` is rejected
- *    and `[Request interrupted by user for tool use]` follows. The turn's lines are `cancelled`. `still_queued` lists
- *    the uuids of the lines still waiting, which run next (unrecorded: the recordings had none), as the docs give
- *    `SDKControlInterruptResponse`. With `cancel_queued: true` (`interrupt_cancel_queued_v1`, which `system`/`init`
- *    lists) none of them run: each is `cancelled` once the answer is written, the answer lists them under
- *    `cancelled`, and `still_queued` is empty (the order unrecorded). With no turn the answer comes at once. `set_permission_mode` gets a plain success (unrecorded; shaped as `apply_flag_settings`'
+ *    and `[Request interrupted by user for tool use]` follows. The turn's lines are `cancelled`. As recorded,
+ *    `still_queued` lists the uuids of the lines still waiting, which then run as a turn of their own. With
+ *    `cancel_queued: true` (`interrupt_cancel_queued_v1`, which `system`/`init` lists) none of them run: each is
+ *    `cancelled` before the answer, which lists them under `cancelled`, `still_queued` empty. With no turn the answer
+ *    comes at once. `set_permission_mode` gets a plain success (unrecorded; shaped as `apply_flag_settings`'
  *    recorded answer); any other control request gets an error (unrecorded).
  *  - **Sessions.** Each session's lines are kept in `<state>/sessions/<id>.jsonl`. `--resume <id>` goes on with the
  *    script's turn after the session's last; an unknown id exits 1 (its wording unrecorded).
@@ -91,8 +94,9 @@
  *    A SIGKILL can't be caught, so a fake killed that way leaves its running Bash group behind: stop it by closing
  *    stdin or with SIGTERM, never with SIGKILL first.
  *
- *  It writes no `status`, `rate_limit_event`, `stream_event` or `thinking_tokens` lines, which real Claude Code
- *  writes too; a driver ignores them. */
+ *  It writes no `status`, `rate_limit_event`, `stream_event`, `thinking_tokens`, `task_started`, `task_updated`,
+ *  `task_notification` or `background_tasks_changed` lines, nor thinking blocks, which real Claude Code writes too:
+ *  the office reads none of them (its tests feed it the recorded ones). */
 import { type ChildProcess, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import fs from "node:fs"
@@ -204,7 +208,7 @@ function readLines(file: string): Obj[] {
     .map((line) => JSON.parse(line) as Obj)
 }
 
-const VERSION = "2.1.319"
+const VERSION = "2.1.330"
 const VALUED = new Set([
   "session-id",
   "resume",
@@ -213,6 +217,7 @@ const VALUED = new Set([
   "model",
   "settings",
   "setting-sources",
+  "tools",
   "allowedTools",
   "disallowedTools",
   "add-dir",
@@ -282,10 +287,14 @@ const SIGNED_IN = {
   apiProvider: "firstParty",
 }
 const SIGNED_OUT = { tokenSource: "none", apiProvider: "firstParty" }
-const TOOLS = ["Bash", "Edit", "Glob", "Grep", "Read", "Write"]
+/** The tools `system`/`init` lists with no `--tools`, as 2.1.330 recorded them on Linux: `Task` first, then by name. */
+const DEFAULT_TOOLS = [
+  "Task", "Bash", "CronCreate", "CronDelete", "CronList", "DesignSync", "Edit", "Monitor", "NotebookEdit",
+  "PushNotification", "Read", "RemoteTrigger", "ReportFindings", "ScheduleWakeup", "Skill", "TaskStop", "ToolSearch",
+  "Workflow", "Write",
+]
 const READS = new Set(["Read", "Glob", "Grep", "LS"])
 const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"])
-const HOOK_EVENTS = new Set(["PreToolUse", "PostToolUse"])
 const INIT_CAPABILITIES = ["interrupt_receipt_v1", "interrupt_cancel_queued_v1", "msg_lifecycle_v1", "ui_surface_v1"]
 const MESSAGE_USAGE = {
   input_tokens: 0,
@@ -337,9 +346,18 @@ const SUBAGENT_STATS = {
   refused: { depth_limit: 0, concurrency_limit: 0, budget: 0 },
   by_type: {},
 }
-/** The recorded tool results' decision, for every tool the fake lets run; what a hook's, a prompt's or a mode's allow
- *  writes there is unrecorded. */
-const ALLOWED = { permission_decision: { decision: "accept", source: "config", reason_type: "rule" } }
+/** The recorded tool results' decision, for every tool the fake lets run; what a prompt's or a mode's allow writes
+ *  there is unrecorded. */
+const ALLOWED = { permission_decision: { decision: "accept", source: "config", reason_type: "other" } }
+/** What a refused call that would have asked says, with nobody to ask (`--permission-prompts none`), as recorded. */
+const NO_APPROVAL =
+  "Permission for this tool use was denied. It requires approval, and this session has no approval surface \u2014 " +
+  "nobody can answer a permission prompt here \u2014 so it was denied automatically. The action was NOT performed; do " +
+  "not claim it succeeded, and do not retry it: this action, and anything else that requires approval, will be " +
+  "denied the same way for the rest of this session. Tell the user what was blocked and why you needed it, then " +
+  "continue with the parts of the task that do not require approval. What required approval: "
+const noSuchTool = (tool: string) =>
+  `No such tool available: ${tool}. ${tool} is disabled for this session, in subagents as well as here.`
 const REJECTED =
   "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the " +
   "new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
@@ -347,16 +365,6 @@ const REJECTED =
 const denied = (tool: string) => `Permission to use ${tool} has been denied.`
 const now = () => new Date().toISOString()
 const isObj = (v: unknown): v is Obj => v !== null && typeof v === "object" && !Array.isArray(v)
-
-/** A hook matcher as Claude Code reads one: none or `*` takes every tool, else a pattern of tool names. */
-function matches(matcher: unknown, tool: string): boolean {
-  if (typeof matcher !== "string" || matcher === "" || matcher === "*") return true
-  try {
-    return new RegExp(`^(?:${matcher})$`).test(tool)
-  } catch {
-    return matcher === tool
-  }
-}
 
 type Verdict = { allow: true; input: Obj } | { allow: false; message: string; source: string }
 
@@ -618,9 +626,14 @@ class Policy {
     return abs === "/" || abs === this.home || this.dirs.some((dir) => dir === abs || dir.startsWith(abs + path.sep))
   }
 
-  /** After the hooks, as the docs order it: the deny rules, the ask rules, the sandbox's auto-allow and the mode,
-   *  the allow rules and what needs no approval. The result is `allow`, `ask`, or a refusal's text. */
-  decide(tool: string, input: Obj, mode: string, hook: "allow" | "ask" | null): "allow" | "ask" | { deny: string } {
+  /** Whether a bare deny rule names `tool` (`Edit`, not `Edit(...)`), which takes it out of the session's tools. */
+  removes(tool: string): boolean {
+    return this.rules.some((r) => r.kind === "deny" && !r.text.includes("(") && r.names(tool))
+  }
+
+  /** As the docs order it: the deny rules, the ask rules, the sandbox's auto-allow and the mode, the allow rules and
+   *  what needs no approval. The result is `allow`, `ask`, or a refusal's text. */
+  decide(tool: string, input: Obj, mode: string): "allow" | "ask" | { deny: string } {
     let parsed: Simple[] | null | undefined
     const subs = (): Simple[] => {
       parsed ??= parseCommand(String(input.command ?? ""))
@@ -643,8 +656,8 @@ class Policy {
           this.matches(rule, tool, target, subs),
       )
     if (hit("deny")) return { deny: denied(tool) }
-    if (hook === "ask" || hit("ask")) return "ask"
-    if (hook === "allow" || sandboxed || mode === "bypassPermissions") return "allow"
+    if (hit("ask")) return "ask"
+    if (sandboxed || mode === "bypassPermissions") return "allow"
     if (tool === "Bash") return subs().every((sub, _, all) => this.approved(sub, all, mode)) ? "allow" : "ask"
     if (this.allowed(tool, target)) return "allow"
     if (READS.has(tool) && !outside) return "allow"
@@ -821,7 +834,8 @@ class Fake {
   readonly version: string
   readonly model: string
   readonly sessionFile: string
-  hooks: Obj = {}
+  /** What `system`/`init` lists. */
+  readonly tools: string[]
   turn: Turn | null = null
   readonly queue: Obj[] = []
   /** The uuids whose `queued` is written already. */
@@ -847,6 +861,11 @@ class Fake {
     this.model = alias ?? flags.model ?? models[0]?.resolvedModel ?? "claude-opus-5-5"
     this.sessionFile = path.join(state, "sessions", `${sessionId}.jsonl`)
     this.turnsDone = readLines(this.sessionFile).filter((m) => m.type === "system" && m.subtype === "init").length
+    const named = flags.tools
+    const base =
+      named === undefined || named === "default" ? DEFAULT_TOOLS : splitRules(String(named)).filter((t) => t !== "")
+    const listed = new Set([...base.filter((t) => !policy.removes(t))])
+    this.tools = [...listed].sort((a, b) => (a === "Task" ? -1 : b === "Task" ? 1 : a < b ? -1 : a > b ? 1 : 0))
   }
 
   log(entry: Obj): void {
@@ -951,8 +970,7 @@ class Fake {
     const id = msg.request_id
     const subtype = msg.request?.subtype
     if (subtype === "initialize") {
-      this.hooks = isObj(msg.request.hooks) ? msg.request.hooks : {}
-      for (const event of Object.keys(this.hooks)) if (!HOOK_EVENTS.has(event)) unmodelled(`a ${event} hook`)
+      if (isObj(msg.request.hooks) && Object.keys(msg.request.hooks).length > 0) unmodelled("hooks")
       const slow = this.script.slow_start ?? 0
       if (slow <= 0) return this.write(this.initializeAnswer(id))
       setTimeout(() => this.write(this.initializeAnswer(id)), slow * 1000)
@@ -989,11 +1007,12 @@ class Fake {
       const at = this.queue.indexOf(msg)
       if (at !== -1) this.queue.splice(at, 1)
     }
-    this.write(answer(id, { still_queued: [], cancelled }))
+    // As recorded: each is cancelled before the answer.
     for (const uuid of cancelled) {
       this.announced.delete(uuid)
       this.write(this.lifecycle(uuid, "cancelled"))
     }
+    this.write(answer(id, { still_queued: [], cancelled }))
   }
 
   start(msg: Obj): void {
@@ -1022,7 +1041,6 @@ class Fake {
       stop,
     }
     this.turn = turn
-    this.write(this.stateChanged("running"))
     this.begin(turn, first)
     this.write(this.init(turn))
     const steps = this.script.turns?.[this.turnsDone] ?? []
@@ -1066,7 +1084,6 @@ class Fake {
   /** Ends the turn's lines (`uuids`) with `state`, goes idle, and starts the next waiting line. */
   settle(turn: Turn, state: "completed" | "cancelled", uuids: string[] = turn.uuids): void {
     for (const uuid of uuids) this.write(this.lifecycle(uuid, state))
-    this.write(this.stateChanged("idle"))
     this.turn = null
     const next = this.queue.shift()
     if (next !== undefined && !this.ending) this.start(next)
@@ -1109,23 +1126,36 @@ class Fake {
     const name = step.tool
     const input = step.input ?? {}
     const id = `toolu_fake_${++this.ids}`
+    if (name === "Bash" && input.run_in_background === true) unmodelled("a Bash command in the background")
     this.write(
       this.assistant(turn, [{ type: "tool_use", id, name, input, caller: { type: "direct" } }], {
         wire_tool_inputs: { [id]: input },
-        // The recorded meta is an MCP tool's; a built-in tool's is unrecorded.
-        tool_use_meta: [{ id, display_name: name, tool_name: name }],
       }),
     )
     turn.tool = id
-    const started = Date.now()
+    if (!this.tools.includes(name)) {
+      turn.tool = null
+      turn.requests++
+      const said = noSuchTool(name)
+      return this.write(this.toolResult(id, `<tool_use_error>Error: ${said}</tool_use_error>`, true, `Error: ${said}`))
+    }
     const verdict = await this.permit(turn, name, input, id)
     if (verdict === null) return
     turn.requests++
     if (!verdict.allow) {
       turn.tool = null
       turn.denials.push({ tool_name: name, tool_use_id: id, tool_input: input })
-      // The decision's values are unrecorded.
-      const meta = { permission_decision: { decision: "reject", source: verdict.source, reason_type: verdict.source } }
+      if (verdict.source === "nobody") {
+        this.write({ type: "system", subtype: "permission_denied", tool_name: name, tool_use_id: id,
+          decision_reason_type: "asyncAgent",
+          decision_reason: "no approval surface in this session; permission request denied automatically",
+          message: verdict.message, uuid: randomUUID(), session_id: this.sessionId })
+        const meta = { non_execution_kind: "permission-rule",
+          permission_decision: { decision: "reject", source: "config", reason_type: "asyncAgent" } }
+        return this.write(this.toolResult(id, verdict.message, true, `Error: ${verdict.message}`, meta))
+      }
+      // The decision's values but a rule's are unrecorded.
+      const meta = { permission_decision: { decision: "reject", source: "config", reason_type: verdict.source } }
       return this.write(this.toolResult(id, verdict.message, true, `Error: ${verdict.message}`, meta))
     }
     let content = step.result ?? ""
@@ -1138,91 +1168,26 @@ class Fake {
       isError = ran.code !== 0
       content = isError ? [`Exit code ${ran.code}`, output].filter((s) => s !== "").join("\n") : output
       const { stdout, stderr } = ran
-      used = isError ? `Error: ${content}` : { stdout, stderr, interrupted: false, isImage: false }
+      used = isError ? `Error: ${content}` : { stdout, stderr, interrupted: false, isImage: false, noOutputExpected: false }
     }
-    // As recorded, a tool that failed gets no PostToolUse callback.
-    if (!isError && !(await this.after(turn, name, verdict.input, id, used, started))) return
     turn.tool = null
     this.write(this.toolResult(id, content, isError, used, ALLOWED))
   }
 
-  /** The callback ids of the host's hooks on `event` whose matcher takes `tool`. */
-  callbacks(event: string, tool: string): string[] {
-    const hooks: unknown = this.hooks[event]
-    return (Array.isArray(hooks) ? hooks : [])
-      .filter((hook) => isObj(hook) && matches(hook.matcher, tool))
-      .flatMap((hook) => strings(hook.hookCallbackIds))
-  }
-
-  hookInput(turn: Turn, event: string): Obj {
-    return {
-      session_id: this.sessionId,
-      transcript_path: this.sessionFile,
-      cwd: this.cwd,
-      prompt_id: turn.promptId,
-      permission_mode: this.mode,
-      effort: { level: "medium" },
-      hook_event_name: event,
-    }
-  }
-
-  /** The PostToolUse callbacks after a tool ran; false when an interrupt comes first. Their output isn't modelled. */
-  async after(turn: Turn, name: string, input: Obj, id: string, response: unknown, started: number): Promise<boolean> {
-    for (const callback of this.callbacks("PostToolUse", name)) {
-      const answered = await this.ask(turn, {
-        subtype: "hook_callback",
-        callback_id: callback,
-        input: {
-          ...this.hookInput(turn, "PostToolUse"),
-          tool_name: name,
-          tool_input: input,
-          tool_response: response,
-          tool_use_id: id,
-          duration_ms: Date.now() - started,
-        },
-        tool_use_id: id,
-      })
-      if (answered === null) return false
-      if (!isObj(answered.response) || Object.keys(answered.response).length > 0)
-        unmodelled("a PostToolUse hook's output")
-    }
-    return true
-  }
-
-  /** Whether a tool runs, null when an interrupt comes first: the host's PreToolUse hooks (a deny refuses; an allow
-   *  still meets the deny and ask rules), then the policy, then, where it would ask, `can_use_tool` with
-   *  `--permission-prompt-tool stdio` unless the mode is dontAsk, which refuses. The decision fields, `can_use_tool`
-   *  and the refusals' text are unrecorded; a hook's `defer`, `decision` or `continue`, and a `can_use_tool` answer's
-   *  `interrupt` or `updatedPermissions`, aren't modelled. */
+  /** Whether a tool runs, null when an interrupt comes first: the policy, then, where it would ask, `can_use_tool`
+   *  with `--permission-prompt-tool stdio` unless the mode is dontAsk, which refuses. `can_use_tool` and the refusals'
+   *  text are unrecorded but with nobody to ask (`--permission-prompts none`); a `can_use_tool` answer's `interrupt`
+   *  or `updatedPermissions` isn't modelled. */
   async permit(turn: Turn, name: string, input: Obj, id: string): Promise<Verdict | null> {
-    let [hook, used]: ["allow" | "ask" | null, Obj] = [null, input]
-    for (const callback of this.callbacks("PreToolUse", name)) {
-      const answered = await this.ask(turn, {
-        subtype: "hook_callback",
-        callback_id: callback,
-        input: { ...this.hookInput(turn, "PreToolUse"), tool_name: name, tool_input: used, tool_use_id: id },
-        tool_use_id: id,
-      })
-      if (answered === null) return null
-      const out = isObj(answered.response) ? answered.response : {}
-      if ("decision" in out || "continue" in out) unmodelled("a PreToolUse hook's decision or continue")
-      const specific = isObj(out.hookSpecificOutput) ? out.hookSpecificOutput : {}
-      if (isObj(specific.updatedInput)) used = specific.updatedInput
-      const decision = specific.permissionDecision
-      if (decision === "defer") unmodelled("a PreToolUse hook's defer")
-      if (decision === "deny") {
-        const reason = specific.permissionDecisionReason
-        return { allow: false, message: typeof reason === "string" ? reason : denied(name), source: "hook" }
-      }
-      if (decision === "ask" || (decision === "allow" && hook === null)) hook = decision
-    }
-    const decided = this.policy.decide(name, used, this.mode, hook)
-    if (decided === "allow") return { allow: true, input: used }
+    const decided = this.policy.decide(name, input, this.mode)
+    if (decided === "allow") return { allow: true, input }
     if (decided !== "ask") return { allow: false, message: decided.deny, source: "rule" }
-    // --permission-prompts none: nobody answers, so the host isn't asked (the refusal's text unrecorded).
-    const noHost = this.flags["permission-prompt-tool"] !== "stdio" || this.flags["permission-prompts"] === "none"
-    if (this.mode === "dontAsk" || noHost) return { allow: false, message: denied(name), source: "mode" }
-    const answered = await this.ask(turn, { subtype: "can_use_tool", tool_name: name, input: used, tool_use_id: id })
+    // --permission-prompts none: nobody answers, so the host isn't asked; what required approval is unrecorded.
+    if (this.flags["permission-prompts"] === "none")
+      return { allow: false, message: `${NO_APPROVAL}${name}, as the fake's rules read it.`, source: "nobody" }
+    if (this.mode === "dontAsk" || this.flags["permission-prompt-tool"] !== "stdio")
+      return { allow: false, message: denied(name), source: "mode" }
+    const answered = await this.ask(turn, { subtype: "can_use_tool", tool_name: name, input, tool_use_id: id })
     if (answered === null) return null
     const r = isObj(answered.response) ? answered.response : {}
     if (r.updatedPermissions !== undefined) unmodelled("a can_use_tool answer's updatedPermissions")
@@ -1274,7 +1239,6 @@ class Fake {
   }
 
   initializeAnswer(id: unknown): Obj {
-    const hooked = Object.keys(this.hooks).length > 0
     return {
       type: "control_response",
       response: {
@@ -1291,7 +1255,9 @@ class Fake {
           pid: process.pid,
           claude_code_version: this.version,
           current_permission_mode: this.mode,
-          ...(hooked ? { hooks_applied: true } : {}),
+          hook_on_failure_supported: true,
+          hooks_when_unanswered_kept: 0,
+          other_hook_ask_outranks_host: true,
           feedback_mode: { kind: "bundle" },
           analytics_disabled: false,
           remote_control_auto_enable: false,
@@ -1310,11 +1276,6 @@ class Fake {
     }
   }
 
-  stateChanged(state: "running" | "idle"): Obj {
-    const [uuid, session_id] = [randomUUID(), this.sessionId]
-    return { type: "system", subtype: "session_state_changed", state, sdk_host_only: true, uuid, session_id }
-  }
-
   lifecycle(uuid: string, state: string): Obj {
     return { type: "command_lifecycle", command_uuid: uuid, state, uuid: randomUUID(), session_id: this.sessionId }
   }
@@ -1325,7 +1286,7 @@ class Fake {
       subtype: "init",
       cwd: this.cwd,
       session_id: this.sessionId,
-      tools: TOOLS,
+      tools: this.tools,
       mcp_servers: [],
       model: this.model,
       permissionMode: this.mode,
@@ -1348,6 +1309,9 @@ class Fake {
       fast_mode_disabled_reason: "sdk_opt_in_required",
       per_turn_effort_active: true,
       view_mode: "default",
+      served_by_anthropic: true,
+      ultrathink_available: false,
+      ultrathink_typed_raises: false,
       ...(turn.uuids.length > 0 ? { user_message_uuids: [...turn.uuids] } : {}),
     }
   }
@@ -1417,11 +1381,12 @@ class Fake {
     }
   }
 
-  toolResult(id: string, content: string, isError: boolean, used: unknown, meta: Obj): Obj {
+  /** A tool's result; with no `meta`, none is written, as for a tool the session doesn't have. */
+  toolResult(id: string, content: string, isError: boolean, used: unknown, meta?: Obj): Obj {
     // Keys in the recorded order: an error's differ from a success's.
     const block = isError
       ? { type: "tool_result", content, is_error: true, tool_use_id: id }
-      : { tool_use_id: id, type: "tool_result", content }
+      : { tool_use_id: id, type: "tool_result", content, is_error: false }
     return {
       type: "user",
       message: { role: "user", content: [block] },
@@ -1430,7 +1395,7 @@ class Fake {
       uuid: randomUUID(),
       timestamp: now(),
       tool_use_result: used,
-      tool_result_meta: [{ id, ...meta }],
+      ...(meta === undefined ? {} : { tool_result_meta: [{ id, ...meta }] }),
     }
   }
 
@@ -1480,9 +1445,13 @@ class Fake {
         costBasis: "list",
       },
     }
+    // 2.1.330's; an API error's result is recorded only from 2.1.302, which had none of them.
+    const since = { model_usage_since_last_result: modelUsage }
     if (end === "completed")
       return {
         ...common,
+        ...since,
+        first_request_cache_read_input_tokens: 0,
         stop_reason: "end_turn",
         modelUsage,
         terminal_reason: "completed",
@@ -1511,6 +1480,7 @@ class Fake {
     const stop = end === "aborted_tools" ? "tool_use" : null
     return {
       ...common,
+      ...since,
       stop_reason: stop,
       modelUsage,
       terminal_reason: end,
