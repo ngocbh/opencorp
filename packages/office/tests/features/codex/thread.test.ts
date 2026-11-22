@@ -23,7 +23,7 @@ import { UnsafeProfile } from "../../../src/runtime/sandbox/policy.ts"
 import { APP_SERVER_ARGS, CodexProcess, nativeCodex, threadLoad } from "../../../src/tools/codex/codex.ts"
 import { RpcError } from "../../../src/tools/codex/rpc.ts"
 import { isGone, tempDir, waitFor } from "../../helpers.ts"
-import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import { sandboxAvailable, standaloneCodex } from "../../runtime/sandbox/helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -280,6 +280,15 @@ test("a config the app-server can't read fails the load: an MCP server left on w
   }
 })
 
+/** `value` as a TOML value on one line: tables inline, keys quoted. */
+function tomlOf(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(value)
+  if (typeof value === "boolean") return String(value)
+  if (Array.isArray(value)) return `[${value.map(tomlOf).join(", ")}]`
+  const entries = Object.entries(value as Record<string, unknown>)
+  return `{ ${entries.map(([key, v]) => `${JSON.stringify(key)} = ${tomlOf(v)}`).join(", ")} }`
+}
+
 /** The probe's options over `layout`'s home, running `script` in the fake. */
 function probeOptions(dir: string, home: string, script: object) {
   fs.mkdirSync(dir, { recursive: true })
@@ -336,6 +345,52 @@ test("doctor's probe says why a thread that starts can't be used", async () => {
   expect((await threadProbe(refused)).failed?.why).toStartWith("thread/start failed: ")
   const misread = probeOptions(path.join(root, "misread"), home, { load_answer: { approvalPolicy: "on-request" } })
   expect((await threadProbe(misread)).failed?.why).toContain('Codex loaded the thread with approval policy "on-request"')
+})
+
+/** The `codex sandbox` runs the fake logged in `log`: each one's arguments after `sandbox`. */
+function sandboxRuns(log: string): string[][] {
+  return fs
+    .readFileSync(log, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter((e) => e.dir === "sandbox")
+    .map((e) => e.args)
+}
+
+test("doctor's probe runs one command in Codex's sandbox under the thread's profile and override, with no model turn", async () => {
+  const { root, home } = layout()
+  // An MCP server the owner's config defines: the command runs under the thread's override, which turns it off.
+  const options = probeOptions(path.join(root, "probe"), home, { mcp_servers: { docs: {} } })
+  expect(await threadProbe(options)).toEqual({ failed: null, projectConfigs: [], mcpServers: ["docs"] })
+  const log = path.join(root, "probe/rpc.jsonl")
+  const [start] = calls(log, "thread/start") as Record<string, any>[]
+  expect(start!.config.mcp_servers).toEqual({ docs: { enabled: false } })
+  const [args] = sandboxRuns(log)
+  const flags = Object.entries(start!.config).flatMap(([key, value]) => ["-c", `${key}=${tomlOf(value)}`])
+  expect(args).toEqual(["-P", "opencorp-doctor", "-C", start!.cwd, ...flags, "--", "/bin/sh", "-c", "echo opencorp-sandbox-ok"])
+  expect(calls(log, "turn/start")).toEqual([])
+})
+
+test("doctor's probe fails when its command can't run in Codex's sandbox, saying what Codex said", async () => {
+  const { root, home } = layout()
+  const said = "bwrap: execvp /home/u/.codex/packages/standalone/releases/0.171.0/bin/codex: Permission denied"
+  const options = probeOptions(path.join(root, "probe"), home, { sandbox_stderr: `${said}\n`, sandbox_exit: 1 })
+  const log = path.join(harnessTemp(options.base), "doctor-codex.log")
+  expect(await threadProbe(options)).toEqual({
+    failed: { why: `a command in Codex's sandbox failed: ${said}`, log },
+    projectConfigs: [],
+    mcpServers: [],
+  })
+  expect(fs.readFileSync(log, "utf8")).toContain(said)
+  // A panic names the reason on its second line; a command that prints nothing has its exit.
+  const panic = probeOptions(path.join(root, "panic"), home, {
+    sandbox_stderr: "thread 'main' (2) panicked at linux-sandbox/src/launcher.rs:68:13:\nbubblewrap is unavailable\n",
+    sandbox_exit: 101,
+  })
+  expect((await threadProbe(panic)).failed?.why).toBe("a command in Codex's sandbox failed: bubblewrap is unavailable")
+  const silent = probeOptions(path.join(root, "silent"), home, { sandbox_exit: 3 })
+  expect((await threadProbe(silent)).failed?.why).toBe("a command in Codex's sandbox failed: exit 3")
 })
 
 test("doctor's probe refuses a codex others could change before it runs it", async () => {
@@ -661,6 +716,22 @@ test.skipIf(NO_CODEX)(
       projectConfigs: [own],
       mcpServers: [],
     })
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
+  "doctor's probe fails a real codex whose binary its sandbox can't run: a wrapper outside ~/.codex running the one in it",
+  async () => {
+    const { root, options } = realHome()
+    const inside = fs.realpathSync(standaloneCodex(options.home, options.codex.install))
+    const wrapper = path.join(root, "tools/bin/codex")
+    fs.mkdirSync(path.dirname(wrapper), { recursive: true })
+    fs.writeFileSync(wrapper, `#!/bin/sh\nexec ${inside} "$@"\n`, { mode: 0o755 })
+    for (const p of [wrapper, path.dirname(wrapper), path.dirname(path.dirname(wrapper))]) fs.chmodSync(p, 0o755)
+    const { failed } = await threadProbe({ ...options, codex: { ...nativeCodex(wrapper), found: wrapper } })
+    expect(failed?.why).toStartWith("a command in Codex's sandbox failed: ")
+    expect(failed?.why).toMatch(/execvp \S*\/bin\/codex: Permission denied$/)
   },
   120_000,
 )

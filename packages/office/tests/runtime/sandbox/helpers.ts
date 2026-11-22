@@ -323,3 +323,32 @@ export async function helperTool(policy: SandboxPolicy, request: object): Promis
   }
   return reply as HelperReply
 }
+
+/** The files of a Codex install its sandbox needs, as its install folder holds them: the binary, the bubblewrap it
+ *  bundles, the folder Codex puts first on its commands' PATH, and its package file. */
+const CODEX_FILES = ["bin/codex", "codex-resources/bwrap", "codex-path/rg", "codex-package.json"]
+
+/** A copy of the Codex installed in `from` (an install folder, as `nativeCodex` finds it) where Codex's own standalone
+ *  installer puts one, `<home>/.codex/packages/standalone/releases/<version>-<target>` (those of its package file),
+ *  with `<home>/.local/bin/codex` linking to it, as the installer links it; each folder and file only the user may
+ *  change. Only what the sandbox needs is copied (`CODEX_FILES`, those `from` has), and `from` is only read. Returns
+ *  the link. */
+export function standaloneCodex(home: string, from: string): string {
+  const pkg = path.join(from, "codex-package.json")
+  const { version = "0.0.0", target = "test" } = fs.existsSync(pkg) ? JSON.parse(fs.readFileSync(pkg, "utf8")) : {}
+  const release = path.join(home, ".codex/packages/standalone/releases", `${version}-${target}`)
+  for (const rel of CODEX_FILES.filter((rel) => fs.existsSync(path.join(from, rel)))) {
+    const to = path.join(release, rel)
+    fs.mkdirSync(path.dirname(to), { recursive: true })
+    fs.copyFileSync(path.join(from, rel), to)
+    fs.chmodSync(to, rel.endsWith(".json") ? 0o644 : 0o755)
+  }
+  for (let dir = release; dir !== home; dir = path.dirname(dir)) fs.chmodSync(dir, 0o755)
+  for (const sub of ["bin", "codex-resources", "codex-path"]) {
+    if (fs.existsSync(path.join(release, sub))) fs.chmodSync(path.join(release, sub), 0o755)
+  }
+  const link = path.join(home, ".local/bin/codex")
+  fs.mkdirSync(path.dirname(link), { recursive: true })
+  fs.symlinkSync(path.join(release, "bin/codex"), link)
+  return link
+}

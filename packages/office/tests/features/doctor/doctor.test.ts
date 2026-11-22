@@ -1578,6 +1578,25 @@ test("a thread that starts but can't be used fails the check, saying why", async
   })
 })
 
+test("a codex whose sandbox can't run a command fails the check, saying what it said", async () => {
+  const { dir, office, base } = probeHomes()
+  const said = "bwrap: execvp /home/u/.codex/packages/standalone/releases/0.171.0/bin/codex: Permission denied"
+  const { env, log } = fakeAppServer(dir, { sandbox_stderr: `${said}\n`, sandbox_exit: 1 })
+  expect(await doctor.codexCheck(env, {}, null, { office, base })).toEqual({
+    name: "codex",
+    status: "fail",
+    detail:
+      `codex-cli 0.167.0-fake at ${path.join(dir, "bin", "codex")} is signed in, but a thread under an employee's ` +
+      `permission can't be used: a command in Codex's sandbox failed: ${said}; Codex's output is in ` +
+      path.join(harnessTemp(base), "doctor-codex.log"),
+  })
+  // It ran under the thread's profile, in the probe's folder.
+  const [sandbox] = fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
+    .filter((e) => e.dir === "sandbox")
+  expect(sandbox.args.slice(0, 2)).toEqual(["-P", "opencorp-doctor"])
+  expect(sandbox.args.slice(-4)).toEqual(["--", "/bin/sh", "-c", "echo opencorp-sandbox-ok"])
+})
+
 test("a project codex trusts whose own config it would load is a warning naming it", async () => {
   const { dir, office, base } = probeHomes()
   const project = path.join(dir, "project")
