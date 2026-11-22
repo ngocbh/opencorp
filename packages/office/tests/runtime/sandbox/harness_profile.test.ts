@@ -219,6 +219,23 @@ test("every Codex override turns hooks, apps, plugins, memories, notify and the 
   expect(mcpServersOff([])).toEqual({})
 })
 
+test("the MCP servers an employee may use stay as the owner's Codex config has them, and every other one is off", () => {
+  const { permission, thread } = layout()
+  const defined = ["github", "docs", "web"]
+  const { config } = thread(permission({ allowedMcp: ["github", "web"] }), { mcpServers: defined })
+  expect(config.mcp_servers).toEqual({ docs: { enabled: false } })
+  // A name the owner's config doesn't define allows nothing and is passed nowhere: Codex refuses an entry for it.
+  expect(thread(permission({ allowedMcp: ["linear"] }), { mcpServers: defined }).config.mcp_servers).toEqual(
+    mcpServersOff(defined),
+  )
+  // Every defined server allowed: none is turned off, and the key is left out.
+  expect("mcp_servers" in thread(permission({ allowedMcp: defined }), { mcpServers: defined }).config).toBe(false)
+  // The allow-list touches nothing else of the override.
+  const plain = thread(permission(), { mcpServers: defined }).config
+  const allowed = thread(permission({ allowedMcp: ["github"] }), { mcpServers: defined }).config
+  expect({ ...allowed, mcp_servers: undefined }).toEqual({ ...plain, mcp_servers: undefined })
+})
+
 test("a read-only employee's folder is read-only in both harnesses, Claude Code's Bash write to it denied too", () => {
   const { home, ws, tmp, fence, install, permission, filesystem } = layout()
   const p = permission({ writable: false })

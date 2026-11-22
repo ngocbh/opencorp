@@ -185,6 +185,33 @@ test("the load turns off exactly the MCP servers the owner's Codex config define
   }
 })
 
+test("the load keeps on only the MCP servers the employee may use, and Codex runs only those", async () => {
+  const { root, ws, install, permission } = layout()
+  const servers = { github: { command: "gh-mcp" }, docs: { command: "docs-mcp" }, web: { url: "https://e.com/mcp" } }
+  const { proc, log } = await fakeServer(path.join(root, "fake"), { mcp_servers: servers })
+  try {
+    // A name the owner's config doesn't define allows nothing.
+    const p = permission({ allowedMcp: ["github", "linear"] })
+    const params = await employeeLoad(proc.rpc!, p, "opencorp-S1", install)
+    expect(calls(log, "config/read")).toEqual([{ cwd: ws, includeLayers: true }])
+    expect((params.config as Record<string, unknown>).mcp_servers).toEqual({
+      docs: { enabled: false },
+      web: { enabled: false },
+    })
+    const loaded = (await proc.rpc!.request("thread/start", { ...params, ephemeral: true })) as { thread: { id: string } }
+    const listed = (await proc.rpc!.request("mcpServerStatus/list", { threadId: loaded.thread.id })) as {
+      data: { name: string; runtimeStatus: string }[]
+    }
+    expect(listed.data).toEqual([
+      { name: "github", runtimeStatus: "connected" },
+      { name: "docs", runtimeStatus: "disabled" },
+      { name: "web", runtimeStatus: "disabled" },
+    ])
+  } finally {
+    await proc.close(1000)
+  }
+})
+
 test("a project config codex would load, as the owner trusts the project, refuses the load; one it won't load doesn't", async () => {
   const { root, ws, install, permission } = layout()
   const dotCodex = path.join(ws, ".codex")
@@ -487,6 +514,36 @@ test.skipIf(NO_CODEX)(
     } finally {
       await second.proc.close(2000)
     }
+  },
+  120_000,
+)
+
+test.skipIf(NO_CODEX)(
+  "a real codex runs the owner's MCP server the employee may use, and keeps the other off",
+  async () => {
+    const real = realHome()
+    const { root, codexHome, marker, options } = real
+    const allowedMarker = path.join(root, "allowed-mcp-ran")
+    const config =
+      real.config + `\n[mcp_servers.allowed]\ncommand = "sh"\nargs = ["-c", "touch ${allowedMarker}; exec sleep 3"]\n`
+    fs.writeFileSync(path.join(codexHome, "config.toml"), config)
+    const { p, proc } = await realServer(real, path.join(real.root, "ws"))
+    p.allowedMcp = ["allowed"]
+    try {
+      await proc.start()
+      const params = await employeeLoad(proc.rpc!, p, "opencorp-real", options.codex.install)
+      expect((params.config as Record<string, unknown>).mcp_servers).toEqual({ probe: { enabled: false } })
+      const loaded = await proc.rpc!.request("thread/start", { ...params, ephemeral: true })
+      checkLoaded(loaded, "opencorp-real")
+      const threadId = (loaded as { thread: { id: string } }).thread.id
+      await proc.rpc!.request("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly" })
+      await waitFor(() => fs.existsSync(allowedMarker), { timeout: 15_000, what: "the allowed MCP server" })
+      await sleep(1000)
+      expect(fs.existsSync(marker)).toBe(false)
+    } finally {
+      await proc.close(2000)
+    }
+    expect(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8")).toBe(config)
   },
   120_000,
 )

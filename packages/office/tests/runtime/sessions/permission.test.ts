@@ -1,5 +1,5 @@
-/** An employee's permission for their harness, from their person: the folder's access, the network and the folders
- *  their `harness_policy` lists, as both harnesses take them. */
+/** An employee's permission for their harness, from their person: the folder's access, the network, the folders
+ *  their `harness_policy` lists and the MCP servers it allows, as both harnesses take them. */
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
@@ -91,6 +91,7 @@ test("the employee's harness gets the person's folders as listed", () => {
     officeHome,
     office: { home },
     othersWritable: [],
+    allowedMcp: [],
   })
   expect(notes).toEqual([])
   // Codex mounts each with its access, and lifts the deny-by-name of the credential folder it covers, never the fence.
@@ -162,10 +163,26 @@ test("another person's writable folders, at the session's commit or at head, and
   expect(harnessPath(later).split(":")).not.toContain(path.join(ml, "bin"))
 })
 
+test("the employee's harness may use the MCP servers their person allows, each plain name once; another person's don't count", () => {
+  const { install, permission } = layout()
+  const ann = person("minh", { handle: "ann", name: "Ann", harness_policy: { mcp_servers: ["docs"] } })
+  const mcp_servers = ["github", "a.b", "my server", "linear", "github"]
+  const p = permission({ minh: minh({ mcp_servers }), ann })
+  // A name that isn't plain allows nothing, as lint says.
+  expect(p.allowedMcp).toEqual(["github", "linear"])
+  const defined = ["github", "a.b", "my server", "docs", "linear"]
+  expect(codexThread(p, "opencorp-s1", { install, mcpServers: defined }).config.mcp_servers).toEqual({
+    "a.b": { enabled: false },
+    "my server": { enabled: false },
+    docs: { enabled: false },
+  })
+  expect(permission({ minh: minh(null) }).allowedMcp).toEqual([])
+})
+
 test("with no harness policy the folder is read-only and offline, and a path that isn't absolute is refused at start", () => {
   const { ws, install, permission } = layout()
   const bare = permission({ minh: minh(null) })
-  expect([bare.writable, bare.network, bare.folders]).toEqual([false, false, []])
+  expect([bare.writable, bare.network, bare.folders, bare.allowedMcp]).toEqual([false, false, [], []])
   expect(codexThread(bare, "opencorp-s1", { install }).config.projects).toEqual({
     [ws]: { trust_level: "untrusted" },
   })

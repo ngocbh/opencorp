@@ -3,8 +3,9 @@
  *
  *  OpenCorp puts no sandbox of its own around a harness. The harness runs as the owner, with its own login and
  *  config; its sandbox holds its commands (and Codex's file edits) to the employee's permission. What a harness would
- *  otherwise run as the owner outside that sandbox is turned off: hooks, `notify`, apps, plugins and MCP servers; the
- *  folder's own project config stays untrusted, unless the owner's config already trusts it (the load then refuses). */
+ *  otherwise run as the owner outside that sandbox is turned off: hooks, `notify`, apps, plugins and MCP servers (but
+ *  those the owner allows the employee); the folder's own project config stays untrusted, unless the owner's config
+ *  already trusts it (the load then refuses). */
 import fs from "node:fs"
 import path from "node:path"
 import {
@@ -39,6 +40,9 @@ export interface EmployeePermission {
   fence: string
   /** The person's extra folders (`harness_policy.folders`; empty until then), each mounted as given. */
   folders: readonly { path: string; access: "read" | "write" }[]
+  /** The owner's MCP servers the person may use, by name (`harness_policy.mcp_servers`, plain names only): each runs
+   *  as the owner, outside this permission. Every other server stays off. */
+  allowedMcp?: readonly string[]
   /** The owner's home and `<OPENCORP_HOME>`, denied by name except where a listed folder covers them. */
   home: string
   officeHome: string
@@ -151,7 +155,8 @@ interface Kept {
  *
  *  `install` is the folder Codex is installed in (the one holding the `bin` of its resolved binary): its sandboxed
  *  commands run Codex's own binary, so the profile reads it, and it is refused if the employee can write it.
- *  `mcpServers` are the owner's MCP servers (`mcpServersOff`). Throws as `checkPermission` does. */
+ *  `mcpServers` are the owner's MCP servers: each but those `p` allows is turned off (`mcpServersOff`). Throws as
+ *  `checkPermission` does. */
 export function codexThread(
   p: EmployeePermission,
   id: string,
@@ -193,7 +198,11 @@ export function codexThread(
     features: { hooks: false, apps: false, plugins: false, memories: false, skill_mcp_dependency_install: false },
     notify: [],
   }
-  if (mcpServers.length > 0) config.mcp_servers = mcpServersOff(mcpServers)
+  // An allowed server keeps whatever the owner's config sets for it; a project's own servers never load (the load
+  // refuses a project config Codex would read).
+  const allowed = new Set(p.allowedMcp ?? [])
+  const off = mcpServers.filter((name) => !allowed.has(name))
+  if (off.length > 0) config.mcp_servers = mcpServersOff(off)
   // Codex's own web search reaches the web from the harness, outside the sandbox.
   if (!c.network) config.web_search = "disabled"
   return { permissions: id, config }

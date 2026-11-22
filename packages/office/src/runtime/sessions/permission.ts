@@ -1,9 +1,11 @@
 /** An employee's permission for their harness, from their person: the session's folder writable or read-only and the
- *  network on or off as their `harness_policy` sets them, and the folders it lists, each mounted as listed. */
+ *  network on or off as their `harness_policy` sets them, the folders it lists, each mounted as listed, and the owner's
+ *  MCP servers it allows. */
 import fs from "node:fs"
 import path from "node:path"
 import type { HarnessPolicy } from "@opencorp/protocol"
 import type { CompanyRepo } from "../../company/loader.ts"
+import { MCP_SERVER_NAME } from "../../company/naming.ts"
 import type { EmployeePermission } from "../sandbox/harness_profile.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 
@@ -24,8 +26,9 @@ export interface Others {
   workspaces?: readonly string[]
 }
 
-/** The permission of `session`'s person in `repo` for one harness thread in the session's folder: read-only and
- *  offline when they have no `harness_policy` (or aren't in `repo`), and their folders as `listedFolders` gives them.
+/** The permission of `session`'s person in `repo` for one harness thread in the session's folder: read-only, offline
+ *  and with no MCP server when they have no `harness_policy` (or aren't in `repo`), their folders as `listedFolders`
+ *  gives them, and each plain MCP server name it allows, once.
  *  What others may write stays off the harness PATH: every other person's writable folders in `repo`, everyone's in
  *  `others.repos` (this person's too, since a session of theirs started there may write them), and
  *  `others.workspaces`. */
@@ -58,6 +61,8 @@ export function employeePermission(
     officeHome: office.officeHome,
     office: office.guards,
     othersWritable: [...new Set([...othersWritable, ...(others.workspaces ?? [])])],
+    // A name that isn't plain allows nothing, as lint reports it.
+    allowedMcp: [...new Set((policy?.mcp_servers ?? []).filter((name) => MCP_SERVER_NAME.test(name)))],
   }
 }
 
