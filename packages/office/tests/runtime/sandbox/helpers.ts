@@ -137,6 +137,11 @@ export function sandboxAvailable(): boolean {
   return available
 }
 
+/** The pattern of a `sleep <marker>` command line, by path or not, the marker matched as it is written. */
+function sleepPattern(marker: string): RegExp {
+  return new RegExp(`(^|/)sleep ${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`)
+}
+
 /** A process a test started: its pid, and its start time (`startTime`), which tells it from a later one on its pid. */
 export interface Started {
   readonly pid: number
@@ -147,7 +152,7 @@ export interface Started {
  *  left out, from one `ps` listing. */
 function ownSleeping(marker: string): number[] {
   const out = spawnSync("ps", ["-A", "-o", "pid=,ppid=,stat=,command="], { encoding: "utf8" }).stdout
-  const pattern = new RegExp(`(^|/)sleep ${marker}$`)
+  const pattern = sleepPattern(marker)
   const rows = out
     .split("\n")
     .map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/))
@@ -214,7 +219,7 @@ export async function ended(procs: readonly Started[], waitMs = 5_000): Promise<
 /** The pids of processes whose command line is `sleep <marker>` (by path or not). */
 function sleepers(marker: string): number[] {
   const out = spawnSync("ps", ["-A", "-o", "pid=,command="], { encoding: "utf8" }).stdout
-  const pattern = new RegExp(`(^|/)sleep ${marker}$`)
+  const pattern = sleepPattern(marker)
   return out
     .split("\n")
     .map((line) => line.trim().match(/^(\d+)\s+(.*)$/))

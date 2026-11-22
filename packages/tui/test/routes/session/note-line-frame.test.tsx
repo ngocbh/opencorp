@@ -71,8 +71,7 @@ test("a note shows as one line in the info colour, and a click opens the whole n
     // Under the line, in order.
     expect(at(f, HEADING).y).toBeLessThan(at(f, "It ran for 4m12s").y)
     expect(at(f, "FAIL src/app.test.ts").y).toBeLessThan(at(f, "The tests failed").y)
-    // Elsewhere on the line, and later, so it isn't a double click, which selects a word.
-    await Bun.sleep(600)
+    // Ten cells along the line: a click more than a cell from the last is never a double click, which selects a word.
     await app.setup.mockMouse.click(line.x + 12, at(f, HEADING).y)
     f = await app.until((f) => !f.includes("FAIL src/app.test.ts"))
     expect(f).toContain(`↳ ${HEADING}`)

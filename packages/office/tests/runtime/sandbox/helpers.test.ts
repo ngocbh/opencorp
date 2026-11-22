@@ -31,3 +31,13 @@ test("an identical sleep outside this test's tree never matches", async () => {
     process.kill(pid, "SIGKILL")
   }
 })
+
+test("a marker is matched as it is written: its dot is no wildcard", async () => {
+  const other = spawn("sleep", ["7173"], { stdio: "ignore" })
+  try {
+    expect((await ownSleepers("7173")).map((p) => p.pid)).toEqual([other.pid!])
+    expect(await ownSleepers("7.73", { waitMs: 300 })).toEqual([])
+  } finally {
+    other.kill("SIGKILL")
+  }
+})
