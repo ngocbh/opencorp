@@ -22,10 +22,10 @@
  *    `--append-system-prompt-file` (read whole at the start, logged as `appended`; one it can't read stops the start,
  *    its wording unrecorded), as `--flag v` or `--flag=v`, and the bare `--strict-mcp-config`, `--verbose`,
  *    `--dangerously-skip-permissions` and `--no-session-persistence` (no session kept). Any other flag, and any
- *    argument that is no flag's value, isn't modelled. With the
- *    script's `sandbox_unavailable`, settings that enable the sandbox with `failIfUnavailable` stop the start: exit 1
- *    and a stderr line (its wording unrecorded); without `failIfUnavailable` it goes on unsandboxed, as Claude Code
- *    does.
+ *    argument that is no flag's value, isn't modelled. Settings that enable the sandbox with `failIfUnavailable`
+ *    stop the start where it can't run (the script's `sandbox_unavailable`): as recorded, `initialize` gets no answer
+ *    but a `result` naming `startup_failure_reason` `sandbox_required_unavailable`, the reason goes to stderr, and
+ *    stdin's end exits 1. Without `failIfUnavailable` it goes on unsandboxed, as Claude Code does.
  *  - **`initialize`** is answered, after the script's `slow_start` seconds if it has them, with the version, models, `commands: []`, the permission mode, the pid and the
  *    account, `{tokenSource: "none", apiProvider: "firstParty"}` when the script is `signed_out`. Hooks aren't
  *    modelled: no recording of 2.1.330 holds them, and the office registers none.
@@ -361,6 +361,8 @@ const NO_APPROVAL =
   "continue with the parts of the task that do not require approval. What required approval: "
 const noSuchTool = (tool: string) =>
   `No such tool available: ${tool}. ${tool} is disabled for this session, in subagents as well as here.`
+/** What a start the sandbox stops writes on stderr and in its result, as recorded. */
+const SANDBOX_REASON = "Sandbox required but unavailable: sandbox is enabled but dependencies are missing"
 const REJECTED =
   "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the " +
   "new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
@@ -839,6 +841,8 @@ class Fake {
   readonly sessionFile: string
   /** What `system`/`init` lists. */
   readonly tools: string[]
+  /** Why the sandbox stops the start, when it does: `initialize` then gets this as a result, and no answer. */
+  readonly startupFailure: string | null
   turn: Turn | null = null
   readonly queue: Obj[] = []
   /** The uuids whose `queued` is written already. */
@@ -857,7 +861,9 @@ class Fake {
     readonly policy: Policy,
     public mode: string,
     readonly sessionId: string,
+    startupFailure: string | null = null,
   ) {
+    this.startupFailure = startupFailure
     this.version = script.version ?? VERSION
     const models = script.models ?? MODELS
     const alias = models.find((m) => m.value === flags.model)?.resolvedModel
@@ -932,6 +938,7 @@ class Fake {
     })
     // Background work keeps Claude Code open after stdin ends, as its headless docs say.
     lines.on("close", () => {
+      if (this.startupFailure !== null) return this.end(1)
       const background = this.script.background ?? 0
       if (background <= 0) return this.end(0)
       setTimeout(() => this.end(0), background * 1000)
@@ -941,6 +948,8 @@ class Fake {
   }
 
   handle(msg: Obj): void {
+    // A start the sandbox stopped answers nothing but `initialize`, with its result.
+    if (this.startupFailure !== null && msg.request?.subtype !== "initialize") return
     if (msg.type === "control_request") {
       try {
         return this.control(msg)
@@ -974,6 +983,7 @@ class Fake {
     const subtype = msg.request?.subtype
     if (subtype === "initialize") {
       if (isObj(msg.request.hooks) && Object.keys(msg.request.hooks).length > 0) unmodelled("hooks")
+      if (this.startupFailure !== null) return this.write(this.startupResult(this.startupFailure))
       const slow = this.script.slow_start ?? 0
       if (slow <= 0) return this.write(this.initializeAnswer(id))
       setTimeout(() => this.write(this.initializeAnswer(id)), slow * 1000)
@@ -1413,6 +1423,29 @@ class Fake {
     }
   }
 
+  /** The result a start the sandbox stopped writes in place of `initialize`'s answer, as recorded. */
+  startupResult(reason: string): Obj {
+    return {
+      type: "result",
+      subtype: "error_during_execution",
+      duration_ms: 0,
+      duration_api_ms: 0,
+      is_error: true,
+      num_turns: 0,
+      stop_reason: null,
+      session_id: this.sessionId,
+      total_cost_usd: 0,
+      usage: ERROR_USAGE,
+      modelUsage: {},
+      permission_denials: [],
+      uuid: randomUUID(),
+      errors: [`${reason}. Set sandbox.failIfUnavailable=false to allow unsandboxed execution.`],
+      startup_failure_reason: "sandbox_required_unavailable",
+      result_index: this.results++,
+      model_usage_since_last_result: {},
+    }
+  }
+
   result(turn: Turn, end: End): Obj {
     const common = {
       duration_api_ms: 0,
@@ -1544,9 +1577,9 @@ function main(state: string, argv: string[]): void {
   if (flags.settings !== undefined && settings === null)
     return quit(1, `fake claude: --settings is neither JSON nor a JSON file: ${flags.settings}`)
   const sandbox = settings?.sandbox
-  if (script.sandbox_unavailable === true && sandbox?.enabled === true && sandbox.failIfUnavailable === true)
-    return quit(1, "Error: the sandbox is enabled with failIfUnavailable, but it can't start on this machine.")
   const sandboxUp = script.sandbox_unavailable !== true
+  const reason = `${SANDBOX_REASON}: the fake's script says the sandbox can't start here`
+  const stopped = !sandboxUp && sandbox?.enabled === true && sandbox.failIfUnavailable === true
   // A rule's `/` anchors at a settings file's folder, else at the working folder.
   const fromFile = flags.settings !== undefined && !flags.settings.trimStart().startsWith("{")
   const settingsDir = fromFile ? path.dirname(path.resolve(cwd, flags.settings)) : cwd
@@ -1565,7 +1598,9 @@ function main(state: string, argv: string[]): void {
   if (id === "" || id.includes("/") || id === "." || id === "..") return quit(1, `fake claude: bad session id: ${id}`)
   if (flags.resume !== undefined && !fs.existsSync(path.join(state, "sessions", `${id}.jsonl`)))
     return quit(1, `No conversation found with session ID: ${id}`)
-  new Fake(state, script, flags, policy, mode, id).serve()
+  if (stopped)
+    process.stderr.write(`\nError: ${reason[0]!.toLowerCase()}${reason.slice(1)}\n  Refusing to start without a working sandbox (see sandbox.failIfUnavailable).\n`)
+  new Fake(state, script, flags, policy, mode, id, stopped ? reason : null).serve()
 }
 
 if (import.meta.main) {

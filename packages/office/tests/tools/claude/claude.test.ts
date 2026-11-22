@@ -290,13 +290,16 @@ test("a claude older than the floor, or one that says no version, is refused at 
   await claude.close(2000)
 })
 
-test("a start that its sandbox stops says what to fix and where Claude Code's output is, and holds none of that output", async () => {
+test("a start that its sandbox stops, as its result's startup_failure_reason says, fails at once saying what to fix and where Claude Code's output is, and holds none of that output", async () => {
   const { root, fake, permission } = layout({ sandbox_unavailable: true })
   const log = path.join(root, "claude.log")
   // An earlier start's output in the same log isn't this start's reason.
   fs.writeFileSync(log, "an earlier run\n", { mode: 0o600 })
   const { claude } = proc(root, fake, permission())
+  const t0 = Date.now()
   const e = await rejection(claude.start())
+  // Claude Code writes the result and answers initialize never: the start doesn't wait for its timeout.
+  expect(Date.now() - t0).toBeLessThan(10_000)
   expect(e).toBeInstanceOf(ClaudeSandboxUnavailable)
   expect(e).toBeInstanceOf(ClaudeStartError)
   expect(e.message).toContain("sandbox")
@@ -307,32 +310,29 @@ test("a start that its sandbox stops says what to fix and where Claude Code's ou
   expect(fs.readFileSync(log, "utf8")).toContain("failIfUnavailable")
   expect(claude.alive).toBe(false)
 
-  // Each failure Claude Code's docs name for a sandbox that can't run is the sandbox's.
+  // The field decides, not what Claude Code says on stderr: another reason is named, and words alone are no reason.
   const dies = layout({ turns: [] })
   const broken = path.join(dies.root, "broken")
-  for (const said of [
-    "Sandbox is required but failed to initialize: bwrap missing. Restart to retry.",
-    "Sandbox is required (sandbox.failIfUnavailable) and stopped being available in this session: socat",
-    "Ubuntu's AppArmor restriction on user namespaces stops bubblewrap here",
-    "bwrap: setting up uid map: Permission denied",
-  ]) {
-    fs.writeFileSync(broken, `#!/bin/sh\necho '${said.replaceAll("'", "")}' >&2\nexit 1\n`, { mode: 0o700 })
-    const stopped = proc(root, dies.fake, dies.permission(), { command: [broken] })
-    expect(await rejection(stopped.claude.start()), said).toBeInstanceOf(ClaudeSandboxUnavailable)
-  }
-  // A start that dies for another reason isn't the sandbox's, though its output says "sandbox".
+  const result = (reason: string) =>
+    JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, startup_failure_reason: reason })
+  fs.writeFileSync(broken, `#!/bin/sh\necho '${result("config_invalid")}'\nexec sleep 60\n`, { mode: 0o700 })
+  const other = proc(root, dies.fake, dies.permission(), { command: [broken] })
+  const named = await rejection(other.claude.start())
+  expect(named).toBeInstanceOf(ClaudeStartError)
+  expect(named).not.toBeInstanceOf(ClaudeSandboxUnavailable)
+  expect(named.message).toContain("config_invalid")
+  expect(named.message).toContain(log)
   fs.writeFileSync(log, "the sandbox was fine last time\n", { mode: 0o600 })
-  fs.writeFileSync(broken, "#!/bin/sh\necho 'no luck: invalid sandbox.network setting' >&2\nexit 1\n", {
+  fs.writeFileSync(broken, "#!/bin/sh\necho 'Sandbox is required but failed to initialize' >&2\nexit 1\n", {
     mode: 0o700,
   })
-  const other = proc(root, dies.fake, dies.permission(), { command: [broken] })
-  const died = await rejection(other.claude.start())
+  const said = proc(root, dies.fake, dies.permission(), { command: [broken] })
+  const died = await rejection(said.claude.start())
   expect(died).toBeInstanceOf(ClaudeStartError)
   expect(died).not.toBeInstanceOf(ClaudeSandboxUnavailable)
   expect(died.message).toContain("opencorp doctor")
   expect(died.message).toContain(log)
-  expect(died.message).not.toContain("no luck")
-  expect(died.message).not.toContain("bubblewrap")
+  expect(died.message).not.toContain("failed to initialize")
 })
 
 test("a command that cant be run says to run opencorp doctor and leaves nothing", async () => {

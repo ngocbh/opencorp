@@ -944,6 +944,14 @@ test("every line the fake writes has the type, subtype and keys real Claude Code
   await office.turn()
   expect(await office.close()).toBe(0)
 
+  // A start the sandbox stops.
+  fake.set({ sandbox_unavailable: true })
+  const sandbox = JSON.stringify({ sandbox: { enabled: true, failIfUnavailable: true } })
+  const stopped = new Claude(fake, ["--settings", sandbox], work)
+  stopped.send(request("init", { subtype: "initialize" }))
+  await stopped.until((m) => m.type === "result", "the start's result")
+  expect(await stopped.close()).toBe(1)
+
   const written = fake
     .log()
     .filter((entry) => entry.dir === "out")

@@ -56,13 +56,9 @@ const CONTROL_TIMEOUT_MS = 30_000
 const TERM_WAIT_MS = 3_000
 /** Milliseconds a killed Claude Code has to be seen exiting. */
 const EXIT_WAIT_MS = 5_000
-/** The most of a start's own output read to tell why it failed. */
-const REASON_BYTES = 64 * 1024
-/** What Claude Code writes when its sandbox can't run, as its docs give the messages: required but failed to
- *  initialize, or stopped being available; Ubuntu's AppArmor stopping bubblewrap; and bubblewrap's own failures. The
- *  message for a start that `failIfUnavailable` stops isn't documented, and is taken to name the setting (O5 records
- *  it). */
-const SANDBOX_FAILED = /failIfUnavailable|Sandbox is required|stops bubblewrap|^bwrap: /m
+/** The `startup_failure_reason` of the `result` Claude Code writes in place of `initialize`'s answer when its sandbox
+ *  can't run and `failIfUnavailable` stops the start (O5); it then waits on stdin, answering nothing. */
+const SANDBOX_UNAVAILABLE = "sandbox_required_unavailable"
 const STOPPED = "Claude Code was stopped before it started."
 const UPDATE =
   "update it with `claude update` (or `brew upgrade claude-code`, or " +
@@ -70,6 +66,16 @@ const UPDATE =
 /** What a tool's permission request is told: nobody answers here. */
 const DENIED =
   "Nobody can approve this here: this session runs only what the employee's permission allows. Don't ask again."
+
+/** Claude Code stopped its own start, as a `result` naming `startup_failure_reason` says. */
+class StartupFailure extends Error {
+  override name = "StartupFailure"
+
+  constructor(readonly reason: string) {
+    // The reason is Claude Code's identifier: only its word characters are kept.
+    super(`it stopped its start (${reason.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 60) || "no reason given"})`)
+  }
+}
 
 /** Claude Code couldn't be run, didn't start, or refused the start. The message says what went wrong and what to
  *  do; it never holds Claude Code's own output, which stays in the session's log. */
@@ -262,10 +268,10 @@ export class ClaudeProcess {
   readonly #log: (line: string) => void
   #exited: Promise<void> = Promise.resolve()
   #untrack: (() => void) | null = null
-  /** The log's size when this start opened it: what Claude Code wrote since is this start's own. */
-  #logStart = 0
   #killed = false
   #killing: Promise<void> | null = null
+  /** Rejects the start with the reason a `result` gave for stopping it, until `initialize` is answered. */
+  #stopsStart: ((reason: string) => void) | null = null
 
   constructor(options: ClaudeProcessOptions) {
     this.#options = options
@@ -290,9 +296,9 @@ export class ClaudeProcess {
   /** Spawns, tracks, and sends `initialize` (registering no hook, and sending no message, so no model call runs);
    *  resolves with its answer once Claude Code is at least `CLAUDE_FLOOR` and signed in.
    *
-   *  Rejects with `ClaudeStartError`: `ClaudeTooOld`, `ClaudeSignedOut`, `ClaudeSandboxUnavailable` when it exits
-   *  first saying its sandbox can't start, and otherwise words that say to run `opencorp doctor` and name the log; an
-   *  error from `track` is rethrown as is. Nothing is left running or tracked. A process killed first never spawns. */
+   *  Rejects with `ClaudeStartError`: `ClaudeTooOld`, `ClaudeSignedOut`, `ClaudeSandboxUnavailable` at once when a
+   *  `result` in place of `initialize`'s answer says its sandbox stops the start (`startup_failure_reason`), and
+   *  otherwise words that say to run `opencorp doctor` and name the log; an error from `track` is rethrown as is. Nothing is left running or tracked. A process killed first never spawns. */
   async start(): Promise<Msg> {
     const { command, cwd, log } = this.#options
     fs.mkdirSync(path.dirname(log), { recursive: true })
@@ -302,7 +308,6 @@ export class ClaudeProcess {
     try {
       const { O_WRONLY, O_APPEND, O_CREAT, O_NOFOLLOW } = fs.constants
       fd = fs.openSync(log, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
-      this.#logStart = fs.fstatSync(fd).size
       proc = spawn(command[0]!, command.slice(1), { cwd, env: this.env, detached: true, stdio: ["pipe", "pipe", fd] })
     } catch (error) {
       this.#forget()
@@ -327,8 +332,17 @@ export class ClaudeProcess {
       throw error
     }
     const options = this.#options
+    const stopped = new Promise<never>((_, reject) => {
+      this.#stopsStart = (reason) => reject(new StartupFailure(reason))
+    })
+    stopped.catch(() => {}) // rejected only while the start waits on it
     const stream = (this.stream = new StreamJson(proc.stdin!, proc.stdout!, {
-      onMessage: (msg) => options.onMessage(msg),
+      onMessage: (msg) => {
+        if (this.#stopsStart !== null && msg.type === "result" && typeof msg.startup_failure_reason === "string") {
+          return this.#stopsStart(msg.startup_failure_reason)
+        }
+        options.onMessage(msg)
+      },
       onRequest: (id, request) => this.#refuse(id, request),
       onClosed: () => void this.#closed(),
       kill: () => this.#signal(),
@@ -337,12 +351,14 @@ export class ClaudeProcess {
     stream.start()
     let init: Msg
     try {
-      init = await stream.request("initialize", {}, { timeout: START_TIMEOUT_MS })
+      init = await Promise.race([stream.request("initialize", {}, { timeout: START_TIMEOUT_MS }), stopped])
     } catch (error) {
-      const stopped = this.closing // an office stop killed it mid-start
+      const killed = this.closing // an office stop killed it mid-start
       await this.kill()
-      if (stopped) throw new ClaudeStartError(STOPPED, { cause: error })
+      if (killed) throw new ClaudeStartError(STOPPED, { cause: error })
       throw this.#startError(error as Error)
+    } finally {
+      this.#stopsStart = null
     }
     const version = typeof init.claude_code_version === "string" ? init.claude_code_version : null
     if (version === null || olderThan(version)) {
@@ -419,11 +435,12 @@ export class ClaudeProcess {
     sent.catch(() => this.#log("claude: couldn't answer a request: Claude Code's stdin is closed"))
   }
 
-  /** The error for a Claude Code that failed or died while starting: its sandbox, when what it wrote since this start
-   *  says so, or else what went wrong, to run `opencorp doctor`, and where its output is. */
+  /** The error for a Claude Code that failed or died while starting: its sandbox, when its result's
+   *  `startup_failure_reason` says so, another reason named, or else what went wrong; each says to run `opencorp
+   *  doctor` and where its output is. */
   #startError(error: Error): ClaudeStartError {
     const { log } = this.#options
-    if (SANDBOX_FAILED.test(this.#startOutput())) {
+    if (error instanceof StartupFailure && error.reason === SANDBOX_UNAVAILABLE) {
       return new ClaudeSandboxUnavailable(
         "Claude Code's sandbox can't start on this machine, and Claude Code runs here only inside it, since it holds " +
           "your employee's commands to their permission. On Linux, install bubblewrap and socat (for example " +
@@ -437,24 +454,6 @@ export class ClaudeProcess {
         `${log}.`,
       { cause: error },
     )
-  }
-
-  /** What Claude Code wrote to its log since this start opened it, up to 64 KiB; "" when it can't be read. */
-  #startOutput(): string {
-    let fd: number | undefined
-    try {
-      fd = fs.openSync(this.#options.log, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
-      const stat = fs.fstatSync(fd)
-      if (!stat.isFile()) return ""
-      const length = Math.min(Math.max(0, stat.size - this.#logStart), REASON_BYTES)
-      const buffer = Buffer.alloc(length)
-      const read = fs.readSync(fd, buffer, 0, length, this.#logStart)
-      return buffer.subarray(0, read).toString("utf8")
-    } catch {
-      return ""
-    } finally {
-      if (fd !== undefined) fs.closeSync(fd)
-    }
   }
 
   #cantStart(error: unknown): ClaudeStartError {
