@@ -92,8 +92,9 @@ function carried(records: FoldedRun["records"]): { summary: string; history: Mes
 }
 
 /**
- * The sends to the main chat's inbox, in log order, that no accepted take and no steer step consumed, with their keys.
- * A take commit counts once a success names it: an orphan one's events go back to unread, as yian re-offers them.
+ * The sends to the main chat's inbox, in log order, that no accepted take, steer step or withdraw consumed, with their
+ * keys. A take commit counts once a success names it: an orphan one's events go back to unread, as yian re-offers
+ * them. A withdraw's sends are the office's again (Esc sends them anew), so none is moved.
  */
 function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
   const sends = new Map<number, UnreadSend>()
@@ -112,6 +113,10 @@ function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
       // yian doesn't export the success and step record classes, so their fields are read by the record's kind.
       const commit = (record as { commit?: unknown }).commit
       for (const seq of typeof commit === "number" ? (takes.get(commit) ?? []) : []) consumed.add(seq)
+    } else if (entry.kind === "inbox_withdrawn") {
+      const { inbox, events } = record as { inbox?: unknown; events?: unknown }
+      // Event seqs are bigints.
+      if (inbox === MAIN_CHAT.inbox && Array.isArray(events)) for (const seq of events) consumed.add(Number(seq))
     } else if (entry.kind === "node_step") {
       const step = (record as { step?: Record<string, unknown> }).step
       if (step?.kind === "steer" && step.inbox === MAIN_CHAT.inbox && Array.isArray(step.from)) {

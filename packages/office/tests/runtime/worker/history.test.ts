@@ -311,6 +311,19 @@ test("a moved send keeps its key and author, so the same send to the fresh run a
   expect(userTexts(fake, 0)).toEqual(['<authored_message author="shell 1">\nmake ended\n</authored_message>'])
 })
 
+test("a send a withdraw took back is not moved", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "ok" })
+  const r1 = await waitingChat(fake)
+  const withdraw = { id: "w1", op: "withdraw", inbox: "messages" } as const
+  const taken = advanceJob(r1, { advance: false, deliver: [send("a", "taken back"), withdraw, send("b", "kept")] })
+  const rec = await run(taken, new TemplateOffice(), { env: fake.env() })
+  expect(rec.replies.find((reply) => reply.id === "w1")?.withdrawn).toHaveLength(1)
+  const r2 = nextRun(r1, { seed: seedOf(r1, fake) })
+  expect(waitingAt(await run(r2, new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#1/heard"])
+  expect(userTexts(fake, 0)).toEqual(["kept"])
+})
+
 test("a send a failed reply read as a steer is not moved", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Looking.", tool_calls: [{ name: "toolbox_stub" }] }, { error: 400 })
