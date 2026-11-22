@@ -1,6 +1,7 @@
 /** An employee's terminal, through the chat harness: each command runs in a pipes shell in the session's workspace,
  *  listed as the session's instrument with its record in the session's `terminal/` folder; the owner's Ctrl-C, Esc and
  *  End stop what they should, and a command the agent was told is running goes on. Commands run in the sandbox. */
+import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
@@ -80,6 +81,25 @@ function listed(h: HarnessOffice, id: string): Instrument[] {
 /** The folder of session `id`'s shell `shell`'s record. */
 function recordOf(h: HarnessOffice, id: string, shell: string): string {
   return path.join(h.office.paths.sessionDir(id), "terminal", shell)
+}
+
+/** Writes a line to fifo `fifo` and closes it, ending a reader's `cat`, once the reader holds it open: until then a
+ *  nonblocking open for writing fails with ENXIO. */
+async function release(fifo: string): Promise<void> {
+  const open = (): { fd: number } | null => {
+    try {
+      return { fd: fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK) }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENXIO") return null
+      throw error
+    }
+  }
+  const { fd } = await waitFor(open, { what: `a reader of ${path.basename(fifo)}` })
+  try {
+    fs.writeSync(fd, "go\n")
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
 /** The tool parts of session `id`'s messages. */
@@ -196,14 +216,17 @@ test("a command that ends after the agent's next turn has begun keeps the run it
 
 sandboxed("a command the agent was told is running goes on after Esc, and the agent reads it later", async () => {
   const fake = await fakeLlm()
-  const command = "sleep 3.74 && echo finished"
+  // It runs until the test writes to the fifo `gate`.
+  const command = "cat gate && echo finished"
   fake.script(
     term("call_run", "run", { command, why: "takes a while", wait: 0 }),
     term("call_wait", "read", { shell: "shell 1", wait: 120 }, `"tool_call_id":"call_run"`),
     term("call_later", "read", { shell: "shell 1", wait: 30 }, "is it done"),
     said("call_later", "It finished."),
   )
-  const h = await makeHarness(fake, { files: allowing("sleep *") })
+  const h = await makeHarness(fake, { files: allowing("cat *") })
+  const gate = path.join(h.folder, "gate")
+  execFileSync("mkfifo", [gate], { env: { PATH: "/usr/bin:/bin" } })
   const id = await chat(h)
   await h.harness.prompt(id, "start it")
   const reading = async () => (await tools(h, id)).some((p) => p.call_id === "call_wait" && p.state === "running")
@@ -212,6 +235,7 @@ sandboxed("a command the agent was told is running goes on after Esc, and the ag
   await h.harness.interrupt(id)
   await waitFor(() => status(h, id) === "idle" && !running(h.registry, id), { what: "the turn's end" })
   expect(listed(h, id)[0]).toMatchObject({ status: "running", command })
+  await release(gate)
   await waitFor(() => listed(h, id)[0]?.status === "idle", { timeout: 15_000, what: "the command's end" })
   await h.harness.prompt(id, "is it done?")
   await replied(h, id, "It finished.")
