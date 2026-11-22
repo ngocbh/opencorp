@@ -44,8 +44,8 @@ const REPLY =
   "The reply is one JSON object: `shell`; `status` (idle, running, waiting, ended or failed); `exit`; `waiting` " +
   '("secret" while a prompt waits for a password, passphrase or code, which only the owner types); `output`, the ' +
   "screen as it showed from where you last read; `next`, where to read on from; `more`, whether more output is " +
-  "ready past this page; `skipped`, when the start of what you asked to read is no longer kept; `note`, when the " +
-  "owner must act; `error`, why a shell failed; and `refused`, why nothing was done."
+  "ready past this page; `skipped`, when the start of what you asked to read is no longer kept; `note`, why `exit` " +
+  "is null or what the owner must do; `error`, why a shell failed; and `refused`, why nothing was done."
 const SHELLS_PTY =
   "A shell keeps its state between commands, as a terminal does: its folder (`cd`), its variables and what " +
   "earlier commands defined. Programs run on a real terminal: answer a program's question with type."
@@ -215,8 +215,11 @@ export function cardArgs(parsed: Parsed & { tool: "run" | "type" }): Record<stri
 }
 
 /** `reply` as the model reads it, `shell` by its name: one JSON object, with the shell's `error` when it failed,
- *  and a `note` when a secret prompt waits for the owner. */
-export function replyText(reply: Reply, o: { name: string; error: string | null; dontAsk: boolean }): string {
+ *  and a `note` when a secret prompt waits for the owner, or else `o.note` (why `exit` is null) when given. */
+export function replyText(
+  reply: Reply,
+  o: { name: string; error: string | null; dontAsk: boolean; note?: string | undefined },
+): string {
   const { status, exit, waiting, output, next, more, skipped, refused } = reply
   return JSON.stringify({
     shell: o.name,
@@ -228,7 +231,7 @@ export function replyText(reply: Reply, o: { name: string; error: string | null;
     more,
     ...(skipped === undefined ? {} : { skipped }),
     ...(status === "failed" && o.error !== null ? { error: o.error } : {}),
-    ...(waiting === "secret" ? { note: o.dontAsk ? SECRET_DONT_ASK : SECRET_ASKED } : {}),
+    ...(waiting === "secret" ? { note: o.dontAsk ? SECRET_DONT_ASK : SECRET_ASKED } : o.note ? { note: o.note } : {}),
     ...(refused === undefined ? {} : { refused }),
   })
 }

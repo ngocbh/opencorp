@@ -152,6 +152,15 @@ const AGENT_INTERRUPT = "the agent interrupted it"
 const SHELL_ENDED = "its shell ended"
 /** The owner's Ctrl-C reaches the shell itself, and a call that couldn't run ends the same way. */
 const NO_EXIT = "it was stopped, or couldn't run"
+/** A reply's `note` when its `exit` is null, by why the command ended with none. */
+const NO_EXIT_NOTES: Readonly<Record<string, string>> = {
+  [CUT_OFF]: "No exit: the command was stopped because its call was cut off.",
+  [AGENT_INTERRUPT]: "No exit: you interrupted the command.",
+  [SHELL_ENDED]: "No exit: the shell ended while the command ran.",
+  [NO_EXIT]: "No exit: the owner stopped the command (Ctrl-C), or it couldn't run.",
+}
+const STILL_RUNNING = "No exit yet: the command is still running."
+const SHELL_GONE = "No exit: the shell ended, closed or killed by a signal."
 
 /** One shell of the terminal: listed from the moment it is made, ready once `opened` settles. */
 interface Entry {
@@ -163,6 +172,8 @@ interface Entry {
   queue: Promise<unknown>
   /** The command the terminal ran here and its end hasn't come yet, if any. */
   running: Running | null
+  /** Why the last command the terminal ran here ended with no exit, as its audit row says; null when it had one. */
+  noExit: string | null
 }
 
 /** A command the terminal ran: what let it run, when, whether the shell has started it, why the terminal stopped
@@ -446,7 +457,10 @@ export class Terminal {
     const running = entry.running
     if (running === null) return
     if (!running.seen) {
-      if (state.status === "running" && state.command === running.command) running.seen = true
+      if (state.status === "running" && state.command === running.command) {
+        running.seen = true
+        entry.noExit = null
+      }
       return
     }
     if (state.status === "running" || state.status === "waiting") return
@@ -458,6 +472,7 @@ export class Terminal {
       ? null
       : (running.stopped ??
         (state.status === "failed" ? `the shell failed: ${state.error}` : state.status === "ended" ? SHELL_ENDED : NO_EXIT))
+    entry.noExit = stopped
     this.audit({ outcome, tool: "terminal_run", text, shell: entry.name, exit: state.exit, duration, why, stopped })
     running.ended.resolve()
   }
@@ -579,7 +594,9 @@ export class Terminal {
       const kind = shells.shell === undefined ? {} : { shell: shells.shell }
       opened = PtyShell.open(binding.id, name, { ...host, start, env: shells.env, ...kind })
     }
-    const entry: Entry = { id: binding.id, name, opened, shell: null, queue: Promise.resolve(), running: null }
+    const entry: Entry = {
+      id: binding.id, name, opened, shell: null, queue: Promise.resolve(), running: null, noExit: null,
+    }
     made = entry
     this.entries.push(entry)
     opened.then(
@@ -614,8 +631,19 @@ export class Terminal {
 
   private text(entry: Entry, shell: TerminalShell, reply: Reply): string {
     const dontAsk = this.host.permissions.mode() === "dontAsk"
-    return replyText(reply, { name: entry.name, error: shell.state().error, dontAsk })
+    return replyText(reply, { name: entry.name, error: shell.state().error, dontAsk, note: noExitNote(entry, reply) })
   }
+}
+
+/** Why `reply`'s exit is null, for its note: the command still runs, or how the last command the terminal ran ended
+ *  with none, or the shell ended. Undefined when it has an exit, was refused, or waits at a secret prompt, whose own
+ *  note says what to do; and for an idle shell whose last command the terminal didn't run, or that ran none. */
+function noExitNote(entry: Entry, reply: Reply): string | undefined {
+  if (reply.exit !== null || reply.refused !== undefined || reply.waiting !== null) return undefined
+  if (reply.status === "running") return STILL_RUNNING
+  const why = entry.noExit === null ? undefined : NO_EXIT_NOTES[entry.noExit]
+  if (reply.status === "ended") return why ?? SHELL_GONE
+  return reply.status === "idle" ? why : undefined
 }
 
 /** Resolves once `promise` does, or after `ms`, whichever comes first. */
