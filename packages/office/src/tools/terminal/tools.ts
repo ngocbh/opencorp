@@ -40,6 +40,11 @@ const SECRET_ASKED =
   "Only the owner can answer this prompt, and they have been asked to type here. Call read with a long wait to see " +
   "what happens next; don't poll it with short ones."
 
+/** What a run's reply says when its command runs on and the agent will be told of its end. */
+const RUNS_ON =
+  "No exit yet: the command is still running, and you'll be told when it ends, with its exit code and last lines. " +
+  "Don't poll it with read; do other work, or end your reply if you have nothing else to do."
+
 const REPLY =
   "The reply is one JSON object: `shell`; `status` (idle, running, waiting, ended or failed); `exit`; `waiting` " +
   '("secret" while a prompt waits for a password, passphrase or code, which only the owner types); `output`, the ' +
@@ -55,14 +60,25 @@ const SHELLS_PIPES =
   "commands, not the folder (`cd`) nor any variable, so join steps that need each other in one command " +
   "(`cd src && make`). A program that asks a question gets no answer."
 
-const runDescription = (shells: string) =>
+/** What happens to a command still running at its reply: the agent follows it with read, or, where the host tells
+ *  the session of its end (`notes`), it is told. */
+const RUNNING = {
+  read:
+    "it keeps running, so follow it with read from the reply's `next`, with a long wait. DO NOT poll read with short " +
+    "waits; do other work meanwhile.",
+  notes:
+    "it keeps running, and you'll be told when it ends, with its exit code and its last lines. DO NOT poll it with " +
+    "read: read its output so far only if that lets you do useful work now. Keep working on what doesn't need its " +
+    "result, and if you have nothing else to do, end your reply; you'll be resumed when it ends.",
+}
+
+const runDescription = (shells: string, running: string) =>
   "Run a command in a shell and return its output. Commands are POSIX sh: printable ASCII, newlines and tabs; " +
   'quote paths that hold spaces or special characters. Leave out `shell`, or give "new", to start a new shell ' +
   `(shell 1, shell 2, …); name a shell to run in it again once its last command has ended. ${shells} Every command ` +
   "goes through this session's permissions first, and may wait for the owner's approval. The reply comes when the " +
-  "command ends, or after `wait` seconds with the command still running: it keeps running, so follow it with read " +
-  "from the reply's `next`, with a long wait. DO NOT poll read with short waits; do other work meanwhile. Prefer a " +
-  `dedicated tool over a shell command when there is one. ${REPLY}`
+  `command ends, or after \`wait\` seconds with the command still running: ${running} Prefer a dedicated tool over a ` +
+  `shell command when there is one. ${REPLY}`
 const TYPE_PTY =
   "Type text into the command running in a shell, as a person at its terminal would: an answer to a program's " +
   "question (`yes`, a menu's `1`), or a line for a program that reads them. `enter` (default true) presses Enter " +
@@ -125,12 +141,15 @@ const PARAMETERS = {
   close: object({ shell: SHELL }, ["shell"]),
 } satisfies Record<ToolName, unknown>
 
-/** The five tools' descriptions and parameters, for a terminal of PTY shells or of the workspace's pipes. */
+/** The five tools' descriptions and parameters, for a terminal of PTY shells or of the workspace's pipes; with
+ *  `notes`, the host tells the session when a command still running at its reply ends. */
 export function toolSpecs(
   kind: "pty" | "pipes",
+  notes = false,
 ): Record<ToolName, { readonly description: string; readonly parameters: Record<string, unknown> }> {
+  const shells = kind === "pty" ? SHELLS_PTY : SHELLS_PIPES
   return {
-    run: { description: runDescription(kind === "pty" ? SHELLS_PTY : SHELLS_PIPES), parameters: PARAMETERS.run },
+    run: { description: runDescription(shells, notes ? RUNNING.notes : RUNNING.read), parameters: PARAMETERS.run },
     type: { description: kind === "pty" ? TYPE_PTY : TYPE_PIPES, parameters: PARAMETERS.type },
     read: {
       description:
@@ -215,12 +234,14 @@ export function cardArgs(parsed: Parsed & { tool: "run" | "type" }): Record<stri
 }
 
 /** `reply` as the model reads it, `shell` by its name: one JSON object, with the shell's `error` when it failed,
- *  and a `note` when a secret prompt waits for the owner, or else `o.note` (why `exit` is null) when given. */
+ *  and a `note` when a secret prompt waits for the owner, or else, with `runsOn`, that the agent will be told of its
+ *  running command's end, or `o.note` (why `exit` is null) when given. */
 export function replyText(
   reply: Reply,
-  o: { name: string; error: string | null; dontAsk: boolean; note?: string | undefined },
+  o: { name: string; error: string | null; dontAsk: boolean; runsOn?: boolean; note?: string | undefined },
 ): string {
   const { status, exit, waiting, output, next, more, skipped, refused } = reply
+  const note = waiting === "secret" ? (o.dontAsk ? SECRET_DONT_ASK : SECRET_ASKED) : o.runsOn ? RUNS_ON : o.note
   return JSON.stringify({
     shell: o.name,
     status,
@@ -231,7 +252,7 @@ export function replyText(
     more,
     ...(skipped === undefined ? {} : { skipped }),
     ...(status === "failed" && o.error !== null ? { error: o.error } : {}),
-    ...(waiting === "secret" ? { note: o.dontAsk ? SECRET_DONT_ASK : SECRET_ASKED } : o.note ? { note: o.note } : {}),
+    ...(note ? { note } : {}),
     ...(refused === undefined ? {} : { refused }),
   })
 }

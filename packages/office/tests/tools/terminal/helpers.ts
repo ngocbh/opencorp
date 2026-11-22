@@ -14,7 +14,9 @@ import type { Result } from "../../../src/runtime/sandbox/run.ts"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../../src/testing/fake_ssh.ts"
 import { InstrumentRecord, readRecord, type RecordFile } from "../../../src/tools/terminal/record.ts"
 import type { ShellState } from "../../../src/tools/terminal/shell.ts"
-import { Terminal, type TerminalAudit, type TerminalHost, type TerminalShells } from "../../../src/tools/terminal/terminal.ts"
+import {
+  type CommandEnded, Terminal, type TerminalAudit, type TerminalHost, type TerminalShells,
+} from "../../../src/tools/terminal/terminal.ts"
 import { goldenPolicy, goldenSshPolicy } from "../../runtime/sandbox/helpers.ts"
 
 /** What the host's own `where()` says: the workspace profile, writable everywhere. A terminal whose shells don't run
@@ -74,18 +76,20 @@ export function plainShells(dir: string, fake?: FakeSsh, cwd = dir): Extract<Ter
 }
 
 /** A terminal driven by `@minh` in a fresh folder, its shells' records in `<dir>/record-<id>`, over plain PTYs there
- *  unless `shells` says otherwise; with `audit`, its host keeps each audit row in `audits`. The test's end closes it,
- *  then removes the folder. */
+ *  unless `shells` says otherwise; with `audit`, its host keeps each audit row in `audits`; with `notes`, it keeps
+ *  each note of a command that ended in `notes`. The test's end closes it, then removes the folder. */
 export function openTerminal(o: {
   perms: Permissions
   fake?: FakeSsh
   shells?: (dir: string) => TerminalShells
   audit?: boolean
+  notes?: boolean
 }) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-term-")))
   const live = new Map<string, Uint8Array[]>()
   const states = new Map<string, ShellState[]>()
   const audits: TerminalAudit[] = []
+  const notes: CommandEnded[] = []
   let made = 0
   let calls = 0
   const host: TerminalHost = {
@@ -93,6 +97,7 @@ export function openTerminal(o: {
     driver: "@minh",
     permissions: o.perms,
     ...(o.audit ? { audit: (row: TerminalAudit) => void audits.push(row) } : {}),
+    ...(o.notes ? { ended: (note: CommandEnded) => void notes.push(note) } : {}),
     shellHost: (name, profile) => {
       const id = `sh_${++made}`
       const record = new InstrumentRecord(path.join(dir, `record-${id}`), {
@@ -114,6 +119,8 @@ export function openTerminal(o: {
     dir,
     /** The rows the host's audit got, in order. */
     audits,
+    /** The notes the host got of commands that ended, in order. */
+    notes,
     /** Calls tool `name` with `args`, as yian would: with a fresh call id unless given. */
     call: (name: keyof typeof tools, args: Record<string, unknown>, options: { callId?: string; signal?: AbortSignal } = {}) =>
       tools[name].call(args, { callId: options.callId ?? `r/n/${++calls}/0`, ...(options.signal ? { signal: options.signal } : {}) }),
@@ -130,11 +137,12 @@ export function openTerminal(o: {
 export const json = (result: unknown): Record<string, unknown> => JSON.parse(result as string)
 
 /** A pipes runner over a workspace's sandbox in `dir` that runs nothing: `echo <text>` prints its text and exits 0 at
- *  once; any other command runs until `end(command, exit)`, or until its call is stopped, when it ends with no exit, as
- *  a killed call does. `commands` are the commands it was given, in order; `running()` those still running. */
+ *  once; any other command runs until `end(command, exit, output)`, which prints `output` first, or until its call is
+ *  stopped, when it ends with no exit, as a killed call does. `commands` are the commands it was given, in order;
+ *  `running()` those still running. */
 export function fakePipes(dir: string) {
   const sandbox = goldenPolicy({ workspace: dir, writable: true, network: false, tmpdir: "/tmp" })
-  const ends = new Map<string, (exit: number) => void>()
+  const ends = new Map<string, (exit: number, output?: string) => void>()
   const commands: string[] = []
   const shells: Extract<TerminalShells, { kind: "pipes" }> = {
     kind: "pipes",
@@ -156,14 +164,17 @@ export function fakePipes(dir: string) {
           return done(0)
         }
         options.signal?.addEventListener("abort", stop, { once: true })
-        ends.set(command, done)
+        ends.set(command, (exit, output = "") => {
+          if (output !== "") options.onOutput?.("stdout", Buffer.from(output))
+          done(exit)
+        })
       }),
   }
   return {
     shells,
     commands,
     running: () => [...ends.keys()],
-    end: (command: string, exit: number) => ends.get(command)?.(exit),
+    end: (command: string, exit: number, output?: string) => ends.get(command)?.(exit, output),
   }
 }
 
