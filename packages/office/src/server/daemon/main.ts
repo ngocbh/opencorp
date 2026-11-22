@@ -350,6 +350,8 @@ export function buildOffice(
     openStore(paths.store, () => reap(store))
     const workers = new WorkerRegistry(store, {
       log: (level, line) => log(level, "opencorp.worker.spawn")(line),
+      // The daemon's own environment, which its workers start from.
+      environ: process.env,
       // Neither rejects. An exit may free its session's pin.
       onExit: () => {
         void office.runIndex.update()

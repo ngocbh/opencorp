@@ -124,8 +124,9 @@ export interface ActorContext {
   spec(session: SessionRecord): RunSpec | Promise<RunSpec>
   /** The clock and sleeps of the wake-at timer (yian's `Scheduler`; `realScheduler` in the office). */
   readonly scheduler: Scheduler
-  /** The office's environment, for a seed's `workerEnv` (default `process.env`). */
-  readonly environ?: Env
+  /** The office's environment its workers start from, for a seed's `workerEnv`: the chat harness passes its
+   *  registry's. */
+  readonly environ: Env
   /** The office's run index, brought up to date before an ended run is reported; the chat harness passes
    *  `office.runIndex`. */
   readonly runIndex?: Pick<RunIndexer, "update">

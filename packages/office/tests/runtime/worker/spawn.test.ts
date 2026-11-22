@@ -3,6 +3,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process"
 import { EventEmitter } from "node:events"
 import fs from "node:fs"
 import type net from "node:net"
+import os from "node:os"
 import path from "node:path"
 import { inspect } from "node:util"
 import type { MemoryBase } from "@ngocbh/yian"
@@ -522,12 +523,35 @@ test("the worker log gets the workers output and keeps it across spawns", async 
   expect(fs.readFileSync(log, "utf8").startsWith(line)).toBe(true)
 })
 
+test("a test registry's workers run on a temp home and temp folder, with no user of this process's", async () => {
+  const where = base()
+  const fake = await fakeLlm()
+  const registry = makeRegistry(openStore())
+  fake.script({ content: "slow", hold: true })
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const worker = await registry.spawn(makeJob(where), sessionDir, new Recorder(), { env: fake.env() })
+  await fake.waitForRequests(1, 30_000)
+  const env = new Map(envEntries(worker.pid))
+  const temp = path.join(fs.realpathSync(os.tmpdir()), "opencorp-")
+  expect([env.get("HOME")?.startsWith(temp), env.get("TMPDIR")?.startsWith(temp)]).toEqual([true, true])
+  expect(env.get("HOME")).not.toBe(env.get("TMPDIR"))
+  expect([env.has("USER"), env.has("LOGNAME")]).toEqual([false, false])
+  fake.release()
+  expect(await worker.wait(30_000)).toBe(0)
+})
+
 test("a running worker is recorded and isolated", async () => {
   const where = base()
   const fake = await fakeLlm()
   const store = openStore()
   const registry = makeRegistry(store, {
-    environ: { ...process.env, OFFICE_SECRET: "office-env-secret", LC_CTYPE: "UTF-8", BUN_OPTIONS: "--preload /nope" },
+    environ: {
+      PATH: process.env.PATH,
+      HOME: tempDir(),
+      OFFICE_SECRET: "office-env-secret",
+      LC_CTYPE: "UTF-8",
+      BUN_OPTIONS: "--preload /nope",
+    },
   })
   const sessionDir = path.join(where.root, "sessions", "s1")
   fake.script({ content: "slow", hold: true })
