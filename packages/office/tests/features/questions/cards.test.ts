@@ -2208,6 +2208,11 @@ test("a card that closes as its side chat registers leaves the side run alone", 
   const h = await sideHarness(fake)
   const { q } = await ask(h)
   const side = await chat(h, q, "why?", 1)
+  // The side reply's run call copies the discussion to the card. An answer before that copy makes it, a second
+  // update of the closed card, which would close the side chat again.
+  await waitFor(() => JSON.stringify(discussed(h, q.id)) === JSON.stringify(["why?", "Quota."]), {
+    what: "the discussion",
+  })
   // Its 409 came just before a start stored the session starting again.
   const end = noLiveRun(h, (sid) => void h.store.updateSession(sid, notWaiting("starting")))
   const abandon = spyOn(h.harness, "abandon")

@@ -1,7 +1,7 @@
 /** Browser sessions: hashed, 30 days, checked against the person at HEAD on every request. */
 import { createHash } from "node:crypto"
 import { inspect } from "node:util"
-import { expect, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import { hashPassword } from "../../../src/runtime/auth/passwords.ts"
 import type { CompanyGit } from "../../../src/company/git.ts"
 import { CompanySnapshots } from "../../../src/company/snapshot.ts"
@@ -21,6 +21,9 @@ import { HqSessionRecord } from "../../../src/runtime/store/store.ts"
 import { git } from "../../company/helpers.ts"
 import { addHuman, makeOffice } from "../helpers.ts"
 import { handEdit } from "./helpers.ts"
+
+// Tests hash passwords with scrypt and commit with git; under a busy machine's load that has taken over 5 s.
+setDefaultTimeout(30_000)
 
 const T0 = new Date("2026-10-19T10:00:00Z")
 const MINUTE = 60_000

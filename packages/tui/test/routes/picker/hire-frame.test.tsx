@@ -1,19 +1,24 @@
 import { expect, test } from "bun:test"
+import { InputRenderable, type Renderable } from "@opentui/core"
 import { createFakeOffice, createStub } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
 import { typeInto } from "./type"
+
+/** Whether one of the form's fields has focus. The picker's `filter` keeps it until the form focuses its first field
+ *  a tick after it mounts; until then nothing may have it, and a Tab pressed meanwhile is undone by that focus. */
+function fieldFocused(app: Awaited<ReturnType<typeof bootFrame>>, filter: Renderable | null) {
+  const r = app.setup.renderer.currentFocusedRenderable
+  return r instanceof InputRenderable && !r.isDestroyed && r !== filter
+}
 
 /** Boots in a folder nobody has worked in, so the picker opens, and picks "Hire new…". */
 async function openHire(office: ReturnType<typeof createFakeOffice>) {
   const app = await bootFrame({ ...createStub(office), cwd: "/tmp/new" })
   await app.until((f) => f.includes("Hire new…"))
   await typeInto(app, "hire")
-  // The picker's filter keeps focus until the form focuses its first field a tick later.
   const filter = app.setup.renderer.currentFocusedRenderable
   app.input.pressEnter()
-  await app.until(
-    (f) => f.includes("Hire a new person") && f.includes("@ngocbh") && app.setup.renderer.currentFocusedRenderable !== filter,
-  )
+  await app.until((f) => f.includes("Hire a new person") && f.includes("@ngocbh") && fieldFocused(app, filter))
   return app
 }
 
@@ -206,7 +211,7 @@ async function openHireEarly(office: ReturnType<typeof createFakeOffice>) {
   await typeInto(app, "hire")
   const filter = app.setup.renderer.currentFocusedRenderable
   app.input.pressEnter()
-  await app.until((f) => f.includes("Hire a new person") && app.setup.renderer.currentFocusedRenderable !== filter)
+  await app.until((f) => f.includes("Hire a new person") && fieldFocused(app, filter))
   return { app, release }
 }
 

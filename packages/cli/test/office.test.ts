@@ -407,7 +407,8 @@ test("the probe tells an office that's too slow or answers with an error from on
   const mute = path.join(home, "mute.sock")
   const server = Bun.serve({ unix: failing, fetch: () => new Response("", { status: 500 }) })
   // Takes the connection and never answers.
-  const silent = net.createServer(() => {})
+  const taken: net.Socket[] = []
+  const silent = net.createServer((c) => void taken.push(c))
   await new Promise<void>((resolve) => silent.listen(mute, resolve))
   try {
     const status = await officeDown(failing)
@@ -417,6 +418,8 @@ test("the probe tells an office that's too slow or answers with an error from on
     expect(await officeDown(mute, 200)).toBeInstanceOf(OfficeTimeout)
   } finally {
     server.stop(true)
+    // Bun's fetch on Linux leaves an aborted request's unix socket open, and close waits for every connection to end.
+    for (const c of taken) c.destroy()
     await new Promise<void>((resolve) => silent.close(() => resolve()))
     fs.rmSync(home, { recursive: true, force: true })
   }

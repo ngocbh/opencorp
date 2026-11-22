@@ -206,10 +206,22 @@ test("a hung check in a worker is killed and its folder removed", async () => {
   const fake = await fakeLlm()
   const store = openStore()
   const registry = makeRegistry(store)
-  const spawning = spyOn(registry, "spawn")
+  // The check's time starts once the test has looked at its held worker, so a short time never ends it first.
+  let looked!: () => void
+  const inspected = new Promise<void>((resolve) => (looked = resolve))
+  const spawn = registry.spawn.bind(registry)
+  const spawning = spyOn(registry, "spawn").mockImplementation(async (...given) => {
+    const spawned = await spawn(...given)
+    const wait = spawned.wait.bind(spawned)
+    spawned.wait = async (ms) => {
+      await inspected
+      return wait(ms)
+    }
+    return spawned
+  })
   const provider = Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: SENTINEL }, env: fake.env() })
   fake.script({ hold: true })
-  const checking = oneReplyProblem(registry, provider, { timeoutMs: 30_000 })
+  const checking = oneReplyProblem(registry, provider, { timeoutMs: 1000 })
   await fake.waitForRequests(1, 25_000)
   const worker = (await spawning.mock.results[0]!.value) as Worker
   const dir = spawning.mock.calls[0]![1]
@@ -222,6 +234,7 @@ test("a hung check in a worker is killed and its folder removed", async () => {
   expect(env).toContain("VLLM_BASE_URL")
   expect(env).not.toContain(SENTINEL)
 
+  looked()
   expect(await checking).toBe(NOT_FINISHED)
   expect(isGone(worker.pid, started)).toBe(true)
   expect(registry.get(worker.sessionId)).toBeUndefined()

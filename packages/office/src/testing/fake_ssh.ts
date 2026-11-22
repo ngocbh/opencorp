@@ -535,18 +535,21 @@ class Master {
 
   /** Listens until it ends, then exits the process. */
   async run(): Promise<number> {
+    // Listed, and ending on a signal, before its socket shows: a caller that sees the socket may count or signal it.
+    const pidFile = path.join(this.state, "masters", String(process.pid))
+    fs.writeFileSync(pidFile, "")
+    for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, () => this.end(255))
     const listening = await new Promise<boolean>((resolve) => {
       this.#server.once("error", () => resolve(false))
       this.#server.listen(this.sock, () => resolve(true))
     })
     if (!listening) {
+      fs.rmSync(pidFile, { force: true })
       process.stderr.write(`ControlSocket ${this.sock} already exists, disabling multiplexing\r\n`)
       for (const c of this.hops) c.destroy()
       return 255
     }
     this.#ino = fs.lstatSync(this.sock).ino
-    fs.writeFileSync(path.join(this.state, "masters", String(process.pid)), "")
-    for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, () => this.end(255))
     setTimeout(() => this.end(255), FAKE_MASTER_MAX_MS).unref()
     // Its transport runs through each hop: losing one loses the connection.
     for (const c of this.hops) c.once("close", () => this.end(255))

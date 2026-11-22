@@ -592,7 +592,8 @@ test("closing the app server of an unloaded thread never holds the message or ou
 })
 
 test("office stop while an unloaded thread's app server closes mid turn still restores the marker", async () => {
-  const h = makeCodex()
+  // The stop outlasts its wait whatever it is: the app server's close is held until the stop returns.
+  const h = makeCodex({ stopWaitMs: 200 })
   h.fake.script([
     [fc.urlElicitation(8, "gh", "Sign in", "https://e.com/l", { wait: false }), { sleep: 0.3 }, fc.threadClosed()],
   ])
