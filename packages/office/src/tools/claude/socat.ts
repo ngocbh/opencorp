@@ -40,16 +40,21 @@ export type SocatOptions = {
 }
 
 /**
- * Readies socat `found` (on the office's PATH, or `OPENCORP_SOCAT_BIN`) for a start under `p`: its real file checked as
- * Claude Code is (`checkSocatInstall`), then run once, outside the sandbox, with `-V`. One in a system folder on the
- * harness PATH needs nothing more. Any other is linked, alone, into the private folder `<root>/<name>` first on the
- * harness PATH, and the sandbox reads its real file's folder and the folders of the libraries it loads (`ldd`), each
- * checked as its folder is when the start builds the permission. Throws `UnsafeProfile` from the checks, and
- * `SocatUnusable` for one that doesn't run or misses a library.
+ * Readies socat `found` (on the office's PATH, or `OPENCORP_SOCAT_BIN`) for a start under `p`, checking before it runs
+ * anything of it: its real file checked as Claude Code is (`checkSocatInstall`), the libraries it loads read with
+ * `ldd`, and its folder and theirs checked as an install folder is (`EmployeePermission.programReads`); only then is it
+ * run once, outside the sandbox, with `-V`, so nothing the employee could plant loads first. One in a system folder on
+ * the harness PATH needs nothing more. Any other is linked, alone, into the private folder `<root>/<name>` first on the
+ * harness PATH, and the sandbox reads those folders. Throws `UnsafeProfile` from the checks, and `SocatUnusable` for
+ * one that misses a library or doesn't run.
  */
 export function prepareSocat(p: EmployeePermission, found: string, options: SocatOptions): PreparedSocat {
   const { libraries = lddLibraries, system = systemPath(), env = {} } = options
   const real = checkSocatInstall(p, found)
+  const folder = path.dirname(real)
+  const loaded = libraries(real).flatMap((lib) => [realPath(path.dirname(lib)), path.dirname(realPath(lib))])
+  const reads = [...new Set([folder, ...loaded])]
+  checkPermission({ ...p, programReads: reads })
   const ran = spawnSync(real, ["-V"], {
     env: { ...env, PATH: harnessPath(p) },
     encoding: "utf8",
@@ -63,18 +68,12 @@ export function prepareSocat(p: EmployeePermission, found: string, options: Soca
         "OPENCORP_SOCAT_BIN at one, then restart the office and run `opencorp doctor`",
     )
   }
-  const folder = path.dirname(real)
   if (system.some((dir) => fs.existsSync(dir) && realPath(dir) === folder)) return { programs: null, reads: [] }
-  const loaded = libraries(real).flatMap((lib) => [realPath(path.dirname(lib)), path.dirname(realPath(lib))])
-  const reads = [...new Set([folder, ...loaded])]
-  // Each folder checked before anything is made; the start's permission checks them again.
-  checkPermission({ ...p, programReads: reads })
   const programs = programsFolder(options.root, options.name, { socat: real })
   return { programs, reads }
 }
 
-/** The libraries `file` loads, as the system's `ldd` resolves them (none for a static program or a script); throws
- *  `SocatUnusable` for one it can't find. */
+/** The libraries `file` loads, as the system's `ldd` resolves them, with a fixed environment (`parseLdd`). */
 export function lddLibraries(file: string): string[] {
   const ran = spawnSync("/usr/bin/ldd", [file], {
     env: { PATH: "/usr/bin:/bin", LANG: "C" },
@@ -82,14 +81,24 @@ export function lddLibraries(file: string): string[] {
     timeout: RUN_TIMEOUT_MS,
   })
   const out = `${ran.stdout ?? ""}${ran.stderr ?? ""}`
+  if (ran.error !== undefined || (ran.status !== 0 && !/not a dynamic executable/.test(out))) {
+    throw new SocatUnusable(`ldd couldn't read ${file}: ${out.trim().slice(0, 200)}`)
+  }
+  return parseLdd(out, file)
+}
+
+/** The library files in `ldd`'s output for `file`: none for a static program or a script. Throws `SocatUnusable` for a
+ *  library it couldn't find (an RPATH folder it didn't resolve is never checked), and for one at a path with a space,
+ *  which this reading leaves out rather than guess. */
+export function parseLdd(out: string, file: string): string[] {
   if (/not a dynamic executable/.test(out)) return []
-  if (ran.error !== undefined || ran.status !== 0) throw new SocatUnusable(`ldd couldn't read ${file}: ${out.trim().slice(0, 200)}`)
-  const missing = out.split("\n").find((line) => /=> not found/.test(line))
-  if (missing !== undefined) throw new SocatUnusable(`${file} can't load ${missing.trim()}`)
   const libs: string[] = []
-  for (const line of out.split("\n")) {
-    const m = /=>\s+(\/\S+)\s+\(0x/.exec(line) ?? /^\s*(\/\S+)\s+\(0x/.exec(line)
-    if (m !== null) libs.push(m[1]!)
+  for (const line of out.split("\n").map((l) => l.trim()).filter(Boolean)) {
+    if (/=>\s*not found/.test(line)) throw new SocatUnusable(`${file} can't load ${line.split(/\s+/)[0]}: ldd finds no such library`)
+    const resolved = /^\S+ => (\/\S+) \(0x[0-9a-f]+\)$/.exec(line) ?? /^(\/\S+) \(0x[0-9a-f]+\)$/.exec(line)
+    if (resolved !== null) libs.push(resolved[1]!)
+    else if (/^\S+ (=> )?\(0x[0-9a-f]+\)$/.test(line)) continue // the kernel's vdso, which is no file
+    else throw new SocatUnusable(`${file} loads a library at a path with a space, which OpenCorp doesn't read: ${line}`)
   }
   return libs
 }

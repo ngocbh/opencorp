@@ -1268,14 +1268,11 @@ test("the folders a program runs and loads from are read in Claude Code's sandbo
   const prefix = path.join(home, ".local/opt/socat")
   const [bin, lib] = [path.join(prefix, "bin"), path.join(prefix, "lib")]
   for (const dir of [bin, lib]) fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
-  const outside = path.join(root, "opt-lib")
-  fs.mkdirSync(outside, { mode: 0o755 })
-  const p = permission({ programReads: [bin, lib, outside, fs.realpathSync("/usr/lib64")] })
+  const p = permission({ programReads: [bin, lib, fs.realpathSync("/usr/lib64")] })
   const rules = (claudeStart(p).settings.sandbox as { filesystem: Record<string, string[]> }).filesystem
-  // Those a deny hides (the home's; and /tmp's, where these tests run) are re-opened, one by one; /usr/lib64 is read
-  // already.
-  const listed = [bin, lib, outside, fs.realpathSync("/usr/lib64"), prefix, home]
-  expect(rules.allowRead.filter((dir) => listed.includes(dir))).toEqual([bin, lib, outside])
+  // Those a deny hides, the home's, are re-opened, one by one; /usr/lib64 is read already.
+  const listed = [bin, lib, fs.realpathSync("/usr/lib64"), prefix, home]
+  expect(rules.allowRead.filter((dir) => listed.includes(dir))).toEqual([bin, lib])
   expect(rules.allowWrite).not.toContain(bin)
 
   fs.chmodSync(lib, 0o775)
@@ -1283,6 +1280,15 @@ test("the folders a program runs and loads from are read in Claude Code's sandbo
   fs.chmodSync(lib, 0o755)
   expect(() => checkPermission(permission({ programReads: [home] }))).toThrow(UnsafeProfile)
   expect(() => checkPermission(permission({ programReads: [path.join(home, ".ssh")] }))).toThrow(UnsafeProfile)
+  // Where the owner's sockets are: a socket root itself, and a folder in one but out of the home (this test's home
+  // lies in /tmp).
+  const outside = path.join(root, "opt-lib")
+  fs.mkdirSync(outside, { mode: 0o755 })
+  for (const dir of ["/run", outside]) {
+    expect(() => checkPermission(permission({ programReads: [dir] })), dir).toThrow(/where the owner's sockets are/)
+  }
+  // Others may write /dev/shm too.
+  expect(() => checkPermission(permission({ programReads: ["/dev/shm"] }))).toThrow(UnsafeProfile)
   // In a folder the employee may write.
   const shared = path.join(root, "shared")
   fs.mkdirSync(path.join(shared, "lib"), { recursive: true, mode: 0o755 })

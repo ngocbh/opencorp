@@ -1658,13 +1658,16 @@ test("checks give the codex check the offices recorded service mode", async () =
 })
 
 /** The fake Claude Code as `claude` in `<dir>/fake/bin`, only the user's to change, on `script` (2.1.325 and signed
- *  in unless it says otherwise), with a stand-in socat beside it. Returns the env to run it with, the fake, and the
- *  binary. */
+ *  in unless it says otherwise), with a stand-in socat in the owner's home (`<dir>/home/.local/bin`, as `probeHomes`
+ *  lays it out), on its PATH. Returns the env to run it with, the fake, the binary and the socat. */
 function fakeClaudeIn(dir: string, script: FakeClaudeScript = {}) {
   const fake = installFakeClaude(path.join(dir, "fake"), { version: "2.1.325", ...script })
-  fs.writeFileSync(path.join(fake.bin, "socat"), "#!/bin/sh\nexit 0\n", { mode: 0o755 })
   for (const p of [path.join(dir, "fake"), fake.bin]) fs.chmodSync(p, 0o755)
-  return { env: { PATH: `${fake.bin}:/usr/bin:/bin`, HOME: dir }, fake, claude: fake.claude }
+  const local = path.join(dir, "home/.local/bin")
+  fs.mkdirSync(local, { recursive: true, mode: 0o755 })
+  const socat = path.join(local, "socat")
+  fs.writeFileSync(socat, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  return { env: { PATH: `${fake.bin}:${local}:/usr/bin:/bin`, HOME: dir }, fake, claude: fake.claude, socat }
 }
 
 /** What doctor tells the owner to run to update Claude Code past the floor. */
@@ -1707,20 +1710,22 @@ test("on Linux, claude warns of each employee who uses it with a folder they may
   const mac = await doctor.claudeCheck(env, {}, null, { office, base, readOnly: ["minh"], platform: "darwin" })
   expect(mac.status).toBe("ok")
   // A start that fails, or no socat, still names them.
-  const failing = fakeClaudeIn(probeHomes().dir, { sandbox_unavailable: true })
-  const failed = await doctor.claudeCheck(failing.env, {}, null, { office, base, readOnly: ["minh"], platform: "linux" })
+  const other = probeHomes()
+  const failing = fakeClaudeIn(other.dir, { sandbox_unavailable: true })
+  const where = { office: other.office, base: other.base, readOnly: ["minh"], platform: "linux" as const }
+  const failed = await doctor.claudeCheck(failing.env, {}, null, where)
   expect(failed.status).toBe("fail")
   expect(failed.detail).toContain("sandbox can't start here")
   expect(failed.detail).toContain("@minh's Claude Code sessions are refused")
-  fs.rmSync(path.join(failing.fake.bin, "socat"))
-  const noSocat = await doctor.claudeCheck(failing.env, {}, null, { office, base, readOnly: ["minh"], platform: "linux" })
+  fs.rmSync(failing.socat)
+  const noSocat = await doctor.claudeCheck(failing.env, {}, null, where)
   expect(noSocat.detail).toContain("needs socat")
   expect(noSocat.detail).toContain("@minh's Claude Code sessions are refused")
 })
 
 test("on Linux, claude fails without a socat for its sandbox, saying how to fix it; the start doctor tries runs with the office's", async () => {
   const { dir, office, base } = probeHomes()
-  const { env, fake } = fakeClaudeIn(dir, { needs_socat: true })
+  const { env, fake, socat } = fakeClaudeIn(dir, { needs_socat: true })
   expect((await doctor.claudeCheck(env, {}, null, { office, base, platform: "linux" })).status).toBe("ok")
   // The start found socat first on its PATH, in a folder of its own.
   const start = fake.log().filter((e) => e.dir === "start")[1]!
@@ -1729,7 +1734,7 @@ test("on Linux, claude fails without a socat for its sandbox, saying how to fix 
   expect(first).not.toBe(fake.bin)
   // The probe's folders go with it.
   expect(fs.existsSync(first)).toBe(false)
-  fs.rmSync(path.join(fake.bin, "socat"))
+  fs.rmSync(socat)
   const missing = await doctor.claudeCheck(env, {}, "systemd", { office, base, platform: "linux" })
   expect(missing.status).toBe("fail")
   expect(missing.detail).toContain("needs socat")
@@ -1738,7 +1743,7 @@ test("on Linux, claude fails without a socat for its sandbox, saying how to fix 
   expect(named.status).toBe("fail")
   expect(named.detail).toContain("OPENCORP_SOCAT_BIN names /nowhere/socat")
   // One that doesn't run says so.
-  fs.writeFileSync(path.join(fake.bin, "socat"), "#!/bin/sh\necho 'cannot open shared object file' >&2\nexit 127\n", {
+  fs.writeFileSync(socat, "#!/bin/sh\necho 'cannot open shared object file' >&2\nexit 127\n", {
     mode: 0o755,
   })
   const broken = await doctor.claudeCheck(env, {}, null, { office, base, platform: "linux" })
@@ -1747,7 +1752,7 @@ test("on Linux, claude fails without a socat for its sandbox, saying how to fix 
   // macOS's sandbox needs none.
   const mac = probeHomes()
   const plain = fakeClaudeIn(mac.dir)
-  fs.rmSync(path.join(plain.fake.bin, "socat"))
+  fs.rmSync(plain.socat)
   const check = await doctor.claudeCheck(plain.env, {}, null, { office: mac.office, base: mac.base, platform: "darwin" })
   expect(check.status).toBe("ok")
 })

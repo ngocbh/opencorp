@@ -363,7 +363,9 @@ test("a Claude Code whose first turn lists a tool outside the office's allowlist
 
 test("on Linux, the office's own socat, linked alone into a private folder first on the harness PATH, with the folders it loads from read, is what Claude Code's sandbox finds; with none, the start is refused saying how to fix it", async () => {
   // A stand-in for socat installed as conda-forge lays one out: <prefix>/bin/socat -> socat1, loading $ORIGIN/../lib.
-  const prefix = path.join(tempDir(), "opt/socat")
+  // In the owner's home, as conda-forge installs one for the user.
+  const home = tempDir()
+  const prefix = path.join(home, ".local/opt/socat")
   const [bin, lib] = [path.join(prefix, "bin"), path.join(prefix, "lib")]
   for (const dir of [bin, lib]) fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
   fs.writeFileSync(path.join(bin, "socat1"), "#!/bin/sh\nexit 0\n", { mode: 0o755 })
@@ -372,6 +374,7 @@ test("on Linux, the office's own socat, linked alone into a private folder first
   fs.writeFileSync(path.join(lib, "libssl.so.3"), "", { mode: 0o644 })
   const libraries = () => [path.join(bin, "../lib/libssl.so.3")]
   const h = makeClaude({
+    home,
     script: { needs_socat: true },
     socat: path.join(bin, "socat"),
     socatLibraries: libraries,
@@ -424,10 +427,12 @@ test("a socat others could change isn't run for Claude Code", async () => {
 })
 
 test("a socat that doesn't run is refused before Claude Code starts, saying so", async () => {
-  const dir = tempDir()
+  const home = tempDir()
+  const dir = path.join(home, ".local/bin")
+  fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
   const socat = path.join(dir, "socat")
   fs.writeFileSync(socat, "#!/bin/sh\necho 'error while loading shared libraries: libssl.so.3' >&2\nexit 127\n", { mode: 0o755 })
-  const h = makeClaude({ script: { needs_socat: true }, socat, platform: "linux" })
+  const h = makeClaude({ home, script: { needs_socat: true }, socat, platform: "linux" })
   const chat = await chatOf(h)
   const error = await h.sessions
     .startInstrument(chat, "01JA1H0000000000000000CA07", { observer: new Heard(), label, owner: "ngocbh" })

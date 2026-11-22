@@ -6,7 +6,7 @@ import { expect, test } from "bun:test"
 import { type EmployeePermission, claudeStart } from "../../../src/runtime/sandbox/harness_profile.ts"
 import { fenceIn, freshFolder, harnessRoot } from "../../../src/runtime/sandbox/harness_temp.ts"
 import { UnsafeProfile } from "../../../src/runtime/sandbox/policy.ts"
-import { SocatUnusable, lddLibraries, prepareSocat } from "../../../src/tools/claude/socat.ts"
+import { SocatUnusable, lddLibraries, parseLdd, prepareSocat } from "../../../src/tools/claude/socat.ts"
 import { tempDir } from "../../helpers.ts"
 
 /** An employee's permission over a temp home, and a socat installed as conda-forge lays one out under that home:
@@ -53,8 +53,10 @@ test("a socat in a system folder on the harness PATH is left as it is", () => {
   expect(fs.existsSync(path.join(temp, "S1.bin"))).toBe(false)
 })
 
-test("a socat whose library folder the employee may write, or others may change, is refused", () => {
-  const { root, bin, lib, temp, permission, libraries } = layout()
+test("a socat whose library folder the employee may write, or others may change, is refused before it ever runs", () => {
+  // It leaves a mark if it runs.
+  const marker = path.join(fs.realpathSync(tempDir()), "ran")
+  const { root, bin, lib, temp, permission, libraries } = layout(`#!/bin/sh\ntouch ${marker}\n`)
   const shared = path.join(root, "shared")
   fs.mkdirSync(shared, { mode: 0o755 })
   const planted = () => [path.join(shared, "libssl.so.3")]
@@ -67,6 +69,18 @@ test("a socat whose library folder the employee may write, or others may change,
   expect(() => prepareSocat(permission(), path.join(bin, "socat"), { root: temp, name: "S1.bin", libraries })).toThrow(
     /others than the user may write/,
   )
+  // Nor does one whose library ldd can't find.
+  const missing = () => {
+    throw new SocatUnusable("libssl.so.3 => not found")
+  }
+  fs.chmodSync(lib, 0o755)
+  expect(() => prepareSocat(permission(), path.join(bin, "socat"), { root: temp, name: "S1.bin", libraries: missing })).toThrow(
+    /not found/,
+  )
+  expect(fs.existsSync(marker)).toBe(false)
+  // Once its folders pass, it runs.
+  prepareSocat(permission(), path.join(bin, "socat"), { root: temp, name: "S1.bin", libraries })
+  expect(fs.existsSync(marker)).toBe(true)
 })
 
 test("a socat that doesn't run, or that misses a library, is refused saying so, not as an opaque bridge error", () => {
@@ -90,4 +104,24 @@ test("ldd's libraries are the files it resolves, none for a script", () => {
   for (const lib of libs) expect(path.isAbsolute(lib) && fs.existsSync(lib), lib).toBe(true)
   const { bin } = layout()
   expect(lddLibraries(path.join(bin, "socat1"))).toEqual([])
+})
+
+test("ldd's output is read strictly: a library it can't find, or one at a path with a space, refuses the socat", () => {
+  const out = (lines: string[]) => lines.join("\n")
+  expect(
+    parseLdd(
+      out([
+        "\tlinux-vdso.so.1 (0x00007ffe)",
+        "\tlibssl.so.3 => /opt/socat/bin/../lib/libssl.so.3 (0x00001527)",
+        "\tlibc.so.6 => /lib64/libc.so.6 (0x00001527)",
+        "\t/lib64/ld-linux-x86-64.so.2 (0x00001527)",
+      ]),
+      "/opt/socat/bin/socat1",
+    ),
+  ).toEqual(["/opt/socat/bin/../lib/libssl.so.3", "/lib64/libc.so.6", "/lib64/ld-linux-x86-64.so.2"])
+  expect(() => parseLdd(out(["\tlibssl.so.3 => not found"]), "/opt/socat/bin/socat1")).toThrow(/can't load libssl.so.3/)
+  expect(() => parseLdd(out(["\tlibssl.so.3 => /opt/my libs/libssl.so.3 (0x0001)"]), "/opt/socat/bin/socat1")).toThrow(
+    /a space/,
+  )
+  expect(parseLdd("\tnot a dynamic executable", "/opt/socat/bin/socat1")).toEqual([])
 })

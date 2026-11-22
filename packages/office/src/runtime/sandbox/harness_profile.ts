@@ -383,8 +383,9 @@ function checked(p: EmployeePermission): Checked {
   ])
   const others = (p.othersWritable ?? []).map((dir) => realPath(dir))
   const programs = p.programs === undefined ? null : programsOf(p.programs, [...writable, ...others], officeHome)
+  const sockets = SOCKET_ROOTS.filter((root) => fs.existsSync(root)).map((root) => realPath(root))
   const programReads = (p.programReads ?? []).map((dir) =>
-    readFolder(dir, [...writable, ...others], [home, officeHome, ...byName]),
+    readFolder(dir, [...writable, ...others], [home, officeHome, ...byName], sockets),
   )
   const all = [workspace, tmpdir, fence, home, ...folders.map((f) => f.path), ...denied, ...held.map((h) => h.path)]
   for (const resolved of all) {
@@ -411,10 +412,11 @@ function checked(p: EmployeePermission): Checked {
 }
 
 /** `dir`, a folder a program runs or loads libraries from, resolved: refused (`UnsafeProfile`) unless it is a folder
- *  others than the user can't write, in and holding none of `offLimits` (what the harness or others may write), and
- *  in and holding none of `kept` (the home, the office's home and the folders denied by name), so it opens no more
- *  than that folder. */
-function readFolder(dir: string, offLimits: readonly string[], kept: readonly string[]): string {
+ *  others than the user can't write, in and holding none of `offLimits` (what the harness or others may write), in
+ *  and holding none of `kept` but the home (the home, the office's home and the folders denied by name), and holding
+ *  no socket root (`SOCKET_ROOTS`, `sockets`) nor in one but within the home, so that re-opening it opens no more
+ *  than that folder: none of the owner's sockets. */
+function readFolder(dir: string, offLimits: readonly string[], kept: readonly string[], sockets: readonly string[]): string {
   const what = `the folder ${JSON.stringify(dir)}, which a program the harness runs loads from,`
   if (!path.isAbsolute(dir) || dir.includes("\0")) throw new UnsafeProfile(`${what} isn't absolute`)
   const visited: string[] = []
@@ -429,6 +431,9 @@ function readFolder(dir: string, offLimits: readonly string[], kept: readonly st
   if (holds !== undefined) throw new UnsafeProfile(`${what} holds ${holds}, which the harness may not read`)
   const inside = kept.slice(1).find((k) => within(real, k))
   if (inside !== undefined) throw new UnsafeProfile(`${what} lies in ${inside}, which the harness may not read`)
+  const home = kept[0]!
+  const socket = sockets.find((root) => within(root, real) || (within(real, root) && !within(real, home)))
+  if (socket !== undefined) throw new UnsafeProfile(`${what} is or lies in ${socket}, where the owner's sockets are`)
   if (PATTERN.test(real)) throw new UnsafeProfile(`the harness would read ${real} as a pattern`)
   return real
 }
