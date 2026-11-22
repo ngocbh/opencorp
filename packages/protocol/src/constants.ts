@@ -1,7 +1,15 @@
 import { RulePattern } from "./schemas/rules"
 
-/** The office's own name: its own connection, set up at onboarding, and the driver of the runs the office starts itself. */
+/** The office's own name: its own connection, set up at onboarding, the driver of the runs the office starts itself,
+ *  and the author of its notes to an agent about the agent's own work (`isOfficeNote`). */
 export const OFFICE = "office"
+
+/** Whether `message` is a note from the office to the agent about the agent's own work, such as a command of its that
+ *  ended: a user message whose author is `office`. Its first line says what happened; clients show that line, which
+ *  opens to the whole note. */
+export function isOfficeNote(message: { readonly role: string; readonly author?: string | null }): boolean {
+  return message.role === "user" && message.author === OFFICE
+}
 
 /** How long, in ms, a pairing code HQ mints stays valid: HQ refuses it after, and `opencorp hq` deletes the code's
  *  redirect file then. */

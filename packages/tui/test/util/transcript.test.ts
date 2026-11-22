@@ -72,6 +72,20 @@ describe("formatMessage", () => {
       formatMessage({ ...user, role: "assistant" }, { ...session, person: "gone" }, people, { toolDetails: true }),
     ).toBe("## gone\n\ngo\n\n")
   })
+
+  test("a note from the office is headed as the office's", () => {
+    const note: Message = {
+      id: "M2",
+      session_id: "S1",
+      role: "user",
+      author: "office",
+      created_at: "t",
+      parts: [{ id: "a", type: "text", text: "shell 1: `make` ended, exit 2" }],
+    }
+    expect(formatMessage(note, session, people, { toolDetails: true })).toBe(
+      "## Office\n\nshell 1: `make` ended, exit 2\n\n",
+    )
+  })
 })
 
 describe("formatTranscript", () => {

@@ -1,4 +1,4 @@
-import type { Message, Part, Person, Session } from "@opencorp/protocol"
+import { isOfficeNote, type Message, type Part, type Person, type Session } from "@opencorp/protocol"
 
 export type TranscriptOptions = {
   toolDetails: boolean
@@ -28,14 +28,16 @@ export function formatTranscript(
   return transcript
 }
 
-/** One message as markdown, headed `## User` or by the session person's handle. */
+/** One message as markdown, headed `## User`, `## Office` for the office's note, or by the session person's
+ *  handle. */
 export function formatMessage(
   msg: Message,
   session: Pick<Session, "person">,
   people: readonly Person[],
   options: TranscriptOptions,
 ): string {
-  let result = msg.role === "user" ? `## User\n\n` : `## ${personLabel(people, session.person)}\n\n`
+  const who = isOfficeNote(msg) ? "Office" : msg.role === "user" ? "User" : personLabel(people, session.person)
+  let result = `## ${who}\n\n`
   for (const part of msg.parts) result += formatPart(part, options)
   return result
 }

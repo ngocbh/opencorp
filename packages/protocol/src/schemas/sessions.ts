@@ -152,8 +152,9 @@ export const Message = z.strictObject({
   session_id: Ulid,
   role: z.enum(["user", "assistant"]),
   /**
-   * The human who sent a user message: harness and composer sessions both name the sender. Null for assistant
-   * messages and for a user message whose sender wasn't recorded.
+   * The human who sent a user message: harness and composer sessions both name the sender; `office` (`OFFICE`) for
+   * the office's note about the agent's own work (`isOfficeNote`). Null for assistant messages and for a user message
+   * whose sender wasn't recorded.
    */
   author: Handle.nullable().default(null),
   parts: z.array(Part),
