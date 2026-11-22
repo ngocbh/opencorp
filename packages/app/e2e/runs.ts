@@ -27,8 +27,8 @@ export function summaryOf(data: Runs, id: string): RunSummary | undefined {
 
 /**
  * Five top-level runs: @kai's chat (idle, a fresh run that replaces run 4, with Ann's side chat under it), the failed
- * run it replaced, @lead's waiting chat (a model question open), a Codex session's debrief, and @minh's profile
- * manager, interrupted when the office stopped.
+ * run it replaced, @lead's waiting chat (a model question open), a debrief the office drove (no usage recorded), and
+ * @minh's profile manager, interrupted when the office stopped.
  */
 export function runLogs(): Runs {
   const side = run(6, { flow: "side_chat", flow_path: "shared/flows/side_chat.yaml", driver: "ann",
@@ -41,7 +41,7 @@ export function runLogs(): Runs {
     run(3, { person: "lead", participants: ["lead"], status: "waiting", ended_at: null, asking: true,
              current_nodes: ["chat#1/reply"] }),
     run(2, { flow: "debrief", flow_path: "shared/flows/debrief.yaml", person: "minh", driver: "office",
-             participants: ["minh"], codex: true }),
+             participants: ["minh"] }),
     run(1, { flow: "profile_manager", flow_path: "shared/flows/profile_manager.yaml", person: "minh",
              participants: ["minh"], status: "interrupted", reason: "the office stopped", ended_at: null }),
   ]

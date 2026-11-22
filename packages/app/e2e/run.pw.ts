@@ -44,10 +44,11 @@ test("the status doesn't repeat its word, or how long a finished run took", asyn
   await expect(status()).toHaveText("interrupted")
 })
 
-test("a debrief says its usage isn't recorded", async ({ page }) => {
+test("a debrief says its usage isn't recorded, under its flow", async ({ page }) => {
   await page.goto(`/runs/${rid(2)}`)
   await expect(header(page)).toContainText("usage not recorded")
-  await expect(header(page)).toContainText("debrief of a Codex session")
+  await expect(header(page).getByRole("heading", { name: "debrief", exact: true })).toBeVisible()
+  await expect(header(page)).toContainText("shared/flows/debrief.yaml")
 })
 
 test("the Timeline: newest first, the latest iteration open, older ones folded, older pages on unfold", async ({ page }) => {

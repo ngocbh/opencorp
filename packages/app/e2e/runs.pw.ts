@@ -48,10 +48,9 @@ test("one row per top-level run, newest first, with every column", async ({ page
   await expect(row(page, 5)).toContainText("chat#3/ask")
   await expect(row(page, 4)).toContainText("chat#2/reply")
   await expect(row(page, 3)).toContainText("asking · chat#1/reply")
-  await expect(row(page, 2)).toContainText("debrief of a Codex session")
+  await expect(row(page, 2).getByRole("cell", { name: "debrief", exact: true })).toBeVisible()
   await expect(row(page, 2)).toContainText("office")
   await expect(row(page, 1)).toContainText("the office stopped")
-  await expect(page.getByText("Codex sessions themselves aren't listed")).toBeVisible()
 })
 
 test("a run's children fold under it, and the copy button copies the full id", async ({ page, context }) => {
