@@ -349,7 +349,9 @@ test("a model that fails asks, saying the check couldn't run, with no text from 
   expect(verdict).toEqual({ verdict: "ask", reason: COULD_NOT_RUN, failed: true })
   expect(COULD_NOT_RUN).toBe("it couldn't run")
   expect(fake.requests()).toHaveLength(1)
-  const said = JSON.stringify([verdict, records])
+  // Each record's run id is a random UUID, which holds "500" about once in 200 checks.
+  expect(records.map((r) => r.runId)).toEqual([expect.stringMatching(/^[0-9a-f-]{36}$/)])
+  const said = JSON.stringify([verdict, records.map((r) => ({ ...r, runId: "<uuid>" }))])
   expect(said).not.toContain(SENTINEL)
   expect(said).not.toContain("scripted error")
   expect(said).not.toContain("500")
