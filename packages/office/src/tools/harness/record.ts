@@ -122,7 +122,7 @@ export class Kept {
 }
 
 /** `text`, or when it is over `max` its first and last `max / 2` code units with a marker between saying how many are
- *  left out; a cut never splits a surrogate pair. */
+ *  left out and how to get them; a cut never splits a surrogate pair. */
 function headAndTail(text: string, max: number): string {
   if (text.length <= max) return text
   const half = Math.floor(max / 2)
@@ -130,7 +130,11 @@ function headAndTail(text: string, max: number): string {
   let tail = text.length - half
   if (isHigh(text.charCodeAt(head - 1))) head -= 1
   if (isLow(text.charCodeAt(tail))) tail += 1
-  return `${text.slice(0, head)}\n\n[… ${tail - head} characters left out here; the session's record keeps them]\n\n${text.slice(tail)}`
+  // The record's files keep them, but the employee can't read those: the harness can still give them.
+  const marker =
+    `[… ${tail - head} characters left out here: ask the session for the part you need, or to save it to a file in ` +
+    "the folder]"
+  return `${text.slice(0, head)}\n\n${marker}\n\n${text.slice(tail)}`
 }
 
 const isHigh = (unit: number) => unit >= 0xd800 && unit <= 0xdbff

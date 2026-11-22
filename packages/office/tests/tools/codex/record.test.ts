@@ -88,7 +88,9 @@ test("memory keeps a huge entry's head and tail with a marker between, the files
   for (const { text } of huge) {
     expect(text.isWellFormed()).toBe(true)
     expect(text).toEndWith("t".repeat(ENTRY_CHARS / 2))
-    expect(text).toMatch(/\n\n\[… \d+ characters left out here; the session's record keeps them\]\n\n/)
+    // Not the record, which the employee can't read: what they can do instead.
+    const asks = "ask the session for the part you need, or to save it to a file in the folder"
+    expect(text).toMatch(new RegExp(`\\n\\n\\[… \\d+ characters left out here: ${asks}\\]\\n\\n`))
   }
   // The head stops short of the astral character rather than split it.
   const [said1] = record.conversation.entries
