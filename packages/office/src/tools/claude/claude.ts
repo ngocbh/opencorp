@@ -37,6 +37,9 @@ export const CLAUDE_TOOLS = ["Bash", "Read", "Edit", "Write", "NotebookEdit", "G
  *  makes a `.gitconfig` in the working folder for each command, which a read-only folder refuses, so every Bash
  *  command fails (`bwrap: Can't create file at <folder>/.gitconfig: Read-only file system`). macOS's isn't known
  *  to. */
+// Claude Code's bug, https://github.com/anthropics/claude-code/issues/111621, is why a read-only folder is refused on
+// Linux. Before removing the refusal, check that the issue is fixed in the floor (`CLAUDE_FLOOR`) and that a Bash
+// command runs in a read-only folder under an employee's start on Linux.
 export function readOnlyFails(platform: NodeJS.Platform = process.platform): boolean {
   return platform === "linux"
 }
