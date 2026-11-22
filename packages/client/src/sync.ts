@@ -62,10 +62,14 @@ function cleanPart(part: unknown, clean: (text: string) => string): unknown {
   return part
 }
 
-/** A message with `clean` applied to its parts. */
+/** A message with `clean` applied to its parts, and to its instrument's name when it is an instrument's note. */
 function cleanMessage<M>(message: M, clean: (text: string) => string): M {
   if (!isRecord(message) || !Array.isArray(message.parts)) return message
-  return { ...message, parts: message.parts.map((p) => cleanPart(p, clean)) } as M
+  const parts = message.parts.map((p) => cleanPart(p, clean))
+  // An instrument's note shows its instrument's name, as the instruments list does.
+  const { instrument } = message
+  if (!isRecord(instrument) || typeof instrument.name !== "string") return { ...message, parts } as M
+  return { ...message, parts, instrument: { ...instrument, name: clean(instrument.name) } } as M
 }
 
 /** An instrument with `clean` applied to the text it shows (name, command, error); ids and states stay as sent. */

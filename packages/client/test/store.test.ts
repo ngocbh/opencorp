@@ -307,6 +307,32 @@ test("instrument.output is handed to listeners, not kept in the store", async ()
   sync.stop()
 })
 
+test("an instrument's note is cleaned as a message is, its instrument's name too; its id stays as sent", async () => {
+  const note: Message = {
+    id: "N1",
+    session_id: S,
+    role: "user",
+    author: null,
+    instrument: { id: "01JA1X0000000000000000000A", name: "shell 1" },
+    parts: [{ id: "n1", type: "text", text: "shell 1: `make` ended, exit 2" }],
+    created_at: "t",
+  }
+  const routes: Record<string, () => unknown> = {
+    [`GET /sessions/${S}`]: () => session(),
+    [`GET /sessions/${S}/messages`]: () => [note],
+    [`GET /questions?session=${S}`]: () => [] as Question[],
+    [`GET /sessions/${S}/instruments`]: () => [],
+  }
+  const { state, sync, send, online } = stubSync(routes)
+  await online()
+  await sync.syncSession(S)
+  const cleaned = { ...note, instrument: { id: "01JA1X0000000000000000000A", name: "SHELL 1" } }
+  expect(state.messages[S]).toEqual([{ ...cleaned, parts: [{ id: "n1", type: "text", text: "SHELL 1: `MAKE` ENDED, EXIT 2" }] }])
+  send({ type: "live", event: live("message.updated", { ...note, id: "N2" }) })
+  expect(state.messages[S]![1]!.instrument).toEqual({ id: "01JA1X0000000000000000000A", name: "SHELL 1" })
+  sync.stop()
+})
+
 test("a synced session's instruments are read with its messages, and an office that serves none has none", async () => {
   const listed = [
     instrument("I1", { command: "make", error: "no tty" }),
