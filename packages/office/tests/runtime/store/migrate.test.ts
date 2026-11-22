@@ -197,10 +197,13 @@ test("a store at version 9 gets only the instrument_of migration, and its sessio
   expect(db.prepare("SELECT id, instrument_of FROM sessions").all()).toEqual([{ id: "s1", instrument_of: null }])
 })
 
-test("a store at version 10 renames its composer sessions yian, and new sessions are yian", () => {
+test("a store at version 11 renames its composer sessions yian, and new sessions are yian", () => {
+  // The rename comes after the subscription cost migration.
+  const last = MIGRATIONS.slice(-2).map((m) => m.name)
+  expect(last).toEqual(["0011_usage_subscription.sql", "0012_session_harness_yian.sql"])
   const file = join(tempDir(), "store.sqlite")
   const db = openSqlite(file)
-  expect(migrate(db, MIGRATIONS.slice(0, 10))).toBe(10)
+  expect(migrate(db, MIGRATIONS.slice(0, 11))).toBe(11)
   const at = "2026-11-22T00:00:00.000Z"
   const insert = db.prepare(
     "INSERT INTO sessions (id, person, harness, office, cwd, repo_commit, status, kind, created_at, updated_at) " +

@@ -115,11 +115,11 @@ test("office json is the office connection and the default", async () => {
   expect(JSON.stringify(info)).not.toContain(SENTINEL)
 })
 
-test("no office json is an office connection on composer defaults", async () => {
+test("no office json is an office connection on yian defaults", async () => {
   const c = new Connections(await officeDir(tempDir()))
   expect(await c.names()).toEqual([OFFICE])
   const info = await c.info(OFFICE)
-  expect(info).toEqual({ name: OFFICE, provider: "composer", method: "none", model: null, default: true })
+  expect(info).toEqual({ name: OFFICE, provider: "yian", method: "none", model: null, default: true })
   expect(await c.resolve(null, null)).toEqual(Provider.parse({}))
 })
 
@@ -846,8 +846,8 @@ test("labels", () => {
   expect(commercialAzure({ provider: "openai" })).toBe(false)
   expect(providerLabel({ provider: "openai" })).toBe("openai")
   expect(providerLabel({ provider: "anthropic", api_key: SENTINEL })).toBe("anthropic")
-  expect(providerLabel({ model: "m" })).toBe("composer")
-  expect(providerLabel(null)).toBe("composer")
+  expect(providerLabel({ model: "m" })).toBe("yian")
+  expect(providerLabel(null)).toBe("yian")
 })
 
 test("azure base url", () => {

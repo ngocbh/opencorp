@@ -689,11 +689,11 @@ export function commercialAzure(llm: LlmConfig | null): boolean {
 }
 
 /** A short name for the provider of `llm`: `azure` (an Azure OpenAI resource in the commercial, Government or
- *  China cloud), `custom` (another OpenAI-compatible endpoint), the provider's own name, or `composer`, the label
+ *  China cloud), `custom` (another OpenAI-compatible endpoint), the provider's own name, or `yian`, the label
  *  for yian's default provider. */
 export function providerLabel(llm: LlmConfig | null): string {
   const provider = llm?.provider
-  if (!provider) return "composer"
+  if (!provider) return "yian"
   if (provider === "openai" && llm.base_url) {
     const host = baseUrlHost(llm)
     return AZURE_HOSTS.some((ending) => host.endsWith(ending)) ? "azure" : "custom"
