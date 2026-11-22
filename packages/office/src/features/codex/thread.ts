@@ -16,7 +16,7 @@ import { UnsafeProfile, UnsafeWorkspace } from "../../runtime/sandbox/policy.ts"
 import { runCommand } from "../../runtime/service/launch.ts"
 import { APP_SERVER_ARGS, CodexProcess, CodexStartError, threadLoad } from "../../tools/codex/codex.ts"
 import { type JsonRpc, RpcClosed, RpcError, nameOf } from "../../tools/codex/rpc.ts"
-import { threadCodex } from "./install.ts"
+import { copiesFolder, threadCodex } from "./install.ts"
 
 /** Milliseconds `config/read` has to answer. */
 const CONFIG_READ_MS = 30_000
@@ -109,7 +109,7 @@ export type ProbeOptions = {
   codex: HarnessInstall
   /** The app-server's environment, as the office gives one (the worker environment). */
   env: Record<string, string>
-  /** The office's environment: its `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. */
+  /** The office's environment: its `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `XDG_CACHE_HOME`. */
   environ: Record<string, string | undefined>
   /** The owner's home and `<OPENCORP_HOME>`, denied by name. */
   home: string
@@ -167,7 +167,7 @@ export async function threadProbe(options: ProbeOptions): Promise<Probed> {
       othersWritable: options.othersWritable ?? [],
     }
     step = "the copy of Codex"
-    const codex = await threadCodex(p, options.codex, root)
+    const codex = await threadCodex(p, options.codex, copiesFolder(options.home, options.environ))
     const started: CodexProcess = (proc = new CodexProcess({
       command: [codex.run, ...APP_SERVER_ARGS],
       cwd: ws,

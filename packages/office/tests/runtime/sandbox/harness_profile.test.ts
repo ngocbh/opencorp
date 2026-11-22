@@ -6,6 +6,7 @@ import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import {
+  checkApart,
   checkClaudeInstall,
   checkCodexInstall,
   checkHarnessBinary,
@@ -381,6 +382,41 @@ test("codex as the office runs it is refused before it runs where anyone but the
   }
   fs.chmodSync(path.join(root, "codex-install"), 0o757)
   expect(() => codexThread(permission(), "opencorp-s1", { install })).toThrow(/others than the user may write/)
+})
+
+test("codex's check returns the binary and install folder it checked, resolved, which is what the office copies and runs", () => {
+  const { root, install, permission } = layout()
+  const link = path.join(root, "codex-link")
+  fs.symlinkSync(install, link)
+  expect(checkCodexInstall(permission(), { run: path.join(link, "bin/codex"), install: link })).toEqual({
+    run: path.join(install, "bin/codex"),
+    install,
+  })
+})
+
+test("a folder the office keeps for the harness is refused in a denied folder, or in or holding the session's folder, the temp folder, a listed folder, another person's writable one or the MCP folder", () => {
+  const { root, home, ws, tmp, permission, folder } = layout()
+  const shared = folder("shared")
+  const others = folder("others")
+  const what = "the folder of the office's copies of Codex"
+  // An MCP folder outside the office's home, as no office makes one, to show the copies' folder never overlaps it.
+  const mcpHome = path.join(root, "mcp/S1")
+  fs.mkdirSync(path.join(mcpHome, "cwd"), { recursive: true, mode: 0o700 })
+  for (const dir of [path.dirname(mcpHome), mcpHome, path.join(mcpHome, "cwd")]) fs.chmodSync(dir, 0o700)
+  expect(checkApart(permission(), path.join(home, ".cache/opencorp/codex"), what)).toBe(path.join(home, ".cache/opencorp/codex"))
+  const refused: [EmployeePermission, string, string][] = [
+    [permission(), path.join(home, ".config/opencorp/codex"), `lies in ${path.join(home, ".config")}, which the employee's permission denies`],
+    [permission(), path.join(ws, "cache"), `lies in or holds the session's folder, ${ws}`],
+    [permission(), root, `lies in or holds the session's folder, ${ws}`],
+    [permission(), path.join(tmp, "cache"), `lies in or holds the harness's temp folder, ${tmp}`],
+    [permission({ folders: [{ path: shared, access: "read" }] }), path.join(shared, "c"), `lies in or holds a listed folder, ${shared}`],
+    [permission({ othersWritable: [others] }), path.join(others, "c"), `lies in or holds another person's writable folder, ${others}`],
+    [permission({ mcpHome }), path.dirname(mcpHome), `lies in or holds the MCP folder, ${mcpHome}`],
+  ]
+  for (const [p, dir, why] of refused) {
+    expect(() => checkApart(p, dir, what), dir).toThrow(UnsafeProfile)
+    expect(() => checkApart(p, dir, what), dir).toThrow(why)
+  }
 })
 
 test("claude as the office runs it is refused before it runs where anyone but the user could change it", () => {

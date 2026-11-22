@@ -717,9 +717,32 @@ const SOCAT: Named = { run: "the socat Claude Code's sandbox runs", folder: "soc
  *  folder either's path walks through, may lie in a folder the employee's harness can write, another person's
  *  writable folder or a live session's folder (`othersWritable`); the install folder may hold none of them; and
  *  neither file's folder, the file itself, the install folder nor its `bin` may be open to the group or others. Codex
- *  runs as the owner, outside any sandbox, so this comes before it runs. Throws as `checkPermission` does too. */
-export function checkCodexInstall(p: EmployeePermission, install: HarnessInstall): void {
-  checkInstall(p, install, CODEX)
+ *  runs as the owner, outside any sandbox, so this comes before it runs. Throws as `checkPermission` does too.
+ *  Returns `run` and `install` as checked, resolved: use those, not the paths given, which a link could repoint. */
+export function checkCodexInstall(p: EmployeePermission, install: HarnessInstall): { run: string; install: string } {
+  return checkInstall(p, install, CODEX)
+}
+
+/** Throws `UnsafeProfile` unless `dir`, a folder the office keeps for the harness outside its install (the office's
+ *  copies of Codex), lies in no folder `p` denies, and neither lies in nor holds the session's folder, the temp folder,
+ *  a listed folder, another person's writable folder or the MCP folder (`mcpHome`): the harness's sandbox reads it as
+ *  it is, and only the office writes it. `what` names it. Returns it resolved. Throws as `checkPermission` does too. */
+export function checkApart(p: EmployeePermission, dir: string, what: string): string {
+  const c = checked(p)
+  const real = realPath(dir)
+  const held = holding(c.denied, real)
+  if (held !== null) throw new UnsafeProfile(`${what} ${real} lies in ${held}, which the employee's permission denies`)
+  const near: [string, string][] = [
+    ["the session's folder", c.workspace],
+    ["the harness's temp folder", c.tmpdir],
+    ...c.folders.map((f): [string, string] => ["a listed folder", f.path]),
+    ...c.others.map((o): [string, string] => ["another person's writable folder", o]),
+    ...(c.mcpHome === null ? [] : ([["the MCP folder", c.mcpHome]] as [string, string][])),
+  ]
+  for (const [name, at] of near) {
+    if (within(real, at) || within(at, real)) throw new UnsafeProfile(`${what} ${real} lies in or holds ${name}, ${at}`)
+  }
+  return real
 }
 
 /** Throws `UnsafeProfile` unless Claude Code as the office runs it can't be changed by anyone but the user, as
@@ -764,15 +787,20 @@ export function checkHarnessBinary(
 }
 
 /** `checkCodexInstall` and `checkClaudeInstall`, with the harness's names for the refusals. */
-function checkInstall(p: EmployeePermission, install: HarnessInstall, named: Named): void {
+function checkInstall(p: EmployeePermission, install: HarnessInstall, named: Named): { run: string; install: string } {
   const c = checked(p)
-  checkAgainst([...c.writableRoots, ...c.others], install, named)
+  return checkAgainst([...c.writableRoots, ...c.others], install, named)
 }
 
 /** Throws `UnsafeProfile` if `install` lies in, holds or is reached through one of `roots`, or others than the user
- *  may write its files. */
-function checkAgainst(roots: readonly string[], { run, install, found }: HarnessInstall, named: Named): void {
-  installFolder(install, roots, named.folder)
+ *  may write its files; returns `run` and `install` resolved. */
+function checkAgainst(
+  roots: readonly string[],
+  { run, install, found }: HarnessInstall,
+  named: Named,
+): { run: string; install: string } {
+  const folder = installFolder(install, roots, named.folder)
+  let resolved = run
   for (const file of found === undefined || found === run ? [run] : [found, run]) {
     const what = `${named.run}, ${JSON.stringify(file)},`
     if (!path.isAbsolute(file)) throw new UnsafeProfile(`${what} isn't absolute`)
@@ -782,7 +810,9 @@ function checkAgainst(roots: readonly string[], { run, install, found }: Harness
     if (through !== undefined) throw new UnsafeProfile(`${what} is writable by the employee or others: ${through}`)
     const open = [real, path.dirname(real)].find(openToOthers)
     if (open !== undefined) throw new UnsafeProfile(`${what} can be changed: others than the user may write ${open}`)
+    resolved = real
   }
+  return { run: resolved, install: folder }
 }
 
 /** `install` resolved, if no one but the user can write it: neither it nor a folder its path walks through lies in
@@ -824,7 +854,7 @@ function pathOf(folders: readonly Listed[], writable: readonly string[]): string
 }
 
 /** Whether `p` (followed) exists and its group or others may write it. */
-function openToOthers(p: string): boolean {
+export function openToOthers(p: string): boolean {
   const stat = fs.statSync(p, { throwIfNoEntry: false })
   return stat !== undefined && (stat.mode & 0o022) !== 0
 }

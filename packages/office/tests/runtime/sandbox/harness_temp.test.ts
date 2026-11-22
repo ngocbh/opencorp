@@ -64,10 +64,3 @@ test("the sweep removes the stale folders it names and dead doctor probes', and 
   expect(fs.readdirSync(root).sort()).toEqual([`doctor-${process.pid}`, "fence", "other"].sort())
   expect(lines).toEqual([])
 })
-
-test("the sweep removes a folder a copy left half made once the process making it is gone, and keeps one still being made", () => {
-  const root = harnessRoot("codex", fs.realpathSync(tempDir()))
-  for (const name of [`install-a.${process.pid}.part`, "install-b.999999999.part"]) freshFolder(root, name)
-  sweepTemp(root, () => false, () => {})
-  expect(fs.readdirSync(root)).toEqual([`install-a.${process.pid}.part`])
-})
