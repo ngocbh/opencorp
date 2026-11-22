@@ -353,7 +353,7 @@ test.skipIf(process.platform !== "linux")(
       .map((p) => fs.realpathSync(p))
     expect(policy.sshOver).toEqual([
       [own, REAL_SSH],
-      ...[own, ...new Set(system), visit].map((target) => [wrapper, target]),
+      ...[own, ...new Set(system), visit].map((target) => [wrapper, target] as const),
     ])
     // None without a wrapper; and a wrapper the call could change, or a link, is refused.
     expect(h.make({ ssh: own }).sshOver).toEqual([])
