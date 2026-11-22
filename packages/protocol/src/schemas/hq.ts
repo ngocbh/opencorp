@@ -19,7 +19,7 @@ export const CompanyView = z.strictObject({
 export type CompanyView = z.input<typeof CompanyView>
 
 export const PersonCost = z.strictObject({
-  /** The price of the person's model calls since the report's start; only composer sessions are priced. */
+  /** The price of the person's model calls since the report's start; only yian sessions are priced. */
   usd: z.number().min(0),
   /**
    * The person's harness sessions (Codex, Claude) updated since then, whose tokens the office doesn't price.

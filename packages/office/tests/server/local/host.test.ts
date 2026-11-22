@@ -46,7 +46,7 @@ test("a local session's flow runs in a kept worker, starts in auto and streams t
   const session = host.session()!
   expect(session).toMatchObject({
     person: "opencorp",
-    harness: "composer",
+    harness: "yian",
     kind: "main",
     mode: "auto",
     opened_by: "owner",

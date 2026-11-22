@@ -140,7 +140,7 @@ test("a turn replies and end finishes the session", async () => {
   fake.script({ content: "Hello from Minh." })
   const h = await makeHarness(fake)
   const s = await start(h)
-  expect([s.kind, s.harness, s.run_ids.length]).toEqual(["main", "composer", 1])
+  expect([s.kind, s.harness, s.run_ids.length]).toEqual(["main", "yian", 1])
 
   expect(await h.harness.prompt(s.id, "hi")).toBe("turn")
   await waitFor(() => same(texts(h, s.id), ["Hello from Minh."]) && status(h, s.id) === "idle", {
@@ -746,9 +746,9 @@ test("a session records the resolved folder", async () => {
   expect(h.store.workedFolders("minh").map((f) => f.cwd)).toEqual([real])
 })
 
-test("a person with no harnesses list chats on the composer", async () => {
+test("a person with no harnesses list chats on yian", async () => {
   const h = await makeHarness(await fakeLlm(), { files: { "people/minh/person.yaml": person("minh", { harnesses: [] }) } })
-  expect((await start(h)).harness).toBe("composer")
+  expect((await start(h)).harness).toBe("yian")
 })
 
 test("a chat starts on the picked connection and stores the connections own model as null", async () => {
@@ -874,7 +874,7 @@ test("a codex chat is stored then handed to the codex sessions", async () => {
   expect(s.work_item_id).toBeTruthy()
 })
 
-test("the composer needs a person who uses it", async () => {
+test("yian needs a person who uses it", async () => {
   const files = { "people/minh/person.yaml": person("minh", { harnesses: ["codex"] }) }
   const h = await makeHarness(await fakeLlm(), { codex: true, files })
   const error = await rejection(h.harness.startSession("minh", h.folder))
@@ -882,7 +882,7 @@ test("the composer needs a person who uses it", async () => {
   expect([error.status, error.code, error.message]).toEqual([
     422,
     "unsupported_harness",
-    "the person doesn't use the composer harness",
+    "the person doesn't use the yian harness",
   ])
   expect(h.store.listSessions()).toEqual([])
 })
@@ -894,7 +894,7 @@ test("codex needs the codex sessions", async () => {
 })
 
 test("codex needs a person who uses it", async () => {
-  // minh's harnesses: [composer]
+  // minh's harnesses: [yian]
   const h = await makeHarness(await fakeLlm(), { codex: true, files: { "people/minh/person.yaml": person("minh") } })
   const error = await rejection(h.harness.startSession("minh", h.folder, { harness: "codex" }))
   expect([error.status, error.code]).toEqual([422, "unsupported_harness"])

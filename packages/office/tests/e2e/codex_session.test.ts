@@ -130,7 +130,7 @@ function minhUsesCodex(office: RunningOffice): void {
   const company = office.paths.company
   const personFile = path.join(company, "people", "minh", "person.yaml")
   const minh = parse(fs.readFileSync(personFile, "utf8")) as Record<string, unknown>
-  minh.harnesses = ["composer", "codex"]
+  minh.harnesses = ["yian", "codex"]
   fs.writeFileSync(personFile, stringify(minh))
   git(company, "commit", "-qam", "minh uses codex")
 }

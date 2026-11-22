@@ -814,7 +814,7 @@ export async function newSession(
     Session.parse({
       id: newId(),
       person: "minh",
-      harness: "composer",
+      harness: "yian",
       office: os.hostname(),
       cwd,
       repo_commit: await git.head(),

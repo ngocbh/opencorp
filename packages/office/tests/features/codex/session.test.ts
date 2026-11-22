@@ -334,7 +334,7 @@ test("an MCP server the owner adds while a session runs refuses the next turn, w
 test("a server the employee may use, added while a session runs, is fine if Codex reaches it by URL, and refuses the turn if Codex would start it as a program, which the load didn't place in the office's folder", async () => {
   const policy = { sandbox: "workspace-write", mcp_servers: ["github", "web", "lint", "docs"] }
   const h = makeCodex({
-    files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"], harness_policy: policy }) },
+    files: { "people/minh/person.yaml": person("minh", { harnesses: ["yian", "codex"], harness_policy: policy }) },
   })
   // At the load: github, a program the employee may use (placed), web, one reached by URL (left as it is), and
   // other, which they may not use (off).
@@ -374,7 +374,7 @@ test("a session whose employee's permission can't be built fails with why, befor
   const h = makeCodex({
     files: {
       "people/minh/person.yaml": person("minh", {
-        harnesses: ["composer", "codex"],
+        harnesses: ["yian", "codex"],
         harness_policy: { sandbox: "workspace-write", network: false, folders: [{ path: "relative", access: "read" }] },
       }),
     },

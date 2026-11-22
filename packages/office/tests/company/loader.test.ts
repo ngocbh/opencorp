@@ -38,7 +38,7 @@ test("chat flow fixture loads", async () => {
 })
 
 test("missing person names a person file that doesnt load", () => {
-  const broken = loadRepo(makeCompany({ "people/minh/person.yaml": "harnesses: [composer\n" }))
+  const broken = loadRepo(makeCompany({ "people/minh/person.yaml": "harnesses: [yian\n" }))
   expect(missingPerson(broken, "minh")).toBe("@minh's person.yaml doesn't load; run `opencorp doctor`")
   const misplaced = loadRepo(makeCompany({ "people/minh/person.yaml": person("minh", { handle: "ava" }) }))
   expect(codes(misplaced)).toContain("people/minh/person.yaml person.dir_mismatch")
@@ -49,7 +49,7 @@ test("missing person names a person file that doesnt load", () => {
 })
 
 test("person file broken matches only the exact person file path", () => {
-  const broken = loadRepo(makeCompany({ "people/minh/person.yaml": "harnesses: [composer\n" }))
+  const broken = loadRepo(makeCompany({ "people/minh/person.yaml": "harnesses: [yian\n" }))
   expect(personFileBroken(broken.errors, "minh")).toBe(true)
   expect(personFileBroken(loadRepo(makeCompany()).errors, "minh")).toBe(false)
   expect(personFileBroken(broken.errors, "nobody")).toBe(false)

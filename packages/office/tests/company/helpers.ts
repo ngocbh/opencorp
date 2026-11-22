@@ -141,7 +141,7 @@ export function baseFiles(): Record<string, unknown> {
       groups: ["eng"],
       main: "../../shared/flows/chat.yaml",
       skills: ["code-review"],
-      harnesses: ["composer"],
+      harnesses: ["yian"],
       harness_policy: { sandbox: "workspace-write", network: false },
     },
     "people/minh/memory/profile.md": "# Minh, Engineer\n",

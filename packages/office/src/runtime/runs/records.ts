@@ -234,7 +234,7 @@ export function readIndex(runsDir: string, log: (line: string) => void = () => {
 }
 
 /** Ends, as the office stopped and with no end time, each run an earlier office left open: the office rows with no
- *  end reason, but each live composer session's current run (restore resumes, replaces or fails it, or it sleeps),
+ *  end reason, but each live yian session's current run (restore resumes, replaces or fails it, or it sleeps),
  *  the runs yian ended, the runs whose log ends inside its run start (they show never started) and the runs whose log
  *  a writer holds now. Returns the run ids it wrote, in run-id order.
  *
@@ -244,7 +244,7 @@ export function sweep(store: Store, yian: YianRuns): string[] {
   const keep = new Set(
     store
       .listSessions({ status: [...LIVE] })
-      .flatMap((s) => (s.harness === "composer" && s.run_ids.length > 0 ? [s.run_ids.at(-1)!] : [])),
+      .flatMap((s) => (s.harness === "yian" && s.run_ids.length > 0 ? [s.run_ids.at(-1)!] : [])),
   )
   const rest = store.openRuns().flatMap((r) => (keep.has(r.runId) || yian.endedOrRunning(r.runId) ? [] : [r.runId]))
   return store.sweepRuns(rest, OFFICE_STOPPED)

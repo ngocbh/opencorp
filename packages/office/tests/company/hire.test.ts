@@ -45,7 +45,7 @@ async function refused(promise: Promise<unknown>): Promise<HireRefused> {
 const GOLDEN = {
   "people/lan/person.yaml":
     "handle: lan\nname: Lan\nkind: agent\ntitle: QA\nmanager: ngocbh\n" +
-    "main: ../../shared/flows/chat.yaml\nharnesses:\n- composer\nharness_policy:\n  sandbox: workspace-write\n",
+    "main: ../../shared/flows/chat.yaml\nharnesses:\n- yian\nharness_policy:\n  sandbox: workspace-write\n",
   "people/lan/memory/profile.md": "# Lan, QA\n",
 }
 
@@ -92,7 +92,7 @@ test("a new hire gets the m1 defaults", async () => {
   await hiring.hire(req(FORM), "ngocbh")
   await hiring.hire(req(FORM, true), "ngocbh")
   const lan = loadRepo(git.root).people.get("lan")!
-  expect([lan.kind, lan.harnesses, lan.groups, lan.skills]).toEqual(["agent", ["composer"], [], []])
+  expect([lan.kind, lan.harnesses, lan.groups, lan.skills]).toEqual(["agent", ["yian"], [], []])
   expect(lan.harness_policy).toEqual({ sandbox: "workspace-write", network: false, folders: [], mcp_servers: [] })
   expect(fs.readFileSync(path.join(git.root, "people/lan/memory/profile.md"), "utf8")).toBe("# Lan, QA\n")
   expect(runGit(git.root, "log", "-1", "--format=%s")).toBe("hire(@lan): Lan, QA")

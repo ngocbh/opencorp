@@ -24,11 +24,11 @@ export type Data = {
 
 export const person = (handle: string, name: string, kind: Person["kind"], title: string, manager: string | null,
   groups: string[] = []): Person =>
-  ({ handle, name, kind, title, manager, groups, devices: [], password_hash: null, home_office: "mac", harnesses: ["composer"] })
+  ({ handle, name, kind, title, manager, groups, devices: [], password_hash: null, home_office: "mac", harnesses: ["yian"] })
 
 /** A session with every key the office serves, its defaults included. */
 export const session = (id: string, who: string, status: Session["status"], over: Partial<Session> = {}): Session =>
-  ({ id, person: who, harness: "composer", office: "mac", cwd: "/work", repo_commit: SHA, status, kind: "main",
+  ({ id, person: who, harness: "yian", office: "mac", cwd: "/work", repo_commit: SHA, status, kind: "main",
      waiting_on: [], capped: false, harness_session_id: null, work_item_id: null, run_ids: [], question_id: null,
      seed: null, cost: 0, subscription_cost: 0, cost_cap_usd: null, opened_by: null, connection: null, model: null, model_note: null,
      harness_model: null, harness_turn_id: null, harness_usage: null, parent_session_id: null, instrument_of: null, turns: 0, mode: "auto",

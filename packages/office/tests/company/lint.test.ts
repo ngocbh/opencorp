@@ -384,7 +384,7 @@ test("the template flows pass lint", async () => {
   const agent = {
     handle: "minh", name: "Minh", kind: "agent", title: "Engineer", manager: "ngocbh",
     main: "../../shared/flows/chat.yaml", sops: [{ flow: "../../shared/flows/drive_harness.yaml" }],
-    harnesses: ["composer", "codex", "claude"],
+    harnesses: ["yian", "codex", "claude"],
   }
   fs.mkdirSync(path.join(root, "people/minh/memory"), { recursive: true })
   fs.writeFileSync(path.join(root, "people/minh/person.yaml"), writeYaml(agent))
@@ -485,7 +485,7 @@ function driving(flow: string, harnesses: string[]): string {
 }
 
 test("an SOP or routine that drives only harnesses its person doesn't use is a lint warning, one for each", async () => {
-  const root = driving(sopFlow("[codex]", { steered: true }), ["composer"])
+  const root = driving(sopFlow("[codex]", { steered: true }), ["yian"])
   expect(await codes(root)).toEqual(new Set())
   const found = await withCode(root, "person.harness_not_used")
   expect(found.map((issue) => [issue.path, issue.severity, issue.message])).toEqual(
@@ -496,18 +496,18 @@ test("an SOP or routine that drives only harnesses its person doesn't use is a l
         + " tools and can't start a session; add codex to harnesses",
     ]),
   )
-  expect(await withCode(driving(sopFlow("[codex]", { steered: true }), ["composer", "codex"]), "person.harness_not_used"))
+  expect(await withCode(driving(sopFlow("[codex]", { steered: true }), ["yian", "codex"]), "person.harness_not_used"))
     .toEqual([])
 })
 
 test("an SOP that drives either harness is a lint warning only for a person who uses neither", async () => {
   const sop = fs.readFileSync(new URL("../../src/company/template/shared/flows/drive_harness.yaml", import.meta.url), "utf8")
-  const [issue] = await withCode(driving(sop, ["composer"]), "person.harness_not_used")
+  const [issue] = await withCode(driving(sop, ["yian"]), "person.harness_not_used")
   expect(issue!.message).toBe(
     "../../shared/flows/drive.yaml drives codex or claude, but @minh uses neither harness, so it gets neither's tools"
       + " and can't start a session; add the one it should drive to harnesses",
   )
-  for (const harnesses of [["composer", "codex"], ["claude"]]) {
+  for (const harnesses of [["yian", "codex"], ["claude"]]) {
     expect(await lint(loadRepo(driving(sop, harnesses)))).toEqual([])
   }
 })

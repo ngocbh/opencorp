@@ -136,10 +136,10 @@ export function createHarnessPick(person: () => Person | undefined) {
   return {
     current(): Harness {
       const p = person()
-      if (!p) return "composer"
+      if (!p) return "yian"
       const options = harnessesOf(p)
       const pick = picked()
-      return pick?.handle === p.handle && options.includes(pick.harness) ? pick.harness : (options[0] ?? "composer")
+      return pick?.handle === p.handle && options.includes(pick.harness) ? pick.harness : (options[0] ?? "yian")
     },
     /** Picks `harness` for `handle`, named rather than read, so a refused switch to them picks nothing for anyone. */
     set(handle: string, harness: Harness) {

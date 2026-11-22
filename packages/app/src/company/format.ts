@@ -6,7 +6,7 @@ export function costText(usd: number, unpriced: number) {
   return `$${usd.toFixed(2)}${unpriced > 0 ? ` +${unpriced} unpriced` : ""}`
 }
 
-/** A composer session's cost: "$0.42"; when part of it ran on a subscription (`subscription`, priced at what the API
+/** A yian session's cost: "$0.42"; when part of it ran on a subscription (`subscription`, priced at what the API
  *  would charge, which the subscription doesn't pay), "≈$1.20 at API prices, $0 on your subscription", or
  *  "≈$1.50 at API prices, $0.30 paid" for the part a key paid. */
 export function sessionCost(usd: number, subscription: number) {

@@ -64,8 +64,8 @@ test("HANDLE takes the handles the protocol's Handle takes", () => {
   expect(cases.map((handle) => HANDLE.test(handle))).toEqual(cases.map((handle) => Handle.safeParse(handle).success))
 })
 
-test("a person's harnesses: the list, else composer; only those the TUI can open", () => {
-  expect(harnessesOf({ ...person("minh"), harnesses: ["composer", "codex"] })).toEqual(["composer", "codex"])
-  expect(harnessesOf(person("lan"))).toEqual(["composer"])
+test("a person's harnesses: the list, else yian; only those the TUI can open", () => {
+  expect(harnessesOf({ ...person("minh"), harnesses: ["yian", "codex"] })).toEqual(["yian", "codex"])
+  expect(harnessesOf(person("lan"))).toEqual(["yian"])
   expect(harnessesOf({ ...person("kai"), harnesses: ["codex", "claude"] })).toEqual(["codex"])
 })

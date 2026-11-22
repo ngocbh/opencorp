@@ -104,7 +104,7 @@ test("an employee allowed an MCP server gets only its definition, in a 0600 file
   const github = { type: "stdio", command: "sh", args: ["-c", script], env: { GITHUB_TOKEN: "ghp_decoy-token" } }
   fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ numStartups: 2, mcpServers: { ...SERVERS, github } }))
   const policy = { sandbox: "workspace-write", network: false, mcp_servers: ["github", "linear"] }
-  const minh = person("minh", { harnesses: ["composer", "claude"], harness_policy: policy })
+  const minh = person("minh", { harnesses: ["yian", "claude"], harness_policy: policy })
   const call = { tool: "mcp__github__get_me", input: {}, result: "you are minh" }
   const h = makeClaude({
     home,
@@ -258,7 +258,7 @@ test("a start whose sandbox can't run fails the session and says what to fix", a
 test("on Linux, an employee whose folder is read-only is refused Claude Code, saying why and what to use; on macOS it starts", async () => {
   const readOnly = {
     "people/minh/person.yaml": person("minh", {
-      harnesses: ["composer", "claude"],
+      harnesses: ["yian", "claude"],
       harness_policy: { sandbox: "read-only", network: false },
     }),
   }
@@ -279,7 +279,7 @@ test("on Linux, an employee whose folder is read-only is refused Claude Code, sa
 })
 
 test("an employee who doesn't use the claude harness is refused, and no session is made", async () => {
-  const h = makeClaude({ files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"] }) } })
+  const h = makeClaude({ files: { "people/minh/person.yaml": person("minh", { harnesses: ["yian", "codex"] }) } })
   const chat = await chatOf(h)
   const error = await h.sessions.startInstrument(chat, "01JA1H0000000000000000CA03", {
     observer: new Heard(), label, owner: "ngocbh",
@@ -329,7 +329,7 @@ test("a server revoked at head no longer loads when the session resumes, though 
   fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ mcpServers: SERVERS }))
   const policy = (mcp_servers: string[]) => ({ sandbox: "workspace-write", network: false, mcp_servers })
   const file = (mcp_servers: string[]) =>
-    person("minh", { harnesses: ["composer", "claude"], harness_policy: policy(mcp_servers) })
+    person("minh", { harnesses: ["yian", "claude"], harness_policy: policy(mcp_servers) })
   const h = makeClaude({
     home,
     files: { "people/minh/person.yaml": file(["github", "docs"]) },
@@ -591,7 +591,7 @@ test("after a restart, a continued session gets the MCP servers allowed at its c
   const github = { command: "sh", args: ["-c", `pwd >> ${logs}/pwd`] }
   fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ mcpServers: { ...SERVERS, github } }))
   const file = (mcp_servers: string[]) =>
-    person("minh", { harnesses: ["composer", "claude"], harness_policy: { sandbox: "workspace-write", mcp_servers } })
+    person("minh", { harnesses: ["yian", "claude"], harness_policy: { sandbox: "workspace-write", mcp_servers } })
   const h = makeClaude({
     home,
     files: { "people/minh/person.yaml": file(["github", "docs"]) },

@@ -205,16 +205,16 @@ export class ChatHarness implements SessionHarness {
   }
 
   /**
-   * Starts `handle`'s main chat in `cwd` on `harness`: a Codex chat is the Codex sessions' start; a composer chat is
+   * Starts `handle`'s main chat in `cwd` on `harness`: a Codex chat is the Codex sessions' start; a yian chat is
    * checked (`#open`), stored `starting` with its work item and worked folder, and started by its new actor. Any
-   * other harness is 422. A composer chat that can't start is `failed`, and the start throws: a `HarnessError` as it
+   * other harness is 422. A yian chat that can't start is `failed`, and the start throws: a `HarnessError` as it
    * is, else 500 `start_failed` naming the session.
    */
   async startSession(
     handle: string,
     cwd: string,
     {
-      harness = "composer",
+      harness = "yian",
       openedBy = null,
       connection = null,
       model = null,
@@ -228,7 +228,7 @@ export class ChatHarness implements SessionHarness {
     this.#running()
     if (harness === "codex")
       return this.#codexOrUnsupported().startSession(handle, cwd, { harness, openedBy, connection, model })
-    if (harness !== "composer") throw unsupported(harness)
+    if (harness !== "yian") throw unsupported(harness)
     const opened = await this.#open(handle, cwd, { connection, model })
     // Checked again before any write: the office may have begun stopping during the checks.
     this.#running()
@@ -250,7 +250,7 @@ export class ChatHarness implements SessionHarness {
       Session.parse({
         id: newId(),
         person: handle,
-        harness: "composer",
+        harness: "yian",
         office: os.hostname(),
         cwd: opened.cwd,
         repo_commit: opened.head,
@@ -327,7 +327,7 @@ export class ChatHarness implements SessionHarness {
       Session.parse({
         id: newId(),
         person: handle,
-        harness: "composer",
+        harness: "yian",
         office: os.hostname(),
         cwd: fs.realpathSync(git.root),
         repo_commit: head,
@@ -570,7 +570,7 @@ export class ChatHarness implements SessionHarness {
     this.#running()
     const session = this.store.getSession(sessionId)
     if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
-    if (session.harness !== "composer") return { rules: [], errors: [] }
+    if (session.harness !== "yian") return { rules: [], errors: [] }
     const actor = this.#actors.get(sessionId)
     return actor !== undefined ? actor.rules() : readRules(this.office.git, session.person)
   }
@@ -591,9 +591,9 @@ export class ChatHarness implements SessionHarness {
     const actor = this.#actors.get(sessionId)
     let removed = false
     try {
-      if (session.harness === "composer" && actor !== undefined) removed = await actor.removeRule(rule, by)
+      if (session.harness === "yian" && actor !== undefined) removed = await actor.removeRule(rule, by)
       // With no actor the session's own rules are gone; the agent's file is still the repo's.
-      else if (session.harness === "composer" && rule.source !== "session") {
+      else if (session.harness === "yian" && rule.source !== "session") {
         removed = await removeAgentRule(this.office.git, session.person, { ...rule, source: rule.source }, by)
       }
     } catch (error) {
@@ -714,7 +714,7 @@ export class ChatHarness implements SessionHarness {
   async restore(): Promise<void> {
     for (const session of this.store.listSessions({ status: [...LIVE] })) {
       if (this.#closed) return
-      if (session.harness !== "composer") continue
+      if (session.harness !== "yian") continue
       try {
         await this.#actor(session.id, { restoring: true }).restore()
       } catch (error) {
@@ -840,10 +840,10 @@ export class ChatHarness implements SessionHarness {
     const person = repo.people.get(handle)
     if (person === undefined) throw new HarnessError(404, "not_found", missingPerson(repo, handle))
     if (person.kind !== "agent" || !person.main) throw notAnAgent()
-    // An empty list is the schema's default: the composer harness alone.
-    const harnesses = person.harnesses.length ? person.harnesses : ["composer"]
-    if (!harnesses.includes("composer"))
-      throw new HarnessError(422, "unsupported_harness", "the person doesn't use the composer harness")
+    // An empty list is the schema's default: the yian harness alone.
+    const harnesses = person.harnesses.length ? person.harnesses : ["yian"]
+    if (!harnesses.includes("yian"))
+      throw new HarnessError(422, "unsupported_harness", "the person doesn't use the yian harness")
     const real = checkFolder(this.office, cwd, this.log)
     return { head, repo, person, cwd: real, ...(await this.choose(person, connection, model)) }
   }

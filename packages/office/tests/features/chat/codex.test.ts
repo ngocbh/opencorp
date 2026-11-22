@@ -132,7 +132,7 @@ test("the employee's interrupt stops Codex's turn and the command it runs", asyn
 })
 
 test("an employee who doesn't use the codex harness is told so, and no session starts", async () => {
-  const h = makeCodex({ files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer"] }) } })
+  const h = makeCodex({ files: { "people/minh/person.yaml": person("minh", { harnesses: ["yian"] }) } })
   const { chat, call } = await employee(h)
   const reply = await call("start", { message: "Hi." })
   expect(reply.status).toBe("failed")

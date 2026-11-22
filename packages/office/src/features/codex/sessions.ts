@@ -169,7 +169,7 @@ export class CodexSessions implements SessionHarness {
       model?: string | null
     } = {},
   ): Promise<SessionRecord> {
-    if (harness === "composer") throw new HarnessError(501, "not_implemented", NOT_SERVED)
+    if (harness === "yian") throw new HarnessError(501, "not_implemented", NOT_SERVED)
     if (harness !== "codex")
       throw new HarnessError(422, "unsupported_harness", `the ${harness} harness is not supported yet`)
     const session = await this.#open(handle, cwd, { openedBy, connection })

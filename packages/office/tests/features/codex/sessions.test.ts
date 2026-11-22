@@ -123,7 +123,7 @@ test.each([
   [
     "no codex",
     // An agent built from minh's file, since the kind check comes first.
-    { "people/ava/person.yaml": person("minh", { handle: "ava", name: "Ava", harnesses: ["composer"] }) },
+    { "people/ava/person.yaml": person("minh", { handle: "ava", name: "Ava", harnesses: ["yian"] }) },
     (h: Codex) => ["ava", h.workspace],
     422,
     "unsupported_harness",
@@ -241,7 +241,7 @@ const CALLS: [string, (h: Codex, id: string) => Promise<unknown>][] = [
 
 test.each(CALLS)("a session on another harness is not served yet [%s]", async (_name, call) => {
   const h = makeCodex()
-  const s = h.store.createSession(session({ harness: "composer", status: "idle" }))
+  const s = h.store.createSession(session({ harness: "yian", status: "idle" }))
   const chat = await rejection(call(h, s.id))
   expect(chat).toBeInstanceOf(HarnessError)
   expect([chat.status, chat.code]).toEqual([501, "not_implemented"])
@@ -253,7 +253,7 @@ test.each(CALLS)("a session on another harness is not served yet [%s]", async (_
 })
 
 test.each([
-  ["composer", 501, "not_implemented"],
+  ["yian", 501, "not_implemented"],
   ["claude", 422, "unsupported_harness"],
 ] as const)("a start on another harness is refused before any write [%s]", async (harness, status, code) => {
   const h = makeCodex()
@@ -276,7 +276,7 @@ test("a start whose default connection cant be read takes office and says so", a
 test("an answer to a question of a session on another harness is stored for the caller or the opener", async () => {
   const h = makeCodex()
   const s = h.store.createSession(
-    session({ harness: "composer", status: "waiting", repo_commit: await h.office.git.head(), opened_by: null }),
+    session({ harness: "yian", status: "waiting", repo_commit: await h.office.git.head(), opened_by: null }),
   )
   const q1 = h.store.addQuestion(question(s.id))
   const q2 = h.store.addQuestion(question(s.id))
@@ -291,7 +291,7 @@ test("an answer to a question of a session on another harness is stored for the 
 
 test("esc on a live session on another harness leaves its questions open", async () => {
   const h = makeCodex()
-  const s = h.store.createSession(session({ harness: "composer", status: "waiting" }))
+  const s = h.store.createSession(session({ harness: "yian", status: "waiting" }))
   const asked = h.store.addQuestion(question(s.id, { source: "ask_user" }))
   const managed = h.store.addQuestion(question(s.id, { source: "ask_manager" }))
   // No run of it is live here, so nothing runs to stop.
@@ -303,7 +303,7 @@ test("esc on a live session on another harness leaves its questions open", async
 
 test("esc on a session on another harness that is not live is 409 and a missing one 404", async () => {
   const h = makeCodex()
-  const s = h.store.createSession(session({ harness: "composer", status: "ended" }))
+  const s = h.store.createSession(session({ harness: "yian", status: "ended" }))
   const ended = await rejection(h.sessions.interrupt(s.id))
   expect(ended).toBeInstanceOf(HarnessError)
   expect([ended.status, ended.code]).toEqual([409, "not_live"])
@@ -318,7 +318,7 @@ test("a session's employee permission comes from their person at the session's p
   ]
   const policy = { sandbox: "workspace-write", network: true, folders, mcp_servers: ["github"] }
   const h = makeCodex({
-    files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"], harness_policy: policy }) },
+    files: { "people/minh/person.yaml": person("minh", { harnesses: ["yian", "codex"], harness_policy: policy }) },
   })
   const home = fs.realpathSync(tempDir())
   fs.mkdirSync(path.join(home, "tools"))
@@ -347,7 +347,7 @@ test("a session's employee permission comes from their person at the session's p
 test("a session whose employee may use an MCP server starts it in the office's empty MCP folder of the session, removed at its end and swept after a crash", async () => {
   const policy = { sandbox: "workspace-write", mcp_servers: ["github"] }
   const h = makeCodex({
-    files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"], harness_policy: policy }) },
+    files: { "people/minh/person.yaml": person("minh", { harnesses: ["yian", "codex"], harness_policy: policy }) },
   })
   h.fake.script([], { mcp_servers: { github: { command: "gh-mcp" }, docs: { command: "docs-mcp" } } })
   const sid = await start(h, h.workspace)
@@ -370,7 +370,7 @@ test("a session whose employee may use an MCP server starts it in the office's e
 test("a session's employee permission keeps what others may write since, and live sessions' folders, off its PATH", async () => {
   const tools = { harness_policy: { folders: [{ path: "~/tools", access: "read" }] } }
   const h = makeCodex({
-    files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"], ...tools }) },
+    files: { "people/minh/person.yaml": person("minh", { harnesses: ["yian", "codex"], ...tools }) },
   })
   const home = fs.realpathSync(tempDir())
   fs.mkdirSync(path.join(home, "tools/bin"), { recursive: true })
@@ -389,8 +389,8 @@ test("a session's employee permission keeps what others may write since, and liv
   await h.office.git.commit(["people/ann/person.yaml"], "ann")
   const live = fs.realpathSync(tempDir())
   const ended = fs.realpathSync(tempDir())
-  h.store.createSession(session({ person: "ngocbh", harness: "composer", cwd: live, status: "idle" }))
-  h.store.createSession(session({ person: "ngocbh", harness: "composer", cwd: ended, status: "ended" }))
+  h.store.createSession(session({ person: "ngocbh", harness: "yian", cwd: live, status: "idle" }))
+  h.store.createSession(session({ person: "ngocbh", harness: "yian", cwd: ended, status: "ended" }))
   const thread = { gitRoot: null, tmpdir: "/tmp/opencorp-t/t", fence: "/tmp/opencorp-t/f" }
   const p = await h.sessions.permission(row.id, thread)
   expect(p.folders).toEqual([{ path: path.join(home, "tools"), access: "read" }])

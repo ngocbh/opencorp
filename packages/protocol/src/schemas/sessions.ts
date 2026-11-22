@@ -23,7 +23,7 @@ export type SessionMode = z.input<typeof SessionMode>
 export const Session = z.strictObject({
   id: Ulid,
   person: Handle,
-  harness: z.enum(["composer", "codex", "claude"]),
+  harness: z.enum(["yian", "codex", "claude"]),
   office: z.string(),
   cwd: z.string(),
   repo_commit: GitId,
@@ -72,18 +72,18 @@ export const Session = z.strictObject({
   model_note: z.string().nullable().default(null),
   /**
    * The model the harness runs, as it reports it (a Codex session: Codex's load response); null until the
-   * harness reports it, and for composer sessions.
+   * harness reports it, and for yian sessions.
    */
   harness_model: z.string().nullable().default(null),
   /**
-   * The harness turn running now (a Codex session's turn id); null outside a turn and for composer sessions.
+   * The harness turn running now (a Codex session's turn id); null outside a turn and for yian sessions.
    * Restore reads it to mark a turn that an office stop cut off as interrupted.
    */
   harness_turn_id: z.string().nullable().default(null),
   /**
    * This session's own token counts so far, as the harness reports them. A continued session counts only its
    * own stretch: add its parent chain's counts for the thread's total. Null until the harness reports any;
-   * always null for composer sessions.
+   * always null for yian sessions.
    */
   harness_usage: HarnessUsage.nullable().default(null),
   /**
@@ -157,7 +157,7 @@ export const Message = z.strictObject({
   session_id: Ulid,
   role: z.enum(["user", "assistant"]),
   /**
-   * The human who sent a user message: harness and composer sessions both name the sender. Null for assistant
+   * The human who sent a user message: harness and yian sessions both name the sender. Null for assistant
    * messages, an instrument's note, and a user message whose sender wasn't recorded.
    */
   author: Handle.nullable().default(null),
@@ -191,7 +191,7 @@ export type Permission = z.input<typeof Permission>
 export const CreateSessionRequest = z.strictObject({
   person: Handle,
   cwd: z.string(),
-  harness: z.enum(["composer", "codex", "claude"]).default("composer"),
+  harness: z.enum(["yian", "codex", "claude"]).default("yian"),
   /**
    * The human's pick of connection for the new chat, which falls back as the office decides; null leaves it
    * to the office.

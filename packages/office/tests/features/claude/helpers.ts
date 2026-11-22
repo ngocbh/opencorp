@@ -15,8 +15,8 @@ import { makeOffice } from "../../server/helpers.ts"
 import { isGone, tempDir, waitFor } from "../../helpers.ts"
 import { session as sessionRow } from "../../runtime/store/helpers.ts"
 
-/** minh, allowed the composer and Claude Code harnesses. */
-export const CLAUDE_PERSON = { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "claude"] }) }
+/** minh, allowed the yian and Claude Code harnesses. */
+export const CLAUDE_PERSON = { "people/minh/person.yaml": person("minh", { harnesses: ["yian", "claude"] }) }
 
 /** Every Claude Code any test of a file recorded, for `allGone`. */
 const spawned: { pid: number; started: number | null }[] = []

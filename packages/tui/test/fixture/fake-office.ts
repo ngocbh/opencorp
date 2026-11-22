@@ -148,7 +148,7 @@ export function seed(nextId = counter()): FakeState {
   const session: Session = {
     id: nextId(),
     person: "minh",
-    harness: "composer",
+    harness: "yian",
     office: "laptop",
     cwd: "/tmp/proj",
     repo_commit: blobId("company"),
@@ -409,7 +409,7 @@ export function createFakeOffice(
     const s = upsertSession(
       {
         id: nextId(),
-        harness: "composer",
+        harness: "yian",
         office: "laptop",
         repo_commit: blobId("company"),
         status: "idle",
@@ -1059,7 +1059,7 @@ export function createFakeOffice(
           state.people.find((p) => p.handle === body.person),
           `person ${body.person}`,
         )
-        const harness = body.harness ?? "composer"
+        const harness = body.harness ?? "yian"
         // Like the office, refuse a harness the person doesn't use before recording the folder.
         if (!(harnessesOf(person) as string[]).includes(harness))
           throw fail(422, "unsupported_harness", `the person doesn't use the ${harness} harness`)

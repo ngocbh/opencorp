@@ -103,7 +103,7 @@ test("labels name the employee by handle and the approver as the owner, by name"
 })
 
 test("a person who doesn't use the codex harness gets no instrument session", async () => {
-  const h = makeCodex({ files: { "people/minh/person.yaml": person("minh", { harnesses: ["composer"] }) } })
+  const h = makeCodex({ files: { "people/minh/person.yaml": person("minh", { harnesses: ["yian"] }) } })
   const row = await chat(h)
   const repo = loadRepo(await h.office.git.pin(row.repo_commit))
   const said = speakers(repo, row)

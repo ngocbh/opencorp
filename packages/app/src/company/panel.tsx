@@ -197,9 +197,9 @@ export function Panel(props: {
             <For each={sessions()}>
               {(x) => (
                 <li>
-                  {/* The office prices composer tokens only; a harness session's spend isn't known here. */}
+                  {/* The office prices yian tokens only; a harness session's spend isn't known here. */}
                   {statusLabel(x)} ·{" "}
-                  {x.harness === "composer" ? sessionCost(x.cost ?? 0, x.subscription_cost ?? 0) : "unpriced"} ·{" "}
+                  {x.harness === "yian" ? sessionCost(x.cost ?? 0, x.subscription_cost ?? 0) : "unpriced"} ·{" "}
                   {x.office}
                   <Show when={x.work_item_id ? office.state.workItems[x.work_item_id] : undefined}>
                     {(w) => <> · now doing: {w().title}</>}
