@@ -14,6 +14,7 @@ import {
   PAGE_CHARS,
   type ThreadEvents,
 } from "../../../src/tools/codex/instrument.ts"
+import { HarnessStopping } from "../../../src/tools/harness/instrument.ts"
 import { readCodexRecord } from "../../../src/tools/codex/record.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 
@@ -103,6 +104,8 @@ class Host implements CodexHost {
   /** Each session opened to resume one an earlier office left: its id, and the Codex thread it resumes. */
   readonly resumes: { id: string; resume: string }[] = []
   readonly lines: string[] = []
+  /** How the owner's message continues each session an earlier office left, by its id. */
+  readonly resumers = new Map<string, () => Promise<void>>()
   /** What `open` rejects with, when set; what it waits for before it opens, when set. */
   failOpen: Error | null = null
   hold: Promise<void> | null = null
@@ -137,6 +140,11 @@ class Host implements CodexHost {
 
   log(line: string): void {
     this.lines.push(line)
+  }
+
+  resumable(sessionId: string, resume: (() => Promise<void>) | null): void {
+    if (resume === null) this.resumers.delete(sessionId)
+    else this.resumers.set(sessionId, resume)
   }
 
   list(instrument: CodexListing): void {
@@ -476,8 +484,9 @@ test("after a restart, send continues a session through the host's resume, from 
   thread.owner("Also update the changelog.")
   thread.answer("Changelog updated.")
   const r = await restarted(m)
-  // Not resumed until the driver writes to it, and not listed meanwhile.
-  expect([r.host.threads, r.host.listed.size]).toEqual([[], 0])
+  // Listed, idle, but not resumed until someone writes to it.
+  expect(r.host.threads).toEqual([])
+  expect(r.host.listed.get(thread.id)!.info()).toMatchObject({ name: "codex 1", status: "idle" })
   const sending = r.call("send", { codex: "codex 1", message: "Run the tests." })
   const resumed = await waitFor(() => r.host.threads[0], { what: "the resumed session" })
   expect(r.host.resumes).toEqual([{ id: thread.id, resume: `thr-${thread.id}` }])
@@ -640,17 +649,58 @@ test("an office stop while a session resumes leaves it to continue after the nex
   const m = made()
   const { thread } = await started(m)
   const r = await restarted(m)
-  let release!: () => void
-  r.host.hold = new Promise((resolve) => (release = resolve))
-  r.host.failOpen = null
-  const sending = r.call("send", { codex: "codex 1", message: "Go on." })
-  await waitFor(() => r.host.listed.size === 1, { what: "the resume" })
-  // The stop's sessions refuse the open once it gets there.
-  r.host.failOpen = new Error("the office is stopping")
-  await r.codex.suspend()
-  release()
-  expect((await sending).refused).toContain("office is stopping")
+  // The office's stop closes the harness sessions before the instrument hears of it.
+  r.host.failOpen = new HarnessStopping("the office is stopping")
+  const reply = await r.call("send", { codex: "codex 1", message: "Go on." })
+  expect(reply.refused).toContain("office is stopping")
+  expect(reply.status).toBe("idle")
   expect(readCodexRecord(r.host.recordDir(thread.id))!.state).toBe("interrupted")
+  expect(r.host.listed.get(thread.id)!.info()).toMatchObject({ status: "idle" })
+  await r.codex.suspend()
   const again = made(m.host.root)
   expect((await again.call("history", { codex: "codex 1" })).note).toContain("restarted")
+})
+
+test("after a restart, each session is listed as its record left it: one to continue idle, a stopped one ended", async () => {
+  const m = made()
+  const { thread: first } = await started(m)
+  const { thread: second } = await started(m, "Write the docs.", "Docs written.")
+  await m.call("stop", { codex: "codex 2" })
+  const r = await restarted(m)
+  expect(r.host.listed.get(first.id)!.info()).toMatchObject({ name: "codex 1", status: "idle", created_at: expect.any(String) })
+  expect(r.host.listed.get(second.id)!.info()).toMatchObject({ name: "codex 2", status: "ended" })
+  expect([...r.host.resumers.keys()]).toEqual([first.id])
+})
+
+test("the owner's message to a restored session continues it through the host's resume, even past the live cap", async () => {
+  const m = made()
+  for (let i = 0; i < MAX_LIVE; i++) await started(m, `Job ${i}.`)
+  const r = await restarted(m)
+  for (let i = 0; i < MAX_LIVE; i++) await started(r, `New job ${i}.`)
+  const [id] = [...r.host.resumers.keys()]
+  await r.host.resumers.get(id!)!()
+  expect(r.host.resumes).toEqual([{ id: id!, resume: `thr-${id}` }])
+  expect(r.host.listed.get(id!)!.info()).toMatchObject({ name: "codex 1", status: "idle" })
+  // It continued: no longer the owner's to wake, and the driver's next send goes straight to it.
+  expect(r.host.resumers.has(id!)).toBe(false)
+  const resumed = r.host.threads.at(-1)!
+  const sending = r.call("send", { codex: "codex 1", message: "And this." })
+  await waitFor(() => resumed.busy, { what: "the turn" })
+  resumed.answer("Done.")
+  expect((await sending).status).toBe("idle")
+  expect(r.host.resumes).toHaveLength(1)
+})
+
+test("a read position past a restored record's end is taken back to its end, so nothing new is hidden", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  await m.codex.suspend()
+  const meta = path.join(m.host.recordDir(thread.id), "meta.json")
+  fs.writeFileSync(meta, JSON.stringify({ ...JSON.parse(fs.readFileSync(meta, "utf8")), read: 99_999 }))
+  const r = made(m.host.root)
+  const sending = r.call("send", { codex: "codex 1", message: "Run the tests." })
+  const resumed = await waitFor(() => r.host.threads[0], { what: "the resumed session" })
+  await waitFor(() => resumed.busy, { what: "the turn" })
+  resumed.answer("Tests pass.")
+  expect(said(await sending)).toEqual([["@minh", "Run the tests."], ["codex", "Tests pass."]])
 })

@@ -6,7 +6,7 @@ import { type Message, OFFICE, Question, Session, WorkItem, now } from "@opencor
 import type { Connections } from "../../models/connections.ts"
 import type { Hooks } from "../../runtime/sessions/hooks.ts"
 import { ProviderError } from "../../models/provider.ts"
-import { HarnessError, notAnAgent, notWaiting, resumable } from "../../runtime/sessions/state.ts"
+import { HarnessError, continueFirst, notAnAgent, notWaiting, resumable } from "../../runtime/sessions/state.ts"
 import type { CompanyGit } from "../../company/git.ts"
 import { loadRepo, missingPerson } from "../../company/loader.ts"
 import type { Bus } from "../../runtime/bus.ts"
@@ -121,6 +121,8 @@ export class CodexSessions implements SessionHarness {
   #closed = false
   /** The tail of the continuations' serial section. */
   #continuing: Promise<unknown> = Promise.resolve()
+  /** How the owner's message continues each instrument session an office restart cut off (`resumable`). */
+  readonly #resumers = new Map<string, () => Promise<void>>()
 
   constructor(office: CodexOffice, hooks: Hooks, options: CodexSessionsOptions = {}) {
     this.office = office
@@ -346,13 +348,21 @@ export class CodexSessions implements SessionHarness {
     }
   }
 
-  /** A message: `turn`, `steer` (a turn was running), or `queued` (until the thread is loaded). */
+  /** A message: `turn`, `steer` (a turn was running), or `queued` (until the thread is loaded). One to an instrument
+   *  session an office restart cut off continues it first, through its chat's instrument. */
   async prompt(sessionId: string, text: string, { by = null }: { by?: string | null } = {}) {
     const session = this.#codexSession(sessionId)
-    const live = this.#must(sessionId)
     for (const refusal of this.hooks.fire("promptCheck", session, text))
       if (refusal) throw new HarnessError(422, "refused", String(refusal))
-    return live.prompt(text, { by })
+    if (!this.#live.has(sessionId)) await continueFirst(this.#resumers.get(sessionId))
+    return this.#must(sessionId).prompt(text, { by })
+  }
+
+  /** Lets a message to instrument session `id`, which an office restart cut off, continue it first through `resume`
+   *  (its chat's instrument); null takes that away. */
+  resumable(id: string, resume: (() => Promise<void>) | null): void {
+    if (resume === null) this.#resumers.delete(id)
+    else this.#resumers.set(id, resume)
   }
 
   /** A steer is a `prompt`: Codex steers a running turn by itself. */

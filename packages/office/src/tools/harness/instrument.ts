@@ -27,11 +27,12 @@
  *  Calls on one session queue; calls on different sessions run together.
  *
  *  **An office restart.** The office's stop leaves each live session's record waiting to be continued (`suspend`); a
- *  crash leaves it as it was. The next office's instrument of the chat takes the records at its first call: each
+ *  crash leaves it as it was. The next office's instrument of the chat takes the records as it is made: each
  *  session by its name, which no new session takes again, its history read from its record, a turn the restart cut
- *  off marked so in it, naming who started it. A session that was live continues on its next `send`, which the host
- *  opens through the harness's own resume; until then it isn't listed, and doesn't count among the live ones. A record
- *  that doesn't load, or isn't this chat's, is refused and logged. A chat that ends ends them all. */
+ *  off marked so in it, naming who started it; each is listed as its record left it. A session that was live continues
+ *  on the driver's next `send`, or on the owner's next message to it, which the host opens through the harness's own
+ *  resume; until then it is listed idle, and doesn't count among the live ones. A record that doesn't load, or isn't
+ *  this chat's, is refused and logged. A chat that ends ends them all. */
 import path from "node:path"
 import { type Instrument, type Message, now } from "@opencorp/protocol"
 import { strerror } from "../../util/errors.ts"
@@ -40,6 +41,12 @@ import type { HarnessEvent } from "./adapter.ts"
 import { HarnessRecord, type Said, loadRecords, saveNextName } from "./record.ts"
 import { type Entry as Shown, type Harness, type Parsed, parseArgs, refusalText, type Reply, type ReplyStatus,
   replyText, type ToolName, TOOLS, toolSpecs } from "./tools.ts"
+
+/** What `HarnessHost.open` rejects with when the office is stopping: a session it was to continue waits, as the stop
+ *  leaves it, for the office's next start. */
+export class HarnessStopping extends Error {
+  override name = "HarnessStopping"
+}
 
 /** A harness session's state, as its host reports it: starting until it first loads; idle, busy or waiting while
  *  live; ended or failed once it finished. */
@@ -97,6 +104,9 @@ export interface HarnessHost {
   recordsDir(): string
   /** Where a warning goes: a record refused. */
   log(line: string): void
+  /** Lets the owner's message to session `id`, one an earlier office left, continue it through `resume` first, as
+   *  the driver's `send` would; null takes that away. `resume` rejects, saying why, when it can't. */
+  resumable(id: string, resume: (() => Promise<void>) | null): void
   /** Lists `instrument` as the chat's; publishes a change of `id`; takes `id` out of the list. */
   list(instrument: HarnessListing): void
   changed(id: string): void
@@ -193,6 +203,7 @@ export class HarnessInstrument {
     private readonly host: HarnessHost,
   ) {
     this.notes = notes(harness)
+    this.load()
   }
 
   /** The model-facing tools: description, parameters, `call(args, { interrupted })`. */
@@ -224,7 +235,7 @@ export class HarnessInstrument {
     this.load()
     for (const entry of this.entries) {
       if (entry.restored) {
-        entry.restored = false
+        this.unrestore(entry)
         this.state(entry, "ended")
       } else if (entry.thread !== null && !finished(entry)) {
         // Already ending, or gone: nothing is left to stop.
@@ -243,6 +254,7 @@ export class HarnessInstrument {
     this.suspended = true
     this.cut("stop")
     for (const entry of this.entries) {
+      this.host.resumable(entry.id, null)
       if (!finished(entry)) {
         const open = entry.open
         entry.open = []
@@ -254,9 +266,10 @@ export class HarnessInstrument {
     }
   }
 
-  /** Takes the sessions an earlier office left in the chat's records, once: each by its name, an ended or failed one
-   *  as it finished, and a live one as that office's stop or crash left it, to continue on its next `send`, with a
-   *  turn the restart cut off marked so first. One the harness never named can't be continued, and fails. */
+  /** Takes the sessions an earlier office left in the chat's records, once, and lists each: by its name, an ended or
+   *  failed one as it finished, and a live one as that office's stop or crash left it, to continue on the driver's
+   *  next `send` or the owner's next message, with a turn the restart cut off marked so first. One the harness never
+   *  named can't be continued, and fails. */
   private load(): void {
     if (this.loaded) return
     this.loaded = true
@@ -270,7 +283,33 @@ export class HarnessInstrument {
       return
     }
     this.made = Math.max(this.made, found.next - 1)
-    for (const record of found.records) this.entries.push(this.restore(record))
+    for (const record of found.records) {
+      const entry = this.restore(record)
+      this.entries.push(entry)
+      try {
+        host.list(this.listing(entry))
+      } catch (error) {
+        host.log(`${harness.kind} session ${entry.id} of chat ${host.sessionId} isn't listed (${(error as Error).name})`)
+      }
+      if (entry.restored) host.resumable(entry.id, () => this.ownerWrites(entry))
+    }
+  }
+
+  /** The owner wrote to `entry`'s session, one an earlier office left: it continues first, as the driver's `send`
+   *  would, the owner's word never held back by the live sessions' cap. Rejects, saying why, when it can't. */
+  private ownerWrites(entry: Entry): Promise<void> {
+    return this.queue(entry, async () => {
+      if (!entry.restored) return
+      if (this.closed) throw new Error(this.notes.closed)
+      const not = await this.continue(entry, { cut: new AbortController().signal }, { owner: true })
+      if (not !== null) throw new Error(not.refused ?? entry.error ?? `this ${this.harness.title} session couldn't continue`)
+    })
+  }
+
+  /** `entry` is no longer one an earlier office left waiting to continue. */
+  private unrestore(entry: Entry): void {
+    entry.restored = false
+    this.host.resumable(entry.id, null)
   }
 
   /** The entry of `record`, an earlier office's session. */
@@ -278,9 +317,11 @@ export class HarnessInstrument {
     const meta = record.meta
     const entry: Entry = {
       id: meta.id, name: meta.name, record, created: meta.started, thread: null, state: "idle", error: null, open: [],
-      settled: new Set(), sent: [], turnBy: null, command: null, read: meta.read ?? 0, waiters: new Set(),
+      settled: new Set(), sent: [], turnBy: null, command: null, read: 0, waiters: new Set(),
       calls: Promise.resolve(), restored: false,
     }
+    // A position past the log's end, kept before a write of it failed, would hide what comes next.
+    if (meta.read !== undefined) entry.read = Math.min(meta.read, record.conversation.end)
     if (meta.state === "ended" || meta.state === "failed") {
       entry.state = meta.state
       entry.error = meta.error ?? null
@@ -404,37 +445,47 @@ export class HarnessInstrument {
     if (id !== null) entry.record.setHarnessSession(id)
   }
 
-  /** Continues a session an earlier office left, before the driver's message to it goes: the host opens it through
-   *  the harness's own resume, and it is listed again. Refused past `MAX_LIVE` live sessions, and once the call was
-   *  interrupted or cut. Null once it continues; a resume that fails fails the session. */
-  private async continue(entry: Entry, signals: Signals): Promise<string | null> {
-    const full = this.full(`continuing ${entry.name}`)
-    if (full !== null) return this.reply(entry, { refused: full })
-    if (signals.interrupted?.aborted) return this.reply(entry, { refused: NOT_SENT })
-    if (signals.cut.aborted) return this.reply(entry, { refused: NOT_SENT_CUT })
-    entry.restored = false
+  /** Continues a session an earlier office left, before a message to it goes: the host opens it through the
+   *  harness's own resume. Refused past `MAX_LIVE` live sessions (unless for the `owner`'s message), and once the call
+   *  was interrupted or cut. Null once it continues; else why not: `refused`, or nothing when the resume failed and
+   *  failed the session. An office stopping meanwhile leaves it to continue after the next start. */
+  private async continue(
+    entry: Entry,
+    signals: Signals,
+    { owner = false }: { owner?: boolean } = {},
+  ): Promise<{ refused?: string } | null> {
+    const full = owner ? null : this.full(`continuing ${entry.name}`)
+    if (full !== null) return { refused: full }
+    if (signals.interrupted?.aborted) return { refused: NOT_SENT }
+    if (signals.cut.aborted) return { refused: NOT_SENT_CUT }
+    this.unrestore(entry)
     entry.state = "starting"
     entry.record.resume()
-    this.host.list(this.listing(entry))
+    this.host.changed(entry.id)
     try {
       entry.thread = await this.host.open(entry.id, entry.name, this.events(entry), {
         resume: entry.record.meta.harnessSessionId,
       })
     } catch (error) {
-      // The office stopped as it opened: the session waits for the next start, as the stop left it.
-      if (this.suspended) {
+      // The office is stopping: the session waits for the next start, as the stop leaves it.
+      if (this.suspended || error instanceof HarnessStopping) {
         entry.restored = true
         entry.state = "idle"
-        return this.reply(entry, { refused: this.notes.stopping })
+        entry.record.suspend()
+        if (!this.suspended) {
+          this.host.changed(entry.id)
+          this.host.resumable(entry.id, () => this.ownerWrites(entry))
+        }
+        return { refused: this.notes.stopping }
       }
       entry.error = (error as Error).message
       this.state(entry, "failed")
-      return this.reply(entry)
+      return {}
     }
     // Closed or cut off while it opened: nobody would read it, so it stops before any message.
     if (this.closed || signals.cut.aborted) {
       void entry.thread.stop().catch(() => {})
-      return this.reply(entry, { refused: this.closed ? this.notes.closed : NOT_SENT_CUT })
+      return { refused: this.closed ? this.notes.closed : NOT_SENT_CUT }
     }
     return null
   }
@@ -443,8 +494,8 @@ export class HarnessInstrument {
    *  interrupted the call. A session an earlier office left continues first. */
   private async send(entry: Entry, message: string, waitMs: number, signals: Signals): Promise<string> {
     if (entry.restored) {
-      const refused = await this.continue(entry, signals)
-      if (refused !== null) return refused
+      const not = await this.continue(entry, signals)
+      if (not !== null) return this.reply(entry, not.refused === undefined ? {} : { refused: not.refused })
     }
     if (entry.thread === null || finished(entry)) return this.reply(entry, { refused: `${entry.name} has ${entry.state}` })
     if (signals.interrupted?.aborted) return this.reply(entry, { refused: NOT_SENT })
@@ -502,7 +553,7 @@ export class HarnessInstrument {
   /** Ends the session, unless the owner's turn runs; one an earlier office left ends as it is, never continued. */
   private async stop(entry: Entry): Promise<string> {
     if (entry.restored) {
-      entry.restored = false
+      this.unrestore(entry)
       this.state(entry, "ended")
       return this.reply(entry)
     }

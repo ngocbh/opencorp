@@ -5,8 +5,14 @@
  *  message, the same child session on the harness's own session (its sessions' `resumeInstrument`). */
 import path from "node:path"
 import type { Instruments } from "../../runtime/sessions/instruments.ts"
+import { HarnessError } from "../../runtime/sessions/state.ts"
 import type { SessionRecord, Store } from "../../runtime/store/store.ts"
-import { HarnessInstrument, type HarnessThread, type ThreadEvents } from "../../tools/harness/instrument.ts"
+import {
+  HarnessInstrument,
+  HarnessStopping,
+  type HarnessThread,
+  type ThreadEvents,
+} from "../../tools/harness/instrument.ts"
 import type { Harness } from "../../tools/harness/tools.ts"
 import { checkFolder, makePrivateFolder } from "../../util/private_files.ts"
 
@@ -25,6 +31,8 @@ export interface InstrumentSessions {
     harnessSessionId: string,
     o: { observer: ThreadEvents; label: (author: string | null) => string; owner: string | null },
   ): Promise<unknown>
+  /** Lets the owner's message to session `id`, which an office restart cut off, continue it through `resume`. */
+  resumable(id: string, resume: (() => Promise<void>) | null): void
   prompt(sessionId: string, text: string, options: { by: string | null }): Promise<unknown>
   interrupt(sessionId: string): Promise<void>
   end(sessionId: string): Promise<void>
@@ -58,8 +66,14 @@ export class EmployeeInstrument {
       label: (author) => speakers.label(author),
       open: async (id, _name, events, { resume } = {}): Promise<HarnessThread> => {
         const of = { observer: events, label: speakers.label, owner: speakers.owner }
-        if (resume === undefined) await sessions.startInstrument(chat, id, of)
-        else await sessions.resumeInstrument(chat, id, resume, of)
+        try {
+          if (resume === undefined) await sessions.startInstrument(chat, id, of)
+          else await sessions.resumeInstrument(chat, id, resume, of)
+        } catch (error) {
+          // The office is stopping: a session it was to continue waits for the next start.
+          if (error instanceof HarnessError && error.status === 503) throw new HarnessStopping(error.message)
+          throw error
+        }
         return {
           send: (text) => sessions.prompt(id, text, { by: driver }),
           interrupt: () => sessions.interrupt(id),
@@ -76,6 +90,7 @@ export class EmployeeInstrument {
         return records
       },
       log: (line) => sessions.log(line),
+      resumable: (id, resume) => sessions.resumable(id, resume),
       list: (listing) => instruments.add(chat.id, listing),
       changed: (id) => instruments.updated(chat.id, id),
       remove: (id) => instruments.remove(chat.id, id),

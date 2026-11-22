@@ -105,3 +105,14 @@ export function resumable(
   }
   return session
 }
+
+/** Runs `resume`, which continues an instrument session an office restart cut off through its chat's instrument, if
+ *  there is one: a message to that session goes once it has. 409 `not_live`, saying why, when it can't. */
+export async function continueFirst(resume: (() => Promise<void>) | undefined): Promise<void> {
+  if (resume === undefined) return
+  try {
+    await resume()
+  } catch (error) {
+    throw new HarnessError(409, "not_live", (error as Error).message)
+  }
+}

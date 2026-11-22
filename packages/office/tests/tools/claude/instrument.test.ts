@@ -92,6 +92,8 @@ class Host implements HarnessHost {
 
   log(): void {}
 
+  resumable(): void {}
+
   list(instrument: HarnessListing): void {
     this.listed.set(instrument.id, instrument)
   }

@@ -40,7 +40,7 @@ import { type OfficePaths as SandboxOfficePaths, UnsafeProfile, UnsafeWorkspace 
 import { checkFolder } from "../../runtime/sessions/folder.ts"
 import { employeePermission } from "../../runtime/sessions/permission.ts"
 import { instructions } from "../../runtime/sessions/speakers.ts"
-import { HarnessError, notWaiting, resumable, writeState } from "../../runtime/sessions/state.ts"
+import { HarnessError, continueFirst, notWaiting, resumable, writeState } from "../../runtime/sessions/state.ts"
 import { LIVE, type SessionRecord, type Store } from "../../runtime/store/store.ts"
 import { workerEnv } from "../../runtime/worker/spawn.ts"
 import type { OfficePaths } from "../../util/home.ts"
@@ -141,6 +141,8 @@ export class ClaudeSessions {
   readonly #socat: string | undefined
   readonly #libraries: ((file: string) => string[]) | undefined
   readonly #live = new Map<string, ClaudeSession>()
+  /** How the owner's message continues each instrument session an office restart cut off (`resumable`). */
+  readonly #resumers = new Map<string, () => Promise<void>>()
   #closed = false
 
   constructor(office: ClaudeOffice, options: ClaudeSessionsOptions = {}) {
@@ -278,16 +280,17 @@ export class ClaudeSessions {
       { resumed },
     )
     this.#live.set(id, live)
+    const stopping = () => new HarnessError(503, "stopping", "the office is stopping")
     if (this.#closed) {
-      // The office began stopping meanwhile: nothing will drive it.
-      await live.finish("ended")
-      throw new HarnessError(503, "stopping", "the office is stopping")
+      // The office began stopping meanwhile: nothing will drive it, and its instrument hears so from the refusal.
+      await live.finish("ended", { tell: false })
+      throw stopping()
     }
     try {
       await live.launch()
     } catch (error) {
-      // Ended while it started: the end has ended it.
-      if (live.over) throw new HarnessError(409, "not_live", `Claude Code session ${id} has ended`)
+      // Ended while it started: the end, or the office's stop, has ended it.
+      if (live.over) throw this.#closed ? stopping() : new HarnessError(409, "not_live", `Claude Code session ${id} has ended`)
       const why = live.failure(error)
       await live.finish("failed", { tell: false })
       throw new HarnessError(422, "start_failed", why)
@@ -295,10 +298,19 @@ export class ClaudeSessions {
     return this.store.getSession(id)!
   }
 
-  /** A message from `by` (the chat's owner when null): a turn, or a steer of the running one. 404 for no session,
-   *  409 `not_live` for one that has ended. */
+  /** A message from `by` (the chat's owner when null): a turn, or a steer of the running one; one to a session an
+   *  office restart cut off continues it first, through its chat's instrument. 404 for no session, 409 `not_live` for
+   *  one that has ended. */
   async prompt(sessionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<string> {
+    if (!this.#live.has(sessionId)) await continueFirst(this.#resumers.get(sessionId))
     return this.#must(sessionId).prompt(text, by)
+  }
+
+  /** Lets a message to session `id`, which an office restart cut off, continue it first through `resume` (its
+   *  chat's instrument); null takes that away. */
+  resumable(id: string, resume: (() => Promise<void>) | null): void {
+    if (resume === null) this.#resumers.delete(id)
+    else this.#resumers.set(id, resume)
   }
 
   /** A steer is a `prompt`: Claude Code reads a message sent mid-turn in the same turn by itself. */

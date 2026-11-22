@@ -205,7 +205,8 @@ test("after an office restart, history reads the Claude Code session's record, a
   const session = h.store.getSession(listed!.id)!
   const dir = path.join(h.office.paths.sessionDir(chat.id), "claude", listed!.id)
   const { r, call: next } = await restart(h, claude, chat)
-  expect([r.store.getSession(listed!.id)!.status, h.office.instruments.list(chat.id)]).toEqual(["ended", []])
+  expect(r.store.getSession(listed!.id)!.status).toBe("ended")
+  expect(h.office.instruments.list(chat.id)).toMatchObject([{ id: listed!.id, name: "claude 1", status: "idle" }])
   expect(readClaudeRecord(dir)).toMatchObject({ state: "interrupted", harnessSessionId: session.harness_session_id })
   expect((await next("history", { claude: "claude 1", from: 0 })).output).toEqual([
     { author: "@minh", text: "Fix the build." },
@@ -258,4 +259,39 @@ test("a resume goes through a start's checks: with no socat for the sandbox, it 
   expect(reply.error).toContain("socat")
   expect(starts(h)).toHaveLength(1)
   expect(r.store.getSession(listed!.id)!.status).toBe("failed")
+})
+
+test("after an office restart, the owner's message to a Claude Code session continues it with --resume", async () => {
+  const h = makeClaude({ script: { turns: [[{ say: "The build is fixed." }], [{ say: "Using staging." }]] } })
+  const { chat, claude, call } = await employee(h)
+  await call("start", { message: "Fix the build." })
+  const [listed] = h.office.instruments.list(chat.id)
+  const { r, call: next } = await restart(h, claude, chat)
+  await r.sessions.prompt(listed!.id, "Use the staging database.", { by: "ngocbh" })
+  await waitFor(() => h.fake.log().some((e) => e.dir === "out" && e.msg?.message?.content?.[0]?.text === "Using staging."), {
+    what: "the owner's turn",
+  })
+  expect(starts(h)[1]!.flags!.resume).toBe(r.store.getSession(listed!.id)!.harness_session_id)
+  await waitFor(() => r.store.getSession(listed!.id)?.status === "idle", { what: "the turn's end" })
+  expect((await next("history", { claude: "claude 1" })).output).toEqual([
+    { author: OWNER, text: "Use the staging database." },
+    { author: "claude", text: "Using staging." },
+  ])
+})
+
+test("an office stop while the employee's message continues a Claude Code session leaves it to continue after the next start", async () => {
+  const h = makeClaude({ script: { turns: [[{ say: "The build is fixed." }], [{ say: "The tests pass too." }]] } })
+  const { chat, claude, call } = await employee(h)
+  await call("start", { message: "Fix the build." })
+  const [listed] = h.office.instruments.list(chat.id)
+  const dir = path.join(h.office.paths.sessionDir(chat.id), "claude", listed!.id)
+  const { r, claude: second, call: next } = await restart(h, claude, chat)
+  await r.sessions.closeAll()
+  expect((await next("send", { claude: "claude 1", message: "Run the tests." })).refused).toContain("office is stopping")
+  await second.suspend()
+  expect(readClaudeRecord(dir)!.state).toBe("interrupted")
+  const { call: last } = await restart(r, second, chat)
+  const sent = await last("send", { claude: "claude 1", message: "Run the tests." })
+  expect(sent).toMatchObject({ status: "idle" })
+  expect(sent.output.at(-1)).toEqual({ author: "claude", text: "The tests pass too." })
 })
