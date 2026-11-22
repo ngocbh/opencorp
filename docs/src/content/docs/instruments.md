@@ -21,9 +21,14 @@ while a command runs), and a missing `.mcp.json` can still be created.
   and the rest goes to Auto's check, a model call on the office's connection, or asks you. Shift+Tab switches the
   mode to `default`, `ask`, `dontAsk` and back. A card asks you before what the mode doesn't allow; `dontAsk`
   refuses it instead.
-- **Watching.** The line under the prompt counts your employee's shells. Press ctrl+x o to open one and watch it;
-  Ctrl-C there stops its command. Esc stops your employee and the command they were waiting on. A command they were
-  told is still running goes on.
+- **Watching.** The line under the prompt counts your employee's shells that run a command, after ↓. Press ↓ at the
+  end of the prompt, or click the count, to open the picker in the prompt's place: its Shell tab lists the chat's
+  shells, Enter opens one to watch, and ctrl+d sends it Ctrl-C. Or press ctrl+x o to open one and switch how it
+  shows; Ctrl-C there stops its command. Esc stops your employee and the command they were waiting on. A command
+  they were told is still running goes on.
+- **The picker.** ← and → switch its tabs (Sessions, Shell), ↑ and ↓ move, Enter opens, and Esc or ↑ on the first
+  row closes it. It opens on the first tab with something running and lists what runs; ctrl+a shows the rest (idle
+  and ended), and stays as you set it until you quit.
 - **When a command ends.** Your employee is told when a command they were told is still running ends, in a note from
   its shell (signed `shell 1`, never by a person): the command, its exit code and its last lines. While they work, they read it before their next step; while they rest,
   it starts a new turn, as a message does. The chat shows it as one line, ``↳ shell 1: `make test` ended, exit 2``;
@@ -38,10 +43,14 @@ An employee's `person.yaml` lists the harnesses they use in `tools`, such as `to
 is the employee's own chat, on the Yian engine. They hand work to Codex if `tools` lists codex, and to Claude Code if
 it lists claude.
 
-- **Sessions.** The line under the prompt counts their Codex and Claude Code sessions. "Open an instrument…" in the
-  command list (ctrl+p), or ctrl+x down, opens one as a chat of its own, where you watch the harness work and write
-  to it too; ctrl+x up goes back. Only the chat's opener (its company's CEO for a chat nobody opened) writes there
-  besides your employee. A chat has at most four live sessions of each harness.
+- **Sessions.** The line under the prompt counts their Codex and Claude Code sessions that run a turn. The picker's
+  Sessions tab (↓, or "Open an instrument…" in the command list, ctrl+p) lists them, each marked Running, Idle or
+  Ended; Enter opens one as a chat of its own, where you watch the harness work and write to it too, and ctrl+d
+  interrupts its turn. ↑ past the oldest entry of the prompt's history, or "Go back to the chat" in the command
+  list, goes back. An ended session opens read-only: the picker takes its prompt's place, and Esc goes back. Only
+  the chat's opener (its company's CEO for a chat nobody opened) writes there besides your employee. A chat has at
+  most four live sessions of each harness.
+- **Drafts.** Each chat and session keeps its own unsent text, so what you type in one never shows in another.
 - **Two speakers.** The session shows who sent each message, and the harness reads each one with its author and is
   told your word wins: your employee reads what you told it with its next answer, and can't interrupt or stop a turn
   you started. A message you or your employee send while Claude Code works joins its turn once its running tool calls

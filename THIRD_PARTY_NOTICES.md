@@ -79,9 +79,9 @@ license, the upstream paths and commit, and our paths.
 - **Ours:** `packages/office/src/tools/terminal/terminal.ts`, `packages/office/src/tools/terminal/tools.ts`,
   `packages/office/src/features/chat/session_actor.ts` (`note`), `packages/tui/src/routes/session/note-line.tsx`.
 - **What:** the line under the prompt keeps the fork's layout: the spinner and `esc interrupt` (or the folder) on the
-  left, the shortcuts on the right. The chat's instrument counts follow the left side, and what waits for the owner
-  takes the shortcuts' place in the warning colour, as the fork's session footer showed its open permissions
-  (`△ N Permissions`).
+  left, the shortcuts on the right. What the chat has running follows the left side (the picker's count, below), and
+  what waits for the owner takes the shortcuts' place in the warning colour, as the fork's session footer showed its
+  open permissions (`△ N Permissions`).
 - **Upstream:** `packages/tui/src/component/prompt/index.tsx` and `packages/tui/src/routes/session/footer.tsx` at
   commit `b471c2b`.
 - **Ours:** `packages/tui/src/routes/session/instrument-line.tsx`, `packages/tui/src/component/prompt/index.tsx`.
@@ -152,17 +152,37 @@ license, the upstream paths and commit, and our paths.
   `collapseShellCommand`, `collapseTail`), read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/tui/src/routes/session/index.tsx` (`toolView`, `Shell`, `TypedLine`, `ShellCall`),
   `packages/tui/src/util/collapse-tool-output.ts`, `packages/tui/test/util/collapse-tool-output.test.ts`.
-- **What:** a Codex or Claude Code session an employee's chat drives opens as the chat's child session, as the fork
-  opens a subagent's: its subagent footer above the child's prompt (its label, which child of how many, and Parent,
-  Prev and Next, each a button showing its key), and its commands to go to the first child, back to the parent, and
-  to the next and previous child round the list. The harness's tokens take the model context's place, the prompt
-  stays so the owner can write to the harness, and the keys are the leader's.
-- **Upstream:** `packages/tui/src/routes/session/subagent-footer.tsx`, and the `session.child.first`,
-  `session.child.next`, `session.child.previous` and `session.parent` commands (`moveFirstChild`, `moveChild`) of
-  `packages/tui/src/routes/session/index.tsx` with their keybinds in `packages/tui/src/config/keybind.ts`, at commit
-  `b471c2b`.
-- **Ours:** `packages/tui/src/routes/session/instrument-footer.tsx`, `packages/tui/src/routes/session/index.tsx`,
-  `packages/tui/src/config/keybind.ts`.
+- **What:** the composer picker and what goes with it, ported: `createComposerTabs` and its context; the picker in the
+  prompt's place, its tabs switched by ←/→ and closed with Esc or Ctrl-C, the active tab's hints then `tabs ←/→`; the
+  Subagents tab as our Sessions tab (the family from `sessionFamily`, ↑/↓, ↑ on the first row closing, Enter or a click
+  opening, ctrl+d interrupting, ctrl+a flipping between active and inactive, the current row tinted, five rows that
+  scroll) and the Shell tab (its rows, keys and scroll); `busyTab`, the first tab with something running; the
+  `session.child.first` command on ↓ that toggles it, or opens it on the tab a click names; the picker always shown in
+  a child, its `onClose` going to the parent; `session.parent` on ↑; the prompt footer's count, with the picker's key
+  in front and a click opening it; arrow keys shown as arrows; the prompt's ↑ and ↓ moving the cursor, then through the
+  history, then falling through past its ends; and one draft per session across prompt remounts. Their tests come with
+  them, the footer's as a frame test. Adapted: the rows and counts read the office's sessions and instruments; a
+  Sessions row is a Codex or Claude Code child session, marked Running, Idle or Ended; a shell opens in our instrument
+  view, and ctrl+d sends it Ctrl-C, as the office has no route to remove a shell; the Shell tab takes ctrl+a too; the
+  picker shows in place of the prompt only in a child whose session ended, since a live or idle child keeps its prompt
+  for the owner; the draft stash and the filters are one per TUI rather than per process; and the line under the
+  prompt keeps its counts per kind and its failures. Scripts and Terminals aren't ported.
+- **Upstream:** `packages/tui/src/routes/session/composer/{context,tabs,index,subagents-tab,shell-tab}.ts(x)`,
+  `packages/tui/src/util/session.ts` (`sessionFamily`), `packages/tui/src/component/prompt/draft-stash.ts`,
+  `packages/tui/src/component/prompt/index.tsx` (`prompt.history.previous` and `prompt.history.next`, the draft's take
+  and save), `packages/tui/src/prompt/history.tsx` (`move`), `packages/tui/src/routes/session/index.tsx` (the
+  `composer` store, `composerVisible`, `session.child.first`, `session.parent`),
+  `packages/tui/src/feature-plugins/prompt/footer.tsx`, `packages/tui/src/config/keybind.ts` (`composer.*`),
+  `packages/tui/src/context/keymap.tsx` (`keyNameAliases`), `packages/tui/test/routes/composer-tabs.test.tsx`,
+  `packages/tui/test/feature-plugins/prompt-footer.test.tsx` and `packages/tui/test/util/session.test.ts`, read at
+  commit `4332e24f` (2026-11-21).
+- **Ours:** `packages/tui/src/routes/session/composer/{context,tabs,index,sessions-tab,shell-tab}.ts(x)`,
+  `packages/tui/src/util/session.ts`, `packages/tui/src/component/prompt/draft-stash.ts`,
+  `packages/tui/src/context/prompt.tsx`, `packages/tui/src/component/prompt/index.tsx`,
+  `packages/tui/src/prompt/history.tsx`, `packages/tui/src/routes/session/index.tsx`,
+  `packages/tui/src/routes/session/instrument-line.tsx`, `packages/tui/src/config/keybind.ts`,
+  `packages/tui/src/keymap.tsx`, `packages/tui/test/routes/session/composer-tabs.test.tsx`,
+  `packages/tui/test/routes/session/composer-frame.test.tsx`, `packages/tui/test/util/session.test.ts`.
 - **What:** the check before a terminal starts that its folder is a directory, since a PTY's library may start the
   shell in the home instead, ported for learning's shells.
 - **Upstream:** `packages/core/src/persistent-pty/index.ts` (`create`), read at commit `df46f69` (2026-11-16).
