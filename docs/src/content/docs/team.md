@@ -14,7 +14,8 @@ want to talk to?". `opencorp -c` continues the newest session in that folder.
 
 In that picker, or after opening it with `/people` or ctrl+x p, pick "Hire new…". Fill in Name,
 Handle, Title and Manager (you, by default). The first Enter shows the change to the company repo;
-the second hires.
+the second hires. `office`, `opencorp` and `yian` can't be anyone's handle: OpenCorp and Yian speak as
+them.
 
 ## What your employee works with
 

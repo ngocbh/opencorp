@@ -9,6 +9,7 @@ import {
 } from "@opencorp/protocol"
 import type { z } from "zod"
 import { parseFile, type RepoIssue, repoIssue } from "./issues.ts"
+import { reservedHandle, reservedPerson } from "./naming.ts"
 
 type Company = z.output<typeof CompanySchema>
 type Person = z.output<typeof PersonSchema>
@@ -93,6 +94,10 @@ export function loadRepo(root: string): CompanyRepo {
     // follows a symlinked folder, gives nothing for a file and keeps a dangling person.yaml link.
     if (!list(root, `people/${folder}`, errors).includes("person.yaml")) continue
     const rel = `people/${folder}/person.yaml`
+    if (reservedHandle(folder)) {
+      errors.push(repoIssue(rel, "person.reserved_handle", reservedPerson(folder)))
+      continue
+    }
     const person = parse(root, rel, PersonSchema, errors)
     if (person === null) continue
     if (person.handle !== folder) {

@@ -1,9 +1,28 @@
 /** Naming rules: person handles, the names of the MCP servers a person may use, and the names the model sees for host
  *  tools. */
-import { Handle } from "@opencorp/protocol"
+import { Handle, OFFICE } from "@opencorp/protocol"
 
-/** Why `handle` can't be a person's handle, or null if it can. */
+/** The names the office and Yian speak as, which no person may take, or their messages could pass for the office's:
+ *  `office`, the author of the office's notes and the driver of the runs it starts; `opencorp`, the built-in agent
+ *  and the driver of its shells; and `yian`, the author of Yian's own chat messages. */
+export const RESERVED_HANDLES: ReadonlySet<string> = new Set([OFFICE, "opencorp", "yian"])
+
+/** Why a reserved handle can't be a person's. */
+const RESERVED = "is reserved for the office itself"
+
+/** Whether `handle`, in any case, is a name the office or Yian speaks as (`RESERVED_HANDLES`). */
+export function reservedHandle(handle: string): boolean {
+  return RESERVED_HANDLES.has(handle.toLowerCase())
+}
+
+/** The problem a person whose handle is reserved has, as the loader and a hire say it. */
+export function reservedPerson(handle: string): string {
+  return `@${handle} can't be a person: the handle ${RESERVED}`
+}
+
+/** Why `handle` can't be a person's handle, or null if it can: it isn't one, or it is reserved. */
 export function handleProblem(handle: string): string | null {
+  if (reservedHandle(handle)) return RESERVED
   const result = Handle.safeParse(handle)
   if (result.success) return null
   // Only the schema's regex (a constant) leaves; a zod issue's message or the error could carry the input.

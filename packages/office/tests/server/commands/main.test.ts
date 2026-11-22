@@ -266,6 +266,13 @@ test.each(["--handle", "--agent-handle"])("a bad handle flag stops init before i
   expect(s.err()).toContain("should match pattern")
 })
 
+test.each(["--handle", "--agent-handle"])("a reserved handle flag stops init before it starts [%s]", async (flag) => {
+  const dir = tempDir()
+  const s = { ...standIns(dir), init: mustNotRun }
+  expect(await main(["init", "--home", path.join(dir, "home"), flag, "office"], s)).toBe(1)
+  expect(s.err()).toBe(`opencorp init: ${flag} 'office': is reserved for the office itself\n`)
+})
+
 test("an init error is exit 1 with the reason", async () => {
   const dir = tempDir()
   const s = { ...standIns(dir), stdin: Readable.from(["not json"]) }

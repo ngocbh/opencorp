@@ -25,6 +25,14 @@ test("a bad owner handle is named with why", () => {
   expect(problems[0]).toContain("pattern")
 })
 
+test("the owner and a teammate can't take a name the office speaks as", () => {
+  const team = [{ name: "Yian", handle: "yian", title: "Engineer", about: "" }]
+  expect(draftProblems({ company: "Acme", owner: { ...ME, handle: "office" }, team })).toEqual([
+    "@office can't be a handle: is reserved for the office itself",
+    "@yian can't be a handle: is reserved for the office itself",
+  ])
+})
+
 test("a teammate cant take the owners handle", () => {
   const team = [{ name: "Ngoc", handle: "ngocbh", title: "Engineer", about: "" }]
   expect(draftProblems({ company: "Acme", owner: ME, team })).toEqual(["@ngocbh is taken"])
