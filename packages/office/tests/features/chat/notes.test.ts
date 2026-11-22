@@ -478,3 +478,36 @@ test("a delivered note is owed no more: after a model switch and a restart, it i
   expect(notes(o, sid)).toHaveLength(1)
   expect(asked(fake, 5, "(gone)")).toBe(false)
 })
+
+test("a note unread at a model switch arrives in the new run signed by its shell, exactly once", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all"), ASK_USER, { match: heading("shell 1", "make all", 0), content: "On two." }, { content: "Again." })
+  const { o, end } = await notesOffice(fake, { second: "stub-2" })
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  await card(o, sid, "ask_user")
+  await waitFor(() => !actor.hasWorker, { what: "the run asleep on the question" })
+  // The note waits unread in the inbox behind the question when the owner switches the model.
+  end("make all", 0)
+  const old = actor.runId!
+  await waitFor(() => loggedNotes(o, old).length === 1, { what: "the note in the inbox" })
+  await waitFor(() => !actor.hasWorker, { what: "the delivering worker's exit" })
+  await actor.setModel("second", "stub-2")
+  await waitFor(() => texts(o, sid).includes("On two.") && status(o, sid) === "idle", { what: "the fresh run's reply" })
+  const fresh = actor.runId!
+  expect(fresh).not.toBe(old)
+  // The fresh run has it under the shell's key, and the model reads it signed by the shell.
+  expect(loggedNotes(o, fresh)).toHaveLength(1)
+  expect(asked(fake, 3, 'author="shell 1"')).toBe(true)
+  const shown = o.transcript
+    .messages(sid, session(o, sid).run_ids)
+    .filter((m) => m.parts.some((part) => part.type === "text" && part.text.startsWith(heading("shell 1", "make all", 0))))
+  expect(shown.map((m) => [m.role, m.author, m.instrument?.name ?? null])).toEqual([["user", null, "shell 1"]])
+  // A restart sends nothing again.
+  const restarted = await reopen(o, actor)
+  await restarted.restore()
+  await restarted.prompt("again")
+  await waitFor(() => texts(o, sid).includes("Again.") && status(o, sid) === "idle", { what: "the last reply" })
+  expect(notes(o, sid)).toHaveLength(1)
+  expect(loggedNotes(o, fresh)).toHaveLength(1)
+})

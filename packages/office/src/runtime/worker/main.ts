@@ -705,9 +705,16 @@ async function runJob(
       inputs = { ...job.inputs, summary: seeded.summary, history: seeded.history }
       // After a stop the fresh run won't start, so the replaced run stays as it is for the next fresh run.
       if (job.seed.cancel && !signal.aborted) await cancelReplaced(job.seed.log, seedOptions)
-      // Ahead of the job's own deliveries, which `serve` queued first.
+      // Ahead of the job's own deliveries, which `serve` queued first. Each keeps its key: a shell's note stays signed
+      // by its shell, and a send under a key the fresh run already has appends nothing.
       deliveries.pushFront(
-        seeded.unread.map((event, n) => ({ id: `moved-${n}`, op: "send", inbox: MAIN_CHAT.inbox, event })),
+        seeded.unread.map(({ message, key }, n) => ({
+          id: `moved-${n}`,
+          op: "send",
+          inbox: MAIN_CHAT.inbox,
+          event: message,
+          ...(key === null ? {} : { key }),
+        })),
         { quiet: true },
       )
     }
