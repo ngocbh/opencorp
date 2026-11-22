@@ -81,6 +81,17 @@ test("a new file is sent as its content and an update as a diff", () => {
   expect(updated.kind).toEqual({ type: "update", move_path: null })
 })
 
+/** Kills `pid` if it is still the process that started at `started`; one that exits between the check and the kill
+ *  is left alone. */
+function killIfSame(pid: number, started: number | null): void {
+  if (started === null || !sameProcess(pid, started)) return
+  try {
+    process.kill(pid, "SIGKILL")
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== "ESRCH") throw error
+  }
+}
+
 function killGroup(pid: number | undefined): void {
   if (pid === undefined) return
   try {
@@ -344,7 +355,7 @@ test(
     const pid: number = spawn.pid
     const started = startTime(pid)
     onTestFinished(() => {
-      if (started !== null && sameProcess(pid, started)) process.kill(pid, "SIGKILL")
+      killIfSame(pid, started)
     })
     live.send(INTERRUPT)
     await live.until(method("turn/completed"))
@@ -372,7 +383,7 @@ test(
     )
     onTestFinished(() => {
       for (const { pid, started } of Object.values(procs)) {
-        if (started !== null && sameProcess(pid, started)) process.kill(pid, "SIGKILL")
+        killIfSame(pid, started)
       }
     })
     const terminate = (id: number, processId: string) =>
