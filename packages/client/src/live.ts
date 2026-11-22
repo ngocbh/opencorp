@@ -1,7 +1,7 @@
 // Runtime guards for event `data`. The protocol types it as a plain object; these check the
 // fields the client keys on or reads, so a malformed event is skipped rather than corrupting
 // state.
-import type { Event, Instrument, InstrumentRemoved, Message, Part } from "@opencorp/protocol"
+import type { Event, Instrument, InstrumentRemoved, Message, MessageRemoved, Part } from "@opencorp/protocol"
 
 /** `part.updated` data: the whole part. */
 export type PartUpdated = { message_id: string; part: Part }
@@ -17,6 +17,12 @@ export function asMessage(data: unknown): Message | undefined {
   if (!isObject(data) || !isString(data.id) || !isString(data.role) || !Array.isArray(data.parts)) return
   if (!data.parts.every(isPart)) return
   return data as Message
+}
+
+/** `message.removed` data, or undefined if it isn't that. */
+export function asMessageRemoved(data: unknown): MessageRemoved | undefined {
+  if (!isObject(data) || !isString(data.id) || !isString(data.session_id)) return
+  return data as MessageRemoved
 }
 
 export function asPartUpdated(data: unknown): PartUpdated | undefined {

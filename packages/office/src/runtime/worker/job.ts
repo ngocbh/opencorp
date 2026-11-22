@@ -26,7 +26,8 @@ const present = z.custom<unknown>((value) => value !== undefined, "is required")
 
 /** One yian host call the worker makes on the run, with the id its `deliver_reply` answers. A `send` with a `key`
  *  appends nothing when the run already has a send with that key and value, so a send retried or sent again by a new
- *  worker isn't doubled. */
+ *  worker isn't doubled. A `withdraw` takes back every send of the inbox nothing has read yet, and its reply lists
+ *  them (`withdrawn`: each one's seq and value), in send order. */
 export const Delivery = z.discriminatedUnion("op", [
   z.strictObject({
     id: deliveryId,
@@ -42,6 +43,7 @@ export const Delivery = z.discriminatedUnion("op", [
     result: z.union([z.strictObject({ output: present }), z.strictObject({ error: z.string() })]),
   }),
   z.strictObject({ id: deliveryId, op: z.literal("close"), inbox: z.string() }),
+  z.strictObject({ id: deliveryId, op: z.literal("withdraw"), inbox: z.string() }),
   z.strictObject({ id: deliveryId, op: z.literal("interrupt"), inbox: z.string() }),
   z.strictObject({ id: deliveryId, op: z.literal("cancel") }),
 ])

@@ -33,6 +33,7 @@ const KINDS: ReadonlySet<string> = new Set([
   "node_failed",
   "run_cancelled",
   "run_failed",
+  "inbox_withdrawn",
 ])
 
 /** The longest log line the transcript parses (Run Logs' HUGE_LINE): yian's reader holds a line whole, and parsing it
@@ -124,7 +125,7 @@ function safeRunId(runId: string): boolean {
 }
 
 /** A message's id: its run and the seq of the record that opens it, the seq padded so ids sort in log order. */
-function messageId(runId: string, seq: number): string {
+export function messageId(runId: string, seq: number): string {
   return `${runId}:${String(seq).padStart(12, "0")}`
 }
 
@@ -530,6 +531,10 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
     }
   } else if (kind === "run_cancelled" || kind === "run_failed") {
     state.ended = true
+  } else if (kind === "inbox_withdrawn") {
+    // Taken back before anything read them: they show no more, and one sent again shows under its new seq.
+    const { inbox: from, events } = record as { inbox: string; events: readonly number[] }
+    if (from === inbox) for (const event of events) state.sends.delete(Number(event))
   }
 }
 

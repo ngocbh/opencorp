@@ -21,7 +21,9 @@ import type {
   WorkItem,
 } from "@opencorp/protocol"
 import { now } from "@opencorp/protocol"
-import { asInstrument, asInstrumentRemoved, asMessage, asPartDelta, asPartUpdated, isMetaData } from "./live"
+import {
+  asInstrument, asInstrumentRemoved, asMessage, asMessageRemoved, asPartDelta, asPartUpdated, isMetaData,
+} from "./live"
 import type { StreamEvent } from "./sse"
 
 export type OfficeState = {
@@ -189,6 +191,13 @@ export function applyLive(s: OfficeState, e: LiveEvent): string[] {
         for (const p of parts) putPart(local, p)
       }
       return msg.parts.map((p) => p.id)
+    }
+    case "message.removed": {
+      const removed = asMessageRemoved(e.data)
+      if (!removed || removed.session_id !== e.session_id) return []
+      const i = list.findIndex((m) => m.id === removed.id)
+      if (i >= 0) list.splice(i, 1)
+      return []
     }
     case "part.updated": {
       const d = asPartUpdated(e.data)

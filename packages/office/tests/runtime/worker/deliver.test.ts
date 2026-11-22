@@ -335,6 +335,26 @@ test("a keyed send sent again appends nothing and gets the first seq; another va
   expect(sent(chat, "messages")).toEqual(["hi"])
 })
 
+test("a withdraw takes back every unread send, in order, with its seq and value, and the take never reads them", async () => {
+  const chat = makeJob(base(), "flows/inbox.yaml", { inputs: {} })
+  expect((await run(chat, new Recorder())).outcome?.status).toBe("waiting")
+  const send = (id: string, event: string) => ({ id, op: "send", inbox: "messages", event }) as const
+  const withdraw = (id: string) => ({ id, op: "withdraw", inbox: "messages" }) as const
+  const rec = await run(
+    advanceJob(chat, { advance: false, deliver: [send("s1", "a"), send("s2", "b"), withdraw("w1"), withdraw("w2")] }),
+    new Recorder(),
+  )
+  const [a, b, taken, none] = rec.replies
+  expect(taken).toEqual({ type: "deliver_reply", id: "w1", seq: null, withdrawn: [
+    { seq: a!.seq, value: "a" },
+    { seq: b!.seq, value: "b" },
+  ] })
+  expect(none).toEqual({ type: "deliver_reply", id: "w2", seq: null, withdrawn: [] })
+  // The take finds nothing to read, and waits on.
+  const advanced = await run(advanceJob(chat, { deliver: [send("s3", "c")] }), new Recorder())
+  expect((advanced.outcome?.output as { events: unknown[] }).events).toEqual(["c"])
+})
+
 test("a deliver to a run that ended is refused", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Done." })

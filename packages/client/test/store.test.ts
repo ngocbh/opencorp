@@ -216,6 +216,21 @@ test("instrument.removed drops a session's instrument", () => {
   expect(s.instruments.OTHER).toBeUndefined()
 })
 
+test("message.removed drops a session's message", () => {
+  const s = synced()
+  for (const id of ["M1", "M2"]) {
+    const message = { id, session_id: S, role: "user", author: null, created_at: "t", parts: [] }
+    applyLive(s, live("message.updated", message))
+  }
+  applyLive(s, live("message.removed", { id: "M1", session_id: S }))
+  expect(s.messages[S].map((m) => m.id)).toEqual(["M2"])
+  // One it doesn't have, one named for another session, and malformed data change nothing.
+  applyLive(s, live("message.removed", { id: "M9", session_id: S }))
+  applyLive(s, live("message.removed", { id: "M2", session_id: "OTHER" }))
+  applyLive(s, live("message.removed", { id: 2, session_id: S }))
+  expect(s.messages[S].map((m) => m.id)).toEqual(["M2"])
+})
+
 test("an instrument of a kind the client doesn't know isn't kept", () => {
   const s = synced()
   applyLive(s, live("instrument.updated", instrument("I1", { kind: "browser" as Instrument["kind"] })))

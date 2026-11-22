@@ -162,6 +162,11 @@ export const Message = z.strictObject({
 })
 export type Message = z.input<typeof Message>
 
+/** `message.removed` data: a queued message the run took back before anything read it, such as one Esc held or sent
+ *  again, which then shows under its new id. */
+export const MessageRemoved = z.strictObject({ id: ItemId, session_id: Ulid })
+export type MessageRemoved = z.input<typeof MessageRemoved>
+
 export const Permission = z.strictObject({
   id: Ulid,
   session_id: Ulid,

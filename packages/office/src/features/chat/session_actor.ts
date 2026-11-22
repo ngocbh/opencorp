@@ -80,7 +80,7 @@ import { chatJob, type RunSpec } from "./run_spec.ts"
 import { ChatApprovals } from "./approvals.ts"
 import type { Mode, Where } from "../../runtime/permissions/policy.ts"
 import { HarnessError, notWaiting, runState, SETTLED, writeState } from "../../runtime/sessions/state.ts"
-import { type LiveCalls, type Transcript, userMessage } from "./transcript.ts"
+import { type LiveCalls, messageId, type Transcript, userMessage } from "./transcript.ts"
 import { type ChatFlow, MAIN_CHAT } from "../../company/chat_flow.ts"
 
 /** What every actor of an office shares. */
@@ -276,6 +276,8 @@ class Pending {
   readonly questionId: string | null
   /** The `send` a message's `complete` falls back on when its call settled first. */
   readonly fallback: Delivery | null
+  /** The office's note this `send` carries, if it carries one. */
+  readonly note: Note | null
   /** Settles with the caller's answer: `acked`, or the `HarnessError` the delivery is refused with. */
   readonly answer: Promise<unknown>
   #resolve!: (value: unknown) => void
@@ -284,12 +286,17 @@ class Pending {
   constructor(
     delivery: Delivery,
     acked: unknown = undefined,
-    { questionId = null, fallback = null }: { questionId?: string | null; fallback?: Delivery | null } = {},
+    {
+      questionId = null,
+      fallback = null,
+      note = null,
+    }: { questionId?: string | null; fallback?: Delivery | null; note?: Note | null } = {},
   ) {
     this.delivery = delivery
     this.acked = acked
     this.questionId = questionId
     this.fallback = fallback
+    this.note = note
     this.answer = new Promise((resolve, reject) => {
       this.#resolve = resolve
       this.#reject = reject
@@ -505,6 +512,9 @@ export class SessionActor implements LiveCalls {
   #notesDue = false
   /** Whether Esc came since the last person's message: notes wait in `#heldNotes` for the next one. */
   #hushed = false
+  /** Whether a note went to the run since it last rested at its turn with nothing queued: one may wait unread in the
+   *  inbox, which Esc then takes back. */
+  #notesUnread = false
   readonly #heldNotes: Note[] = []
 
   /** The actor of stored session `sessionId`, over its current run. Throws `HarnessError` (`404`) for no such
@@ -662,13 +672,11 @@ export class SessionActor implements LiveCalls {
       const answered = await this.#answerAsked(session, text, by, delivery)
       // The notes held since Esc go to the run with the message: after an answer, which takes no note, and before a
       // message, so one turn reads them all.
-      this.#hushed = false
-      const held = this.#heldNotes.splice(0)
       if (answered !== null) {
-        await this.#giveNotes(session, held)
+        await this.#releaseNotes(session)
         return answered
       }
-      await this.#giveNotes(session, held, { spawn: false })
+      await this.#releaseNotes(session, { spawn: false })
       return await this.#send(delivery, reply)
     })
     if (pending === null) return "turn"
@@ -893,6 +901,8 @@ export class SessionActor implements LiveCalls {
       if (stored.call_id !== null && stored.run_id === this.#runId && !this.#finished) {
         if (stored.source === "approval") await this.#approvals.answered(stored)
         else await this.#deliver(this.#complete(stored, undefined))
+        // The agent works again: the notes held since Esc go with the answer.
+        await this.#releaseNotes(this.#session())
       }
       this.#trySettle("after an answer")
       return stored
@@ -958,8 +968,13 @@ export class SessionActor implements LiveCalls {
         if (status !== "open") throw new HarnessError(409, "not_open", `question ${question} is ${status ?? "gone"}`)
         if (this.#interrupting()) throw new HarnessError(409, "not_open", `question ${question} is being interrupted`)
       }
-      // Esc means stop working: what ends from now on waits for the next person's message.
+      // Esc means stop working: notes wait for the person's next message or answer, those not yet sent included.
       this.#hushed = true
+      for (const p of this.#next.filter((given) => given.note !== null)) {
+        this.#next.splice(this.#next.indexOf(p), 1)
+        this.#heldNotes.push(p.note!)
+        p.resolve(undefined)
+      }
       this.#interruptShells()
       this.#approvals.stop()
       this.#answerCalls()
@@ -969,6 +984,12 @@ export class SessionActor implements LiveCalls {
       const running = live && (this.#ending || !this.#capped() || this.#replying())
       if (!running && !this.#agentWaits()) return null
       const spec = await this.#specOf(session)
+      // Taken back first, so the turn after the stopped reply reads no note queued in the inbox; the people's messages
+      // among them go back after the interrupt (`#withdrawn`).
+      if (this.#notesUnread) {
+        this.#notesUnread = false
+        await this.#give(new Pending({ id: newId(), op: "withdraw", inbox: spec.chat.inbox }))
+      }
       const p = new Pending({ id: newId(), op: "interrupt", inbox: spec.chat.inbox })
       this.#interrupt = p
       await this.#deliver(p)
@@ -1037,11 +1058,53 @@ export class SessionActor implements LiveCalls {
     if (notes.length === 0) return
     const { inbox } = (await this.#specOf(session)).chat
     let due = false
-    for (const { text, key } of notes) {
-      const event = { role: "user", parts: [{ type: "text", text }], author: OFFICE }
-      due = (await this.#give(new Pending({ id: newId(), op: "send", inbox, event, key }))) || due
+    for (const note of notes) {
+      const event = { role: "user", parts: [{ type: "text", text: note.text }], author: OFFICE }
+      const delivery: Delivery = { id: newId(), op: "send", inbox, event, key: note.key }
+      this.#notesUnread = true
+      due = (await this.#give(new Pending(delivery, undefined, { note }))) || due
     }
     if (due && spawn) await this.#spawnQuietly("advance")
+  }
+
+  /** A person's message or answer sets the agent working again: the notes held since Esc, or since a restart, go to
+   *  the run (`#giveNotes`, with `spawn`), and later ones go at once. */
+  async #releaseNotes(session: SessionRecord, { spawn = true } = {}): Promise<void> {
+    this.#hushed = false
+    await this.#giveNotes(session, this.#heldNotes.splice(0), { spawn })
+  }
+
+  /**
+   * The sends Esc's `withdraw` took back from run `runId`'s inbox, `withdrawn` (each one's seq and value): the
+   * clients drop each, the office's notes wait with the held ones (each under a key of its own, since the run keeps
+   * its old key), and the people's messages go back, in order and unchanged, ahead of any message queued since.
+   */
+  async #withdrawn(runId: string, withdrawn: readonly { seq: number; value: unknown }[]): Promise<void> {
+    if (withdrawn.length === 0 || this.#finished) return
+    const inbox = (await this.#specOf(this.#session())).chat.inbox
+    const people: Pending[] = []
+    for (const { seq, value } of withdrawn) {
+      this.#publishRemoved(messageId(runId, seq))
+      const key = `withdrawn:${runId}:${seq}`
+      const message = value as Partial<RunMessage> | null
+      if (message?.author === OFFICE) {
+        const text = message.parts?.findLast((part) => part.type === "text") as { text: string } | undefined
+        if (text !== undefined) this.#heldNotes.push({ text: text.text, key })
+      } else {
+        people.push(new Pending({ id: newId(), op: "send", inbox, event: value, key }))
+      }
+    }
+    // A message or an answer came since Esc: the notes go now.
+    if (!this.#hushed) await this.#releaseNotes(this.#session())
+    if (people.length === 0) return
+    const run = this.#run
+    const live = run !== null && run.worker !== null && run.outcome === null
+    if (live && !this.#next.some((p) => p.delivery.op === "send")) {
+      for (const p of people) await this.#give(p)
+      return
+    }
+    this.#next.unshift(...people)
+    if (this.#run === null) await this.#spawnQuietly("advance")
   }
 
   /**
@@ -2497,7 +2560,14 @@ export class SessionActor implements LiveCalls {
       // The stored status is busy, and a message shown, before the caller hears back.
       this.#trySettle("after a reply")
       if (op === "send") this.#publishMessage(run.runId, reply.seq as number, p.delivery.event)
+      if (op === "withdraw" && Array.isArray(reply.withdrawn)) {
+        const withdrawn = reply.withdrawn as { seq: number; value: unknown }[]
+        this.#post("withdrawn", () => this.#withdrawn(run.runId, withdrawn))
+      }
       p.resolve(p.acked)
+    } else if (p.note !== null && reply.refused === "key_reused") {
+      // A note the run already has under its key, as a restart's note of a command whose note was sent.
+      p.resolve(undefined)
     } else if (typeof reply.refused === "string") {
       // The reason only: a delivery never names the message's text.
       this.#log(`session ${this.sessionId}: a ${op} was refused (${reply.refused})`)
@@ -2548,6 +2618,16 @@ export class SessionActor implements LiveCalls {
 
   /** Publishes the user message of the `send` the run took at `seq`, as the transcript will show it. `sent` is the
    *  message `prompt` built. */
+  /** Tells the session's clients that message `id` is no more: a send the run took back. */
+  #publishRemoved(id: string): void {
+    try {
+      const data = { id, session_id: this.sessionId }
+      this.#ctx.bus.publishLive({ type: "message.removed", session_id: this.sessionId, data })
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a message can't be dropped (${errorName(error)})`)
+    }
+  }
+
   #publishMessage(runId: string, seq: number, sent: unknown): void {
     const message = userMessage(this.sessionId, runId, { seq, at: now(), message: sent as RunMessage })
     try {
@@ -2600,7 +2680,14 @@ export class SessionActor implements LiveCalls {
       void runIndex.update().then(changed)
     }
     this.#disarm()
-    if (frame.type === "result" && frame.status === "waiting") this.#waits = waitsOf(frame)
+    if (frame.type === "result" && frame.status === "waiting") {
+      const waits = waitsOf(frame)
+      this.#waits = waits
+      // Resting at its turn with nothing queued: the inbox holds no note.
+      if (waits.length > 0 && waits.every((wait) => this.#chat.isTurn(wait.node) && !wait.settled)) {
+        this.#notesUnread = false
+      }
+    }
     run.turnPending = false
     this.#trySettle("after a result")
   }
