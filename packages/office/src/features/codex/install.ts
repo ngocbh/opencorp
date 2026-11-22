@@ -59,11 +59,12 @@ export function copiesFolder(home: string, environ: Record<string, string | unde
  * apart from what the employee may touch (`checkApart`). Every file copied, and its folder, must be the user's alone
  * to write, and each file is copied only while it is still the one listed (inode and size). A copy is made once per
  * Codex and renamed into place whole; a file that went missing or changed in it is copied again beside it and renamed
- * over it, so a session running from it goes on. Each start writes its last-used time into the copy (`markUsed`). Then
- * every other copy there unused for over a day that no program runs from is removed (`sweepCopies`, which tells `log`
- * what it couldn't remove): a day after an update, none of the earlier Codex is left. Throws
- * `UnsafeProfile` from the checks, for a copy that isn't a private folder of the user's, and for a Codex in a denied
- * folder that isn't a native binary in its install's `bin`, each before anything is copied.
+ * over it, so a session running from it goes on. Each start writes its last-used time into the copy (`markUsed`),
+ * making the copy again if another office's sweep took it before the mark. Then every other copy there unused for over
+ * a day that no program runs from is removed (`sweepCopies`, which tells `log` what it couldn't remove): a day after an
+ * update, none of the earlier Codex is left. Throws `UnsafeProfile` from the checks, for a copy that isn't a private
+ * folder of the user's, and for a Codex in a denied folder that isn't a native binary in its install's `bin`, each
+ * before anything is copied.
  */
 export async function threadCodex(
   p: EmployeePermission,
@@ -88,13 +89,23 @@ export async function threadCodex(
   const copies = ownFolder(p, folder)
   const json = JSON.stringify(source)
   const dir = path.join(copies, nameOf(json))
-  let made = making.get(dir)
-  if (made === undefined) {
-    made = ensureCopy(copies, dir, source, json).finally(() => making.delete(dir))
-    making.set(dir, made)
+  const ensure = () => {
+    let made = making.get(dir)
+    if (made === undefined) {
+      made = ensureCopy(copies, dir, source, json).finally(() => making.delete(dir))
+      making.set(dir, made)
+    }
+    return made
   }
-  await made
-  markUsed(dir)
+  await ensure()
+  try {
+    markUsed(dir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    // Another office's sweep took the copy between its check of the last use and this mark: it is made again.
+    await ensure()
+    markUsed(dir)
+  }
   const copy = { run: path.join(dir, "bin", path.basename(run)), install: dir }
   checkCodexInstall(p, copy)
   await sweepCopies(copies, path.basename(dir), log)
@@ -105,9 +116,10 @@ export async function threadCodex(
  * Removes from the copies' folder `folder` each copy (`install-<hash>`, a folder of the user's) but `keep`, those this
  * process is making, those used within `KEPT_MS` (`lastUsed`), and those a running program's arguments name (a live
  * session's app-server, another office's, or doctor's), and each folder a process that is gone left half made or half
- * removed. A copy is renamed aside before it is removed, so nothing finds half of one. One that can't be looked at or
- * removed is passed to `log` and left; anything else (a link, a file) is never followed or removed, and nothing is when
- * `ps` can't list what runs.
+ * removed. A copy is renamed aside before it is removed, so nothing finds half of one, and put back when a start
+ * marked it used meanwhile (unless a start made it again there). One that can't be looked at or removed is passed to
+ * `log` and left; anything else (a link, a file) is never followed or removed, and nothing is when `ps` can't list what
+ * runs.
  */
 async function sweepCopies(folder: string, keep: string, log: (line: string) => void): Promise<void> {
   let names: string[]
@@ -132,10 +144,12 @@ async function sweepCopies(folder: string, keep: string, log: (line: string) => 
         continue
       }
       if (!COPY_NAME.test(name) || name === keep || making.has(at)) continue
-      if (Date.now() - lastUsed(at, stat) <= KEPT_MS) continue
+      const used = lastUsed(at, stat)
+      if (Date.now() - used <= KEPT_MS) continue
       if (running.some((args) => args.includes(`${at}/`))) continue
       const aside = `${name}.${process.pid}.part`
       fs.renameSync(at, path.join(folder, aside))
+      if (lastUsed(path.join(folder, aside), stat) !== used && putBack(path.join(folder, aside), at)) continue
       removeFolder(folder, aside)
     } catch (error) {
       log(`codex: the copy of Codex ${name} wasn't swept (${error instanceof Error ? error.message : String(error)})`)
@@ -146,6 +160,18 @@ async function sweepCopies(folder: string, keep: string, log: (line: string) => 
 /** Writes now into the copy `dir`'s last-used file, the user's alone; its modification time is what the sweep reads. */
 function markUsed(dir: string): void {
   fs.writeFileSync(path.join(dir, LAST_USED), `${new Date().toISOString()}\n`, { mode: 0o600 })
+}
+
+/** Renames the copy `aside` back to `at`; false when a start made the copy again there meanwhile. */
+function putBack(aside: string, at: string): boolean {
+  try {
+    fs.renameSync(aside, at)
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== "ENOTEMPTY" && code !== "EEXIST") throw error
+    return false
+  }
 }
 
 /** When a session or doctor last started from the copy at `at`: its last-used file's modification time, or, for one

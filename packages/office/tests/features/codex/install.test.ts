@@ -5,7 +5,7 @@
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { copiesFolder, threadCodex } from "../../../src/features/codex/install.ts"
 import { harnessTemp, sandboxArgs, threadEnv } from "../../../src/features/codex/thread.ts"
 import { type EmployeePermission, codexThread } from "../../../src/runtime/sandbox/harness_profile.ts"
@@ -263,6 +263,42 @@ test("a copy that lost a file or had one changed gets it back in place at the ne
   // One that isn't a private folder of the user's is refused, saying to remove it.
   fs.chmodSync(copy.install, 0o755)
   await expect(threadCodex(p, codex, folder)).rejects.toThrow(/isn't a private folder of yours; remove it/)
+})
+
+test("a copy a session marks used while a sweep takes it goes back in place, and one a sweep took before its mark is made again", async () => {
+  const { home, p, folder } = layout()
+  const stale = await threadCodex(p, fakeInstall(releaseIn(home, "0.171.0")), folder)
+  unused(stale.install)
+  // Another office's session marks the stale copy used just as this sweep renames it aside.
+  const rename = fs.renameSync
+  const marked = spyOn(fs, "renameSync").mockImplementation((from, to) => {
+    if (from === stale.install) fs.writeFileSync(path.join(stale.install, "last-used"), "now\n")
+    rename(from, to)
+  })
+  const current = fakeInstall(releaseIn(home, "0.172.0"))
+  const copy = await threadCodex(p, current, folder)
+  marked.mockRestore()
+  expect(copies(folder).sort()).toEqual([path.basename(copy.install), path.basename(stale.install)].sort())
+  expect(fs.readFileSync(path.join(stale.install, "bin/codex"), "utf8")).toBe("\x7fELF the codex binary")
+  expect(fs.readdirSync(folder).filter((name) => name.endsWith(".part"))).toEqual([])
+  // A sweep takes the current copy after this start found it and before it marks it: the start makes it again.
+  const write = fs.writeFileSync
+  let swept = false
+  const taken = spyOn(fs, "writeFileSync").mockImplementation((file, ...rest) => {
+    if (!swept && file === path.join(copy.install, "last-used")) {
+      swept = true
+      fs.rmSync(copy.install, { recursive: true, force: true })
+    }
+    write(file, ...rest)
+  })
+  try {
+    expect(await threadCodex(p, current, folder)).toEqual(copy)
+  } finally {
+    taken.mockRestore()
+  }
+  expect(swept).toBe(true)
+  expect(fs.readFileSync(copy.run, "utf8")).toBe("\x7fELF the codex binary")
+  expect(fs.existsSync(path.join(copy.install, "last-used"))).toBe(true)
 })
 
 test("a Codex in a denied folder that isn't a binary in its install's bin, or with a file or folder others could change, is refused before anything is copied", async () => {
