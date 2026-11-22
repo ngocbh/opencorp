@@ -670,6 +670,44 @@ export function userMessage(sessionId: string, runId: string, send: Send): Messa
   }
 }
 
+/** A send Esc's withdraw took back from a run's inbox, as its log records it: its seq, its message, and the key it
+ *  was sent under, if any. */
+export interface WithdrawnSend {
+  readonly seq: number
+  readonly message: RunMessage
+  readonly key: string | null
+}
+
+/**
+ * The sends of the inbox `inbox` that withdraws took back in the run log `log`, in send order: each `inbox_withdrawn`
+ * record names their seqs, and the send records before it hold their messages and keys. The log is the record of
+ * what a withdraw took, even when its worker died before it answered. A send whose value isn't a message is left out.
+ */
+export function withdrawnSends(log: string, inbox: string): WithdrawnSend[] {
+  const sends = new Map<number, { message: RunMessage; key: string | null }>()
+  const taken: number[] = []
+  for (const entry of iterRunRecords(log)) {
+    const record = entry.envelope.record
+    if (entry.kind === "pool_commit" && record instanceof PoolCommitRecord && record.value !== null) {
+      if (record.key !== `${record.nodeId}.${inbox}`) continue
+      try {
+        sends.set(entry.seq, { message: checkMessage(TypedValue.fromWire(record.value).toObject()), key: record.sendKey })
+      } catch (error) {
+        if (!(error instanceof RangeError)) throw error
+      }
+    } else if (entry.kind === "inbox_withdrawn") {
+      const { inbox: from, events } = record as { inbox: string; events: readonly number[] }
+      if (from === inbox) taken.push(...events.map(Number))
+    }
+  }
+  return taken
+    .sort((a, b) => a - b)
+    .flatMap((seq) => {
+      const send = sends.get(seq)
+      return send === undefined ? [] : [{ seq, ...send }]
+    })
+}
+
 /** True for an object that is a plain `{}` record. */
 function isPlain(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null) return false

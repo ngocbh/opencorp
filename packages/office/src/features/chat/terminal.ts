@@ -13,7 +13,7 @@ import type { ApprovalCard, CheckInput, Mode, Permissions, Where } from "../../r
 import type { Instruments } from "../../runtime/sessions/instruments.ts"
 import type { Store } from "../../runtime/store/store.ts"
 import { shellInstrument } from "../../tools/terminal/instrument.ts"
-import { InstrumentRecord, readRecord, RecordError, type RecordFile } from "../../tools/terminal/record.ts"
+import { clearTold, InstrumentRecord, readRecord, RecordError, type RecordFile } from "../../tools/terminal/record.ts"
 import type { ShellState } from "../../tools/terminal/shell.ts"
 import {
   type CommandEnded, restoredNote, Terminal, type TerminalAudit, type TerminalProfile, type TerminalShells,
@@ -128,6 +128,8 @@ export class EmployeeTerminal {
   readonly #startedIn = new Map<string, string | null>()
   /** Who gets the notes of commands that ended: the session's actor. */
   #onEnded: ((note: CommandEnded) => void) | null = null
+  /** The records of the shells it made, by shell id. */
+  readonly #records = new Map<string, InstrumentRecord>()
 
   constructor(o: EmployeeTerminalOptions) {
     this.#o = o
@@ -145,6 +147,16 @@ export class EmployeeTerminal {
    *  replaces any listener before it. */
   onEnded(listener: (note: CommandEnded) => void): void {
     this.#onEnded = listener
+  }
+
+  /** The run has the note under `key` (`terminal:<shell id>:<n>`): the shell's record, this terminal's or one an
+   *  earlier office left, owes it no more, so a restart never sends it again. */
+  delivered(key: string): void {
+    const shell = /^terminal:([^:/]+):\d+$/.exec(key)?.[1]
+    if (shell === undefined) return
+    const record = this.#records.get(shell)
+    if (record?.running) record.untold(key)
+    else clearTold(path.join(this.#o.folder, "terminal", shell), key)
   }
 
   /** The model-facing tools: the `terminal` group. */
@@ -226,6 +238,7 @@ export class EmployeeTerminal {
     const record = new InstrumentRecord(path.join(records, id), {
       id, name, kind: "terminal", profile, driver: person, started: now(),
     })
+    this.#records.set(id, record)
     const terminal = this.#terminal
     const shell = () => terminal.shell(id)
     const listing = shellInstrument({ sessionId, id, name, driver: person, profile, interactive: false, shell })

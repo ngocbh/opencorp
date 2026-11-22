@@ -168,6 +168,11 @@ export class InstrumentRecord {
     this.save()
   }
 
+  /** Whether the record still takes writes: its shell hasn't ended. */
+  get running(): boolean {
+    return this.file.state === "running"
+  }
+
   /** Records that the command owed the note under `key` needs none: something else told the agent of its end. */
   untold(key: string): void {
     const command = this.file.commands.find((c) => c.told === key)
@@ -262,6 +267,23 @@ export function readRecord(dir: string): RecordFile | null {
   }
   if (!isRecordFile(parsed)) throw new RecordError("its meta.json isn't a terminal's record")
   return parsed
+}
+
+/** Records in the ended record in `dir` that the command owed the note under `key` needs none any more: the run has
+ *  it. A record still running is its host's to write (`InstrumentRecord.untold`); one that isn't a record's, or owes no
+ *  such note, is left as it is. */
+export function clearTold(dir: string, key: string): void {
+  let file: RecordFile | null
+  try {
+    file = readRecord(dir)
+  } catch (error) {
+    if (error instanceof RecordError) return
+    throw error
+  }
+  const command = file?.commands.find((c) => c.told === key)
+  if (file === null || file.state === "running" || command === undefined) return
+  delete command.told
+  replaceFile(dir, META, metaText(file))
 }
 
 /** Marks each record in `dir`'s folders that is still running as interrupted: its host stopped while the shell ran.

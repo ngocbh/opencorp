@@ -81,7 +81,7 @@ import { ChatApprovals } from "./approvals.ts"
 import type { Mode, Where } from "../../runtime/permissions/policy.ts"
 import { HarnessError, notWaiting, runState, SETTLED, writeState } from "../../runtime/sessions/state.ts"
 import { restoreNotes } from "./terminal.ts"
-import { type LiveCalls, messageId, type Transcript, userMessage } from "./transcript.ts"
+import { type LiveCalls, messageId, type Transcript, userMessage, withdrawnSends } from "./transcript.ts"
 import { type ChatFlow, MAIN_CHAT } from "../../company/chat_flow.ts"
 
 /** What every actor of an office shares. */
@@ -234,10 +234,12 @@ export const INTERRUPTED_CALL = "interrupted; outcome unknown"
  *  reply, or queued for a later turn. */
 export type MessageReply = "turn" | "answer" | "steer" | "queued"
 
-/** A note from the office about the agent's own work, as `note` takes it: its text, and the key its send carries. */
+/** A note from the office about the agent's own work, as `note` takes it: its text, the key its send carries, and the
+ *  key of the note the terminal's record owes (`owed`, cleared once the run has it), if any. */
 interface Note {
   readonly text: string
   readonly key: string
+  readonly owed: string | null
 }
 
 /** A call a waiting run waits on, as a `result` frame lists it. */
@@ -517,6 +519,10 @@ export class SessionActor implements LiveCalls {
   /** Whether a note went to the run since it last rested at its turn with nothing queued: one may wait unread in the
    *  inbox, which Esc then takes back. */
   #notesUnread = false
+  /** Esc's withdraw, until its answer comes: a message sent meanwhile waits in `#next`, behind what it takes back. */
+  #withdrawal: Pending | null = null
+  /** The sends withdraws took back that went back to the run or wait with the held notes, by run and seq. */
+  readonly #rehomed = new Set<string>()
   readonly #heldNotes: Note[] = []
 
   /** The actor of stored session `sessionId`, over its current run. Throws `HarnessError` (`404`) for no such
@@ -990,7 +996,11 @@ export class SessionActor implements LiveCalls {
       // among them go back after the interrupt (`#withdrawn`).
       if (this.#notesUnread) {
         this.#notesUnread = false
-        await this.#give(new Pending({ id: newId(), op: "withdraw", inbox: spec.chat.inbox }))
+        const withdrawal = new Pending({ id: newId(), op: "withdraw", inbox: spec.chat.inbox })
+        this.#withdrawal = withdrawal
+        // Refused or never answered: what waited behind it goes on.
+        withdrawal.answer.catch(() => this.#post("a withdraw's end", () => this.#withdrawEnded(withdrawal)))
+        await this.#give(withdrawal)
       }
       const p = new Pending({ id: newId(), op: "interrupt", inbox: spec.chat.inbox })
       this.#interrupt = p
@@ -1031,7 +1041,7 @@ export class SessionActor implements LiveCalls {
    */
   note(text: string, key: string): void {
     if (this.#closed || this.#finished) return
-    this.#notes.push({ text, key })
+    this.#notes.push({ text, key, owed: key })
     if (this.#notesDue) return
     this.#notesDue = true
     // A turn of the event loop later, so the notes of commands that end together go in one job.
@@ -1077,36 +1087,81 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * The sends Esc's `withdraw` took back from run `runId`'s inbox, `withdrawn` (each one's seq and value): the
-   * clients drop each, the office's notes wait with the held ones (each under a key of its own, since the run keeps
-   * its old key), and the people's messages go back, in order and unchanged, ahead of any message queued since.
+   * Esc's withdraw answered: the sends withdraws took back from run `runId`'s inbox, as its log records them (the log
+   * keeps them though a worker died before it answered, and a withdraw sent again then takes nothing), each once. The
+   * clients drop each; the people's messages go back, in order and unchanged, ahead of any message sent since, which
+   * waited for this; the office's notes go back with them once a person has spoken since Esc, else wait with the
+   * held ones. Each goes under a key of its own, since the run keeps the old one.
    */
-  async #withdrawn(runId: string, withdrawn: readonly { seq: number; value: unknown }[]): Promise<void> {
-    if (withdrawn.length === 0 || this.#finished) return
+  async #withdrawn(runId: string): Promise<void> {
+    this.#withdrawal = null
+    if (this.#finished) return
     const inbox = (await this.#specOf(this.#session())).chat.inbox
-    const people: Pending[] = []
-    for (const { seq, value } of withdrawn) {
+    let taken: ReturnType<typeof withdrawnSends>
+    try {
+      taken = withdrawnSends(this.#logOf(runId), inbox)
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a withdraw's sends can't be read (${errorName(error)})`)
+      taken = []
+    }
+    const back: Pending[] = []
+    for (const { seq, message, key: sentAs } of taken) {
+      if (this.#rehomed.has(`${runId}:${seq}`)) continue
+      this.#rehomed.add(`${runId}:${seq}`)
       this.#publishRemoved(messageId(runId, seq))
       const key = `withdrawn:${runId}:${seq}`
-      const message = value as Partial<RunMessage> | null
-      if (message?.author === OFFICE) {
-        const text = message.parts?.findLast((part) => part.type === "text") as { text: string } | undefined
-        if (text !== undefined) this.#heldNotes.push({ text: text.text, key })
+      if (message.author !== OFFICE) {
+        back.push(new Pending({ id: newId(), op: "send", inbox, event: message, key }))
+        continue
+      }
+      const text = message.parts.findLast((part) => part.type === "text") as { text: string } | undefined
+      if (text === undefined) continue
+      const note: Note = { text: text.text, key, owed: sentAs?.startsWith("terminal:") ? sentAs : null }
+      if (this.#hushed) {
+        this.#heldNotes.push(note)
       } else {
-        people.push(new Pending({ id: newId(), op: "send", inbox, event: value, key }))
+        const event = { role: "user", parts: [{ type: "text", text: note.text }], author: OFFICE }
+        back.push(new Pending({ id: newId(), op: "send", inbox, event, key }, undefined, { note }))
       }
     }
-    // A message or an answer came since Esc: the notes go now.
-    if (!this.#hushed) await this.#releaseNotes(this.#session())
-    if (people.length === 0) return
-    const run = this.#run
-    const live = run !== null && run.worker !== null && run.outcome === null
-    if (live && !this.#next.some((p) => p.delivery.op === "send")) {
-      for (const p of people) await this.#give(p)
+    this.#next.unshift(...back)
+    await this.#flushNext()
+  }
+
+  /** `withdrawal` was refused, or its worker went before it answered: what waited behind it goes on, and what a
+   *  withdraw took back that the log shows comes back. */
+  async #withdrawEnded(withdrawal: Pending): Promise<void> {
+    if (this.#withdrawal !== withdrawal) return
+    const runId = this.#runId
+    if (runId === null) {
+      this.#withdrawal = null
+      await this.#flushNext()
       return
     }
-    this.#next.unshift(...people)
-    if (this.#run === null) await this.#spawnQuietly("advance")
+    await this.#withdrawn(runId)
+  }
+
+  /** Gives what waits in `#next` to the run, in order: to a running worker now, else to a job, which starts now when
+   *  no worker runs, or at the lingering worker's exit. */
+  async #flushNext(): Promise<void> {
+    if (this.#next.length === 0) return
+    const run = this.#run
+    if (run === null) {
+      await this.#spawnQuietly("advance")
+      return
+    }
+    if (run.worker === null || run.outcome !== null) return
+    for (const p of this.#next.splice(0)) await this.#give(p)
+  }
+
+  /** The run has `note`: the terminal's record owes it no more, so a restart never sends it again. */
+  #delivered(note: Note): void {
+    if (note.owed === null) return
+    try {
+      this.#spec?.terminal?.delivered(note.owed)
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a note's record can't be updated (${errorName(error)})`)
+    }
   }
 
   /**
@@ -1237,7 +1292,10 @@ export class SessionActor implements LiveCalls {
     }
     const ending = session.status === "ending"
     // Notes the office's stop may have cost: they wait for the next message or answer, as after Esc.
-    if (!ending) this.#heldNotes.push(...restoreNotes(this.#ctx.paths.sessionDir(this.sessionId)))
+    if (!ending) {
+      const owed = restoreNotes(this.#ctx.paths.sessionDir(this.sessionId))
+      this.#heldNotes.push(...owed.map((note) => ({ ...note, owed: note.key })))
+    }
     if (!fs.existsSync(this.#logOf(runId))) {
       const lost = this.#ranStarted(runId)
       if (lost) {
@@ -1572,6 +1630,11 @@ export class SessionActor implements LiveCalls {
     // The office stopped while the command waited: no worker may start for it.
     if (this.#closed) {
       p.reject(stopping())
+      return false
+    }
+    // Behind Esc's withdraw, which puts what it takes back first (`#withdrawn`).
+    if (this.#withdrawal !== null && p.delivery.op === "send") {
+      this.#next.push(p)
       return false
     }
     const run = this.#run
@@ -2564,13 +2627,12 @@ export class SessionActor implements LiveCalls {
       // The stored status is busy, and a message shown, before the caller hears back.
       this.#trySettle("after a reply")
       if (op === "send") this.#publishMessage(run.runId, reply.seq as number, p.delivery.event)
-      if (op === "withdraw" && Array.isArray(reply.withdrawn)) {
-        const withdrawn = reply.withdrawn as { seq: number; value: unknown }[]
-        this.#post("withdrawn", () => this.#withdrawn(run.runId, withdrawn))
-      }
+      if (op === "withdraw") this.#post("withdrawn", () => this.#withdrawn(run.runId))
+      if (p.note !== null) this.#delivered(p.note)
       p.resolve(p.acked)
     } else if (p.note !== null && reply.refused === "key_reused") {
       // A note the run already has under its key, as a restart's note of a command whose note was sent.
+      this.#delivered(p.note)
       p.resolve(undefined)
     } else if (typeof reply.refused === "string") {
       // The reason only: a delivery never names the message's text.

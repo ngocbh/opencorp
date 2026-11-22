@@ -8,6 +8,8 @@ import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { stringify } from "yaml"
 import { OFFICE } from "@opencorp/protocol"
 import type { SessionActor } from "../../../src/features/chat/session_actor.ts"
+import type { WorkerHandlers } from "../../../src/runtime/worker/rpc.ts"
+import type { Worker } from "../../../src/runtime/worker/spawn.ts"
 import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { waitFor } from "../../helpers.ts"
 import {
@@ -36,10 +38,11 @@ function run(command: string, wait = 0): ScriptedReply {
 /** The first line of the note of `command` in `shell` ending with `exit`. */
 const heading = (shell: string, command: string, exit: number) => `${shell}: \`${command}\` ended, exit ${exit}`
 
-/** An office whose minh may run `make *`, each command running until `end` ends it or it is stopped. */
-async function notesOffice(fake: Awaited<ReturnType<typeof fakeLlm>>) {
+/** An office whose minh may run `make *`, each command running until `end` ends it or it is stopped; `connections`
+ *  are `chatOffice`'s. */
+async function notesOffice(fake: Awaited<ReturnType<typeof fakeLlm>>, connections: Record<string, string> = {}) {
   const rules = stringify({ rules: [{ effect: "allow", kind: "command", pattern: "make *" }] })
-  const o = await chatOffice(fake, { files: { "people/minh/rules.yaml": rules } })
+  const o = await chatOffice(fake, { files: { "people/minh/rules.yaml": rules }, connections })
   const ends = new Map<string, (result: { output?: string; exit: number | null }) => void>()
   o.pipes.run = (command, signal) =>
     new Promise((resolve) => {
@@ -382,4 +385,94 @@ test("a restart while a command runs on holds a note of it for the next message,
   await again.prompt("again")
   await waitFor(() => texts(o, sid).includes("Again.") && status(o, sid) === "idle", { what: "the last reply" })
   expect(notes(o, sid)).toHaveLength(2)
+})
+
+test("a message sent just after Esc goes after the owner's messages Esc took back", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all"), { content: "never shown", hold: true }, { content: "On both." })
+  const { o, end } = await notesOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  await fake.waitForRequests(2, 30_000)
+  end("make all", 0)
+  await waitFor(() => loggedNotes(o, actor.runId!).length === 1, { what: "the note in the inbox" })
+  expect(await actor.prompt("first")).toBe("steer")
+  // Esc, and the next message at once, before the run has answered the withdraw.
+  const stopped = actor.interrupt()
+  const second = actor.prompt("second")
+  await stopped
+  fake.release()
+  await second
+  await waitFor(() => texts(o, sid).includes("On both.") && status(o, sid) === "idle" && !actor.hasWorker, {
+    what: "the messages answered",
+  })
+  const third = JSON.stringify(fake.requests()[2]!.messages)
+  expect(third.indexOf("first")).toBeGreaterThan(-1)
+  expect(third.indexOf("first")).toBeLessThan(third.indexOf("second"))
+  // The message after Esc takes the note with it.
+  expect(asked(fake, 3, heading("shell 1", "make all", 0))).toBe(true)
+  expect(texts(o, sid, "user").filter((text) => text === "first" || text === "second")).toEqual(["first", "second"])
+})
+
+test("a worker that dies between applying Esc's withdraw and answering it loses none of the owner's messages", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all"), { content: "never shown", hold: true }, ...Array.from({ length: 4 }, () => ({ content: "ok" })))
+  const { o, end } = await notesOffice(fake)
+  // The withdraw's answer never reaches the office: its worker dies first.
+  let died = false
+  const dying = (handlers: WorkerHandlers<Worker>) => {
+    const reply = handlers.deliverReply.bind(handlers)
+    handlers.deliverReply = (w, frame) => {
+      if (!died && Array.isArray(frame.withdrawn)) {
+        died = true
+        w.kill()
+        return
+      }
+      reply(w, frame)
+    }
+    return handlers
+  }
+  const { spawn, next } = o.registry
+  o.registry.spawn = (job, sessionDir, handlers, options) => spawn(job, sessionDir, dying(handlers), options)
+  o.registry.next = (worker, job, handlers) => next(worker, job, dying(handlers))
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  await fake.waitForRequests(2, 30_000)
+  end("make all", 0)
+  await waitFor(() => loggedNotes(o, actor.runId!).length === 1, { what: "the note in the inbox" })
+  expect(await actor.prompt("first")).toBe("steer")
+  await actor.interrupt().catch(() => {})
+  await waitFor(() => died, { what: "the worker's death" })
+  const answered = () => fake.requests().some((r) => JSON.stringify(r.messages).includes("first"))
+  await waitFor(() => answered() && status(o, sid) === "idle" && !actor.hasWorker, {
+    timeout: 30_000,
+    what: "the owner's message answered",
+  })
+  fake.release()
+  expect(texts(o, sid, "user").filter((text) => text === "first")).toEqual(["first"])
+  expect(fake.requests().some((r) => JSON.stringify(r.messages).includes(heading("shell 1", "make all", 0)))).toBe(false)
+  // The note waits for the owner's next message.
+  const before = fake.requests().length
+  await actor.prompt("and the build?")
+  await waitFor(() => fake.requests().length > before && status(o, sid) === "idle", { what: "the reply" })
+  expect(JSON.stringify(fake.requests().at(-1)!.messages)).toContain(heading("shell 1", "make all", 0))
+})
+
+test("a delivered note is owed no more: after a model switch and a restart, it isn't sent again", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all"), { content: "Started." }, { content: "It built." }, { content: "On two." }, { content: "Again." })
+  const { o, end } = await notesOffice(fake, { second: "stub-2" })
+  const { actor: first, sid } = await started(o)
+  end("make all", 0)
+  await waitFor(() => texts(o, sid).includes("It built.") && status(o, sid) === "idle", { what: "the woken turn" })
+  await first.setModel("second", "stub-2")
+  await first.prompt("on two")
+  await waitFor(() => texts(o, sid).includes("On two.") && status(o, sid) === "idle", { what: "the fresh run's reply" })
+  expect(session(o, sid).run_ids).toHaveLength(2)
+  const restarted = await reopen(o, first)
+  await restarted.restore()
+  await restarted.prompt("again")
+  await waitFor(() => texts(o, sid).includes("Again.") && status(o, sid) === "idle", { what: "the last reply" })
+  expect(notes(o, sid)).toHaveLength(1)
+  expect(asked(fake, 5, "(gone)")).toBe(false)
 })
