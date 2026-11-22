@@ -19,7 +19,7 @@ them.
 
 ## What your employee works with
 
-Your employee runs their commands in a sandboxed shell, and hands work to Codex or Claude Code when their
+Your employee runs their commands in a sandboxed shell, and hands work to Codex or Claude Code when `tools` in their
 `person.yaml` lists that harness. [Instruments and permissions](/instruments/) says how you watch and steer each one,
 what `harness_policy` lets it touch, and where that permission stops.
 
