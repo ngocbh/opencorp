@@ -20,8 +20,9 @@
  *  `runApproved` runs a held call, and the agent's `why` reaches the card, never Auto's check.
  *
  *  **Waits.** A reply waits at most two minutes; a held call waits for its card instead. Each call's wait and gate
- *  end with the call's signal and with `interruptWaits`, and a call stopped in its gate types nothing. Calls on one
- *  shell queue; calls on different shells run together.
+ *  end with the call's signal, with its interrupt (the agent's, as yian passes it, which reaches a call that came after
+ *  `interruptWaits` too) and with `interruptWaits`, and a call stopped in its gate types nothing. Calls on one shell
+ *  queue; calls on different shells run together.
  *
  *  **A call cut off stops its command.** A `run`, the agent's or an approved one, whose signal aborts before its reply
  *  returns stops the command it waits on, as the owner's Ctrl-C does, and replies once it has ended (or after a few
@@ -113,13 +114,13 @@ export interface TerminalHost {
 export type TerminalShell = PtyShell | PipeShell
 
 /** A tool as the model calls it: an `OfficeTool`, declared here by its shape. `callId` is the yian call's, which a
- *  held call's card names; `signal` stops the call. */
+ *  held call's card names; `signal` stops the call, and so does `interrupted`, the agent's interrupt while it runs. */
 export interface TerminalTool {
   readonly description: string
   readonly parameters: Record<string, unknown>
   call(
     args: Record<string, unknown>,
-    options?: { readonly callId?: string; readonly signal?: AbortSignal },
+    options?: { readonly callId?: string; readonly signal?: AbortSignal; readonly interrupted?: AbortSignal },
   ): Promise<unknown>
 }
 
@@ -345,14 +346,17 @@ export class Terminal {
   private async call(
     tool: ToolName,
     args: Record<string, unknown>,
-    options: { readonly callId?: string; readonly signal?: AbortSignal },
+    options: { readonly callId?: string; readonly signal?: AbortSignal; readonly interrupted?: AbortSignal },
   ): Promise<unknown> {
     if (this.closed) return refusalText(CLOSED)
     const parsed = parseArgs(tool, args)
     if (typeof parsed === "string") return refusalText(parsed)
     const own = new AbortController()
     this.calls.add(own)
-    const signal = options.signal ? AbortSignal.any([own.signal, options.signal]) : own.signal
+    // The agent's interrupt reaches a call that came after `interruptWaits` cut off the ones it found: Esc, say, while
+    // the call was on its way.
+    const stops = [own.signal, options.signal, options.interrupted].filter((s) => s !== undefined)
+    const signal = AbortSignal.any(stops)
     try {
       const call: Call = { callId: options.callId, signal, approved: false }
       if (parsed.tool === "run") return await this.run(parsed, call)

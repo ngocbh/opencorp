@@ -248,6 +248,34 @@ test("a reply whose exit is null says why in its note: still running, cut off, i
   expect(note(await pty.call("close", { shell: "shell 1" }))).toBe("No exit: the shell ended, closed or killed by a signal.")
 })
 
+test("a call ends on its interrupt too, so an Esc that came before the call reached the terminal still cuts it off", async () => {
+  let fake!: ReturnType<typeof fakePipes>
+  const t = openTerminal({
+    perms: permissions({ rules: [rule("allow", "command", "make *")] }).perms,
+    shells: (dir) => (fake = fakePipes(dir)).shells,
+  })
+  const tools = t.terminal.tools()
+  expect(json(await tools.run.call({ command: "make long", why: "x", wait: 0 }, { callId: "r/n/1/0" }))).toMatchObject({
+    status: "running",
+  })
+  // Esc's cut-off found no call: this read reaches the terminal after it, and only its interrupt says so.
+  t.terminal.interruptWaits()
+  const interrupt = new AbortController()
+  const read = tools.read.call({ shell: "shell 1", wait: 60 }, { callId: "r/n/2/0", interrupted: interrupt.signal })
+  interrupt.abort()
+  expect(json(await read)).toMatchObject({ shell: "shell 1", status: "running" })
+  // The command its run's reply said is running goes on.
+  expect(fake.running()).toEqual(["make long"])
+  // A run whose interrupt comes while it waits stops its command, as a cut-off does.
+  fake.end("make long", 0)
+  const stop = new AbortController()
+  const run = tools.run.call({ command: "make two", why: "x", wait: 60, shell: "shell 1" }, { callId: "r/n/3/0", interrupted: stop.signal })
+  await waitFor(() => fake.running().length === 1, { what: "the command" })
+  stop.abort()
+  expect(json(await run)).toMatchObject({ status: "idle", exit: null })
+  expect(fake.running()).toEqual([])
+})
+
 test("a command whose reply said running goes on when a later call is cut off", async () => {
   let fake!: ReturnType<typeof fakePipes>
   const t = openTerminal({

@@ -4,7 +4,7 @@
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { stringify } from "yaml"
 import type { Instrument, ToolPart } from "@opencorp/protocol"
 import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
@@ -224,6 +224,25 @@ sandboxed("a command the agent was told is running goes on after Esc, and the ag
     term("call_later", "read", { shell: "shell 1", wait: 30 }, "is it done"),
     said("call_later", "It finished."),
   )
+  // The order that raced: Esc lands while the agent's read is on its way to the terminal, which holds it until the
+  // test releases it, once Esc is done.
+  let arrived = false
+  let letThrough!: () => void
+  const held = new Promise<void>((resolve) => (letThrough = resolve))
+  const own = EmployeeTerminal.prototype.tools
+  const spy = spyOn(EmployeeTerminal.prototype, "tools").mockImplementation(function (this: EmployeeTerminal) {
+    const shells = own.call(this)
+    const read = shells.read
+    const call: typeof read.call = async (args, options) => {
+      if (args.wait === 120) {
+        arrived = true
+        await held
+      }
+      return await read.call(args, options)
+    }
+    return { ...shells, read: { ...read, call } }
+  })
+  onTestFinished(() => spy.mockRestore())
   const h = await makeHarness(fake, { files: allowing("cat *") })
   const gate = path.join(h.folder, "gate")
   execFileSync("mkfifo", [gate], { env: { PATH: "/usr/bin:/bin" } })
@@ -231,8 +250,11 @@ sandboxed("a command the agent was told is running goes on after Esc, and the ag
   await h.harness.prompt(id, "start it")
   const reading = async () => (await tools(h, id)).some((p) => p.call_id === "call_wait" && p.state === "running")
   await waitFor(reading, { what: "the agent's read" })
-  // Esc cuts off the read, never the command its run's reply said is running.
+  await waitFor(() => arrived, { what: "the agent's read at the office" })
+  // Esc cuts off the read, even one that reaches the terminal after it, never the command its run's reply said is
+  // running.
   await h.harness.interrupt(id)
+  letThrough()
   await waitFor(() => status(h, id) === "idle" && !running(h.registry, id), { what: "the turn's end" })
   expect(listed(h, id)[0]).toMatchObject({ status: "running", command })
   await release(gate)
