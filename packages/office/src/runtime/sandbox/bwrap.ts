@@ -75,7 +75,9 @@ export function command(policy: SandboxPolicy, argv: readonly string[], { tty = 
  * and `/dev`, and a new session unless `tty`. It sees the system paths and `SSH_SYSTEM_FILES` read-only, the
  * policy's copies of the system's ssh config over the originals, then the policy's read-only paths, its writable
  * files over them (so `~/.ssh/known_hosts` takes writes inside the read-only `~/.ssh`), a test's own folder
- * read-write, its sockets read-only, and its temp folder, where it starts. Nothing else of the home or of hq is mounted, hq/cm included.
+ * read-write, its sockets read-only, and its temp folder, where it starts; then, with a wrapper, the real ssh at
+ * `REAL_SSH` and the wrapper over every other ssh (`SshPolicy.sshOver`). Nothing else of the home or of hq is mounted,
+ * hq/cm included.
  *
  * Each writable file is a mount point in a read-only folder, so the call can write its data but can't remove,
  * rename or link it. A socket takes connections on a read-only mount, and nothing else.
@@ -91,6 +93,8 @@ export function sshCommand(policy: SshPolicy, argv: readonly string[], { tty = f
   // An agent that has gone leaves its path behind; ssh then goes on without it, as it would outside.
   for (const p of policy.sockets) args.push("--ro-bind-try", p, p)
   args.push("--bind", policy.tmpdir, policy.tmpdir)
+  // Last, so no folder mounted later covers them: the real ssh where the wrapper runs it, and the wrapper over the rest.
+  for (const [source, target] of policy.sshOver) args.push("--ro-bind", source, target)
   return [...args, "--remount-ro", "/", "--chdir", policy.tmpdir, "--", ...argv]
 }
 

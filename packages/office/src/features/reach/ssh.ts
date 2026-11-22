@@ -10,6 +10,7 @@ import type { Readable, Writable } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { sameProcess, startTime } from "../../util/proc.ts"
 import { replaceFile, writePrivate } from "../../util/private_files.ts"
+import { REAL_SSH } from "../../runtime/sandbox/ssh_policy.ts"
 import type { ReachPaths } from "./paths.ts"
 import { remoteCommand, type Spec, safePath, word } from "./spec.ts"
 
@@ -236,7 +237,8 @@ export function wrapperText(realSsh: string): string {
   ].join("\n")
 }
 
-/** Writes the visit's two configs and the agent's (0600), and the wrapper (0700), for this visit. */
+/** Writes the visit's two configs and the agent's (0600), and the wrapper and the agent's sandbox's (0700), for this
+ *  visit. */
 export async function writeSshFiles(paths: ReachPaths, realSsh: string, includes: readonly string[]): Promise<void> {
   const sessionOptions = knowsSessionOptions(realSsh)
   await writePrivate(paths.config, configText(paths.cm, { includes, sessionOptions }))
@@ -244,6 +246,8 @@ export async function writeSshFiles(paths: ReachPaths, realSsh: string, includes
   await writePrivate(paths.agentConfig, agentConfigText(includes))
   await writePrivate(paths.wrapper, wrapperText(realSsh))
   fs.chmodSync(paths.wrapper, 0o700)
+  await writePrivate(paths.agentWrapper, wrapperText(REAL_SSH))
+  fs.chmodSync(paths.agentWrapper, 0o700)
 }
 
 /** The first executable `ssh` in an absolute entry of `pathVar` other than the folder `skip` (our wrapper's), or

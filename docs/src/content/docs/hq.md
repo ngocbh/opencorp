@@ -39,9 +39,16 @@ your username, paths, job lists).
   there. The agent sees the prompt as the screen shows it, never what you type at it.
 - **One login.** The agent's ssh uses a connection you have open to the cluster, with no password prompt.
   Without one, each separate ssh may ask you to log in. Connect from your own terminal first, or let the agent
-  log in once and type its commands into that shell. The agent's commands could end a connection of yours, or run
-  an ssh other than the one OpenCorp sets up for them (`command -p ssh`, `/usr/bin/ssh`), which would log in again;
-  each asks you first, in every mode.
+  log in once and type its commands into that shell. The agent's commands could end a connection of yours; that
+  asks you first, in every mode.
+- **The agent's ssh** goes through OpenCorp's wrapper, which never keeps a connection of its own. So does running
+  ssh by its path, through `command -p` or with another `PATH`, which would log in again with your config as it is:
+  - **On Linux** the sandbox puts the wrapper in place of the system's ssh, so every way of running it reaches the
+    wrapper, a program that runs `/usr/bin/ssh` itself (`python`, a script) included. Only a command that runs the
+    real ssh from `/run/opencorp/ssh`, where the sandbox keeps it for the wrapper, gets past it.
+  - **On macOS** the sandbox can't put one program in place of another, so OpenCorp's command check is what holds:
+    ssh run by its path, through `command -p` or an `env` that clears or sets `PATH`, and a line that changes `PATH`
+    or runs `hash -p`, ask you first, in every mode (on Linux too). A program that runs ssh itself isn't caught.
 - **Saving.** The agent shows you `reach.sh` and `notes.md` (how your cluster is reached, in plain words)
   with the risks of your setup on a card, which you read to the end before you choose. It asks in every
   mode. "Test it, then save it" runs the whole connection in OpenCorp's own connection shell, which the chat

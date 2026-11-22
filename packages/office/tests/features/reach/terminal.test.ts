@@ -206,6 +206,26 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
     expect(printed.output).toStartWith("$ ssh -G h\ncontrolmaster no\n")
   })
 
+  test.skipIf(process.platform !== "linux" || !fs.existsSync("/usr/bin/python3"))(
+    "on Linux the wrapper is in place of the system's ssh: a program that execs it, or an approved PATH change, reaches it",
+    async () => {
+      const { perms, held } = permissions({ check: RUNS })
+      const t = await learning({ perms })
+      const config = `controlmaster no\ncontrolpath ${t.ssh}/tmp/${fakeControlName("h")}\nuser alice\n`
+      await t.call("run", { command: "true", why: "start a shell" })
+      for (const ssh of ["/usr/bin/ssh", "/bin/ssh"]) {
+        const command = `python3 -c 'import os; os.execv("${ssh}", ["ssh", "-G", "h"])'`
+        const printed = json(await t.call("run", { command, why: "check the config", shell: "shell 1" }))
+        expect([ssh, printed.output]).toEqual([ssh, `$ ${command}\n${config}`])
+      }
+      // The owner lets a PATH change run: the system's ssh it then finds is the wrapper still.
+      expect(isPending(await t.call("run", { command: "PATH=/usr/bin:/bin", why: "x", shell: "shell 1" }))).toBe(true)
+      await t.terminal.runApproved("terminal_run", held[0]!.card.args, new AbortController().signal, "approved by @ngocbh")
+      const printed = json(await t.call("run", { command: "command -v ssh; ssh -G h", why: "x", shell: "shell 1" }))
+      expect(printed.output).toBe(`$ command -v ssh; ssh -G h\n/usr/bin/ssh\n${config}`)
+    },
+  )
+
   test("with a connection of the user's open, the agent's ssh rides it with no password", async () => {
     const t = await learning({ perms: permissions({ check: RUNS }).perms })
     // The user's own master, as their terminal leaves one, at their ControlPath.

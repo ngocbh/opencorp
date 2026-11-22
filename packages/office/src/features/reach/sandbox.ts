@@ -1,5 +1,6 @@
 /** The agent's SSH-only sandbox while learning: the owner's ssh config and `~/.ssh` read-only, `hq/ssh` read-only for
- *  the wrapper and the agent's config, and nothing else of hq, `hq/cm` included. */
+ *  the wrapper and the agent's config, and nothing else of hq, `hq/cm` included. On Linux the agent's wrapper is
+ *  mounted over the system's ssh too, so every way of running ssh reaches it. */
 import fs from "node:fs"
 import os from "node:os"
 import { realPath, UnsafeProfile, within } from "../../runtime/sandbox/policy.ts"
@@ -67,7 +68,9 @@ export async function agentPolicy(paths: ReachPaths, o: AgentPolicyInit): Promis
   }
   const base = new SshPolicy(init)
   await probe(base, o.run ?? run)
-  return new SshPolicy({ ...init, sshFiles: await sshFiles(base, o.ssh, paths.agentConfig) })
+  const files = await sshFiles(base, o.ssh, paths.agentConfig)
+  // `ssh -G` above runs the real ssh by its path; the shells' calls run it only through the wrapper.
+  return new SshPolicy({ ...init, sshFiles: files, wrapper: paths.agentWrapper, wrapperOver: [paths.wrapper] })
 }
 
 /** `dir`, a test's fake ssh folder, resolved, once it is the user's own 0700 folder, no link, holding none of `homes`

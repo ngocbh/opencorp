@@ -436,4 +436,14 @@ test("the SSH-only argv shares the network, keeps the terminal, and binds only t
     "/home/me/.ssh/known_hosts",
     "/home/me/.opencorp/hq/ssh/status.4242",
   ])
+  // With a wrapper, the real ssh and the wrapper over the system's come last, after the temp folder, which would
+  // cover a fake ssh in it.
+  const wrapper = "/home/me/.opencorp/hq/ssh/agent-ssh"
+  const sshOver = [
+    ["/usr/bin/ssh", "/run/opencorp/ssh"], [wrapper, "/usr/bin/ssh"], [wrapper, "/home/me/.opencorp/hq/ssh/bin/ssh"],
+  ] as const
+  const over = sshCommand(goldenSshPolicy({ ...SSH, sshOver }), SHELL, { tty: true })
+  const end = s1().indexOf("--remount-ro")
+  const binds = sshOver.flatMap(([source, target]) => ["--ro-bind", source, target])
+  expect(over).toEqual([...s1().slice(0, end), ...binds, ...s1().slice(end)])
 })

@@ -76,6 +76,7 @@ export function goldenSshPolicy(fields: {
   ticket?: string
   kcm?: string
   systemConfig?: readonly (readonly [string, string])[]
+  sshOver?: readonly (readonly [string, string])[]
 }): SshPolicy {
   const ssh = path.join(fields.home, ".ssh")
   return Object.assign(Object.create(SshPolicy.prototype), {
@@ -86,6 +87,7 @@ export function goldenSshPolicy(fields: {
     readOnly: [ssh, ...(fields.bound ?? []), path.join(fields.hq, "ssh"), ...(fields.readOnly ?? [])],
     writable: [path.join(ssh, "known_hosts"), fields.statusFile, ...(fields.ticket === undefined ? [] : [fields.ticket])],
     readWrite: [],
+    sshOver: fields.sshOver ?? [],
     sockets: [fields.agentSocket, fields.kcm].filter((p) => p !== undefined),
     socketFolders: [ssh, ...(fields.controlFolders ?? [])],
     agentSocket: fields.agentSocket ?? null,

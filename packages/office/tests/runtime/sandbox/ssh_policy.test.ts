@@ -8,7 +8,7 @@ import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { UnsafeProfile } from "../../../src/runtime/sandbox/policy.ts"
 import { run, startOnTerminal } from "../../../src/runtime/sandbox/run.ts"
 import { SETUID_PROGRAMS } from "../../../src/runtime/sandbox/seatbelt.ts"
-import { includedConfigs, SshPolicy, type SshPolicyInit, sshFiles } from "../../../src/runtime/sandbox/ssh_policy.ts"
+import { includedConfigs, REAL_SSH, SshPolicy, type SshPolicyInit, sshFiles } from "../../../src/runtime/sandbox/ssh_policy.ts"
 import { installFakeSsh } from "../../../src/testing/fake_ssh.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import { sandboxAvailable } from "./helpers.ts"
@@ -339,6 +339,31 @@ test("an ssh outside the system folders is bound read-only, and refused where it
   expect(h.make({ ssh: folder }).readOnly).toEqual([h.ssh, path.join(h.hq, "ssh")])
   expect(h.make({ ssh: folder }).notes).toEqual([`ssh ${folder} is not bound: it is not a regular file`])
 })
+
+test.skipIf(process.platform !== "linux")(
+  "on Linux a wrapper in hq/ssh is mounted over ssh, the system's ssh and the visit's wrapper, and ssh at REAL_SSH",
+  () => {
+    const h = layout()
+    const wrapper = h.file(path.join(h.hq, "ssh", "agent-ssh"), "#!/bin/sh\n", 0o700)
+    const own = h.file(path.join(h.root, "openssh", "bin", "ssh"), "#!/bin/sh\n", 0o755)
+    const visit = path.join(h.hq, "ssh", "bin", "ssh")
+    const policy = h.make({ ssh: own, wrapper, wrapperOver: [visit] })
+    const system = ["/usr/local/bin/ssh", "/usr/bin/ssh", "/bin/ssh", "/usr/sbin/ssh", "/sbin/ssh"]
+      .filter((p) => fs.existsSync(p))
+      .map((p) => fs.realpathSync(p))
+    expect(policy.sshOver).toEqual([
+      [own, REAL_SSH],
+      ...[own, ...new Set(system), visit].map((target) => [wrapper, target]),
+    ])
+    // None without a wrapper; and a wrapper the call could change, or a link, is refused.
+    expect(h.make({ ssh: own }).sshOver).toEqual([])
+    const outside = h.file(path.join(h.tmp, "agent-ssh"), "#!/bin/sh\n", 0o700)
+    expect(() => h.make({ ssh: own, wrapper: outside })).toThrow(UnsafeProfile)
+    const link = path.join(h.hq, "ssh", "agent-link")
+    fs.symlinkSync(outside, link)
+    expect(() => h.make({ ssh: own, wrapper: link })).toThrow(UnsafeProfile)
+  },
+)
 
 test("a ControlPath folder outside ~/.ssh is bound read-only only when it is the user's own, 0700, and holds only sockets", async () => {
   const h = layout()
