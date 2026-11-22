@@ -80,7 +80,7 @@ const ids = { chat: "01JA1K0000000000000000CHAT", a: "01JA1K00000000000000000AAA
 /** A session of the chat's family, as the store holds it. */
 function session(id: string, fields: Partial<Session>): Session {
   return {
-    id, person: "minh", harness: "composer", office: "laptop", cwd: "/tmp/proj", repo_commit: "a".repeat(40),
+    id, person: "minh", harness: "yian", office: "laptop", cwd: "/tmp/proj", repo_commit: "a".repeat(40),
     status: "idle", kind: "main", cost: 0, cost_cap_usd: null, created_at: AT, updated_at: AT, ...fields,
   } as Session
 }
