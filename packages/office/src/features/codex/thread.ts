@@ -48,16 +48,17 @@ export class ProjectConfigLoads extends Error {
   }
 }
 
-/** MCP servers the owner's Codex config defines that a running thread's override, made at its load, doesn't turn off:
- *  added since, they would start as the owner at the next turn, which reloads the config. */
+/** MCP servers the owner's Codex config defines that a running thread's override, made at its load, doesn't name (turn
+ *  off, or start in the office's folder): added since, they would start as the owner at the next turn, which reloads
+ *  the config. */
 export class McpServersAdded extends Error {
   override name = "McpServersAdded"
 
   constructor(readonly servers: readonly string[]) {
     super(
-      `Your Codex config has MCP servers this session didn't turn off when it started (${servers.join(", ")}), and ` +
-        "they would run as you, outside your employee's permission. Remove them from your Codex config.toml, or " +
-        "end this session and start another, which turns them off, then send your message again.",
+      `Your Codex config has MCP servers this session didn't turn off, or start in the office's folder, when it ` +
+        `started (${servers.join(", ")}), and they would run as you, outside your employee's permission. Remove them ` +
+        "from your Codex config.toml, or end this session and start another, which does, then send your message again.",
     )
   }
 }

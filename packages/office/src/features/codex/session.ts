@@ -165,8 +165,11 @@ export class CodexSession {
   readonly #commands = new Map<string, Set<string>>()
   /** The turns an interrupt is stopping now, whose commands outlive their `turn/completed` until it reads them. */
   readonly #interrupting = new Set<string>()
-  /** The owner's MCP servers the thread's override turned off at its last load. */
-  #serversOff = new Set<string>()
+  /** The owner's MCP servers the thread's override named at its last load: turned off, or, for a program the employee
+   *  may use, started in the office's folder. */
+  #serversNamed = new Set<string>()
+  /** The MCP servers the employee could use at the last load. */
+  #serversAllowed = new Set<string>()
 
   constructor(
     owner: CodexSessions,
@@ -483,6 +486,7 @@ export class CodexSession {
     let proc: CodexProcess
     let result: Loaded
     let servers: string[] = []
+    let allowed: readonly string[] = []
     try {
       // Each load runs under the employee's permission as it is now, in a fresh temp folder.
       const prepared = await this.owner.prepare(this)
@@ -490,6 +494,7 @@ export class CodexSession {
       const id = `opencorp-${this.sessionId}`
       const loaded = await employeeLoad(proc.rpc!, prepared.permission, id, prepared.install)
       servers = Object.keys((loaded.config as { mcp_servers?: Record<string, unknown> }).mcp_servers ?? {})
+      allowed = prepared.permission.allowedMcp ?? []
       const params =
         this.instrument === null ? loaded : { ...loaded, developerInstructions: this.instrument.instructions }
       // The office never reads past turns, so a resume needn't send them.
@@ -516,7 +521,8 @@ export class CodexSession {
       return
     }
     this.process = proc
-    this.#serversOff = new Set(servers)
+    this.#serversNamed = new Set(servers)
+    this.#serversAllowed = new Set(allowed)
     this.#loaded = true
     this.threadId = result.thread.id
     this.store.updateSession(this.sessionId, { harness_session_id: this.threadId, harness_model: result.model ?? null })
@@ -583,13 +589,15 @@ export class CodexSession {
    *  answer naming a turn not seen yet says a new one started). `queued` when Codex had unloaded the thread: the
    *  message waits for the reload. First the owner's config is read again for the folder (`ownerConfig`), as a load
    *  reads it, since a turn reloads it: a project the owner trusted since the load refuses the message with the load's
-   *  words, and so does an MCP server the owner added since, which the thread's override doesn't turn off. */
+   *  words, and so does an MCP server the owner added since, which the thread's override doesn't name, unless the
+   *  employee may use it and Codex reaches it by URL, starting nothing (a program would start in their folder). */
   async #send(proc: CodexProcess, text: string, busy: boolean): Promise<"turn" | "steer" | "queued"> {
     this.#sending++
     this.#settle()
     try {
-      const { mcpServers } = await ownerConfig(proc.rpc!, this.cwd)
-      const added = mcpServers.filter((name) => !this.#serversOff.has(name))
+      const { mcpServers, stdio } = await ownerConfig(proc.rpc!, this.cwd)
+      const harmless = (name: string) => this.#serversAllowed.has(name) && !stdio.includes(name)
+      const added = mcpServers.filter((name) => !this.#serversNamed.has(name) && !harmless(name))
       if (added.length > 0) throw new McpServersAdded(added)
       const res = (await proc.rpc!.request("turn/start", { threadId: this.threadId, input: input(text) })) as Obj
       const named = typeof res?.turn?.id === "string" ? (res.turn.id as string) : null

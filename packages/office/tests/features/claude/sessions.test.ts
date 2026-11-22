@@ -585,6 +585,41 @@ test("after a restart, the chat's instrument continues its session with --resume
   expect(r.store.getSession(id)!.harness_usage).toEqual(counted)
 })
 
+test("after a restart, a continued session gets the MCP servers allowed at its commit and at head, in a fresh office folder they start in", async () => {
+  const home = tempDir()
+  const logs = fs.realpathSync(tempDir())
+  const github = { command: "sh", args: ["-c", `pwd >> ${logs}/pwd`] }
+  fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ mcpServers: { ...SERVERS, github } }))
+  const file = (mcp_servers: string[]) =>
+    person("minh", { harnesses: ["composer", "claude"], harness_policy: { sandbox: "workspace-write", mcp_servers } })
+  const h = makeClaude({
+    home,
+    files: { "people/minh/person.yaml": file(["github", "docs"]) },
+    script: { turns: [[{ say: "First." }], [{ say: "Second." }]] },
+  })
+  const { chat, heard, id, session } = await started(h)
+  await h.sessions.prompt(id, "One.", { by: "minh" })
+  await waitFor(() => heard.said().includes("First.") && status(h, id) === "idle", { what: "the first turn" })
+  await h.sessions.closeAll()
+  // The owner revokes docs while the office is down; the chat's commit still allows it.
+  await commitPerson(h, file(["github"]))
+  const r = reopened(h)
+  await r.sessions.restore()
+  expect(fs.existsSync(path.join(r.sessions.mcpRoot(), id))).toBe(false)
+  const again = new Heard()
+  await r.sessions.resumeInstrument(chat, id, session.harness_session_id!, { observer: again, label, owner: "ngocbh" })
+  const [, start] = starts(h)
+  expect(start!.flags!.resume).toBe(session.harness_session_id)
+  const folder = path.join(r.sessions.mcpRoot(), id)
+  expect(start!.mcp![0]!.path).toBe(path.join(folder, "opencorp.mcp.json"))
+  expect(Object.keys(start!.mcp![0]!.servers)).toEqual(["github"])
+  expect(start!.flags!.settings.permissions.allow).toEqual(["mcp__github__*"])
+  expect(fs.readFileSync(path.join(logs, "pwd"), "utf8").trim().split("\n")).toEqual([
+    path.join(folder, "cwd"),
+    path.join(folder, "cwd"),
+  ])
+})
+
 test("a continue is refused for a session that isn't the chat's, for one live here, and once the chat ended", async () => {
   const h = makeClaude()
   const { chat, id, session } = await started(h)
