@@ -158,6 +158,7 @@ const COPIES = "it copies files to or from another machine"
 const LOCAL_SSH = "it runs a local command for ssh"
 const SSH_OFF_PATH = "it runs ssh without the shell's PATH lookup, so around any ssh wrapper on it"
 const SETS_PATH = "it changes the shell's PATH, which OpenCorp's ssh wrapper comes first on"
+const NAMES_REAL_SSH = "it names the real ssh that OpenCorp's ssh wrapper stands in for"
 const CONTROLS_SSH = "it controls a shared ssh connection"
 const NETWORK = "it connects to another machine"
 const FEEDS_SHELL = "it feeds a remote shell from its input"
@@ -254,6 +255,9 @@ const SSH_VARIABLE =
 const SETS_VARIABLE = set("export declare typeset readonly local unset read mapfile readarray printf getopts")
 /** A word that names PATH, as `SSH_VARIABLE` names ssh's variables: a plain read of its value is left out. */
 const PATH_VARIABLE = /(?:^|[^A-Za-z0-9_${]|\$\{(?=PATH:?=))(?:-[A-Za-z]+)?PATH(?![A-Za-z0-9_])/
+/** A word naming the folder where the SSH-only sandbox keeps the real ssh for its wrapper (`REAL_SSH`'s), or what is in
+ *  it, anywhere in the word: a path, an option's value, a script's text. */
+const REAL_SSH_FOLDER = /\/run\/opencorp(?![^/])/
 const SSH_LOCAL_KEYS = set("proxycommand localcommand permitlocalcommand knownhostscommand")
 const SSH_IDENTITY_KEYS = set("identityfile certificatefile")
 /** Programs that read only names and metadata, so a credential path given to them reads no secret. */
@@ -658,7 +662,7 @@ export function ownerOnly(part: SimpleCommand, readable: boolean): string | null
   if (push) return push.asks ?? (readable ? null : PUSHES)
   if (OTHER_USERS.has(base(programOf(part)[0] ?? ""))) return OTHER_USER
   const risk = classify(part).risk
-  if (risk === LOCAL_SSH || risk === CONTROLS_SSH || risk === SSH_OFF_PATH) return risk
+  if (risk === LOCAL_SSH || risk === CONTROLS_SSH || risk === SSH_OFF_PATH || risk === NAMES_REAL_SSH) return risk
   const host = sshOf(part)?.host
   for (const inner of innerParts(part)) {
     const found = ownerOnly(inner, readable)
@@ -1412,6 +1416,7 @@ function riskOf(part: SimpleCommand, prog: string, args: readonly string[], sets
   const name = base(prog)
   // An exported variable of the shell's keeps its export when assigned, so a bare assignment counts too.
   if ([prog, ...args, ...sets].some(namesSshCommand)) return LOCAL_SSH
+  if ([prog, ...args, ...sets, ...part.writes, ...part.reads].some((w) => REAL_SSH_FOLDER.test(w))) return NAMES_REAL_SSH
   const own = programRisk(name, args, part) ?? FIXED_RISKS.get(name) ?? null
   if (own !== null) return own
   return part.writes.some((w) => w !== "/dev/null") ? WRITES : null

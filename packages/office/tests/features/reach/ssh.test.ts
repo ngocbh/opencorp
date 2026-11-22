@@ -54,6 +54,7 @@ import { isGone, shortDir, waitFor } from "../../helpers.ts"
 import { fakeHome, freePort, holdConnection, holdingServer, named, reachCtx, staleSocket } from "./helpers.ts"
 import { type FakeSsh, fakeControlName } from "../../../src/testing/fake_ssh.ts"
 import { startTime } from "../../../src/util/proc.ts"
+import { REAL_SSH } from "../../../src/runtime/sandbox/ssh_policy.ts"
 
 setDefaultTimeout(30_000)
 
@@ -337,6 +338,24 @@ test("writeSshFiles writes the configs 0600 and the wrapper 0700", async () => {
   )
   expect(fs.readFileSync(paths.agentConfig, "utf8")).toBe(agentConfigText(["/i/one"]))
   expect(fs.readFileSync(paths.wrapper, "utf8")).toBe(wrapperText("/usr/bin/ssh"))
+  // The agent's sandbox's: the real ssh where the sandbox keeps it, and ControlMaster no.
+  expect(fs.statSync(paths.agentWrapper).mode & 0o777).toBe(0o700)
+  expect(fs.readFileSync(paths.agentWrapper, "utf8")).toBe(wrapperText(REAL_SSH, { agent: true }))
+})
+
+test("the agent's wrapper puts ControlMaster no before the caller's options, so it wins: ssh takes an option's first value", () => {
+  const dir = shortDir()
+  fs.mkdirSync(path.join(dir, "real"))
+  fs.mkdirSync(path.join(dir, "bin"))
+  fs.writeFileSync(path.join(dir, "real", "ssh"), '#!/bin/sh\nprintf "%s\\n" "$@"\n', { mode: 0o700 })
+  const env = { PATH: `${dir}/bin:/usr/bin:/bin`, OPENCORP_SSH_CONFIG: "/c" }
+  const args = (agent: boolean) => {
+    fs.writeFileSync(path.join(dir, "bin", "ssh"), wrapperText(path.join(dir, "real", "ssh"), { agent }), { mode: 0o700 })
+    return execFileSync("/bin/sh", ["-c", "ssh -o ControlMaster=auto h true"], { env, timeout: 10_000 }).toString()
+  }
+  expect(args(true)).toBe("-F\n/c\n-o\nControlMaster=no\n-o\nControlMaster=auto\nh\ntrue\n")
+  // The visit's own keeps the masters its config shares.
+  expect(args(false)).toBe("-F\n/c\n-o\nControlMaster=auto\nh\ntrue\n")
 })
 
 /** An executable `ssh` in `dir`. */

@@ -184,14 +184,18 @@ const listed = (items: readonly string[]) =>
  *  `$OPENCORP_SSH_CONFIG` names; each exit status but a
  *  control command's (`-O`) is appended to $OPENCORP_SSH_STATUS, so a 255 counts where a pipeline or `|| true` hides
  *  it. When the host it named is a plain `[user@]host`, the host follows, then its jump hosts from `-J` or
- *  `-o ProxyJump`: a failed visit checks the owner's config for them. */
-export function wrapperText(realSsh: string): string {
+ *  `-o ProxyJump`: a failed visit checks the owner's config for them. The `agent`'s (`hq/ssh/agent-ssh`, which the
+ *  agent's sandbox puts in place of the system's ssh on Linux) passes `-o ControlMaster=no` before the caller's options,
+ *  so no option of theirs makes it keep a connection. */
+export function wrapperText(realSsh: string, { agent = false }: { agent?: boolean } = {}): string {
   // The hop's command holds the program name unquoted.
   if (!safePath(realSsh)) throw new Error(`ssh's path can't be used unquoted: ${realSsh}`)
+  // ssh takes an option's first value: before the caller's, the agent's `ControlMaster no` wins over theirs.
+  const fixed = agent ? " -o ControlMaster=no" : ""
   return [
     "#!/bin/sh",
     "# Written by opencorp hq on each visit.",
-    `${word(realSsh)} -F "$OPENCORP_SSH_CONFIG" "$@"`,
+    `${word(realSsh)} -F "$OPENCORP_SSH_CONFIG"${fixed} "$@"`,
     "status=$?",
     // A control command (-O) opens no connection: its 255 (no master yet) isn't "couldn't connect". The options end
     // at `--` or the destination; these take a value, which may look like an option.
@@ -246,7 +250,7 @@ export async function writeSshFiles(paths: ReachPaths, realSsh: string, includes
   await writePrivate(paths.agentConfig, agentConfigText(includes))
   await writePrivate(paths.wrapper, wrapperText(realSsh))
   fs.chmodSync(paths.wrapper, 0o700)
-  await writePrivate(paths.agentWrapper, wrapperText(REAL_SSH))
+  await writePrivate(paths.agentWrapper, wrapperText(REAL_SSH, { agent: true }))
   fs.chmodSync(paths.agentWrapper, 0o700)
 }
 

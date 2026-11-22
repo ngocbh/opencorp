@@ -226,6 +226,23 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
     },
   )
 
+  test.skipIf(process.platform !== "linux")(
+    "on Linux the wrapper's ControlMaster no wins over the caller's, for ssh and for scp, which runs the system's ssh",
+    async () => {
+      const { perms, held } = permissions({ check: RUNS })
+      const t = await learning({ perms })
+      await t.call("run", { command: "true", why: "start a shell" })
+      const command = "ssh -o ControlMaster=auto -G h"
+      expect(isPending(await t.call("run", { command, why: "x", shell: "shell 1" }))).toBe(true)
+      const signal = new AbortController().signal
+      const approved = json(await t.terminal.runApproved("terminal_run", held[0]!.card.args, signal, "approved by @ngocbh"))
+      expect(approved.output).toStartWith(`$ ${command}\ncontrolmaster no\n`)
+      await t.call("run", { command: "scp h:/etc/hostname copied; true", why: "copy a file", shell: "shell 1" })
+      const call = t.fake.calls().find((argv) => argv.includes("h"))!
+      expect(call.slice(0, 4)).toEqual(["-F", t.paths.agentConfig, "-o", "ControlMaster=no"])
+    },
+  )
+
   test("with a connection of the user's open, the agent's ssh rides it with no password", async () => {
     const t = await learning({ perms: permissions({ check: RUNS }).perms })
     // The user's own master, as their terminal leaves one, at their ControlPath.

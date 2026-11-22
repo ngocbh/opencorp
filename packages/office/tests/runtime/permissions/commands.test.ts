@@ -1,10 +1,12 @@
 /** Reading a sh command line for a permission check: its simple commands, what makes it unreadable, what is
  *  read-only, what is a file operation inside the workspace, what runs code and what is risky. */
+import path from "node:path"
 import { expect, test } from "bun:test"
 import {
   classify, CREDENTIALS, credentialOf, fileOp, ownerOnly, programOf, pushOf, readCommand, sshHosts, type Where,
 } from "../../../src/runtime/permissions/commands.ts"
 import { decide, type Mode } from "../../../src/runtime/permissions/policy.ts"
+import { REAL_SSH } from "../../../src/runtime/sandbox/ssh_policy.ts"
 
 const words = (text: string) => readCommand(text).parts.map((p) => p.words)
 const why = (text: string) => readCommand(text).unreadable
@@ -505,6 +507,29 @@ test("env's combined flags, -C and assignments after -- are read, and an env the
   for (const line of ["env -0 ssh h", "env -C /tmp ssh h", "env -u FOO ssh h", "env -v -- A=1 ssh h", "env -0v ssh h"]) {
     expect([line, sshHosts(readCommand(line)), risk(line)]).toEqual([line, ["h"], null])
   }
+})
+
+test("a word naming where the SSH-only sandbox keeps the real ssh asks in every mode, whatever the program", () => {
+  const names = "it names the real ssh that OpenCorp's ssh wrapper stands in for"
+  expect(path.dirname(REAL_SSH)).toBe("/run/opencorp")
+  const lines = [
+    "/run/opencorp/ssh h uptime", "cp /run/opencorp/ssh /tmp/x/s", "ln -s /run/opencorp/ssh s", "ln /run/opencorp/ssh s",
+    `python3 -c 'import os; os.execv("/run/opencorp/ssh", ["ssh", "h"])'`, `perl -e 'exec "/run/opencorp/ssh", "h"'`,
+    "X=/run/opencorp/ssh", "cat </run/opencorp/ssh", "ls /run/opencorp", "cd /run/opencorp/",
+  ]
+  each(lines, (line) => readCommand(line).parts.map((p) => ownerOnly(p, true)).find((r) => r !== null) ?? null, names)
+  const allows = [{ effect: "allow" as const, kind: "command" as const, pattern: "*" }]
+  for (const mode of ["auto", "dontAsk"] as Mode[]) {
+    expect([mode, decide({ kind: "command", text: "cp /run/opencorp/ssh s" }, mode, allows, W)]).toEqual([
+      mode,
+      mode === "dontAsk"
+        ? { verdict: "deny", reason: `this session doesn't ask (dontAsk mode): ${names}` }
+        : { verdict: "ask", reason: names, rules: [] },
+    ])
+  }
+  // Another folder of /run, or one only like it, is no such name.
+  each(["ls /run/systemd", "ls /run/opencorpx", "echo run/opencorp"], (line) =>
+    readCommand(line).parts.map((p) => ownerOnly(p, true)).find((r) => r !== null) ?? null, null)
 })
 
 test("on the SSH-only profile, a line that sets, exports or unsets PATH, or runs hash -p, asks in every mode", () => {
