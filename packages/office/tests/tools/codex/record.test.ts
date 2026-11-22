@@ -133,3 +133,18 @@ test("a folder that holds no record of the harness doesn't load, saying why", ()
   fs.writeFileSync(path.join(root, "r", "meta.json"), "{")
   expect(() => loadRecord(CODEX, path.join(root, "r"))).toThrow("meta.json")
 })
+
+test("an entries file a crash cut short goes on with a line of its own, so the next entry isn't lost", () => {
+  const dir = path.join(tempDir(), "r")
+  const record = new CodexRecord(dir, META)
+  record.add([message("user", "minh", [{ id: "u", type: "text", text: "Run the tests." }])], label)
+  record.suspend()
+  fs.appendFileSync(path.join(dir, "conversation.jsonl"), '{"at":14,"author":"codex","text":"All 1')
+  const loaded = loadRecord(CODEX, dir)
+  loaded.resume()
+  loaded.add([message("assistant", null, [{ id: "a", type: "text", text: "All pass." }])], label)
+  expect(loadRecord(CODEX, dir).conversation.entries).toEqual([
+    { at: 0, author: "@minh", text: "Run the tests." },
+    { at: 14, author: "codex", text: "All pass." },
+  ])
+})

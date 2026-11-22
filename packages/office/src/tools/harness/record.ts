@@ -301,15 +301,17 @@ export class HarnessRecord {
     this.#write(ENTRIES[log], `${JSON.stringify({ at, author, text })}\n`)
   }
 
-  /** Appends `text` to `key`'s file, opening it first if it isn't; a failed write stops the file, and a finished
-   *  record writes nothing. */
+  /** Appends `text` to `key`'s file, opening it first if it isn't (an entries file a crash cut short goes on from a
+   *  line of its own); a failed write stops the file, and a finished record writes nothing. */
   #write(key: FileKey, text: string): void {
     if (finishedState(this.#file.state) || this.#stopped.has(key)) return
     try {
       let fd = this.#fds[key]
       if (fd === undefined) {
+        const cut = (key === ENTRIES.conversation || key === ENTRIES.trace) && cutShort(path.join(this.dir, FILES[key]))
         fd = open(this.dir, FILES[key], fs.constants.O_CREAT)
         this.#fds[key] = fd
+        if (cut) text = `\n${text}`
       }
       const bytes = Buffer.from(text, "utf8")
       for (let at = 0; at < bytes.length; ) at += fs.writeSync(fd, bytes, at)
@@ -355,6 +357,25 @@ function open(dir: string, name: string, flags: number): number {
   const fd = fs.openSync(path.join(dir, name), O_WRONLY | O_CREAT | O_NOFOLLOW | O_APPEND | flags, 0o600)
   fs.fchmodSync(fd, 0o600) // the umask may have narrowed it
   return fd
+}
+
+/** Whether `file` holds text that doesn't end its last line: an append a crash cut off. */
+function cutShort(file: string): boolean {
+  let fd: number
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+  } catch {
+    return false
+  }
+  try {
+    const { size } = fs.fstatSync(fd)
+    if (size === 0) return false
+    const last = Buffer.alloc(1)
+    fs.readSync(fd, last, 0, 1, size - 1)
+    return last[0] !== 0x0a
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
 /** The newest entries of a log, as its JSON lines keep them: read from the file's end, each starting where the one
