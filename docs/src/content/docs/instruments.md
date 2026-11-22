@@ -112,7 +112,9 @@ is: untrust the project in `~/.codex/config.toml` (its `[projects]` entry), or r
 lists the trusted projects this applies to.
 
 - A path is absolute or starts with `~/`, your home. `opencorp doctor` fails on any other, and on `/`, a folder
-  listed twice, a path holding `*`, `?`, `[`, `]`, `{` or `}`, and a read-only one holding `:`.
+  listed twice, a path holding `*`, `?`, `[`, `]`, `{` or `}`, a read-only one holding `:`, and one that holds or
+  lies in `/tmp/opencorp-<uid>`, where the harnesses keep every session's temp folder (so `/tmp` itself too). The
+  harness won't start with such a folder either.
 - A folder that doesn't exist mounts nothing.
 - The harness won't start with a folder whose path goes through a folder your employee can write (the project
   folder, or another writable listed folder), since a link there could repoint it. The same goes for a project
@@ -158,15 +160,22 @@ harness_policy:
 credentials, and nothing holds it to their permission: allowing `github` lets your employee do whatever your GitHub
 token can.
 
-- **Codex** keeps each allowed server as your `~/.codex/config.toml` (or `CODEX_HOME`'s) defines it, and turns every
-  other one off. A project's own `.codex/config.toml` never loads, so allowing a name never runs a project's server
-  of that name.
+- **Where it starts.** A server the harness starts as a program starts in an empty folder of the office's, in
+  `~/.opencorp`, never in your employee's project folder, where a launcher such as `npx`, `uvx` or `python` would load
+  files they wrote. Your employee's commands can't read that folder.
+- **Codex** keeps each allowed server as your `~/.codex/config.toml` (or `CODEX_HOME`'s) defines it, but where it
+  starts, and turns every other one off. A project's own `.codex/config.toml` never loads, so allowing a name never
+  runs a project's server of that name.
 - **Claude Code** gets each allowed server's definition from your user-scope servers (`claude mcp add --scope user`,
-  kept in `~/.claude.json`, or in `CLAUDE_CONFIG_DIR`). OpenCorp hands Claude Code only those, in a file your
-  employee's commands can't read, removed when Claude Code stops; nothing else loads, a project's `.mcp.json` and your
-  local-scope servers included. Their tools run without asking, as Claude Code asks nobody there.
-- **Names.** A name is letters, digits, `-` and `_`, as your harness config names the server. A server only one
-  harness defines loads only there.
+  kept in `~/.claude.json`, or in `CLAUDE_CONFIG_DIR`). OpenCorp hands Claude Code only those, in a file in that
+  office folder, removed when Claude Code stops; nothing else loads, a project's `.mcp.json` and your local-scope
+  servers included. It starts each program through `sh`, which moves to the office's folder first, and runs a
+  `headersHelper` there too. Their tools, and Claude Code's two tools that read servers' resources, run without
+  asking, as Claude Code asks nobody there.
+- **Names.** A name is letters, digits, `-` and `_`, with no `__`, as your harness config names the server. A server
+  only one harness defines loads only there.
+- **Revoking.** Remove the name and commit: your employee's sessions started earlier drop the server the next time
+  their harness starts or resumes, as a server must be allowed both where the session started and now.
 - **Your environment.** The harnesses run with few of your shell's variables, so a server that reads a token from
   one (`${GITHUB_TOKEN}`, say) doesn't get it there.
 
@@ -195,7 +204,7 @@ a harness they use doesn't. Its lint warns about each allowed server.
   which can act as you, your LAN, and a cloud machine's metadata endpoint. Claude Code won't start with the network
   on. Off, commands get none, and the harness still reaches its own model.
 - **No `/tmp`.** Commands get only their own temp folder, so a tool that writes to `/tmp` fails unless a listed
-  folder covers it.
+  folder covers where it writes. You can't list `/tmp` itself ([What an employee may touch](#what-an-employee-may-touch)).
 - **Project config.** Only the `.codex/`, `.agents/` and `.claude/` at the top of the project folder and its
   repository's root are read-only; ones in folders below aren't.
 - **Placeholders on Linux.** Codex's sandbox holds a missing `.claude` or `.mcp.json` read-only by mounting an empty
