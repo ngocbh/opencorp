@@ -3,7 +3,8 @@
  *  `terminal/` folder; every command goes through the permissions of the run whose tools were last built (its mode,
  *  rules, Auto's check and cards); and each command the gate holds or refuses, and each one that ran, once it ends, is
  *  an audit row of the session's, of the run it started in. A command an office crash cut off gets its row at the
- *  next start (`auditInterrupted`). */
+ *  next start (`auditInterrupted`). The note of a command the agent was told runs on, once it ends, goes to the
+ *  session's actor (`onEnded`). */
 import path from "node:path"
 import { now } from "@opencorp/protocol"
 import { REASON_CHARS } from "../../runtime/permissions/monitor.ts"
@@ -14,7 +15,7 @@ import { shellInstrument } from "../../tools/terminal/instrument.ts"
 import { InstrumentRecord, type RecordFile } from "../../tools/terminal/record.ts"
 import type { ShellState } from "../../tools/terminal/shell.ts"
 import {
-  Terminal, type TerminalAudit, type TerminalProfile, type TerminalShells,
+  type CommandEnded, Terminal, type TerminalAudit, type TerminalProfile, type TerminalShells,
 } from "../../tools/terminal/terminal.ts"
 import { newId } from "../../util/ids.ts"
 import { checkFolder, makePrivateFolder } from "../../util/private_files.ts"
@@ -96,6 +97,8 @@ export class EmployeeTerminal {
   #permissions: Permissions | null = null
   /** The run each shell's running command started in, by shell name: its row, whenever it ends, is that run's. */
   readonly #startedIn = new Map<string, string | null>()
+  /** Who gets the notes of commands that ended: the session's actor. */
+  #onEnded: ((note: CommandEnded) => void) | null = null
 
   constructor(o: EmployeeTerminalOptions) {
     this.#o = o
@@ -105,7 +108,14 @@ export class EmployeeTerminal {
       permissions: this.#forwarded(),
       shellHost: (name, profile) => this.#shellHost(name, profile),
       audit: (row) => this.#audit(row),
+      ended: (note) => this.#onEnded?.(note),
     })
+  }
+
+  /** Gives `listener` (the session's actor) the note of each command the agent was told runs on, once it ends; it
+   *  replaces any listener before it. */
+  onEnded(listener: (note: CommandEnded) => void): void {
+    this.#onEnded = listener
   }
 
   /** The model-facing tools: the `terminal` group. */

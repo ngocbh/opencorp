@@ -233,6 +233,12 @@ export const INTERRUPTED_CALL = "interrupted; outcome unknown"
  *  reply, or queued for a later turn. */
 export type MessageReply = "turn" | "answer" | "steer" | "queued"
 
+/** A note from the office about the agent's own work, as `note` takes it: its text, and the key its send carries. */
+interface Note {
+  readonly text: string
+  readonly key: string
+}
+
 /** A call a waiting run waits on, as a `result` frame lists it. */
 export interface Wait {
   node: string
@@ -494,6 +500,12 @@ export class SessionActor implements LiveCalls {
   readonly #nodes = new OpenNodes()
   /** The session's mode, rules, Auto's check and approval cards, as its runs' tools get them. */
   readonly #approvals: ChatApprovals
+  /** The notes `note` took that its next job hasn't sent yet, and whether that job is due. */
+  readonly #notes: Note[] = []
+  #notesDue = false
+  /** Whether Esc came since the last person's message: notes wait in `#heldNotes` for the next one. */
+  #hushed = false
+  readonly #heldNotes: Note[] = []
 
   /** The actor of stored session `sessionId`, over its current run. Throws `HarnessError` (`404`) for no such
    *  session. */
@@ -621,7 +633,7 @@ export class SessionActor implements LiveCalls {
 
   /**
    * Takes a message from `by` (the owner when null) and resolves once the run has it. The flow's exit command
-   * (`/exit`) is End, and gets `turn`.
+   * (`/exit`) is End, and gets `turn`. The notes held since Esc go to the run with the message.
    *
    * While the model's `ask_user` question is open on the run, the message answers it (`answer`). Otherwise it goes
    * to the run's inbox, and the reply is decided when it is queued: `steer` while a reply node runs, `turn` while the
@@ -639,13 +651,25 @@ export class SessionActor implements LiveCalls {
         if (refusal) throw new HarnessError(422, "refused", String(refusal))
       }
       if (text === (await this.#specOf(session)).chat.exit) {
+        // The chat ends: the notes held since Esc have no one left to tell.
+        this.#heldNotes.length = 0
         await this.#end(session)
         return null
       }
       // A session capped with no charge (a cap of 0, or a side chat reopened at its cap) has no item yet.
       if (this.#capped()) this.#ensureCapItem()
       const { delivery, reply } = await this.#message(session, text, by)
-      return (await this.#answerAsked(session, text, by, delivery)) ?? (await this.#send(delivery, reply))
+      const answered = await this.#answerAsked(session, text, by, delivery)
+      // The notes held since Esc go to the run with the message: after an answer, which takes no note, and before a
+      // message, so one turn reads them all.
+      this.#hushed = false
+      const held = this.#heldNotes.splice(0)
+      if (answered !== null) {
+        await this.#giveNotes(session, held)
+        return answered
+      }
+      await this.#giveNotes(session, held, { spawn: false })
+      return await this.#send(delivery, reply)
     })
     if (pending === null) return "turn"
     const fallback = pending.fallback
@@ -917,10 +941,10 @@ export class SessionActor implements LiveCalls {
    * Esc: interrupts the workspace and the terminal (a command the agent waits on stops), answers the office tool
    * calls in flight `INTERRUPTED_CALL`, and interrupts the run: through its worker while one runs it (over the cost
    * cap, unless ending, only while a reply node runs), else, while the agent waits on a model question, through a
-   * worker spawned for it; else nothing runs to stop. Resolves
-   * once the interrupt's reply is handled (the calls it closed are answered) or it was dropped. A card's stop names its
-   * `question`, which must still be open with no other interrupt unanswered. Refused with `404 not_found`, `409
-   * not_live`, `409 not_open` and `409 ending` (with a `question`), `503 stopping` or `503 cant_wake`.
+   * worker spawned for it; else nothing runs to stop. Notes that come after it wait for the next person's message.
+   * Resolves once the interrupt's reply is handled (the calls it closed are answered) or it was dropped. A card's stop
+   * names its `question`, which must still be open with no other interrupt unanswered. Refused with `404 not_found`,
+   * `409 not_live`, `409 not_open` and `409 ending` (with a `question`), `503 stopping` or `503 cant_wake`.
    */
   async interrupt({ question = null }: { question?: string | null } = {}): Promise<void> {
     const pending = await this.#command(async () => {
@@ -934,6 +958,8 @@ export class SessionActor implements LiveCalls {
         if (status !== "open") throw new HarnessError(409, "not_open", `question ${question} is ${status ?? "gone"}`)
         if (this.#interrupting()) throw new HarnessError(409, "not_open", `question ${question} is being interrupted`)
       }
+      // Esc means stop working: what ends from now on waits for the next person's message.
+      this.#hushed = true
       this.#interruptShells()
       this.#approvals.stop()
       this.#answerCalls()
@@ -970,6 +996,52 @@ export class SessionActor implements LiveCalls {
   /** A steer is a message: the running reply reads it before its next model call, else the next turn does. */
   steer(text: string, options: { by?: string | null } = {}): Promise<MessageReply> {
     return this.prompt(text, options)
+  }
+
+  /**
+   * A note from the office about the agent's own work, `text` (a command it was told runs on has ended), sent to the
+   * run's inbox as a message whose author is `office`, under `key`, so a retry or a replay never sends it twice. It is
+   * never an answer to the model's open question. A running reply reads it as a steer, a run at rest takes it as a new
+   * turn, and over the cost cap it waits for a raise, as a message does; it opens no cap item. After Esc it waits for
+   * the next person's message. Notes that come together go to the run in one job, so one turn reads them all. Dropped
+   * once the session is ending, finished or closed: there is no one left to tell.
+   */
+  note(text: string, key: string): void {
+    if (this.#closed || this.#finished) return
+    this.#notes.push({ text, key })
+    if (this.#notesDue) return
+    this.#notesDue = true
+    // A turn of the event loop later, so the notes of commands that end together go in one job.
+    setTimeout(() => {
+      this.#notesDue = false
+      this.#post("notes", () => this.#sendNotes(this.#notes.splice(0)))
+    }, 0)
+  }
+
+  /** Sends `notes` to the run (`#giveNotes`), or holds them for the next person's message after Esc; none once the
+   *  session is ending or finished. */
+  async #sendNotes(notes: readonly Note[]): Promise<void> {
+    if (notes.length === 0 || this.#finished || this.#ending || this.#runId === null) return
+    const session = this.#session()
+    if (!LIVE.includes(session.status) || session.status === "ending") return
+    if (this.#hushed) {
+      this.#heldNotes.push(...notes)
+      return
+    }
+    await this.#giveNotes(session, notes)
+  }
+
+  /** Gives each of `notes` to the run as a `send` from `office` with its key, as `#give` gives a message; with `spawn`,
+   *  a worker starts for them when none runs. Without, the delivery after them starts it. */
+  async #giveNotes(session: SessionRecord, notes: readonly Note[], { spawn = true } = {}): Promise<void> {
+    if (notes.length === 0) return
+    const { inbox } = (await this.#specOf(session)).chat
+    let due = false
+    for (const { text, key } of notes) {
+      const event = { role: "user", parts: [{ type: "text", text }], author: OFFICE }
+      due = (await this.#give(new Pending({ id: newId(), op: "send", inbox, event, key }))) || due
+    }
+    if (due && spawn) await this.#spawnQuietly("advance")
   }
 
   /**
@@ -1371,6 +1443,8 @@ export class SessionActor implements LiveCalls {
     this.#answerCalls()
     const given = [...(this.#starting?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
     this.#answerRest(given, stopping())
+    this.#notes.length = 0
+    this.#heldNotes.length = 0
     return Promise.all([tail, shells]).then(() => {})
   }
 
@@ -3229,6 +3303,7 @@ export class SessionActor implements LiveCalls {
     if (this.#spec === null) {
       const spec = await this.#ctx.spec(session)
       this.#spec = spec
+      spec.terminal?.onEnded((ended) => this.note(ended.text, ended.key))
       const due = this.#reconcileDue
       this.#reconcileDue = null
       if (due !== null && due === this.#runId && !this.#finished && !this.#closed) {
