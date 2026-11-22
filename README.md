@@ -1,6 +1,6 @@
 # OpenCorp
 
-OpenCorp: run a company of AI employees on your machine.
+> Run a company of AI employees on your own machine. Hire AI employees you can trust, rely on, inspect, and continuously improve as they work.
 
 OpenCorp runs AI employees locally, on top of [Yian](https://github.com/ngocbh/yian). Early stage.
 
