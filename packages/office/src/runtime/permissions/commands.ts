@@ -1003,9 +1003,8 @@ class Reader {
    *  doesn't know to take it as data, any with a shell or an interpreter among its words, or a compound command (the
    *  keyword that ends it holds the redirect, and no program), whose every command reads it. */
   private hereInput(words: readonly string[], assignments: readonly string[]): void {
-    const { start } = unwrap({ ...EMPTY, words, assignments })
-    const runner = words.some((w) => SHELLS.has(base(w)) || RUNS_CODE.has(base(w)))
-    if (runner || !DATA_INPUT.has(base(words[start] ?? ""))) this.mark(HERE_INPUT)
+    const runner = words.some((w) => runnerIn(w, SHELLS) ?? runnerIn(w, RUNS_CODE))
+    if (runner || !takesData({ ...EMPTY, words, assignments })) this.mark(HERE_INPUT)
   }
 
   /** Follows an if, a loop or a case through its keywords; one out of place marks the line, as bash would refuse it
@@ -1396,12 +1395,34 @@ function hiddenText(part: SimpleCommand, name: string, args: readonly string[]):
   if ((name === "mapfile" || name === "readarray") && args.some((w) => /^-[A-Za-z]*C/.test(w)))
     return `${RUNS_TEXT}: ${name} -C`
   // A program it doesn't know, fed from its input, with a shell among its words, may run it there.
-  const launched = part.fed && name !== "ssh" && !SHELLS.has(name) && !DATA_INPUT.has(name)
-    ? part.words.find((w) => SHELLS.has(base(w)))
+  const launched = part.fed && name !== "ssh" && !SHELLS.has(name) && !takesData(part)
+    ? part.words.map((w) => runnerIn(w, SHELLS)).find((found) => found !== null)
     : undefined
-  if (launched !== undefined) return `${RUNS_TEXT}: ${base(launched)} from its input`
+  if (launched) return `${RUNS_TEXT}: ${launched} from its input`
   const shell = inputShell(part)
   return shell === null ? null : `${RUNS_TEXT}: ${shell} from its input`
+}
+
+/** Whether `part`'s program is known to take its input as data, never as commands (`DATA_INPUT`), with no option that
+ *  has it run a program it names (git's `-c` and `--config-env`, which may set an alias, a pager or an editor; sort's
+ *  `--compress-program`). */
+function takesData(part: SimpleCommand): boolean {
+  const { start } = unwrap(part)
+  const [prog = "", ...args] = part.words.slice(start)
+  const name = base(prog)
+  if (!DATA_INPUT.has(name)) return false
+  if (name === "git" && gitArgs(args).globals.some((g) => /^(-c|--config-env)/.test(g))) return false
+  return !(name === "sort" && args.some((w) => long(w, "--compress-program")))
+}
+
+/** The program of `names` that `word` names: as itself, or as an option's or a setting's value after `=`, where a
+ *  git alias's leading `!` runs it as a command (`alias.x=!sh`, `--compress-program=bash`). Null when it names none. */
+function runnerIn(word: string, names: ReadonlySet<string>): string | null {
+  for (const text of [word, ...word.split("=").slice(1)]) {
+    const name = base(text.replace(/^!/, "").trim().split(/\s+/)[0] ?? "")
+    if (names.has(name)) return name
+  }
+  return null
 }
 
 /** The shell `part` runs when that shell reads its commands from a descriptor: `fed` from its input (as `part` is,

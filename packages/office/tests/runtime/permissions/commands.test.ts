@@ -351,6 +351,20 @@ test("what the review found the reader read through it reads as bash does, or ma
     why,
     null,
   )
+  // A shell named in an option's value, or by a git alias's `!`, is a shell among the words; git's -c and
+  // --config-env and sort's compress program make a known program's input more than data.
+  each(
+    ["git -c alias.x='!sh' x <<<'rm -rf x'", "sort --compress-program=bash -S 1 <<<'rm -rf x'", "sort --comp=bash <<<x",
+      "git --config-env=core.pager=P log <<<x", "git -c core.pager=less log <<<x", "cat --x=/bin/sh <<<x",
+      "sort --compress-program gzip <<<x"],
+    (line) => why(line) !== null,
+    true,
+  )
+  expect(why("echo 'rm -rf x' | git -c alias.x='!sh' x")).toBe("it runs text as a command: sh from its input")
+  expect(why("echo 'rm -rf x' | git -c alias.x='!/bin/bash -c y' x"))
+    .toBe("it runs text as a command: bash from its input")
+  each(["git log <<<x", "sort -S 1 <<<x", "git commit -c HEAD -F - <<<x", "echo x | git log", "echo x | sort"], why,
+    null)
   // An unknown program fed from a pipe with a shell among its words may run it there.
   each(["echo 'rm -rf x' | docker exec -i c sh", "cat s | srun bash"], (line) => why(line)?.endsWith("from its input"), true)
   // `for x do` and `select x do` loop over "$@": what follows `do` is the body, not the list.

@@ -440,6 +440,8 @@ test("what the review found the reader read through it no longer does, with a de
     "eval sh <<EOF\nrm -rf x\nEOF", "bash /dev/fd/3 3<<EOF\nrm -rf x\nEOF", "sh /proc/self/fd/3 3<<<'rm -rf x'",
     "docker exec -i c sh <<EOF\nrm -rf x\nEOF", "srun bash <<EOF\nrm -rf x\nEOF", "setsid sh <<EOF\nrm -rf x\nEOF",
     "echo 'rm -rf x' | docker exec -i c sh", "while :; do bash; break; done <<'EOF'\nrm -rf x\nEOF",
+    "git -c alias.x='!sh' x <<<'rm -rf x'", "echo 'rm -rf x' | git -c alias.x='!sh' x",
+    "sort --compress-program=bash -S 1 <<<'rm -rf x'",
   ]) {
     table("auto", [[cmd(text), [deny("rm *")], W, { verdict: "ask", reason: why(text), rules: [] }]])
     table("dontAsk", [[cmd(text), [deny("rm *")], W, { verdict: "deny", reason: DONT + why(text) }]])
