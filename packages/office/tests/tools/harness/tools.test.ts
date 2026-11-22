@@ -27,6 +27,12 @@ test("an empty optional text reads as left out, as a null does; a required one i
   expect(parseArgs(H, "start", { message: "" })).toBe("message must be text to tell Claude Code")
 })
 
+test("an argument named after an inherited property, such as constructor or toString, is no argument a tool takes", () => {
+  for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+    expect(parseArgs(H, "stop", JSON.parse(`{"claude": "claude 1", "${name}": "x"}`))).toBe(`stop takes no argument "${name}"`)
+  }
+})
+
 test("the descriptions name the harness, its sessions and what its trace holds", () => {
   const specs = toolSpecs(H)
   expect(specs.start.description).toContain("Start a Claude Code session")

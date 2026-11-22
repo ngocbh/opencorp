@@ -141,7 +141,8 @@ export function toolSpecs(h: Harness): Record<ToolName, ToolSpec> {
 export function parseArgs(h: Harness, tool: ToolName, args: Record<string, unknown>): Parsed | string {
   if (typeof args !== "object" || args === null) return `${tool} takes its arguments as an object`
   const { properties, required } = parameters(h)[tool]
-  const unknown = Object.keys(args).find((key) => !(key in properties))
+  // Own properties only: `in` would take an object's inherited names (constructor, toString) as parameters.
+  const unknown = Object.keys(args).find((key) => !Object.hasOwn(properties, key))
   if (unknown !== undefined) return `${tool} takes no argument ${JSON.stringify(unknown)}`
   const leftOut = (key: string, value: unknown) =>
     value === null || (value === "" && !(required as readonly string[]).includes(key))
