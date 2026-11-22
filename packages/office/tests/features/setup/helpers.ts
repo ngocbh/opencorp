@@ -16,7 +16,8 @@ import { CREATE } from "../../../src/features/setup/tools/propose_company.ts"
 import { killGroup, sameProcess, startTime } from "../../../src/util/proc.ts"
 import { type Prompter, stepLines } from "../../../src/features/setup/prompts.ts"
 import { repr } from "../../../src/util/redact.ts"
-import { startGroup } from "../../helpers.ts"
+import { startGroup, tempDir } from "../../helpers.ts"
+import { testEnviron } from "../../runtime/worker/helpers.ts"
 
 /** Records commands and answers each from a table of `[argv prefix, code, stderr, stdout?]`: the first matching
  *  prefix answers, else code 0 with empty output. */
@@ -183,7 +184,7 @@ export function accepting(draft: Draft, sessions: BuiltinSession<never>[] = []):
  *  plays the owner on the host, then the chat ends as the session does. */
 export function hostChat(owner: (host: LocalHost) => Promise<void>): InterviewChat {
   return async (session) => {
-    const host = await LocalHost.start(session, { log: () => {} })
+    const host = await LocalHost.start(session, { log: () => {}, environ: testEnviron(tempDir()) })
     try {
       await owner(host)
       await host.ended
