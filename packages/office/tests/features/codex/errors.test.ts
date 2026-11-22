@@ -441,7 +441,8 @@ test("a message codex says has no thread after another reloaded it goes to the n
   const old = live.process!
   const [entered, enter] = gate()
   const [opened, release] = gate()
-  spyOn(old.rpc!, "request").mockImplementation(async (_method, params) => {
+  spyOn(old.rpc!, "request").mockImplementation(async (method, params) => {
+    if (method === "config/read") return {} // each message's check of the folder's config
     if ((params as Entry).input[0].text === "two") {
       enter()
       await opened // Codex answers this one only after the reload the other message started is done
@@ -470,7 +471,8 @@ test("esc with a turn running, a message being sent and one queued marks the tur
   const old = live.process!
   const [entered, enter] = gate()
   const [opened, release] = gate()
-  spyOn(old.rpc!, "request").mockImplementation(async (_method, params) => {
+  spyOn(old.rpc!, "request").mockImplementation(async (method, params) => {
+    if (method === "config/read") return {} // each message's check of the folder's config
     if ((params as Entry).input[0].text === "two") {
       enter()
       await opened // answered once the reload's turn runs
@@ -513,7 +515,8 @@ test("esc with a message queued behind a load that fails writes the marker befor
   const old = live.process!
   const [entered, enter] = gate()
   const [opened, release] = gate()
-  spyOn(old.rpc!, "request").mockImplementation(async (_method, params) => {
+  spyOn(old.rpc!, "request").mockImplementation(async (method, params) => {
+    if (method === "config/read") return {} // each message's check of the folder's config
     if ((params as Entry).input[0].text === "two") {
       enter()
       await opened // still waiting on Codex when the reload fails

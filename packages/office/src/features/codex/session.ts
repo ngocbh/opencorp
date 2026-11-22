@@ -9,7 +9,7 @@ import { RpcClosed, RpcError, nameOf } from "../../tools/codex/rpc.ts"
 import type { ThreadEvents } from "../../tools/codex/instrument.ts"
 import { type Issued, NOT_AN_OPTION, NOT_A_NUMBER, TURNLESS, Translator, Unserved, Unshowable, declined } from "../../tools/codex/translate.ts"
 import type { CodexSessions } from "./sessions.ts"
-import { ProjectConfigLoads, checkLoaded, employeeLoad } from "./thread.ts"
+import { ProjectConfigLoads, checkLoaded, employeeLoad, ownerConfig } from "./thread.ts"
 
 /** Milliseconds office stop waits for the session to finish the job it is in. */
 export const STOP_WAIT_MS = 10_000
@@ -576,11 +576,14 @@ export class CodexSession {
 
   /** `turn/start`: a new turn, or a steer of the running one (Codex decides; `turn/started` says which, and the
    *  answer naming a turn not seen yet says a new one started). `queued` when Codex had unloaded the thread: the
-   *  message waits for the reload. */
+   *  message waits for the reload. First the folder's project layers are read again (`ownerConfig`), as a load reads
+   *  them, since a turn reloads the config: a project the owner trusted since the load refuses the message with the
+   *  load's words. */
   async #send(proc: CodexProcess, text: string, busy: boolean): Promise<"turn" | "steer" | "queued"> {
     this.#sending++
     this.#settle()
     try {
+      await ownerConfig(proc.rpc!, this.cwd)
       const res = (await proc.rpc!.request("turn/start", { threadId: this.threadId, input: input(text) })) as Obj
       const named = typeof res?.turn?.id === "string" ? (res.turn.id as string) : null
       // A new turn, unless Codex steered a turn already seen (running, or ended meanwhile) or this one's turn/started
@@ -592,6 +595,7 @@ export class CodexSession {
         this.#reload(proc, text)
         return "queued"
       }
+      if (error instanceof ProjectConfigLoads) throw new HarnessError(409, "codex_refused", error.message)
       if (error instanceof RpcError || error instanceof RpcClosed || isTimeout(error))
         throw new HarnessError(409, "codex_refused", `Codex didn't take the message: ${error.message}`)
       throw error

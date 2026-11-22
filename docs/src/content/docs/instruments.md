@@ -103,8 +103,9 @@ it. On Linux its sandbox fails every command in a folder your employee may only 
 
 A project you've trusted in Codex (Codex asks the first time you run it there) loads its own `.codex/config.toml`,
 whose MCP servers and hooks would run as you, outside your employee's permission. So your employee's Codex session
-won't start in such a project, and says which file it is: untrust the project in `~/.codex/config.toml` (its
-`[projects]` entry), or remove that file. `opencorp doctor` lists the trusted projects this applies to.
+won't start in such a project, nor take a message once you trust the project while it runs, and says which file it
+is: untrust the project in `~/.codex/config.toml` (its `[projects]` entry), or remove that file. `opencorp doctor`
+lists the trusted projects this applies to.
 
 - A path is absolute or starts with `~/`, your home. `opencorp doctor` fails on any other, and on `/`, a folder
   listed twice, a path holding `*`, `?`, `[`, `]`, `{` or `}`, and a read-only one holding `:`.
@@ -161,8 +162,7 @@ folders of tools you run yourself read-only: `~/.cargo` read-only, `~/miniconda3
 - **No `/tmp`.** Commands get only their own temp folder, so a tool that writes to `/tmp` fails unless a listed
   folder covers it.
 - **Project config.** Only the `.codex/`, `.agents/` and `.claude/` at the top of the project folder and its
-  repository's root are read-only; ones in folders below aren't. Codex's check for a trusted project runs when a
-  session starts, so a project you trust while a session runs there isn't checked until one starts again.
+  repository's root are read-only; ones in folders below aren't.
 - **Placeholders on Linux.** Codex's sandbox holds a missing `.claude` or `.mcp.json` read-only by mounting an empty
   file there (a missing `.codex`, `.agents` or `.git`, an empty folder). So `git status` in your employee's Codex
   session lists `.claude` and `.mcp.json` as untracked though they aren't in your project; `.git` is read-only there,
