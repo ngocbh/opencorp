@@ -30,6 +30,7 @@ OpenCorp isn't affiliated with OpenCode (its TUI is forked from OpenCode's) or w
 | Install OpenCorp | [Get started](/get-started/) |
 | Create your company | [Create the company](/create-the-company/) |
 | Talk to your employees and hire new ones | [Talk to your team and hire](/team/) |
+| See what your employees' shell, Codex and Claude Code may touch | [Instruments and permissions](/instruments/) |
 | Open HQ, here or from another machine | [HQ](/hq/) |
 | Change HQ's port and other settings | [HQ settings](/hq-settings/) |
 | Check the office and start or restart it | [Check and run](/check-and-run/) |

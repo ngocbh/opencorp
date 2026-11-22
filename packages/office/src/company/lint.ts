@@ -273,10 +273,13 @@ function chatShapeProblems(ref: string, flow: ComposedFlow): string[] {
   return problems
 }
 
-/** Each AGENT of `flow` (in its defs, loops and the flows it grants as tools too) that grants an instrument group but
- *  reads no steer inbox, as `[its node path, the groups]`, in node order. */
-function unsteeredInstruments(flow: ComposedFlow): [string, string[]][] {
-  const found: [string, string[]][] = []
+/** An AGENT that grants instrument groups: its node path, the groups, and whether it reads a steer inbox. */
+type InstrumentAgent = { node: string; groups: string[]; steered: boolean }
+
+/** Each AGENT of `flow` (in its defs, loops and the flows it grants as tools too) that grants an instrument group, in
+ *  node order. */
+function instrumentAgents(flow: ComposedFlow): InstrumentAgent[] {
+  const found: InstrumentAgent[] = []
   const seen = new Set<Compiled>()
   const walk = (compiled: Compiled, at: string) => {
     if (seen.has(compiled)) return
@@ -288,7 +291,7 @@ function unsteeredInstruments(flow: ComposedFlow): [string, string[]][] {
         const groups = (node.tools ?? [])
           .map((grant) => (grant.kind === "group" ? grant.group : grant.name))
           .filter((group): group is string => group !== undefined && INSTRUMENT_GROUPS.has(group) && !own.has(group))
-        if (groups.length > 0 && node.steerInbox !== true) found.push([here, groups])
+        if (groups.length > 0) found.push({ node: here, groups, steered: node.steerInbox === true })
         for (const tool of node.flowTools ?? []) if (tool.child !== undefined) walk(tool.child, `${here}/${tool.name}`)
       }
       if (node.child !== undefined) walk(node.child, here)
@@ -298,9 +301,30 @@ function unsteeredInstruments(flow: ComposedFlow): [string, string[]][] {
   return found
 }
 
+/** Why a person who uses `harnesses` can't run the SOP or routine `ref`, whose agents grant the instrument groups
+ *  `granted`, or null: it drives none of them, and the office binds an instrument's group, empty otherwise, only for a
+ *  harness its person uses. A main flow isn't asked: a chat offers its instruments beside its other tools, while an
+ *  SOP that drives a harness exists for it. */
+function unusedHarnesses(
+  ref: string,
+  handle: string,
+  granted: ReadonlySet<string>,
+  harnesses: readonly string[],
+): string | null {
+  if (granted.size === 0 || [...granted].some((group) => harnesses.includes(group))) return null
+  const groups = [...granted]
+  if (groups.length === 1) {
+    return `${ref} drives ${groups[0]}, but @${handle} doesn't use the ${groups[0]} harness, so it gets no ${groups[0]}`
+      + ` tools and can't start a session; add ${groups[0]} to harnesses`
+  }
+  return `${ref} drives ${groups.join(" or ")}, but @${handle} uses neither harness, so it gets neither's tools and`
+    + " can't start a session; add the one it should drive to harnesses"
+}
+
 /** Agents have a main flow; every main, SOP, and routine flow is a relative path to a file inside the repo
- *  that compiles and isn't a library; an agent that grants an instrument group reads a steer inbox; a main flow
- *  declares the inputs the office passes it and has the template chat's shape. */
+ *  that compiles and isn't a library; an agent that grants an instrument group reads a steer inbox; an SOP or routine
+ *  that drives harnesses drives one its person uses (a warning); a main flow declares the inputs the office passes it
+ *  and has the template chat's shape. */
 async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
     const file = personPath(handle)
@@ -349,12 +373,17 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
           `${ref} is a library (defs: and no nodes:), which can't run; import it with uses: and call a def`)
         continue
       }
-      for (const [node, groups] of unsteeredInstruments(flow)) {
+      const instruments = instrumentAgents(flow)
+      for (const { node, groups } of instruments.filter((agent) => !agent.steered)) {
         yield repoIssue(file, "person.instrument_unsteered",
           `${ref}'s agent ${node} grants ${groups.join(" and ")} but reads no steer inbox, so Esc can't reach a turn`
           + " of the harness it waits on; set `steer_inbox:` on it, as the template's shared/flows/chat.yaml does")
       }
-      if (!isMain) continue
+      if (!isMain) {
+        const unused = unusedHarnesses(ref, handle, new Set(instruments.flatMap((agent) => agent.groups)), person.harnesses)
+        if (unused !== null) yield repoIssue(file, "person.harness_not_used", unused, "warning")
+        continue
+      }
       const declared = new Set(flow.input.map((parameter) => parameter.name))
       const missing = MAIN_INPUTS.filter((name) => !declared.has(name))
       if (missing.length > 0) {

@@ -1,0 +1,64 @@
+# The SOP "drive a harness": an employee hands a task to Codex or Claude Code and sees it through. `route` picks the
+# driver of the harness asked for. Each driver is the employee at work: it grants only that harness's tool group, so the
+# harness does the work under the employee's permission and in the chat's folder, both of which the host binds, never
+# the flow; the task says where in that folder the work is. What people send to `messages` while it works steers the
+# driver, and an interrupt of that inbox (Esc) stops it and the harness turn its call waits on.
+#
+# A resume in the same office never repeats a start or a message: each call with a recorded result is replayed, and the
+# harness tools aren't resumable, so a call a crash cut off is never sent again. The driver reads that its outcome is
+# unknown, and checks the session's record before it starts or sends anything again. The office keeps the harness
+# sessions in memory, so after it restarts they are gone: a resumed run finds none, and starts the work over.
+id: drive_harness
+name: drive_harness
+description: Hand a task to Codex or Claude Code, and see it through.
+
+typedefs:
+  Harness: Literal(codex, claude)
+input:
+  task: !str  # what to get done, and where in the chat's folder, where the harness starts
+  harness: !Harness  # which harness does the work
+  messages: !Inbox(Message)  # what people send while the driver works: its steers, and its interrupt
+
+nodes:
+  route:
+    kind: case
+    on: ${input.harness}
+    cases:
+      - when: codex
+        then: codex
+      - when: claude
+        then: claude
+  # The two drivers differ only in the tool group they grant.
+  codex: &driver
+    kind: agent
+    steer_inbox: ${input.messages}
+    env:
+      max_tool_iterations: 100
+    tools: [codex]
+    input:
+      task: ${input.task}
+      harness: ${input.harness}
+      title: ${"Codex" if input.harness == "codex" else "Claude Code"}
+    output: !Optional(str)  # null only after an interrupt
+    system_prompt: |-
+      You hand a task to ${title}, a coding agent, and see it through, as a careful engineer working with a colleague
+      would. You work with it through your ${harness} tools: ${harness}_start, ${harness}_send, ${harness}_history,
+      ${harness}_interrupt and ${harness}_stop.
+      1. Start one ${title} session and send it the task, with what it needs to know: where to work, what done looks
+         like, and anything people have told you.
+      2. Follow its turn with history and long waits until the turn ends. Answer its questions when you can.
+      3. Check its work against the task: read the session's trace (history with trace) for what it ran and changed.
+         Send it what is missing or wrong, in the same session, and check again.
+      4. Once the task is done, or can't be done, stop the session and answer with a short report: what changed, how
+         it was checked, and what is left.
+      Keep to one session, and name it in every call as ${harness}_start's reply names it; start another only if it
+      failed. When a call's outcome is unknown, read that session's history from its start (from 0) before you start
+      or send anything again: it may have your message already. If the start's own outcome is unknown, a history call
+      with any name lists the sessions there are.
+      People may write to you while you work: do what they ask. The owner can also write to ${title} in the session,
+      and the owner's word wins.
+    prompt: "The task: ${task}"
+  claude:
+    <<: *driver
+    tools: [claude]
+output: ${route.output}

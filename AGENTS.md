@@ -27,7 +27,7 @@ people or offices.
 **OpenCorp is the company built on it.** It owns policy and product: the company (people, org
 chart, SOPs as flows in the company repo); the office (daemon, sessions, the people and devices who
 sign in); who may do what (modes, approvals, rules, sandbox profiles); the three instruments (the
-terminal, Claude Code and Codex; the first two come with #888); which model each person uses and
+terminal, Claude Code and Codex); which model each person uses and
 what it costs; the TUI, CLI and HQ.
 
 **Where a new piece goes.** Ask: would another program running Yian flows need it? If so, it is a
