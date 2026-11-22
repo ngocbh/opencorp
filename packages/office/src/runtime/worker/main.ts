@@ -207,7 +207,7 @@ function applier(
     try {
       switch (delivery.op) {
         case "send":
-          return { seq: await send(log, delivery.inbox, delivery.event, options) }
+          return { seq: await send(log, delivery.inbox, delivery.event, { ...options, key: delivery.key ?? null }) }
         case "complete":
           return { seq: await complete(log, delivery.call_id, delivery.result, options) }
         case "close":

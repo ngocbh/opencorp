@@ -317,6 +317,24 @@ test("a delivery the ended loop could not read shows as a settled wait", async (
   if (replyAt < resultAt) expect((result.waits as Record<string, unknown>[])[0]!.settled).toBe(true)
 })
 
+test("a keyed send sent again appends nothing and gets the first seq; another value under its key is refused", async () => {
+  const chat = makeJob(base(), "flows/inbox.yaml", { inputs: {} })
+  expect((await run(chat, new Recorder())).outcome?.status).toBe("waiting")
+  const keyed = (id: string, event: string) => ({ id, op: "send", inbox: "messages", event, key: "k1" }) as const
+  const rec = await run(
+    advanceJob(chat, { advance: false, deliver: [keyed("s1", "hi"), keyed("s2", "hi"), keyed("s3", "other")] }),
+    new Recorder(),
+  )
+  expect(sent(chat, "messages")).toEqual(["hi"])
+  const [first, again, other] = rec.replies
+  expect(again).toEqual({ type: "deliver_reply", id: "s2", seq: first!.seq })
+  expect(other).toEqual({ type: "deliver_reply", id: "s3", refused: "key_reused" })
+  // A send retried after its worker died appends nothing either.
+  const retried = await run(advanceJob(chat, { advance: false, deliver: [keyed("s4", "hi")] }), new Recorder())
+  expect(retried.replies).toEqual([{ type: "deliver_reply", id: "s4", seq: first!.seq }])
+  expect(sent(chat, "messages")).toEqual(["hi"])
+})
+
 test("a deliver to a run that ended is refused", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Done." })

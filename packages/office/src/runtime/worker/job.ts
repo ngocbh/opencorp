@@ -24,9 +24,17 @@ const absolute = z.string().refine((p) => path.posix.isAbsolute(p), "must be an 
 const deliveryId = z.string().min(1)
 const present = z.custom<unknown>((value) => value !== undefined, "is required")
 
-/** One yian host call the worker makes on the run, with the id its `deliver_reply` answers. */
+/** One yian host call the worker makes on the run, with the id its `deliver_reply` answers. A `send` with a `key`
+ *  appends nothing when the run already has a send with that key and value, so a send retried or sent again by a new
+ *  worker isn't doubled. */
 export const Delivery = z.discriminatedUnion("op", [
-  z.strictObject({ id: deliveryId, op: z.literal("send"), inbox: z.string(), event: present }),
+  z.strictObject({
+    id: deliveryId,
+    op: z.literal("send"),
+    inbox: z.string(),
+    event: present,
+    key: z.string().min(1).optional(),
+  }),
   z.strictObject({
     id: deliveryId,
     op: z.literal("complete"),
