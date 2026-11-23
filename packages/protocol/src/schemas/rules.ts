@@ -2,16 +2,16 @@ import { z } from "zod"
 import { Handle, Timestamp } from "./common"
 
 /** A rule's pattern: words that hold no whitespace, one space between each; only a final `*` word is a wildcard,
- *  matching any further words (none included). */
+ *  matching any further words: none or more in a command or input rule, one or more in a tool rule (see `Rule`). */
 export const RulePattern = z.string().regex(/^\S+(?: \S+)*$/u)
 export type RulePattern = z.input<typeof RulePattern>
 
 /** A rule for an agent's commands, typed input or tool calls: allow, ask or deny, on a `RulePattern`. `kind`:
  *  `command` and `input` match a command's or a typed line's words; `tool` matches a tool call's words, its source's
- *  kind then the names its source gives it (`host codex start`, `module crm quote`, `mcp github *`). `source`:
- *  `session` rules last while the session runs; `agent` rules are the agent's file (`people/<handle>/rules.yaml`);
- *  `company` rules are `rules.yaml` at the company repo's root, for every agent. `note`: for a session rule an
- *  "always" couldn't save to the agent's file, why. */
+ *  kind then the names its source gives it (`host codex start`, `module crm quote`, `mcp github *`), where a last `*`
+ *  stands for one or more further words, never none. `source`: `session` rules last while the session runs; `agent`
+ *  rules are the agent's file (`people/<handle>/rules.yaml`); `company` rules are `rules.yaml` at the company repo's
+ *  root, for every agent. `note`: for a session rule an "always" couldn't save to the agent's file, why. */
 export const Rule = z.strictObject({
   effect: z.enum(["allow", "ask", "deny"]),
   kind: z.enum(["command", "input", "tool"]),

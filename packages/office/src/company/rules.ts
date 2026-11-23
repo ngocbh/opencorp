@@ -11,13 +11,14 @@
  * a linked folder is none, as git keeps only the link.
  *
  * A `tool` rule matches a tool call by its words (`toolWords`): its source's kind, then the names its source gives
- * it, so `host codex start`, `mcp github *` or `module crm quote`. Lint warns of one that no call's words can match.
+ * it, so `host codex start`, `mcp github *` or `module crm quote`, where a last `*` stands for one or more further
+ * words (`toolRuleMatches`). Lint warns of one that no call's words can match.
  */
 import fs from "node:fs"
 import path from "node:path"
 import type { ToolSource } from "@ngocbh/yian/tools"
 import {
-  Handle, now, Rule as RuleSchema, type RuleFileError, RulePattern, Timestamp, validationMessage,
+  Handle, now, Rule as RuleSchema, type RuleFileError, RulePattern, ruleWords, Timestamp, validationMessage,
 } from "@opencorp/protocol"
 import { z } from "zod"
 import { actorLine } from "./access.ts"
@@ -51,7 +52,8 @@ const LITERAL_STAR = "pattern: a * matches further words only as the last word o
 /** Lint's warning for a tool rule no call's words (`toolWords`) can match. */
 const TOOL_PATTERN =
   "pattern: a tool rule names a call by its source: host [group] tool, mcp server tool, module alias export, " +
-  "memory input tool, or flow [library] flow, each part a word or a last *; this one matches no tool call"
+  "memory input tool, or flow [library] flow, each part a word, or a last * for one or more further words; this " +
+  "one matches no tool call"
 const COMPANY_ONLY = "company rules change only by editing rules.yaml in the company repo"
 
 /** A time as a hand-written file often has it, without the milliseconds. */
@@ -125,23 +127,42 @@ export function loadRules(
 }
 
 /** A tool call's words, which a `tool` rule's pattern matches: its source's kind, then the names its source gives
- *  it. A host tool's group comes before its name, and a top-level one has none (`host codex start`, `host
- *  propose_company`); an MCP tool's server before its name; a module's tool is its `uses:` alias and its export, not
- *  the ref the alias names; a memory's tool its memory input and its name; a granted flow its name, after its
- *  library's alias when it is a library's def. */
-export function toolWords(source: ToolSource): string[] {
-  switch (source.kind) {
-    case "host":
-      return source.group === null ? ["host", source.tool] : ["host", source.group, source.tool]
-    case "mcp":
-      return ["mcp", source.server, source.tool]
-    case "module":
-      return ["module", source.alias, source.export]
-    case "memory":
-      return ["memory", source.input, source.tool]
-    case "flow":
-      return source.library === null ? ["flow", source.flow] : ["flow", source.library, source.flow]
-  }
+ *  it. A host tool's group comes before its name (`host codex start`), but a tool named as its group, or with no
+ *  group, is its name alone (`host propose_company`), so its words stay the same whether its group has other tools or
+ *  none (the model then sees it top-level); an MCP tool's server comes before its name; a module's tool is its `uses:`
+ *  alias and its export, not the ref the alias names; a memory's tool its memory input and its name; a granted flow
+ *  its name, after its library's alias when it is a library's def. Null when a name isn't one word (empty, or holding
+ *  whitespace): no rule can name the call. */
+export function toolWords(source: ToolSource): string[] | null {
+  const words = ((): string[] => {
+    switch (source.kind) {
+      case "host":
+        return source.group === null || source.group === source.tool
+          ? ["host", source.tool]
+          : ["host", source.group, source.tool]
+      case "mcp":
+        return ["mcp", source.server, source.tool]
+      case "module":
+        return ["module", source.alias, source.export]
+      case "memory":
+        return ["memory", source.input, source.tool]
+      case "flow":
+        return source.library === null ? ["flow", source.flow] : ["flow", source.library, source.flow]
+    }
+  })()
+  return words.every((word) => /^\S+$/u.test(word)) ? words : null
+}
+
+/** Whether tool rule `pattern` matches a call's `words` (`toolWords`): word for word, where a last `*` stands for one
+ *  or more further words, so `host codex *` names the `codex` group's tools and not a lone tool `codex`. A pattern no
+ *  rules file could hold, or a call with no words, matches nothing. */
+export function toolRuleMatches(pattern: string, words: readonly string[] | null): boolean {
+  const want = ruleWords(pattern)
+  if (want === null || words === null) return false
+  const wild = want.at(-1) === "*"
+  const fixed = wild ? want.slice(0, -1) : want
+  if (wild ? words.length <= fixed.length : words.length !== fixed.length) return false
+  return fixed.every((word, i) => word === words[i])
 }
 
 /** How many names follow each source kind in a call's words (`toolWords`): the fewest and the most. */
@@ -154,7 +175,7 @@ const TOOL_NAMES: Readonly<Record<ToolSource["kind"], readonly [number, number]>
 }
 
 /** Whether a tool rule's pattern `words` can match some call's words: `*` alone, or a source kind followed by as many
- *  names as that kind has, where a last `*` stands for any further ones (none included). */
+ *  names as that kind has, where a last `*` stands for one or more further ones. */
 function fitsSomeCall(words: readonly string[]): boolean {
   const wild = words.at(-1) === "*"
   const fixed = wild ? words.slice(0, -1) : words
@@ -163,7 +184,7 @@ function fitsSomeCall(words: readonly string[]): boolean {
   if (!Object.hasOwn(TOOL_NAMES, kind)) return false
   const [fewest, most] = TOOL_NAMES[kind as ToolSource["kind"]]
   const names = fixed.length - 1
-  return names <= most && (wild || names >= fewest)
+  return wild ? names < most : names >= fewest && names <= most
 }
 
 /** What `rel` holds under `root`, a tree of the company repo, read as the office reads it at a commit: nothing under a
