@@ -489,11 +489,6 @@ export function Session(props: SessionProps) {
     const owner = approver()
     return local.person.color(message.author && message.author !== owner ? message.author : owner)
   }
-  // What an unread message says the owner can do: Esc stops the reply, and the next turn reads it. Over the cost cap
-  // nothing runs to stop, and it waits for a raise.
-  const unreadHint = createMemo(() =>
-    interruptible(viewStatus()) && !viewSession()?.capped ? "esc to interrupt so it's read now" : undefined,
-  )
   const showTimestamps = createMemo(() => timestamps() === "show")
   // In the pane, the chat's sides take one column each, not two.
   const gutter = () => (props.pane ? 1 : 2)
@@ -1289,7 +1284,6 @@ export function Session(props: SessionProps) {
                           index={index() + hidden()}
                           speaker={speaker(message)}
                           speakerColor={speakerColor(message)}
-                          unreadHint={unreadHint()}
                           onMouseUp={() => {
                             if (renderer.getSelection()?.getSelectedText()) return
                             dialog.replace(() => <DialogMessage messageID={message.id} sessionID={props.sessionID} />)
@@ -1484,8 +1478,6 @@ function UserMessage(props: {
   index: number
   speaker?: string
   speakerColor?: RGBA
-  /** What the owner can do with the message while it is unread, after the word `unread`. */
-  unreadHint?: string
 }) {
   const ctx = use()
   const text = createMemo(() =>
@@ -1540,9 +1532,6 @@ function UserMessage(props: {
                 )}
               </For>
             </box>
-          </Show>
-          <Show when={props.message.unread}>
-            <text fg={theme.textMuted}>{props.unreadHint ? `unread · ${props.unreadHint}` : "unread"}</text>
           </Show>
           <Show when={ctx.showTimestamps()}>
             <text fg={theme.textMuted}>{Locale.todayTimeOrDateTime(Date.parse(props.message.created_at))}</text>

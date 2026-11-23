@@ -55,8 +55,7 @@ while a command runs), and a missing `.mcp.json` can still be created.
   `$` lines in their colour. A shell waiting for your password opens itself, with your keys unless you are typing a
   draft or a card is open; then press ctrl+x → to type the password there. Esc in the chat stops your employee and
   the command they were waiting on. A command they were told is still running goes on. A message you send while they
-  wait shows `unread`, its border grey, until they read it before their next step; Esc stops them, and they read it
-  next.
+  wait has a grey border until they read it before their next step; Esc stops them, and they read it next.
 - **The picker.** ← and → switch its tabs (Sessions, Shell), ↑ and ↓ move, Enter opens in the pane, and Esc or ↑ on
   the first row closes it. It opens on the first tab with something running. Sessions lists the live sessions,
   running or idle, and Shell the shells that run; ctrl+a shows the rest, and stays as you set it until you quit.
