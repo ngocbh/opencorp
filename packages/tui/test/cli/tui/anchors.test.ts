@@ -1,0 +1,126 @@
+// Upstream's timeline anchor tests, and its session tabs' scroll anchor tests for our per-session store. A whole
+// message here is a user message or an instrument note, and the kinds are ours.
+import { expect, test } from "bun:test"
+import {
+  anchorKey,
+  containsAnchor,
+  createTimelineAnchors,
+  entryRef,
+  messageRef,
+  SCROLL_MEMORY_SIZE,
+  scrollMemory,
+  type AnchorTarget,
+} from "../../../src/routes/session/anchors"
+import { groupEntries } from "../../../src/routes/session/grouping/tree"
+import { groupID, type SessionEntry } from "../../../src/routes/session/grouping/session"
+
+test("part anchors identify the exact part and whole messages have a body reference", () => {
+  const a: AnchorTarget = { type: "part", ref: { messageID: "a", partID: "text:0" } }
+  const b: AnchorTarget = { type: "part", ref: { messageID: "b", partID: "text:0" } }
+  const later: AnchorTarget = { type: "part", ref: { messageID: "a", partID: "text:1" } }
+  expect(new Set([a, b, later].map(anchorKey)).size).toBe(3)
+  expect(messageRef("user")).toEqual({ messageID: "user", partID: "message" })
+  const entry: SessionEntry = { type: "part", ref: { messageID: "a", partID: "read" } }
+  const saved = entryRef(entry)
+  entry.ref.partID = "replacement"
+  expect(saved.partID).toBe("read")
+})
+
+test("group IDs use the first descendant reference, kind and nesting level", () => {
+  const a: SessionEntry = { type: "part", ref: { messageID: "a", partID: "read" } }
+  const b: SessionEntry = { type: "part", ref: { messageID: "b", partID: "read" } }
+  const [root] = groupEntries([a], () => ["exploration", "exploration"] as const)
+  const [appended] = groupEntries([a, b], () => ["exploration", "exploration"] as const)
+  const [prepended] = groupEntries([b, a], () => ["exploration", "exploration"] as const)
+  if (root.type !== "group" || appended.type !== "group" || prepended.type !== "group")
+    throw new Error("Expected groups")
+  const inner = root.children[0]
+  if (inner.type !== "group") throw new Error("Expected inner group")
+  expect(groupID(root, 0)).toBe(groupID(appended, 0))
+  expect(groupID(root, 0)).not.toBe(groupID(prepended, 0))
+  expect(groupID(root, 0)).not.toBe(groupID(inner, 1))
+  expect(groupID(root, 0)).not.toBe(groupID({ ...root, kind: "activity" }, 0))
+  const id = groupID(inner, 1)
+  if (!id) throw new Error("Missing group ID")
+  expect(containsAnchor(root, { type: "group", groupID: id })).toBe(true)
+  expect(containsAnchor(root, { type: "part", ref: a.ref })).toBe(true)
+  expect(containsAnchor(root, { type: "part", ref: b.ref })).toBe(false)
+  expect(containsAnchor({ type: "part", ref: messageRef("u") }, { type: "part", ref: messageRef("u") })).toBe(true)
+})
+
+test("mounted headers and parts are independent targets with current geometry", () => {
+  const anchors = createTimelineAnchors()
+  const part: AnchorTarget = { type: "part", ref: { messageID: "a", partID: "read" } }
+  const group: AnchorTarget = { type: "group", groupID: "group-a" }
+  const header = { y: 2, height: 1, isDestroyed: false }
+  const node = { y: 8, height: 1, isDestroyed: false }
+  anchors.register({ target: group, node: header })
+  expect(anchors.get(part)).toBeUndefined()
+  const remove = anchors.register({ target: part, node })
+  expect(anchors.get(group)?.node).toBe(header)
+  expect(anchors.get(part)?.node).toBe(node)
+  node.y = -4
+  expect(anchors.list()[0].target).toEqual(part)
+  expect(anchors.messagePositions()).toEqual([{ id: "a", y: -4 }])
+  remove()
+  expect(anchors.get(part)).toBeUndefined()
+  expect(anchors.get(group)?.node).toBe(header)
+})
+
+test("cleanup cannot remove a replacement registration", () => {
+  const anchors = createTimelineAnchors()
+  const target: AnchorTarget = { type: "part", ref: { messageID: "a", partID: "text:0" } }
+  const remove = anchors.register({ target, node: { y: 0, height: 1, isDestroyed: false } })
+  const node = { y: 3, height: 1, isDestroyed: false }
+  anchors.register({ target, node })
+  remove()
+  expect(anchors.get(target)?.node).toBe(node)
+  node.height = 0
+  expect(anchors.get(target)).toBeUndefined()
+  node.height = 1
+  node.isDestroyed = true
+  expect(anchors.get(target)).toBeUndefined()
+})
+
+test("keeps scroll anchors per session, one store per renderer", () => {
+  const renderer = {}
+  const memory = scrollMemory(renderer)
+  const target = { type: "part" as const, ref: { messageID: "msg_1", partID: "text:0" } }
+  memory.setScrollAnchor("first", { target, screenY: -3 })
+  expect(scrollMemory(renderer).scrollAnchor("first")).toEqual({ target, screenY: -3 })
+  const group = { type: "group" as const, groupID: "group-1" }
+  memory.setScrollAnchor("first", { target: group, screenY: -3 })
+  expect(memory.scrollAnchor("first")?.target).toEqual(group)
+  expect(scrollMemory({}).scrollAnchor("first")).toBeUndefined()
+  memory.setScrollAnchor("first", undefined)
+  expect(memory.scrollAnchor("first")).toBeUndefined()
+})
+
+test("keeps parent and child scroll anchors independent", () => {
+  const memory = scrollMemory({})
+  const parent = { target: { type: "part" as const, ref: messageRef("msg_parent") }, screenY: -3 }
+  const child = { target: { type: "part" as const, ref: messageRef("msg_child") }, screenY: -5 }
+  memory.setScrollAnchor("root", parent)
+  // A short child transcript is at the bottom, so it saves no anchor.
+  memory.setScrollAnchor("child", undefined)
+  expect(memory.scrollAnchor("root")).toEqual(parent)
+  expect(memory.scrollAnchor("child")).toBeUndefined()
+  memory.setScrollAnchor("child", child)
+  expect(memory.scrollAnchor("root")).toEqual(parent)
+  expect(memory.scrollAnchor("child")).toEqual(child)
+  memory.setScrollAnchor("root", undefined)
+  expect(memory.scrollAnchor("child")).toEqual(child)
+})
+
+test("keeps only the sessions left most recently, up to a cap", () => {
+  const memory = scrollMemory({})
+  const at = (id: string) => ({ target: { type: "part" as const, ref: messageRef(id) }, screenY: -1 })
+  for (let index = 0; index < SCROLL_MEMORY_SIZE; index++) memory.setScrollAnchor(`s${index}`, at(`m${index}`))
+  // Leaving the first again makes it the most recent, so the second goes first.
+  memory.setScrollAnchor("s0", at("again"))
+  memory.setScrollAnchor("new", at("new"))
+  expect(memory.scrollAnchor("s1")).toBeUndefined()
+  expect(memory.scrollAnchor("s0")).toEqual(at("again"))
+  expect(memory.scrollAnchor("s2")).toEqual(at("m2"))
+  expect(memory.scrollAnchor("new")).toEqual(at("new"))
+})

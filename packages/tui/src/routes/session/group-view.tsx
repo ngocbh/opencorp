@@ -1,7 +1,9 @@
 import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
+import type { Renderable } from "@opentui/core"
 import { useRenderer, type JSX } from "@opentui/solid"
 import { useTheme } from "../../context/theme"
 import { summarizeActivity, type ActivityItem } from "./activity-summary"
+import { GroupAnchor } from "./anchor-view"
 import {
   groupID,
   visitEntries,
@@ -77,7 +79,7 @@ function GroupContent(props: GroupProps) {
   const children = () => <Children {...props} nodes={props.node.children} />
 
   return (
-    <>
+    <GroupAnchor groupID={disclosure.id()} active={grouped() && tools().length > 0}>
       <Show when={grouped()} fallback={children()}>
         <Show when={tools().length > 0}>
           <InlineToolRow
@@ -88,7 +90,7 @@ function GroupContent(props: GroupProps) {
             spinner={!completed()}
             onMouseOver={() => setHover(true)}
             onMouseOut={() => setHover(false)}
-            onMouseUp={() => disclosure.toggle()}
+            onMouseUp={(event) => disclosure.toggle(event.currentTarget)}
           >
             {label()}
           </InlineToolRow>
@@ -96,7 +98,7 @@ function GroupContent(props: GroupProps) {
         <Show when={disclosure.expanded() && tools().length > 0}>{children()}</Show>
       </Show>
       <PendingEntries {...props} entries={entries()} />
-    </>
+    </GroupAnchor>
   )
 }
 
@@ -111,7 +113,7 @@ function ActivityGroup(props: GroupProps) {
   const entries = createMemo(() => descendants(props.node))
   const summary = createMemo(() => summarizeActivity(props.node, props.item, props.pending))
   return (
-    <>
+    <GroupAnchor groupID={disclosure.id()} active={summary().label !== ""}>
       <Show when={summary().label}>
         <InlineToolRow
           icon={disclosure.expanded() ? "−" : "+"}
@@ -121,7 +123,7 @@ function ActivityGroup(props: GroupProps) {
           spinner={!disclosure.expanded() && summary().active}
           onMouseOver={() => setHover(true)}
           onMouseOut={() => setHover(false)}
-          onMouseUp={() => disclosure.toggle()}
+          onMouseUp={(event) => disclosure.toggle(event.currentTarget)}
         >
           {summary().label}
         </InlineToolRow>
@@ -130,7 +132,7 @@ function ActivityGroup(props: GroupProps) {
         </Show>
       </Show>
       <PendingEntries {...props} entries={entries()} />
-    </>
+    </GroupAnchor>
   )
 }
 
@@ -145,10 +147,10 @@ function useDisclosure(props: GroupProps) {
   return {
     id,
     expanded,
-    toggle() {
+    toggle(anchor?: Renderable | null) {
       if (renderer.getSelection()?.getSelectedText()) return
       const key = id()
-      if (key) ctx.setGroupExpanded(key, !expanded())
+      if (key) ctx.setGroupExpanded(key, !expanded(), anchor)
     },
   }
 }

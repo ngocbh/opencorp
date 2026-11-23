@@ -1,5 +1,5 @@
 import { Match, Show, Switch } from "solid-js"
-import { BoxRenderable, TextAttributes, type RGBA } from "@opentui/core"
+import { BoxRenderable, TextAttributes, type MouseEvent, type RGBA } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
 import { Spinner } from "../../component/spinner"
 import { setPreLayoutSiblingMargin } from "../../util/layout"
@@ -28,7 +28,7 @@ export function InlineToolRow(props: {
   children: JSX.Element
   onMouseOver?: () => void
   onMouseOut?: () => void
-  onMouseUp?: () => void
+  onMouseUp?: (event: MouseEvent) => void
 }) {
   return (
     <box
