@@ -170,7 +170,7 @@ export class Transcript {
     this.log = options.log ?? (() => {})
   }
 
-  /** The messages of the runs `runIds` (session_runs order), then the last run's queued messages. */
+  /** The messages of the runs `runIds` (session_runs order), then the last run's queued messages, unread. */
   messages(sessionId: string, runIds: readonly string[], live?: LiveCalls): Message[] {
     const out: Message[] = []
     runIds.forEach((runId, index) => {
@@ -181,11 +181,19 @@ export class Transcript {
       // A replaced run's unread sends were moved into the fresh run, so only the last run's are queued.
       if (last) {
         for (const send of state.sends.values()) {
-          if (!state.read.has(send.seq)) out.push(userMessage(sessionId, runId, send))
+          if (!state.read.has(send.seq)) out.push(userMessage(sessionId, runId, send, true))
         }
       }
     })
     return out
+  }
+
+  /** Whether the send at `seq` of the run `runId` waits unread in its inbox: its log holds it, no take or steer has
+   *  read it, and no withdraw took it back. */
+  unread(runId: string, seq: number): boolean {
+    if (!safeRunId(runId)) return false
+    const state = this.read(runId)
+    return state.sends.has(seq) && !state.read.has(seq)
   }
 
   /** The id of the first message of the reply still running in the run `runId` (its last reply, if it started, hasn't
@@ -574,7 +582,7 @@ function render(
     if (item.kind === "take") {
       for (const seq of item.events) {
         const send = state.sends.get(seq)
-        if (send) out.push(userMessage(sessionId, runId, send))
+        if (send) out.push(userMessage(sessionId, runId, send, false))
       }
     } else if (item.kind === "start") {
       open.set(item.node, assistantMessage(sessionId, runId, item.seq, item.at))
@@ -628,7 +636,7 @@ function render(
         // What the model says after reading a steer follows it, in a message of its own.
         for (const event of step.from as readonly number[]) {
           const send = state.sends.get(event)
-          if (send) out.push(userMessage(sessionId, runId, send))
+          if (send) out.push(userMessage(sessionId, runId, send, false))
         }
         if (open.has(node)) open.set(node, assistantMessage(sessionId, runId, item.seq, item.at))
       } else if (step.kind === "interrupted") {
@@ -662,8 +670,9 @@ function assistantMessage(sessionId: string, runId: string, seq: number, at: str
 }
 
 /** The user message of `send` in the run `runId`: its last text part, since earlier ones are the turn's context. A
- *  send under a shell's note key (`NOTE_KEY`) is that shell's note, signed by it; any other names its human author. */
-export function userMessage(sessionId: string, runId: string, send: Send): Message {
+ *  send under a shell's note key (`NOTE_KEY`) is that shell's note, signed by it; any other names its human author.
+ *  `unread` says it still waits in the run's inbox. */
+export function userMessage(sessionId: string, runId: string, send: Send, unread: boolean): Message {
   const id = messageId(runId, send.seq)
   const text = send.message.parts.findLast((part) => part.type === "text") as { text: string } | undefined
   const shell = send.key ? NOTE_KEY.exec(send.key)?.[1] : undefined
@@ -676,6 +685,7 @@ export function userMessage(sessionId: string, runId: string, send: Send): Messa
     role: "user",
     author: author?.success ? author.data : null,
     instrument,
+    unread,
     parts: text === undefined ? [] : [{ id: `${id}:0`, type: "text", text: text.text }],
     created_at: send.at,
   }

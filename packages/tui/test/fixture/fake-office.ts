@@ -111,8 +111,8 @@ const now = () => new Date().toISOString()
 const served = (person: Person): Person => PersonSchema.parse({ ...person, password_hash: null })
 /** `session` as the office serves it: every field, defaults filled. */
 const servedSession = (session: Session): Session => SessionSchema.parse(session)
-/** `message` as the office serves it: a message with no author has a null one. */
-const servedMessage = (message: Message): Message => ({ author: null, instrument: null, ...message })
+/** `message` as the office serves it: a message with no author has a null one, and one not marked unread is read. */
+const servedMessage = (message: Message): Message => ({ author: null, instrument: null, unread: false, ...message })
 
 /** Words a side chat refuses, in any case: only the office ends a side run. */
 const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])

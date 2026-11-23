@@ -124,9 +124,9 @@ export interface ActorContext {
   readonly checkMs?: number
   readonly hooks: Hooks
   readonly answers: Answers
-  readonly transcript: Pick<Transcript, "forget">
+  readonly transcript: Pick<Transcript, "forget" | "unread">
   /** The office's live relay, fed each worker's live frames; the actor's `calls` reads it. */
-  readonly live: Pick<LiveRelay, "frame" | "detach" | "calls" | "forget">
+  readonly live: Pick<LiveRelay, "frame" | "detach" | "calls" | "forget" | "unreadShown">
   /** The run spec of `session` (Python's restorers); may throw a `HarnessError`. */
   spec(session: SessionRecord): RunSpec | Promise<RunSpec>
   /** The clock and sleeps of the wake-at timer (yian's `Scheduler`; `realScheduler` in the office). */
@@ -2750,8 +2750,6 @@ export class SessionActor implements LiveCalls {
     })
   }
 
-  /** Publishes the user message of the `send` the run took at `seq`, as the transcript will show it. `sent` is the
-   *  message `prompt` built. */
   /** Tells the session's clients that message `id` is no more: a send the run took back. */
   #publishRemoved(id: string): void {
     try {
@@ -2762,9 +2760,14 @@ export class SessionActor implements LiveCalls {
     }
   }
 
+  /** Publishes the user message of the `send` the run took at `seq`, as the transcript shows it now: unread while its
+   *  log says the run hasn't read it, which the live relay then publishes again once the run has. `sent` is the message
+   *  `prompt` built. */
   #publishMessage(runId: string, seq: number, sent: unknown, key: string | undefined): void {
-    const message = userMessage(this.sessionId, runId, { seq, at: now(), message: sent as RunMessage, key })
     try {
+      const send = { seq, at: now(), message: sent as RunMessage, key }
+      const message = userMessage(this.sessionId, runId, send, this.#ctx.transcript.unread(runId, seq))
+      if (message.unread) this.#ctx.live.unreadShown(runId, message.id)
       this.#ctx.bus.publishLive({ type: "message.updated", session_id: this.sessionId, data: message })
     } catch (error) {
       this.#log(`session ${this.sessionId}: a message can't be shown (${errorName(error)})`)

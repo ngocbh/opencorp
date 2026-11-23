@@ -10,9 +10,9 @@ import { Transcript } from "../../../src/features/chat/transcript.ts"
 import { MAIN_CHAT } from "../../../src/company/chat_flow.ts"
 import { PING } from "../../../src/runtime/bus.ts"
 import { type LiveJoin, LiveRelay, type LiveViewer, type LiveWorker, type ViewerFrame } from "../../../src/features/chat/live.ts"
-import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
+import type { FakeLLM, ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import type { Frame } from "../../../src/runtime/worker/channel.ts"
-import type { Job } from "../../../src/runtime/worker/job.ts"
+import type { Delivery, Job } from "../../../src/runtime/worker/job.ts"
 import { advance, fakeLlm, logPrefix, send, TemplateOffice, waitingAt, waitingChat } from "./helpers.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import { advanceJob, inProcessWorker, run, type TestWorker, waitsOf } from "../../runtime/worker/helpers.ts"
@@ -463,6 +463,90 @@ test("a reply streams live under the transcripts ids", async () => {
   expect(lines).toEqual([])
 })
 
+/** The user messages of `messages`. */
+function users(messages: readonly Message[]): Message[] {
+  return messages.filter((message) => message.role === "user")
+}
+
+/** The assistant messages of `messages`. */
+function replies(messages: readonly Message[]): Message[] {
+  return messages.filter((message) => message.role === "assistant")
+}
+
+/** The user messages `events` publish, in order. */
+function publishedUsers(events: readonly LiveEvent[]): Message[] {
+  return users(events.flatMap((event) => (event.type === "message.updated" ? [event.data as unknown as Message] : [])))
+}
+
+/** Applies `deliver` to the waiting run `job` without moving it on. */
+async function apply(job: Job, fake: FakeLLM, deliver: Delivery[]): Promise<void> {
+  await run(advanceJob(job, { deliver, advance: false }), new TemplateOffice(), { env: fake.env() })
+}
+
+/** The user messages `transcript` shows of `job`'s run that wait unread. */
+function unreadOf(transcript: Pick<Transcript, "messages">, job: Job): Message[] {
+  return users(transcript.messages(job.session_id, [job.run_id])).filter((message) => message.unread)
+}
+
+test("a send clients hold unread is published again, read, once a take or a steer reads it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Working", tool_calls: [{ id: "c1", name: "toolbox_stub" }] }, { content: "Rome." })
+  const job = await waitingChat(fake)
+  const { relay, events, lines, transcript } = makeRelay(runsOf(job))
+  // Each send as the actor publishes it: unread, since the run hasn't read it, and so told to the relay.
+  await apply(job, fake, [send("s1", "Plan the trip.")])
+  const sent = unreadOf(transcript, job)
+  for (const message of sent) relay.unreadShown(job.run_id, message.id)
+  const steer = send("during", "Also mention Rome.")
+  class Steering extends LiveOffice {
+    override async toolCall(worker: TestWorker, group: string, name: string, args: Record<string, unknown>) {
+      await worker.deliver(steer)
+      await waitFor(() => this.replies.some((reply) => reply.id === steer.id), { timeout: 10_000, what: "the steer" })
+      const steered = unreadOf(transcript, job)
+      for (const message of steered) relay.unreadShown(job.run_id, message.id)
+      sent.push(...steered)
+      return await super.toolCall(worker, group, name, args)
+    }
+  }
+  await run(advanceJob(job, {}), new Steering(relay), { env: fake.env() })
+  const want = users(transcript.messages(job.session_id, [job.run_id]))
+  expect(want.map((m) => m.unread)).toEqual([false, false])
+  expect(want.map((m) => m.id)).toEqual(sent.map((m) => m.id))
+  // Each once, under its id, as the run read it.
+  expect(publishedUsers(events)).toEqual(want)
+  expect(lines).toEqual([])
+})
+
+test("a send read while the relay missed its frames is published read once a snapshot shows it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "One." }, { content: "Two." })
+  const job = await waitingChat(fake)
+  await advance(job, fake, [send("s1", "one")])
+  const { relay, events, lines, transcript } = makeRelay(runsOf(job))
+  relay.frame(new StubWorker(job), snapshot(lastSeq(job.log)))
+  // Read before anyone was told it was unread: a client fetched it read.
+  expect(publishedUsers(events)).toEqual([])
+  await apply(job, fake, [send("s2", "two")])
+  const [held] = unreadOf(transcript, job)
+  relay.unreadShown(job.run_id, held!.id)
+  await advance(job, fake, [])
+  relay.frame(new StubWorker(job), snapshot(lastSeq(job.log)))
+  const read = users(transcript.messages(job.session_id, [job.run_id]))
+  expect(read.map((m) => [m.id, m.unread])).toEqual([
+    [read[0]!.id, false],
+    [held!.id, false],
+  ])
+  expect(publishedUsers(events)).toEqual([read[1]!])
+  // One taken back is never published: its removal is the actor's.
+  await apply(job, fake, [send("s3", "three")])
+  const [withdrawn] = unreadOf(transcript, job)
+  relay.unreadShown(job.run_id, withdrawn!.id)
+  await apply(job, fake, [{ id: "w", op: "withdraw", inbox: "messages" }])
+  relay.frame(new StubWorker(job), snapshot(lastSeq(job.log)))
+  expect(publishedUsers(events)).toEqual([read[1]!])
+  expect(lines).toEqual([])
+})
+
 test("a chunk of a shown live part is published as a delta", async () => {
   const content = "Hello there my good friend"
   const { job, frames } = await recordedTurn(content)
@@ -665,7 +749,7 @@ test("a steered reply shows its text once while its worker runs", async () => {
 
     override exited(worker: TestWorker, returncode: number | null): void {
       const read = transcript.messages(job.session_id, [job.run_id], relay).filter((m) => m.role === "assistant")
-      beforeExit = { read, live: fold(events) }
+      beforeExit = { read, live: replies(fold(events)) }
       super.exited(worker, returncode)
     }
   }
@@ -676,7 +760,10 @@ test("a steered reply shows its text once while its worker runs", async () => {
     messages.flatMap((m) => m.parts.flatMap((part) => (part.type === "text" && part.text !== "" ? [part.text] : [])))
   expect(texts(want)).toEqual(["Working", "Rome."])
   for (const shown of [read, live]) expect(withoutEmptyText(shown)).toEqual(want)
-  expect(withoutEmptyText(fold(events))).toEqual(want)
+  expect(withoutEmptyText(replies(fold(events)))).toEqual(want)
+  // The steer, which the relay rendered unread, comes again once the reply read it.
+  const said = (m: Message) => m.parts.map((part) => (part.type === "text" ? part.text : part.type))
+  expect(publishedUsers(events).map((m) => [said(m), m.unread])).toEqual([[["Also mention Rome."], false]])
   expect(lines).toEqual([])
 })
 

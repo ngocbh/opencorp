@@ -495,7 +495,9 @@ export class LocalHost {
     const event = { role: "user", parts: [{ type: "text" as const, text }], author: by }
     await this.#deliver({ id: newId(), op: "send", inbox: MAIN_CHAT.inbox, event }, (frame) => {
       if (typeof frame.seq !== "number") return
-      const message = userMessage(this.id, this.#runId, { seq: frame.seq, at: now(), message: event })
+      const send = { seq: frame.seq, at: now(), message: event }
+      const message = userMessage(this.id, this.#runId, send, this.#transcript.unread(this.#runId, frame.seq))
+      if (message.unread) this.#relay.unreadShown(this.#runId, message.id)
       this.bus.publishLive({ type: "message.updated", session_id: this.id, data: message })
     })
   }
