@@ -144,21 +144,48 @@ function keyShown(found: Record<string, Check>): boolean {
   return Object.values(found).some((c) => c.detail.includes(KEY))
 }
 
-test("the report keeps the python line format byte for byte", () => {
+test("the report marks each check with the installer's icon and keeps the names aligned", () => {
   expect(doctor.report([{ name: "hq", status: "ok", detail: "web app at http://127.0.0.1:1/, and on /s" }])).toBe(
-    "ok    hq           web app at http://127.0.0.1:1/, and on /s\n",
+    "✓ hq           web app at http://127.0.0.1:1/, and on /s\n",
   )
   expect(
     doctor.report([
       { name: "provider", status: "warn", detail: "no model" },
       { name: "connections", status: "fail", detail: "loose" },
     ]),
-  ).toBe("warn  provider     no model\nfail  connections  loose\n")
+  ).toBe("⚠ provider     no model\n✗ connections  loose\n")
+})
+
+test("in colour each icon takes the installer's colour and only the icon is coloured", () => {
+  const found: Check[] = [
+    { name: "home", status: "ok", detail: "/h" },
+    { name: "company", status: "warn", detail: "1 lint warnings" },
+    { name: "codex", status: "fail", detail: "missing" },
+  ]
+  expect(doctor.report(found, true)).toBe(
+    "\x1b[32m✓\x1b[0m home         /h\n" +
+      "\x1b[33m⚠\x1b[0m company      1 lint warnings\n" +
+      "\x1b[31m✗\x1b[0m codex        missing\n",
+  )
+})
+
+test("the icons are coloured only on a terminal, without NO_COLOR, and with a TERM that isn't dumb", () => {
+  expect(doctor.colour(true, { TERM: "xterm-256color" })).toBe(true)
+  expect(doctor.colour(true, { TERM: "xterm-256color", NO_COLOR: "" })).toBe(true)
+  expect(doctor.colour(false, { TERM: "xterm-256color" })).toBe(false)
+  expect(doctor.colour(true, { TERM: "xterm-256color", NO_COLOR: "1" })).toBe(false)
+  expect(doctor.colour(true, { TERM: "dumb" })).toBe(false)
+  expect(doctor.colour(true, { TERM: "" })).toBe(false)
+  expect(doctor.colour(true, {})).toBe(false)
 })
 
 test("each check stays one row in the report, whatever its detail holds", () => {
   const out = doctor.report([{ name: "codex", status: "fail", detail: "a\nb\rc\x1b]0;t\x07d\x1b[31me\x07\x9b2J" }])
-  expect(out).toBe("fail  codex        a b cde2J\n")
+  expect(out).toBe("✗ codex        a b cde2J\n")
+  // In colour a detail's own escapes still go: the icon's are the only ones.
+  expect(doctor.report([{ name: "codex", status: "fail", detail: "d\x1b[31me" }], true)).toBe(
+    "\x1b[31m✗\x1b[0m codex        de\n",
+  )
 })
 
 test("a company without a first commit is told to onboard", async () => {

@@ -116,14 +116,28 @@ test("doctor runs the codex check doctor has when it runs", async () => {
   const dir = tempDir()
   const s = standIns(dir)
   await main(["doctor", "--home", path.join(dir, "home")], s)
-  expect(s.out()).toContain("ok    codex        stand-in")
+  expect(s.out()).toContain("✓ codex        stand-in")
 })
 
 test("doctor on a fresh machine fails and says to onboard", async () => {
   const dir = tempDir()
   const s = standIns(dir)
   expect(await main(["doctor", "--home", path.join(dir, "home")], s)).toBe(1)
-  expect(s.out()).toContain("fail  company      no company repo")
+  expect(s.out()).toContain("✗ company      no company repo")
+})
+
+test.each([
+  ["a terminal", true, { TERM: "xterm-256color" }, "\x1b[32m✓\x1b[0m codex        stand-in"],
+  ["no terminal", false, { TERM: "xterm-256color" }, "✓ codex        stand-in"],
+  ["NO_COLOR", true, { TERM: "xterm-256color", NO_COLOR: "1" }, "✓ codex        stand-in"],
+  ["TERM=dumb", true, { TERM: "dumb" }, "✓ codex        stand-in"],
+])("doctor colours its icons as the installer does [%s]", async (_, tty, environ, line) => {
+  const dir = tempDir()
+  const s = { ...standIns(dir), environ }
+  Object.assign(s.stdout, { isTTY: tty })
+  await main(["doctor", "--home", path.join(dir, "home")], s)
+  expect(s.out()).toContain(`${line}\n`)
+  if (!line.startsWith("\x1b")) expect(s.out()).not.toContain("\x1b[")
 })
 
 test("the home defaults to opencorp home", async () => {
