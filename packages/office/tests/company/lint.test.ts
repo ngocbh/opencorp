@@ -668,6 +668,41 @@ test("a tool module whose imports resolve outside the company repo is a lint err
   }
 })
 
+/** A flow `id` whose agent grants `alias` (a `uses:` ref of `ref`) and, when given, the child flow `child`. */
+function aliasing(id: string, alias: string, ref: string, child?: string): string {
+  const uses = child === undefined ? "" : `  ${child}: ${child}\n`
+  const tools = child === undefined ? alias : `${alias}, ${child}`
+  return `id: ${id}\nname: ${id}\ndescription: ${id}\nuses:\n  ${alias}: ${ref}\n${uses}nodes:\n  reply:\n    kind: agent\n`
+    + `    tools: [${tools}]\n    output: !str\n    prompt: hi\noutput: \${reply.output}\n`
+}
+
+test("a tool module with two aliases in the company's flows is a lint error naming both and their files: rules name it by its alias", async () => {
+  for (const childRef of ["./crm.ts", "./crm.ts:lookup"]) {
+    const root = makeCompany({
+      "shared/flows/chat.yaml": aliasing("chat", "crm", "./crm.ts", "child"),
+      "shared/flows/child.yaml": aliasing("child", childRef.includes(":") ? "lookup" : "c", childRef),
+      "shared/flows/crm.ts": crmModule(),
+    })
+    const issues = await withCode(root, "flow.module_aliases")
+    expect([childRef, issues.length]).toEqual([childRef, 1])
+    const other = childRef.includes(":") ? "lookup" : "c"
+    expect(issues[0]!.severity).toBe("error")
+    expect(issues[0]!.message).toBe(
+      `tool module shared/flows/crm.ts has two aliases: \`crm\` in shared/flows/chat.yaml and \`${other}\` in`
+        + " shared/flows/child.yaml; tool rules name a module by its alias, so give it one alias in every flow",
+    )
+  }
+})
+
+test("a tool module with one alias in every flow that names it lints clean", async () => {
+  const root = makeCompany({
+    "shared/flows/chat.yaml": aliasing("chat", "crm", "./crm.ts", "child"),
+    "shared/flows/child.yaml": aliasing("child", "crm", "./crm.ts"),
+    "shared/flows/crm.ts": crmModule(),
+  })
+  expect(await withCode(root, "flow.module_aliases")).toEqual([])
+})
+
 test("a tool module that imports only built-ins and files in the repo lints clean", async () => {
   const root = makeCompany({
     "shared/flows/chat.yaml": CRM_CHAT,

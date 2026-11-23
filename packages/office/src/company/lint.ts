@@ -385,6 +385,7 @@ function outsideImports(root: string, modules: readonly UsedModule[]): string[] 
  *  that drives harnesses drives one its person uses (a warning); a main flow declares the inputs the office passes it
  *  and has the template chat's shape. */
 async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
+  const used: UsedModule[] = []
   for (const [handle, person] of sorted(repo.people)) {
     const file = personPath(handle)
     if (person.kind === "agent" && !person.main) {
@@ -427,6 +428,7 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
         }
         continue
       }
+      used.push(...modules)
       for (const message of outsideImports(repo.root, modules)) {
         yield repoIssue(file, "person.module_import_outside", `${ref}: ${message}`)
       }
@@ -459,6 +461,34 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
         continue
       }
       for (const problem of chatShapeProblems(ref, flow)) yield repoIssue(file, "person.main_chat_shape", problem)
+    }
+  }
+  yield* moduleAliases(repo.root, used)
+}
+
+/**
+ * An error for each tool module file the company's flows give more than one `uses:` alias: tool rules name a module's
+ * tools by the alias (`module crm *`), so a second alias would slip past a rule on the first. Each names the first
+ * alias and its flow (by repo path, then alias) and the other alias and its flow, where it is reported.
+ */
+function* moduleAliases(root: string, used: readonly UsedModule[]): Iterable<RepoIssue> {
+  const byFile = new Map<string, Map<string, UsedModule>>()
+  for (const module of used) {
+    const file = resolvePath(module.file)
+    const found = byFile.get(file) ?? new Map<string, UsedModule>()
+    byFile.set(file, found)
+    found.set(`${module.flow}\0${module.alias}`, module)
+  }
+  for (const [file, found] of [...byFile].sort(([a], [b]) => a.localeCompare(b))) {
+    const order = [...found.values()].sort((a, b) => a.flow.localeCompare(b.flow) || a.alias.localeCompare(b.alias))
+    const first = order[0]!
+    const reported = new Set([first.alias])
+    for (const other of order) {
+      if (reported.has(other.alias)) continue
+      reported.add(other.alias)
+      yield repoIssue(other.flow, "flow.module_aliases",
+        `tool module ${path.relative(root, file)} has two aliases: \`${first.alias}\` in ${first.flow} and`
+        + ` \`${other.alias}\` in ${other.flow}; tool rules name a module by its alias, so give it one alias in every flow`)
     }
   }
 }
