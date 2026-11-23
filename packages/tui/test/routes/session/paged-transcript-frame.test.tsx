@@ -237,7 +237,8 @@ test("a session opens where the reader left it", async () => {
   const S1 = "000000000000000000000000S1"
   const S2 = "000000000000000000000000S2"
   const state = seed()
-  state.people.push({ handle: "lan", name: "Lan", kind: "agent", title: "Designer", manager: "ngocbh" })
+  const ceo = state.people.find((p) => p.kind === "human")!.handle
+  state.people.push({ handle: "lan", name: "Lan", kind: "agent", title: "Designer", manager: ceo })
   const base = state.sessions[0]!
   const at = (ms: number) => new Date(Date.now() - ms).toISOString()
   state.sessions = [
