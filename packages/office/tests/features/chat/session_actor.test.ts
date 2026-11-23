@@ -58,6 +58,7 @@ import {
   PRICES,
   PRICEY,
   reopen,
+  replyRunning,
   say,
   type ScriptedWorker,
   scriptedWorker,
@@ -406,7 +407,9 @@ test("a message sent while the reply runs is published unread, and again, read, 
   onTestFinished(() => sub.close())
   await actor.prompt("Plan the trip.")
   await fake.waitForRequests(1, 30_000)
-  // The held call can't read it: the reply reads a steer before its next model call.
+  // Once the actor knows the reply runs, a message steers it; the held call can't read it, since the reply reads a
+  // steer before its next model call.
+  await replyRunning(o)
   expect(await actor.prompt("Also mention Rome.")).toBe("steer")
   const events: LiveEvent[] = []
   const drain = async () => {
