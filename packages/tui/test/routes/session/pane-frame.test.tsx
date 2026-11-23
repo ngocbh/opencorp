@@ -782,6 +782,43 @@ test("a Codex secret card that goes stale mid-entry drops the rest of the line; 
   }
 })
 
+test("Esc on a Codex card with text on another page stops the turn and drops none of the owner's keys", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    const card = office.addQuestion({
+      session_id: child.id,
+      source: "harness" as const,
+      node_id: "1",
+      run_id: "turn_1",
+      question: "Two things",
+      questions: [
+        { question: "Branch name?", header: "Branch", options: [] },
+        { question: "Proceed?", header: "Go", options: [{ label: "yes" }, { label: "no" }] },
+      ],
+    })
+    await app.until((f) => f.includes("Branch name?"))
+    await Bun.sleep(100)
+    app.input.typeText("feat")
+    await app.until((f) => f.includes("feat"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Proceed?"))
+    await escape(app)
+    await until(() => sent(office, `/sessions/${child.id}/interrupt`).length === 1)
+    // The interrupt makes Codex stop waiting, which is the owner's doing.
+    office.expire(card.id)
+    await app.until((f) => !f.includes("Proceed?"))
+    await Bun.sleep(100)
+    expect(app.frame()).not.toContain("keys are dropped")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a card from an older Codex session waits behind a younger one's that has the keys, then takes them", async () => {
   const office = createFakeOffice()
   const chat = office.state.sessions[0]!

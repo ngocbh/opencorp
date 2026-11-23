@@ -46,7 +46,8 @@ export function HarnessCard(props: {
   )
   // One answer call at a time: a second pick while one is in flight would race it.
   let sending = false
-  // Whether the owner's answer from here is out or taken: the card closing after it is their doing.
+  // Whether the owner's answer or Esc from here is out or taken: the card closing after it (an answer refused because it
+  // was taken, Codex no longer waiting once the turn stops) is their doing.
   let answered = false
 
   /** Says the answer never reached Codex, which stopped waiting for the card. */
@@ -64,10 +65,9 @@ export function HarnessCard(props: {
       .then((q) => {
         // The card closes on any status but open; a stale one means Codex never got the answer.
         if (q.status === "stale") unused()
-        office.putQuestion(q)
+        return office.putQuestion(q)
       })
       .catch((error) => {
-        answered = false
         if (error instanceof OfficeError && error.status === 409)
           return office
             .refreshQuestion(id)
@@ -78,14 +78,20 @@ export function HarnessCard(props: {
             })
         toast.show({ title: "Answering failed", message: errorMessage(error), variant: "error" })
       })
-      .finally(() => (sending = false))
+      .finally(() => {
+        sending = false
+        // An answer that left the card open, as one that failed, is no longer the owner's doing.
+        if (office.state.questions[id]?.status === "open") answered = false
+      })
   }
 
   function interrupt() {
     props.onInterrupt?.()
-    office.client.sessions
-      .interrupt(props.question.session_id)
-      .catch((error) => toast.show({ title: "Interrupting failed", message: errorMessage(error), variant: "error" }))
+    answered = true
+    office.client.sessions.interrupt(props.question.session_id).catch((error) => {
+      answered = false
+      toast.show({ title: "Interrupting failed", message: errorMessage(error), variant: "error" })
+    })
   }
 
   return (

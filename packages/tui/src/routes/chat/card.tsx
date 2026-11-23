@@ -82,31 +82,35 @@ export function QuestionCard(props: {
   // One office call at a time: a second pick, stop, send back, or dismiss while one is in flight
   // would race it.
   let sending = false
-  // Whether the owner's answer or stop from here is out or taken: the card closing after it is their doing.
+  // Whether one of the owner's actions from here (an answer, a stop, a send back) is out or closed the card: the card
+  // closing after it, an answer refused because it was taken say, is their doing.
   let answered = false
 
   function call(run: () => Promise<unknown>) {
     if (sending) return toast.show({ message: "Busy: the last action is still sending", variant: "info" })
     sending = true
-    run().finally(() => (sending = false))
+    answered = true
+    run().finally(() => {
+      sending = false
+      // One that left the card open, as a dismiss or a failure does, is no longer the owner's doing.
+      if (office.state.questions[question().id]?.status === "open") answered = false
+    })
   }
 
   function send(req: AnswerRequest) {
     const id = question().id
-    call(() => {
-      answered = true
-      return office.client.questions
+    call(() =>
+      office.client.questions
         .answer(id, req)
         .then((q) => office.putQuestion(q))
         .catch((error) => {
-          answered = false
           if (error instanceof OfficeError && error.status === 409) {
             toast.show({ message: "This question was already answered", variant: "warning" })
             return office.refreshQuestion(id).catch(() => {})
           }
           toast.show({ title: "Answering failed", message: errorMessage(error), variant: "error" })
-        })
-    })
+        }),
+    )
   }
 
   function sendBack() {
@@ -142,18 +146,16 @@ export function QuestionCard(props: {
 
   function stop() {
     setConfirming(false)
-    call(() => {
-      answered = true
-      return office.client.questions
+    call(() =>
+      office.client.questions
         .stop(question().id)
         .then((q) => office.putQuestion(q))
         .catch((error) => {
-          answered = false
           if (isNotImplemented(error))
             return toast.show({ message: "Stopping a question is not available yet", variant: "warning" })
           toast.show({ title: "Stopping failed", message: errorMessage(error), variant: "error" })
-        })
-    })
+        }),
+    )
   }
 
   onCleanup(() => {
