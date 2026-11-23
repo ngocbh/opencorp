@@ -154,13 +154,16 @@ export type NodeCalls = { list: RunCallEntry[]; calls: RunCall[] }
 /** Model calls by run id and node id. */
 export type RunCalls = Record<string, Record<string, NodeCalls>>
 
+/** HTML a model wrote: shown as text, it never becomes an element or runs. */
+export const HTML = '<img src=x onerror="window.__pwned=1">'
+
 /** A file listing of 30 lines: long enough to fold. */
 export const LISTING = Array.from({ length: 30 }, (_, i) => `notes-${String(i).padStart(2, "0")}.md`).join("\n")
 
 /**
  * Run 5's `chat#2/reply`: call 2, its first attempt cut short and retried, thinks, then saves the notes (held, then
- * released by @ngocbh) and lists the folder (allowed as read-only, its long listing folded); call 5 says "Done.", its
- * system prompt cut by the office. And
+ * released by @ngocbh) and lists the folder (allowed as read-only, its long listing folded); call 5 says "Done." and
+ * writes HTML, its system prompt cut by the office. And
  * run 6's `chat#0/reply`: call 1, which an interrupt cut.
  */
 export function runCalls(): RunCalls {
@@ -215,7 +218,7 @@ export function runCalls(): RunCalls {
     digest_mismatch: false,
     attempts: [{ n: 5, started_at: at(11), first_token_at: at(12), finished_at: at(12), error: null, retry_in: null,
                  usage }],
-    reply: { role: "assistant", author: null, parts: [{ type: "text", text: "Done." }] },
+    reply: { role: "assistant", author: null, parts: [{ type: "text", text: "Done." }, { type: "text", text: HTML }] },
     // As if its system prompt had been too long to send whole.
     tool_results: [], usage, finish: "stop", interrupted: false, cut: ["/request/system"],
   }

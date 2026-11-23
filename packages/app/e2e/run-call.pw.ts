@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
-import { rid } from "./runs"
+import { HTML, rid } from "./runs"
 
 test.beforeEach(async ({ request }) => {
   await request.post("/__fixture/reset")
@@ -83,6 +83,15 @@ test("Escape goes back from a call to its node, then closes the node", async ({ 
   await expect(detail).toBeVisible()
   await page.keyboard.press("Escape")
   await expect(detail).toHaveCount(0)
+})
+
+test("HTML in a reply shows as text and never runs", async ({ page }) => {
+  const detail = await openReply(page)
+  await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 5/ }).click()
+  const reply = page.getByRole("region", { name: "Model call 5" }).getByRole("region", { name: "Reply" })
+  await expect(reply).toContainText(HTML)
+  await expect(reply.locator("img")).toHaveCount(0)
+  expect(await page.evaluate(() => (window as { __pwned?: number }).__pwned)).toBeUndefined()
 })
 
 test("an interrupted call says so", async ({ page }) => {
