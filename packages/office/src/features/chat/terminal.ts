@@ -134,6 +134,12 @@ export class EmployeeTerminal {
     this.#terminal.interruptWaits()
   }
 
+  /** A message for the agent arrived: the replies its calls wait on come now, their commands running on
+   *  (`Terminal.messageArrived`). */
+  messageArrived(): void {
+    this.#terminal.messageArrived()
+  }
+
   /** Ends every shell and its record, and removes each listing. */
   async close(): Promise<void> {
     try {

@@ -38,10 +38,13 @@ type Workspace = Pick<WorkspaceTools, "call" | "interrupt">
 /** What the session actor and the approvals use of a main chat's terminal. */
 type Shells = Pick<
   EmployeeTerminal,
-  "tools" | "bind" | "plan" | "where" | "interruptWaits" | "close" | "onEnded" | "delivered"
+  "tools" | "bind" | "plan" | "where" | "interruptWaits" | "close" | "onEnded" | "delivered" | "messageArrived"
 >
 /** What the session actor uses of a main chat's Codex or Claude Code instrument. */
-type Harnessed = Pick<EmployeeInstrument, "tools" | "cutCalls" | "close" | "suspend">
+type Harnessed = Pick<
+  EmployeeInstrument,
+  "tools" | "cutCalls" | "close" | "suspend" | "onEnded" | "delivered" | "messageArrived"
+>
 
 /** What a run's tool groups are built for: the session, the run, how its tools ask questions, and the permissions
  *  its terminal's commands run under. */

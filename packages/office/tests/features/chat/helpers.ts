@@ -15,7 +15,7 @@ import { ConnectionFile } from "../../../src/models/connections.ts"
 import { ChatHarness } from "../../../src/features/chat/harness.ts"
 import { Hooks } from "../../../src/runtime/sessions/hooks.ts"
 import { type Lister, ModelCache, ownModels } from "../../../src/models/models.ts"
-import { mainSpec } from "../../../src/features/chat/run_spec.ts"
+import { mainSpec, type RunSpec } from "../../../src/features/chat/run_spec.ts"
 import { EmployeeTerminal } from "../../../src/features/chat/terminal.ts"
 import { MAIN_CHAT } from "../../../src/company/chat_flow.ts"
 import { type ActorContext, type ActorWorker, SessionActor, type Wait } from "../../../src/features/chat/session_actor.ts"
@@ -586,6 +586,7 @@ export async function chatOffice(
     groups = {},
     office: build = (files) => makeOffice({ files }),
     connections = {},
+    codexInstrument,
   }: {
     files?: Record<string, unknown>
     prices?: Record<string, unknown>
@@ -594,6 +595,8 @@ export async function chatOffice(
     groups?: Record<string, Record<string, OfficeTool>>
     office?: (files: Record<string, unknown>) => Office
     connections?: Record<string, string>
+    /** Makes each spec's Codex instrument, over the session's folder. */
+    codexInstrument?: (session: SessionRecord, folder: string, office: Office) => Promise<NonNullable<RunSpec["codex"]>>
   } = {},
 ): Promise<ChatOffice> {
   const actors: SessionActor[] = []
@@ -735,7 +738,11 @@ export async function chatOffice(
         instruments: office.instruments,
         mode: () => store.getSession(session.id)?.mode ?? session.mode,
       })
-      const spec = mainSpec({ store, git, repo, session, workspace: standIn, terminal, monitor, carried })
+      const instrument = await codexInstrument?.(session, office.paths.sessionDir(session.id), office)
+      const spec = mainSpec({
+        store, git, repo, session, workspace: standIn, terminal, monitor, carried,
+        ...(instrument === undefined ? {} : { codex: instrument }),
+      })
       return {
         ...spec,
         groups: (c) => {
