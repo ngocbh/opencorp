@@ -36,7 +36,7 @@ const SOON: [string, RegExp][] = [
   ["Routines", /scheduled SOPs/i],
   ["SOPs", /Yian flows/],
   ["Connections", /model providers/i],
-  ["Activity", /audit/i],
+  ["Activity", /what happened in each run/i],
 ]
 const soon = (page: Page, name: string) => nav(page).getByRole("link", { name: `${name} soon`, exact: true })
 
