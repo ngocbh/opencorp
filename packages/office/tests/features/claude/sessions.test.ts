@@ -8,7 +8,7 @@ import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from
 import type { Part } from "@opencorp/protocol"
 import { ClaudeSessions } from "../../../src/features/claude/sessions.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
-import { ClaudeProcess } from "../../../src/tools/claude/claude.ts"
+import { ClaudeProcess, PLAIN_COMMANDS } from "../../../src/tools/claude/claude.ts"
 import { CLAUDE, readClaudeRecord } from "../../../src/tools/claude/instrument.ts"
 import { HarnessRecord } from "../../../src/tools/harness/record.ts"
 import { person } from "../../company/helpers.ts"
@@ -71,9 +71,10 @@ test("a start is the chat's child session, under the employee's permission, told
   const [start] = starts(h)
   expect(start!.flags!["session-id"]).toBe(session.harness_session_id)
   expect(start!.cwd).toBe(h.workspace)
-  // The speakers' instructions, appended to Claude Code's own system prompt.
+  // The speakers' instructions, appended to Claude Code's own system prompt, then the office's words on commands.
   expect(start!.appended).toContain("Two people write to you in this session")
   expect(start!.appended).toContain(OWNER)
+  expect(start!.appended).toContain(PLAIN_COMMANDS)
   // The employee's permission: Claude Code's sandbox, its settings files off, and the session's own temp folder.
   expect(start!.flags!.settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true })
   expect(start!.flags!["setting-sources"]).toBe("")

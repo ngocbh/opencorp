@@ -21,6 +21,7 @@ import {
   claudeArgs,
   claudeCommand,
   CLAUDE_TOOLS,
+  PLAIN_COMMANDS,
   claudeSession,
   nativeClaude,
   refusal,
@@ -209,7 +210,14 @@ test("the session's own temp folder is one of Claude Code's working folders, so 
   await claude.close(2000)
 })
 
-test("a session's start passes the owner's and the project's CLAUDE.md from a file in its own temp folder, removed when Claude Code exits", async () => {
+test("Claude Code is asked, in two or three sentences, for plain commands it can check, scratch files where it may write them, and plain steps after a refusal", () => {
+  expect(PLAIN_COMMANDS.split(/(?<=\.) /).length).toBeLessThanOrEqual(3)
+  for (const said of ["`( )` groups", "`$(…)`", "loops", "working folder", "`$TMPDIR`", "split it into plain steps"]) {
+    expect(PLAIN_COMMANDS, said).toContain(said)
+  }
+})
+
+test("a session's start passes the office's words on commands, then the owner's and the project's CLAUDE.md, from a file in its own temp folder, removed when Claude Code exits", async () => {
   const { root, home, ws, tmp, fake, permission } = layout()
   const config = path.join(home, ".claude")
   fs.writeFileSync(path.join(config, "CLAUDE.md"), "Owner says: be brief.\n")
@@ -223,6 +231,7 @@ test("a session's start passes the owner's and the project's CLAUDE.md from a fi
   expect(fs.statSync(file).mode & 0o777).toBe(0o600)
   expect(fs.statSync(file).uid).toBe(process.getuid!())
   const text = fs.readFileSync(file, "utf8")
+  expect(text.startsWith(`${PLAIN_COMMANDS}\n\n`)).toBe(true)
   expect(text).toContain("Owner says: be brief.")
   expect(text).toContain("Project says: use tabs.")
   const logged: string[] = []
@@ -242,27 +251,28 @@ test("a session's start passes the owner's and the project's CLAUDE.md from a fi
   expect(fs.existsSync(file)).toBe(false)
   expect(logged).toEqual([])
 
-  // With no CLAUDE.md anywhere, no file and no flag.
+  // With no CLAUDE.md anywhere, the file holds the office's words on commands alone.
   fs.rmSync(path.join(config, "CLAUDE.md"))
   fs.rmSync(path.join(ws, "CLAUDE.md"))
+  const start = claudeStart(p)
   const bare = claudeSession(p, { claude: fake.claude, configDir: config })
-  expect(bare.instructions).toBeNull()
-  expect(bare.command.some((arg) => arg.startsWith("--append-system-prompt"))).toBe(false)
-  expect(fs.readdirSync(tmp)).toEqual([])
+  expect(bare.instructions).toBe(file)
+  expect(fs.readFileSync(file, "utf8")).toBe(`${PLAIN_COMMANDS}\n`)
+  expect(fs.readdirSync(tmp)).toEqual(["opencorp.instructions.md"])
   // The rest is the permission's start, as claudeArgs builds it.
-  expect(bare.command.slice(1)).toEqual(claudeArgs(claudeStart(p)))
-  expect(bare.env).toEqual(claudeStart(p).env)
+  expect(bare.command.slice(1)).toEqual(claudeArgs(start, { instructions: file }))
+  expect(bare.env).toEqual(start.env)
 
-  // The office's own words for the session come first, with no CLAUDE.md too.
+  // The office's own words for the session come first, then those on commands. Each start's temp folder is fresh.
+  fs.rmSync(file)
   const told = claudeSession(p, { claude: fake.claude, configDir: config, prompt: "Two people write to you." })
   expect(told.instructions).toBe(file)
-  expect(fs.readFileSync(file, "utf8")).toBe("Two people write to you.\n")
-  // Each start's temp folder is fresh.
+  expect(fs.readFileSync(file, "utf8")).toBe(`Two people write to you.\n\n${PLAIN_COMMANDS}\n`)
   fs.rmSync(file)
   fs.writeFileSync(path.join(config, "CLAUDE.md"), "Owner says: be brief.\n")
   const both = claudeSession(p, { claude: fake.claude, configDir: config, prompt: "Two people write to you." })
-  const text2 = fs.readFileSync(both.instructions!, "utf8")
-  expect(text2.startsWith("Two people write to you.\n\n")).toBe(true)
+  const text2 = fs.readFileSync(both.instructions, "utf8")
+  expect(text2.startsWith(`Two people write to you.\n\n${PLAIN_COMMANDS}\n\n`)).toBe(true)
   expect(text2).toContain("Owner says: be brief.")
 })
 
@@ -332,9 +342,12 @@ test("with no MCP server allowed, or none of those allowed defined, nothing is w
   const config = path.join(home, ".claude.json")
   fs.writeFileSync(config, JSON.stringify({ mcpServers: SERVERS }))
   const configDir = path.join(home, ".claude")
+  const start = claudeStart(permission())
   const none = claudeSession(permission(), { claude: fake.claude, configDir, claudeJson: config })
   expect(none.mcp).toEqual({ file: null, servers: [], missing: [] })
-  expect(none.command.slice(1)).toEqual(claudeArgs(claudeStart(permission())))
+  expect(none.command.slice(1)).toEqual(claudeArgs(start, { instructions: none.instructions }))
+  // Each start's temp folder is fresh: its instructions go between them.
+  fs.rmSync(none.instructions)
   const undefinedOnly = claudeSession(permission({ allowedMcp: ["linear"], mcpHome }), {
     claude: fake.claude,
     configDir,
@@ -344,11 +357,13 @@ test("with no MCP server allowed, or none of those allowed defined, nothing is w
   expect(undefinedOnly.command.some((arg) => arg.startsWith("--mcp-config"))).toBe(false)
   expect(settingsOf(undefinedOnly.command).permissions.allow).toBeUndefined()
   expect(fs.readdirSync(mcpHome)).toEqual(["cwd"])
+  fs.rmSync(undefinedOnly.instructions)
   // A config that can't be read loads none of them.
   fs.writeFileSync(config, "{not json")
   const options = { claude: fake.claude, configDir, claudeJson: config }
   const unread = claudeSession(permission({ allowedMcp: ["github"], mcpHome }), options)
   expect(unread.mcp).toEqual({ file: null, servers: [], missing: ["github"] })
+  fs.rmSync(unread.instructions)
   // Allowed servers need the office's MCP folder.
   expect(() => claudeSession(permission({ allowedMcp: ["github"] }), options)).toThrow(/office's MCP folder/)
 })
