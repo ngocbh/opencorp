@@ -885,12 +885,6 @@ export function Prompt(props: PromptProps) {
     }
 
     input.insertText(normalizedText)
-
-    setTimeout(() => {
-      if (!input || input.isDestroyed) return
-      input.invalidateIntrinsicSize()
-      renderer.requestRender()
-    }, 0)
   }
 
   /** Empties the prompt once `text`, its content, has gone out, keeping `text` in the history. */
@@ -1065,12 +1059,6 @@ export function Prompt(props: PromptProps) {
                   promptPartTypeId = input.extmarks.registerType("prompt-part")
                 }
                 props.ref?.(ref)
-                setTimeout(() => {
-                  // setTimeout is a workaround and needs to be addressed properly
-                  if (!input || input.isDestroyed) return
-                  input.cursorColor = theme.text
-                  if (tuiConfig.cursor) input.cursorStyle = tuiConfig.cursor
-                }, 0)
               }}
               onMouseDown={(r: MouseEvent) => !inactive() && r.target?.focus()}
               focusedBackgroundColor={theme.backgroundElement}
