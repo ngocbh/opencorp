@@ -130,6 +130,56 @@ test("after Esc, the stopped reply's interrupted marker shows, and nothing else 
   }
 })
 
+test("a send after Esc keeps the stopped reply's interrupted marker, before and after the next reply", async () => {
+  const office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const first: Message = {
+    id: office.nextId(),
+    session_id: id,
+    role: "assistant",
+    created_at: new Date().toISOString(),
+    parts: [{ id: office.nextId(), type: "text", text: "Looking" }],
+  }
+  const next: Message = {
+    id: office.nextId(),
+    session_id: id,
+    role: "assistant",
+    created_at: new Date().toISOString(),
+    parts: [{ id: office.nextId(), type: "text", text: "Fresh start" }],
+  }
+  // The first prompt's reply streams; the second's comes only when the test sends it.
+  office.onPrompt((_, req) => {
+    if (req.text === "go") office.live({ type: "message.updated", session_id: id, data: first as never })
+  })
+  const marker = /^\s*\[?interrupted\]?\s*$/m
+  const app = await bootFrame(createStub(office), { sessionID: id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    app.input.typeText("go")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Looking") && f.includes("esc interrupt"))
+    app.input.pressEscape()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${id}/interrupt`))
+    const part = { ...first.parts[0], text: "Looking" + INTERRUPTED_TEXT }
+    office.live({ type: "part.updated", session_id: id, data: { message_id: first.id, part } as never })
+    office.replyEnded(id)
+    await app.until((f) => marker.test(f) && f.includes("@minh · idle"))
+    app.input.typeText("again")
+    app.input.pressEnter()
+    // The session works on "again" and no reply has come yet: the stopped reply is still the last one.
+    await app.until((f) => f.includes("@minh · busy") && f.split("again").length === 2)
+    for (let i = 0; i < 10; i++) await app.setup.renderOnce()
+    expect(app.frame()).toMatch(marker)
+    office.live({ type: "message.updated", session_id: id, data: next as never })
+    await app.until((f) => f.includes("Fresh start"))
+    for (let i = 0; i < 10; i++) await app.setup.renderOnce()
+    expect(app.frame()).toMatch(marker)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a second Esc keeps hiding a reply that arrived after the first", async () => {
   const office = createFakeOffice()
   const id = office.state.sessions[0].id

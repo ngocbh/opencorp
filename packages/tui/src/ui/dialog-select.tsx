@@ -775,7 +775,6 @@ function Option(props: {
         attributes={props.active && !props.muted ? TextAttributes.BOLD : undefined}
         overflow="hidden"
         wrapMode="none"
-        paddingLeft={3}
       >
         {props.titleView ??
           (props.truncateTitle === false

@@ -158,7 +158,7 @@ export function ShellTab(props: {
 
   return (
     <Show when={composer.active("shell")}>
-      {/* Five rows at most, as upstream's; OpenTUI 0.8's scrollbox takes all of its maxHeight, so it is the rows'. */}
+      {/* Five rows at most, as upstream's; OpenTUI's scrollbox, 0.9's too, fills its maxHeight, so it is the rows'. */}
       <scrollbox
         scrollbarOptions={{ visible: false }}
         maxHeight={Math.min(5, Math.max(1, entries().length))}

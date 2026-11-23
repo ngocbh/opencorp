@@ -282,14 +282,14 @@ export function Profile() {
       <scrollbox flexGrow={1} minHeight={0}>
         <Show when={profile()}>
           {(p) => (
-            // Streaming mode in a non-shrinking box, as in the session transcript: without it the
-            // markdown blanks for a few frames each time the layout under it changes.
+            // A non-shrinking box, as in the session transcript: without it the markdown blanks for a
+            // few frames each time the layout under it changes.
             <box flexShrink={0}>
               <markdown
                 syntaxStyle={syntax()}
-                streaming={true}
-                internalBlockMode="top-level"
                 content={p().text}
+                // Tables without borders, as before OpenTUI 0.9 made the grid the default.
+                tableOptions={{ style: "columns" }}
                 conceal={true}
                 fg={theme.markdownText}
                 bg={theme.background}

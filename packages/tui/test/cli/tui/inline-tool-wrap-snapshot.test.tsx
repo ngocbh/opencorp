@@ -118,7 +118,7 @@ function LoadedReadBeforeTaskFixture() {
         Read src/cli/cmd/tui/routes/session/index.tsx
       </InlineToolRow>
       <box paddingLeft={3}>
-        <text paddingLeft={3}>↳ Loaded src/cli/cmd/tui/routes/session/tools.tsx</text>
+        <text>↳ Loaded src/cli/cmd/tui/routes/session/tools.tsx</text>
       </box>
       <InlineToolRow icon="✓" complete={true} pending="" separate={true}>
         {"Explore Task — Inspect active task spacing\n↳ 1 toolcall · 501ms"}

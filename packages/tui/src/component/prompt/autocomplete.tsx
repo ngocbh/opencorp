@@ -16,6 +16,7 @@ import { Locale } from "../../util/locale"
 import type { PromptFilePart, PromptInfo } from "../../prompt/history"
 import { findFiles } from "../../prompt/files"
 import { useFrecency } from "../../prompt/frecency"
+import { deleteCells } from "../../prompt/content"
 import { useBindings, useCommandSlashes, useOpenCorpModeStack } from "../../keymap"
 import { displayCharAt, mentionTriggerIndex } from "../../prompt/display"
 
@@ -171,12 +172,7 @@ export function Autocomplete(props: {
     const needsSpace = charAfterCursor !== " "
     const append = "@" + text + (needsSpace ? " " : "")
 
-    input.cursorOffset = store.index
-    const startCursor = input.logicalCursor
-    input.cursorOffset = currentCursorOffset
-    const endCursor = input.logicalCursor
-
-    input.deleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
+    deleteCells(input, store.index, currentCursorOffset)
     input.insertText(append)
 
     const virtualText = "@" + text

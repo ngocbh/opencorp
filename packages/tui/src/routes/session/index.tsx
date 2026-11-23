@@ -108,6 +108,8 @@ const context = createContext<{
   width: number
   sessionID: string
   conceal: () => boolean
+  /** Whether the last reply can still grow. */
+  streaming: () => boolean
   showTimestamps: () => boolean
   showDetails: () => boolean
   showGenericToolOutput: () => boolean
@@ -222,13 +224,13 @@ export function Session(props: SessionProps) {
    * The viewed session's assistant messages from before its current (or next) turn began. Esc
    * stops that turn, and what a later turn writes after a message sent before Esc still shows.
    */
-  let turnStart: Record<string, true> | undefined
+  const [turnStart, setTurnStart] = createSignal<Record<string, true>>()
   createEffect(
     on(
       viewID,
       () => {
         setFrozen(undefined)
-        turnStart = undefined
+        setTurnStart(undefined)
       },
       { defer: true },
     ),
@@ -241,7 +243,7 @@ export function Session(props: SessionProps) {
       () => [viewID(), interruptible(viewStatus()), viewSession()?.turns ?? 0] as const,
       ([id, live, turns], prev) => {
         if (!prev || prev[0] !== id) return
-        if ((prev[1] && !live) || turns > prev[2]) turnStart = assistantIds(messages())
+        if ((prev[1] && !live) || turns > prev[2]) setTurnStart(assistantIds(messages()))
       },
       { defer: true },
     ),
@@ -249,18 +251,18 @@ export function Session(props: SessionProps) {
   /** Esc: freezes the view; the turn after the stopped one starts from what it shows now. */
   function interrupt() {
     // A harness steer joins the live turn, so the next message after it can still be the stopped turn's.
-    setFrozen(freeze(messages(), frozen(), harnessed() ? undefined : turnStart))
-    turnStart = assistantIds(messages())
+    setFrozen(freeze(messages(), frozen(), harnessed() ? undefined : turnStart()))
+    setTurnStart(assistantIds(messages()))
   }
   /**
    * Ends the freeze as the user sends, before the office answers, so the new reply's first
    * message shows even if it streams in first; returns an undo for a send that fails.
    */
   function lift() {
-    const start = turnStart
+    const start = turnStart()
     // A message to a session between turns starts one.
-    if (!interruptible(viewStatus())) turnStart = assistantIds(messages())
-    const started = turnStart
+    if (!interruptible(viewStatus())) setTurnStart(assistantIds(messages()))
+    const started = turnStart()
     const f = frozen()
     const lifted = f?.active ? unfreeze(f, messages()) : undefined
     const view = viewID()
@@ -268,7 +270,7 @@ export function Session(props: SessionProps) {
     // A newer Esc, or a switch to or from the side view, has since replaced the lifted freeze.
     return () => {
       if (viewID() !== view) return
-      if (turnStart === started) turnStart = start
+      if (turnStart() === started) setTurnStart(start)
       if (lifted && frozen() === lifted) setFrozen(f)
     }
   }
@@ -370,10 +372,10 @@ export function Session(props: SessionProps) {
             toBottom()
             // A turn may have started before this view opened (the first message is sent from home): it
             // began at the last user message, or begins after what is here now.
-            if (turnStart || viewID() !== sessionID) return
+            if (turnStart() || viewID() !== sessionID) return
             const list = messages()
             const last = Math.max(list.findLastIndex((m) => m.role === "user"), 0)
-            turnStart = assistantIds(interruptible(viewStatus()) ? list.slice(0, last) : list)
+            setTurnStart(assistantIds(interruptible(viewStatus()) ? list.slice(0, last) : list))
           })
           .catch((error) => {
             // An office that is down loads the session when it comes back.
@@ -731,6 +733,12 @@ export function Session(props: SessionProps) {
   }))
 
   const lastAssistant = createMemo(() => shown().findLast((x) => x.role === "assistant"))
+  /** Whether the last reply can still grow: the transcript ends with it, it is the current turn's (a stopped or
+   *  finished turn's never grows again), the run is on and Esc hasn't frozen the view. */
+  const streaming = () => {
+    const last = shown().at(-1)
+    return last?.role === "assistant" && !turnStart()?.[last.id] && interruptible(viewStatus()) && !frozen()?.active
+  }
 
   return (
     <context.Provider
@@ -740,6 +748,7 @@ export function Session(props: SessionProps) {
         },
         sessionID: props.sessionID,
         conceal,
+        streaming,
         showTimestamps,
         showDetails,
         showGenericToolOutput,
@@ -1062,8 +1071,7 @@ function TextPartView(props: { last: boolean; part: TextPart }) {
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
         <markdown
           syntaxStyle={syntax()}
-          streaming={true}
-          internalBlockMode="top-level"
+          streaming={props.last && ctx.streaming()}
           content={props.part.text.trim()}
           tableOptions={{ style: "grid" }}
           conceal={ctx.conceal()}
@@ -1515,7 +1523,6 @@ export function InlineToolRow(props: {
           <Show
             fallback={
               <text
-                paddingLeft={3}
                 fg={props.color}
                 attributes={props.denied ? TextAttributes.STRIKETHROUGH : undefined}
               >
@@ -1588,7 +1595,7 @@ function BlockTool(props: {
           <Show
             when={props.spinner}
             fallback={
-              <text paddingLeft={3} fg={theme.textMuted}>
+              <text fg={theme.textMuted}>
                 {title()}
               </text>
             }
