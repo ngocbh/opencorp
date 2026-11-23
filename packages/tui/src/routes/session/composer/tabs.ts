@@ -14,6 +14,9 @@ const rank = (id: string) => {
 /** How the picker marks a Codex or Claude Code session: running a turn now, idle between turns, or ended. */
 export type ChildState = "running" | "idle" | "ended"
 
+/** A harness's name as the picker and the chat's calls say it, before the session's (`Codex: codex 1`). */
+export const HARNESS_TITLE: Record<"codex" | "claude", string> = { codex: "Codex", claude: "Claude Code" }
+
 /** A Codex or Claude Code session of a chat's family, as the picker lists it. */
 export type FamilyEntry = {
   sessionID: string

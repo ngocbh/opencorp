@@ -10,13 +10,12 @@ import { useToast } from "../../../ui/toast"
 import { errorMessage } from "../../../util/error"
 import { display } from "../../../util/printable"
 import { useComposerTab } from "./context"
-import { filterMemory, harnessFamily, type ChildState, type FamilyEntry } from "./tabs"
+import { filterMemory, HARNESS_TITLE, harnessFamily, type ChildState, type FamilyEntry } from "./tabs"
 
 interface SessionEntry extends FamilyEntry {
   current: boolean
 }
 
-const AGENT: Record<FamilyEntry["harness"], string> = { codex: "Codex", claude: "Claude Code" }
 const STATUS: Record<ChildState, string> = { running: "Running", idle: "Idle", ended: "Ended" }
 
 const useFilter = filterMemory()
@@ -222,7 +221,7 @@ export function SessionsTab(props: { sessionID: string; visibleID?: string; onOp
                       wrapMode="none"
                     >
                       {entry.prefix}
-                      {AGENT[entry.harness]}: {display(entry.name)}
+                      {HARNESS_TITLE[entry.harness]}: {display(entry.name)}
                     </text>
                   </box>
                   <text fg={active() ? selectedForeground(theme) : theme.textMuted} wrapMode="none">
