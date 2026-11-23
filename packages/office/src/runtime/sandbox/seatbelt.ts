@@ -207,7 +207,7 @@ export function sshProfile(
       [...policy.readOnly, ...policy.writable, ...policy.readWrite, ...policy.sockets, policy.tmpdir],
       developer,
     ),
-    ";; ~/.ssh, the files ssh -G names, hq/ssh and any extra paths, read-only.",
+    ";; ~/.ssh, the files ssh -G names, the destination's hq/<name>/ssh and any extra paths, read-only.",
     allow("file-read*", policy.readOnly.map((p) => `(subpath ${quote(p)})`)),
     ";; known_hosts, this call's status file and a ticket file: their data only, " +
       "so none is removed, renamed or replaced.",

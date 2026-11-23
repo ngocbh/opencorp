@@ -72,13 +72,16 @@ test("a temp folder or status file that would expose hq is refused", async () =>
   fs.symlinkSync(h.paths.root, h.paths.ssh)
   await expect(make(h.tmpdir)).rejects.toThrow(UnsafeProfile)
   await expect(make(h.tmpdir)).rejects.toThrow("would expose hq")
-  // Or for a link to the destination's whole folder, or to another destination's ssh folder.
+  // Or for a link to the destination's whole folder, or to another destination's ssh folder, wrapper and all: only
+  // its own hq/<name>/ssh is bound.
   const other = new ReachPaths(h.paths.home, "login1", "0a1b2c")
   makeDirs(other)
+  await writeSshFiles(other, SSH, [path.join(h.ssh, "config")])
   for (const target of [h.paths.dir, other.ssh]) {
     fs.rmSync(h.paths.ssh)
     fs.symlinkSync(target, h.paths.ssh)
     await expect(make(h.tmpdir)).rejects.toThrow(UnsafeProfile)
+    await expect(make(h.tmpdir)).rejects.toThrow(`the SSH-only sandbox's ssh folder ${h.paths.ssh} isn't its destination's own`)
   }
 })
 

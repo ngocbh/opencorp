@@ -113,7 +113,7 @@ keeps its own path, local port and browser sign-in, so several can be open at on
 | `opencorp hq NAME --relearn` | Learns NAME's path again; the old one stays until the new one works. |
 | `opencorp hq --list` | Each destination's name, host, local port and last use. |
 | `opencorp hq --rename OLD NEW` | Renames a destination. |
-| `opencorp hq --forget NAME` | Deletes a destination's folder, after asking. |
+| `opencorp hq --forget NAME` | Deletes a destination's folder, after asking; it needs a terminal to ask on. |
 
 - **Names** are 1 to 32 lowercase letters, digits and dashes, starting with a letter or a digit. A few words
   `opencorp hq` uses itself, such as `list` and `ssh`, aren't names. A path learned with plain `opencorp hq`

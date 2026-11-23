@@ -3,9 +3,9 @@
  *  destination's folder, OpenCorp's other files, nor the rest of the home.
  *
  *  `~/.ssh` is read-only, as is the owner's ControlPath folder where the profile binds one, so the shell's ssh rides a
- *  connection the owner has open there and can bind no socket of its own: its config says `ControlMaster no`. `hq/cm`,
- *  where OpenCorp's own ssh calls keep their masters outside the sandbox, is never mounted, so a call can't ride or
- *  end them, nor plant a socket there that OpenCorp would take for its master. */
+ *  connection the owner has open there and can bind no socket of its own: its config says `ControlMaster no`. The
+ *  `hq/cm-*` folders, where OpenCorp's own ssh calls keep their masters outside the sandbox, are never mounted, so a
+ *  call can't ride or end them, nor plant a socket there that OpenCorp would take for its master. */
 import fs from "node:fs"
 import path from "node:path"
 import { SYSTEM_DIRS } from "./bwrap.ts"
@@ -64,7 +64,7 @@ export interface SshPolicyInit {
   /** Folders bound read-write whole: only a test's own folder, checked by its caller first, which holds its fake ssh
    *  and the state it writes. */
   readWrite?: readonly string[]
-  /** On Linux, an ssh wrapper in `hq/ssh` that runs the real ssh at `REAL_SSH`: mounted over `ssh`, over each `ssh`
+  /** On Linux, an ssh wrapper in `hq/<name>/ssh` that runs the real ssh at `REAL_SSH`: mounted over `ssh`, over each `ssh`
    *  in the system's PATH folders and over `wrapperOver`, so whatever path a command runs ssh by, it reaches the
    *  wrapper. Seatbelt can't mount one path over another, so macOS has none. */
   wrapper?: string
@@ -83,7 +83,7 @@ export class SshPolicy {
   /** `<tmpdir>/cm` (0700): a folder where the call's ssh could bind control sockets of its own. */
   readonly controlDir: string
   /** Bound read-only, in this order: `~/.ssh`, the files and ControlPath folder `ssh -G` names that the profile takes
-   *  (the constructor says which), the ssh program and a link it was named by, `hq/ssh`, then the extra paths. */
+   *  (the constructor says which), the ssh program and a link it was named by, `hq/<name>/ssh`, then the extra paths. */
   readonly readOnly: readonly string[]
   /** Files bound read-write for their data only, never to be removed, renamed or linked, in this order:
    *  `~/.ssh/known_hosts`, the status file, and a ticket file. */
@@ -102,10 +102,10 @@ export class SshPolicy {
   readonly agentSocket: string | null
   /** KRB5CCNAME for a ticket cache that is a file (`FILE:<path>`), or null: a KCM socket is found from krb5.conf. */
   readonly ccache: string | null
-  /** On Linux, a copy of each config file ssh reads that someone else owns, in `hq/ssh/system`, and the file it
+  /** On Linux, a copy of each config file ssh reads that someone else owns, in `hq/<name>/ssh/system`, and the file it
    *  stands for, which bubblewrap mounts it over. In bubblewrap's user namespace root's files show as owned by
    *  nobody, and ssh refuses an included config that isn't root's or the user's ("Bad owner or permissions"); a
-   *  copy is the user's, 0600. They live in hq/ssh, which the call can't write, not in its temp folder: the office
+   *  copy is the user's, 0600. They live in hq/<name>/ssh, which the call can't write, not in its temp folder: the office
    *  writes them, outside the sandbox, so a link the call planted could redirect them. Empty on macOS, where
    *  Seatbelt shows owners as they are. */
   readonly systemConfig: readonly (readonly [copy: string, target: string])[]
@@ -123,7 +123,7 @@ export class SshPolicy {
    * Throws `UnsafeProfile`, before it creates anything:
    * - for a bind that is or holds `hq` or the home, that is, holds or lies inside `hq/provider.json`, `hq/auth.json`
    *   or the connections' folder, or that is a hard link to one of their files; a hard link to one anywhere in
-   *   `~/.ssh` or `hq/ssh`, which are mounted whole, counts too;
+   *   `~/.ssh` or `hq/<name>/ssh`, which are mounted whole, counts too;
    * - for a temp folder inside `hq` or `~/.ssh`, a destination's ssh folder outside `hq`, and a status file outside
    *   that folder;
    * - for a known_hosts, status file or ticket file (bound read-write) that is a link, not a regular file, not the
@@ -167,8 +167,10 @@ export class SshPolicy {
     }
     // Mounted whole: a link there to hq would bind it.
     denied.check(hqSsh, "hq/<name>/ssh")
-    if (path.dirname(path.dirname(hqSsh)) !== hq || path.basename(hqSsh) !== "ssh") {
-      throw new UnsafeProfile(`the SSH-only sandbox's ssh folder ${hqSsh} is not a destination's ssh folder in ${hq}`)
+    // A link on its way would bind another destination's folder, or its whole one: it must resolve to itself.
+    const own = path.join(hq, path.relative(path.resolve(init.hq), path.resolve(init.hqSsh)))
+    if (own !== hqSsh || path.dirname(path.dirname(hqSsh)) !== hq || path.basename(hqSsh) !== "ssh") {
+      throw new UnsafeProfile(`the SSH-only sandbox's ssh folder ${init.hqSsh} isn't its destination's own ssh folder in ${hq}`)
     }
     if (statusDir !== hqSsh) {
       throw new UnsafeProfile(`the SSH-only sandbox's status file ${status} is not in ${hqSsh}`)
@@ -315,7 +317,7 @@ export class SshPolicy {
     const sshOver: [string, string][] = []
     if (init.wrapper !== undefined && init.ssh !== undefined && process.platform === "linux") {
       const wrapper = realPath(init.wrapper)
-      // In hq/ssh, which the call can't write; a link there would point it elsewhere.
+      // In hq/<name>/ssh, which the call can't write; a link there would point it elsewhere.
       if (!within(wrapper, hqSsh) || !lstat(wrapper)?.isFile()) {
         throw new UnsafeProfile(`the SSH-only sandbox's ssh wrapper ${init.wrapper} is not a regular file in ${hqSsh}`)
       }
