@@ -14,7 +14,8 @@
  *
  *  An office stop leaves a live session's record interrupted (`suspend`), and the next start marks one a crash left
  *  running so (`markRecordInterrupted`); the turn it cut off stays in meta.json. A later office goes on writing it once
- *  it continues the session (`resume`). */
+ *  it continues the session (`resume`). meta.json also counts the session's turns, and keeps the key of the note the
+ *  driver is owed of a turn's end (`told`), so a later office can send it after a restart. */
 import fs from "node:fs"
 import path from "node:path"
 import { authoredText, escapeAuthorTags } from "@ngocbh/yian"
@@ -52,6 +53,11 @@ export interface RecordFile extends RecordMeta {
   harnessSessionId?: string
   /** The turn under way, while one runs: what an office stop or a crash cuts off. */
   turn?: RecordTurn
+  /** How many turns the session has started: each turn's number, for its note's key. */
+  turns?: number
+  /** The key of the note the driver is owed of a turn's end, once a reply said the turn runs on, until the run has
+   *  the note or something else told the driver of the end. */
+  told?: string
   /** Where the driver last read the conversation. */
   read?: number
   ended?: string
@@ -256,12 +262,29 @@ export class HarnessRecord {
     this.#trySave()
   }
 
-  /** Keeps the turn under way, or that none is (`null`). */
+  /** Keeps the turn under way, or that none is (`null`); a turn that starts when none was under way is counted. */
   setTurn(turn: RecordTurn | null): void {
     const was = this.#file.turn
     if (turn === null ? was === undefined : was !== undefined && was.by === turn.by) return
     if (turn === null) delete this.#file.turn
-    else this.#file.turn = { by: turn.by }
+    else {
+      if (was === undefined) this.#file.turns = (this.#file.turns ?? 0) + 1
+      this.#file.turn = { by: turn.by }
+    }
+    this.#trySave()
+  }
+
+  /** Keeps `key`, the note's the driver is owed of the turn under way, once a reply said it runs on. */
+  told(key: string): void {
+    if (this.#file.told === key) return
+    this.#file.told = key
+    this.#trySave()
+  }
+
+  /** The note under `key` is owed no more: the run has it, or something else told the driver of the turn's end. */
+  untold(key: string): void {
+    if (this.#file.told !== key) return
+    delete this.#file.told
     this.#trySave()
   }
 
@@ -469,7 +492,9 @@ function isRecordFile(value: unknown, kind: Harness["kind"]): value is RecordFil
     STATES.has(file.state as string) &&
     (file.harnessSessionId === undefined || (typeof file.harnessSessionId === "string" && file.harnessSessionId !== "")) &&
     (turn === undefined || (typeof turn === "object" && turn !== null && (turn.by === null || typeof turn.by === "string"))) &&
-    (file.read === undefined || isOffset(file.read))
+    (file.read === undefined || isOffset(file.read)) &&
+    (file.turns === undefined || isOffset(file.turns)) &&
+    (file.told === undefined || typeof file.told === "string")
   )
 }
 

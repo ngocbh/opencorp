@@ -12,13 +12,13 @@ test("the group has start, send, interrupt, stop and history, each taking only i
 })
 
 test("arguments are read, a null is left out, and a wait is capped at two minutes", () => {
-  expect(parseArgs("start", { message: "Fix it.", wait: null })).toEqual({ tool: "start", message: "Fix it.", waitMs: 60_000 })
+  expect(parseArgs("start", { message: "Fix it.", wait: null })).toEqual({ tool: "start", message: "Fix it.", waitMs: 5_000 })
   // The model names the session `codex`; the instrument reads it as the session's name.
   expect(parseArgs("send", { codex: "codex 1", message: "More.", wait: 999 })).toEqual({
     tool: "send", session: "codex 1", message: "More.", waitMs: 120_000,
   })
   expect(parseArgs("history", { codex: "codex 1", from: 5, trace: true })).toEqual({
-    tool: "history", session: "codex 1", from: 5, query: undefined, trace: true, waitMs: 60_000,
+    tool: "history", session: "codex 1", from: 5, query: undefined, trace: true, waitMs: 5_000,
   })
   expect(parseArgs("stop", { codex: "codex 2" })).toEqual({ tool: "stop", session: "codex 2" })
 })

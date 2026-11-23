@@ -11,7 +11,13 @@ import {
   markClaudeInterrupted,
   readClaudeRecord,
 } from "../../../src/tools/claude/instrument.ts"
-import type { HarnessHost, HarnessListing, HarnessThread, ThreadEvents } from "../../../src/tools/harness/instrument.ts"
+import type {
+  HarnessHost,
+  HarnessListing,
+  HarnessThread,
+  ThreadEvents,
+  TurnEnded,
+} from "../../../src/tools/harness/instrument.ts"
 import { MAX_LIVE } from "../../../src/tools/harness/instrument.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 
@@ -66,6 +72,7 @@ class Host implements HarnessHost {
   readonly sessions: Session[] = []
   readonly listed = new Map<string, HarnessListing>()
   failOpen: Error | null = null
+  readonly notes: TurnEnded[] = []
 
   label(author: string | null): string {
     return author === "minh" ? "@minh" : "Ngoc (owner)"
@@ -102,6 +109,10 @@ class Host implements HarnessHost {
 
   remove(instrumentId: string): void {
     this.listed.delete(instrumentId)
+  }
+
+  ended(note: TurnEnded): void {
+    this.notes.push(note)
   }
 }
 
@@ -184,4 +195,21 @@ test(`a start past ${MAX_LIVE} live Claude Code sessions is refused, naming them
       "send one of them the work, or stop one, before starting another",
   )
   expect(m.host.sessions).toHaveLength(MAX_LIVE)
+})
+
+test("a Claude Code turn a reply said runs on gets its note when it ends, signed claude 1, in Claude Code's words", async () => {
+  const m = made()
+  expect((await m.call("start", { message: "Fix the build.", wait: 0 })).status).toBe("running")
+  const [session] = m.host.sessions
+  session!.answer([bash("bun test", "12 pass"), { id: id(), type: "text", text: "All 12 pass." }])
+  await waitFor(() => m.host.notes.length === 1, { what: "the note" })
+  const [note] = m.host.notes
+  expect([note!.key, note!.session]).toEqual([`claude:${session!.id}:1`, "claude 1"])
+  expect(note!.text.split("\n")).toEqual([
+    "claude 1: the turn on `Fix the build.` completed",
+    expect.stringMatching(/^It ran for \d+s\. Claude Code's last message ends:$/),
+    "```",
+    "All 12 pass.",
+    "```",
+  ])
 })
