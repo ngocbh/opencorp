@@ -87,11 +87,12 @@ Each other tool call your employee's model makes also goes through the chat's mo
 - **Cards.** Yes runs the call once; No tells your employee what you wrote. While a card is open, the reply's later
   calls wait. An open card survives an office restart, and is decided again by the rules then. A call a stop or crash
   cut off before you approved it isn't run when your employee's work resumes.
-- **Only your employee's calls.** A company flow's own steps that call a tool directly (`call:`, `map`, `loop`), a
-  tool module's tool included, skip the mode and the rules: only the calls your employee's model makes are gated. So a
-  flow you grant your employee is a way around them. Their call of the flow runs in every mode, with arguments their
-  model chose, and the flow's own call of a module's tool then runs even where a direct call would be refused or a
-  deny rule names it. Grant only flows whose tool calls you would let your employee make.
+- **Granted flows.** A flow you grant your employee runs when they call it, in every mode, with no card or check:
+  granting it approves what it does. Its own steps that call a tool directly (`call:`, `map`, `loop`) skip the mode,
+  but not your rules on the tool modules they call, in the flow or the flows it calls: a deny rule on one (such as
+  `module crm *`) refuses the flow in every mode, and in `dontAsk` the flow runs only if an allow rule covers each one.
+  When OpenCorp can't read which module tools a flow calls, it counts the flow as calling every one. The calls the
+  flow's own agents make are gated as your employee's are.
 - **Tool modules.** A company flow may grant its agent a tool module's tools (`uses: {crm: ./crm.ts}`, then
   `tools: [crm]`); the file must be inside the company repo. A module gets nothing from the office through `ctx`
   (`ctx.context` is `undefined`), but it runs with your full power: on a worker thread, with no sandbox, as you. It can

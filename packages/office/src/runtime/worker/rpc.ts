@@ -283,12 +283,61 @@ export const UNGATED = "Not run: nothing here decides this session's calls."
  */
 export function gateHook(
   rpc: Rpc,
-  { timeoutMs = GATE_TIMEOUT_MS }: { timeoutMs?: number } = {},
+  {
+    timeoutMs = GATE_TIMEOUT_MS,
+    wraps,
+  }: {
+    timeoutMs?: number
+    /** For a flow's call, the tool modules' tools the flow's own steps call (`wraps`): null when they can't be read,
+     *  undefined for a call that isn't a flow's. */
+    wraps?: (call: GatedCall) => Promise<readonly ModuleTool[] | null | undefined>
+  } = {},
 ): (call: GatedCall, ctx: GateContext) => Promise<GateDecision> {
   return async (call, ctx) => {
     const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(timeoutMs)])
-    return decisionOf(await rpc.request("gate_call", { call: wireCall(call) }, { signal }))
+    const wrapped = call.source.kind === "flow" ? await readWraps(wraps, call) : undefined
+    const request = { call: wireCall(call), ...(wrapped === undefined ? {} : { wraps: wrapped }) }
+    return decisionOf(await rpc.request("gate_call", request, { signal }))
   }
+}
+
+/** A tool module's tool, by its `uses:` alias and export: what a flow's own step calls. */
+export interface ModuleTool {
+  readonly alias: string
+  readonly export: string
+}
+
+/** The office's `GatedCall`: yian's, and, for a flow's call, the module tools the flow calls (`ModuleTool`); null or
+ *  absent when they couldn't be read. */
+export type OfficeGatedCall = GatedCall & { readonly wraps?: readonly ModuleTool[] | null }
+
+/** `wraps(call)`, or null when there is none or it fails: what can't be read counts as every module tool. */
+async function readWraps(
+  wraps: ((call: GatedCall) => Promise<readonly ModuleTool[] | null | undefined>) | undefined,
+  call: GatedCall,
+): Promise<readonly ModuleTool[] | null> {
+  try {
+    return (await wraps?.(call)) ?? null
+  } catch {
+    return null
+  }
+}
+
+/** The most module tools a `gate_call`'s `wraps` holds, and the longest alias or export: past them it is unread. */
+const MAX_WRAPS = 1000
+const MAX_WRAP_NAME = 256
+
+/** A `gate_call` request's `wraps`: the module tools, or null for one that is null, malformed or too big. */
+function wrapsOf(raw: unknown): readonly ModuleTool[] | null {
+  if (!Array.isArray(raw) || raw.length > MAX_WRAPS) return null
+  const name = (value: unknown) => typeof value === "string" && value.length > 0 && value.length <= MAX_WRAP_NAME
+  const tools: ModuleTool[] = []
+  for (const item of raw) {
+    const fields = isPlainObject(item) ? item : {}
+    if (!name(fields.alias) || !name(fields.export)) return null
+    tools.push({ alias: fields.alias as string, export: fields.export as string })
+  }
+  return tools
 }
 
 /** `call` in the wire's field names. */
@@ -446,7 +495,7 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
    * answers it with a `release` or `complete` delivery. The run waits for the answer, so it must come quickly: a
    * person's or a check's answer is a hold. A throw or any other answer refuses the call.
    */
-  gateCall(worker: W, call: GatedCall): unknown
+  gateCall(worker: W, call: OfficeGatedCall): unknown
   /** Runs the memory call `request` on the office memory the job names, or on a session the worker opened on one;
    *  resolves to the reply's fields. */
   memory(worker: W, request: MemoryRequest): Frame | Promise<Frame>
@@ -510,7 +559,7 @@ export class BaseHandlers implements WorkerHandlers {
   }
 
   /** Refuses every call: a host whose runs call tools decides each one (its gate), so one that doesn't fails closed. */
-  gateCall(_worker: unknown, _call: GatedCall): unknown {
+  gateCall(_worker: unknown, _call: OfficeGatedCall): unknown {
     return { refuse: UNGATED }
   }
 
@@ -655,7 +704,7 @@ export class OfficeRequests {
 type RequestArgs =
   | { kind: "ask_user"; request: AskRequest; callId: string }
   | { kind: "tool_call"; group: string; name: string; args: Record<string, unknown>; callId: string }
-  | { kind: "gate_call"; call: GatedCall }
+  | { kind: "gate_call"; call: OfficeGatedCall }
   | { kind: "memory"; request: MemoryRequest }
 
 /** The handler arguments a request frame carries; throws a `TypeError` naming a missing or bad field, never its
@@ -687,8 +736,11 @@ function requestArgs(kind: RequestType, frame: Frame): RequestArgs {
         args: maybe("args", isPlainObject) ?? {},
         callId: need("call_id", isString),
       }
-    case "gate_call":
-      return { kind, call: gatedCall(need("call", isPlainObject)) }
+    case "gate_call": {
+      const call = gatedCall(need("call", isPlainObject))
+      // A flow's call names the module tools it calls; with none sent, they count as unread.
+      return { kind, call: call.source.kind === "flow" ? { ...call, wraps: wrapsOf(frame.wraps) } : call }
+    }
     default:
       return { kind: "memory", request: memoryRequest(kind, need, maybe) }
   }

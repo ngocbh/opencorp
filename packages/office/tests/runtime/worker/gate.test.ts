@@ -96,7 +96,8 @@ test("the hook sends each call as one gate_call request, and the office gets it 
   const handlers = new Gating()
   const hook = gateHook(await officeEnd(handlers))
   for (const call of CALLS) expect(await hook(call, { runId: "r1", signal: SIGNAL })).toBeUndefined()
-  expect(handlers.gated).toEqual(CALLS)
+  // A flow's call names the module tools it calls; a hook with no reader of them sends them as unread.
+  expect(handlers.gated).toEqual(CALLS.map((call) => (call.source.kind === "flow" ? { ...call, wraps: null } : call)))
   const sent = frames.map((frame) => JSON.parse(frame) as Frame).find((frame) => frame.type === "gate_call")
   expect(sent).toEqual({
     type: "gate_call",
@@ -395,6 +396,56 @@ test("a tool module's tool: an agent's call reaches the gate as a module call, t
   const asked = JSON.stringify(fake.requests().map((r) => r.messages))
   expect(asked).toContain("quoted 3; context none")
   expect(asked).toContain("quoted 5; context none")
+})
+
+/** A flow whose agent is granted `priced` (which calls the module's `quote` itself, then `inner`, which maps it, and
+ *  the one-export alias `tally`) and `plain` (which calls no module tool). */
+const WRAPPING =
+  "id: wrapping\nname: wrapping\ninput:\n  message: !str\nuses:\n  crm: ./crm.ts\n  tally: ./tally.ts:tally\ndefs:\n" +
+  "  inner:\n    description: Price each.\n    input:\n      amount: !int\n    nodes:\n      each:\n        kind: map\n" +
+  "        over: ${[input.amount, input.amount]}\n        call: {crm: quote}\n        input:\n          amount: ${item}\n" +
+  "      counted:\n        kind: call\n        call: tally\n        input:\n          n: ${input.amount}\n" +
+  "    output: ${counted.output}\n" +
+  "  priced:\n    description: Price an order.\n    input:\n      amount: !int\n    nodes:\n      first:\n" +
+  "        kind: call\n        call: {crm: quote}\n        input:\n          amount: ${input.amount}\n      again:\n" +
+  "        kind: call\n        call: inner\n        input:\n          amount: ${input.amount}\n    output: ${again.output}\n" +
+  "  plain:\n    description: Say it loud.\n    input:\n      text: !str\n    nodes:\n      loud:\n        kind: code\n" +
+  "        input:\n          text: ${input.text}\n        output: !str\n        code: return inputs.text.toUpperCase()\n" +
+  "    output: ${loud.output}\n" +
+  "nodes:\n  reply:\n    kind: agent\n    tools: [priced, plain]\n    input:\n      message: ${input.message}\n" +
+  '    output: !str\n    prompt: "${message}"\noutput: ${reply.output}\n'
+
+/** A one-export module: `tally` counts. */
+const TALLY = `export const tally = {
+  name: "tally",
+  description: "Count.",
+  parameters: { type: "object", properties: { n: { type: "integer" } }, required: ["n"] },
+  execute: async (args) => \`counted \${args.n}\`,
+}
+`
+
+test("a granted flow's call reaches the gate naming the module tools its steps call, through nested flows and maps", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    {
+      content: "",
+      tool_calls: [{ name: "priced", arguments: { amount: 2 } }, { name: "plain", arguments: { text: "hi" } }],
+    },
+    { content: "done" },
+  )
+  const where = base()
+  writeFiles(where.pin, { "flows/wrapping.yaml": WRAPPING, "flows/crm.ts": CRM, "flows/tally.ts": TALLY })
+  const rec = new Gating(() => undefined)
+  const job = makeJob(where, "flows/wrapping.yaml", {}, rec)
+  await run(job, rec, { env: fake.env() })
+  expect([rec.outcome?.status, rec.outcome?.output], String(rec.outcome?.message)).toEqual(["succeeded", "done"])
+  const seen = rec.gated.map((call) => [call.tool, (call as { wraps?: unknown }).wraps])
+  expect(seen.sort()).toEqual([
+    ["plain", []],
+    ["priced", [{ alias: "crm", export: "quote" }, { alias: "tally", export: "tally" }]],
+  ])
+  // The calls ran: the flow's own calls of the module, ungated.
+  expect(JSON.stringify(fake.requests()[1]!.messages)).toContain("counted 2")
 })
 
 test("the office's answer runs a call with its note, refuses it, and a gate that fails refuses it", async () => {

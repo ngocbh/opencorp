@@ -6,7 +6,7 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { type FileLock, FileLockError, lockFile } from "@ngocbh/yian/platform"
-import { type GatedCall, pending } from "@ngocbh/yian/tools"
+import { pending } from "@ngocbh/yian/tools"
 import {
   type Event,
   type Message,
@@ -50,6 +50,7 @@ import {
   errorName,
   type OfficeTool,
   type WorkerHandlers,
+  type OfficeGatedCall,
 } from "../../runtime/worker/rpc.ts"
 import { spawnProcess, Worker, workerEnv } from "../../runtime/worker/spawn.ts"
 import { shellInstrument } from "../../tools/terminal/instrument.ts"
@@ -801,7 +802,7 @@ export class LocalHost {
         return ask(request, callId)
       }
 
-      override gateCall(_worker: unknown, call: GatedCall): unknown {
+      override gateCall(_worker: unknown, call: OfficeGatedCall): unknown {
         if (host.#finished) throw new Error("the session has ended")
         return host.#gate.gate(host.#runId, call)
       }
