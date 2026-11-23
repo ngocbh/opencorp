@@ -60,13 +60,18 @@ while a command runs), and a missing `.mcp.json` can still be created.
 - **The picker.** ← and → switch its tabs (Sessions, Shell), ↑ and ↓ move, Enter opens in the pane, and Esc or ↑ on
   the first row closes it. It opens on the first tab with something running and lists what runs; ctrl+a shows the
   rest (idle and ended), and stays as you set it until you quit.
-- **When a command ends.** Your employee is told when a command they were told is still running ends, in a note from
-  its shell (signed `shell 1`, never by a person): the command, its exit code and its last lines. While they work, they read it before their next step; while they rest,
-  it starts a new turn, as a message does. The chat shows it as one line, ``↳ shell 1: `make test` ended, exit 2``;
-  click it to read the whole note. After Esc, notes wait, one your employee hadn't read yet included, and go with your
-  next message or answer; messages of yours they hadn't read go on, in order. Over the cost cap, a note waits for a
-  raise. No note comes for a command your employee stopped, or once the chat has ended. If the office restarts while
-  such a command runs, its shell is gone, and your next message tells your employee so.
+- **Waits.** A command's reply waits 5 seconds unless your employee asks for longer (at most two minutes): a quick
+  command replies with its output, and a longer one runs on while your employee does other work or ends their reply.
+  A message that reaches your employee during the wait, yours or a note, ends it at once; the command goes on. One
+  sent while their model is still writing the call doesn't: they read it at their next step, after the wait.
+- **When a command ends.** Your employee is told when a command they were told is still running ends, in a note from its
+  shell (signed `shell 1`, never by a person): the command, its exit code and its last lines. While they work, they read
+  it before their next step; while they rest, it starts a new turn, as a message does. The chat shows it as one line,
+  ``↳ shell 1: `make test` ended, exit 2``; click it to read the whole note. After Esc, notes wait, one your employee
+  hadn't read yet included, and go with your next message or answer; messages of yours they hadn't read go on, in order.
+  Over the cost cap, a note waits for a raise. No note comes for a command your employee stopped, or once the chat has
+  ended. If the office restarts while such a command runs, its shell is gone, and your next message tells your employee
+  so.
 
 ## Other tools
 
@@ -106,6 +111,13 @@ it lists claude.
   when one waits behind it; a card that opens while you answer another waits its turn. If a card closes unanswered
   while you type into it (Codex stopped waiting, say), the rest of your line is dropped until Enter. Esc on the card
   stops the session's turn.
+- **Waits and notes.** Starting a session or sending it a message replies within 5 seconds, unless your employee asks
+  to wait longer (at most two minutes), and a message ends the wait as it ends a command's. The harness works on,
+  and when a turn your employee was told is still running ends, they get a note from its session (signed `codex 1`
+  or `claude 1`): whether the turn completed, was interrupted or failed, and the end of the harness's last message.
+  It reaches them, shows in the chat and waits after Esc as a shell's note does. No note comes for a turn whose end
+  your employee waited for, or one they interrupted or stopped. If the office restarts before a note reaches your
+  employee, your next message carries it, or says the restart stopped the turn.
 - **Two speakers.** The session shows who sent each message, its border in the sender's colour, and the pane's header
   says `you are driving` while a turn you started runs. The harness reads each message with its author and is
   told your word wins: your employee reads what you told it with its next answer, and can't interrupt or stop a turn

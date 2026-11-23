@@ -6,9 +6,13 @@ import type { Reply } from "./shell.ts"
 export const TOOLS = ["run", "type", "read", "interrupt", "close"] as const
 export type ToolName = (typeof TOOLS)[number]
 
-/** A reply's wait, in seconds, unless the call says: the default, and the cap. A steer reaches the agent only between
- *  steps, so a reply comes within two minutes and the agent can read its messages. */
-const WAIT_DEFAULT_S = 30
+/** A reply's wait, in seconds, unless the call says: the default, and the cap. Where the host tells the session when a
+ *  command ends (`notes`), the default is short: a quick command still replies with its output, and a long one runs on
+ *  while the agent works. Without notes nothing would tell the agent, so it waits longer. A steer reaches the agent
+ *  only between steps, so a reply comes within two minutes, and sooner when a message comes, and the agent can read
+ *  its messages. */
+const WAIT_DEFAULT_S = 5
+const WAIT_DEFAULT_NO_NOTES_S = 30
 const WAIT_MAX_S = 120
 
 /** The model's tool arguments, read. `shell: null` asks `run` for a new shell; `waitMs` is the capped wait. */
@@ -44,6 +48,8 @@ const SECRET_ASKED =
 const RUNS_ON =
   "No exit yet: the command is still running, and you'll be told when it ends, with its exit code and last lines. " +
   "Don't poll it with read; do other work, or end your reply if you have nothing else to do."
+/** What a reply says first when a message for the agent ended its wait while its command ran on. */
+const EARLY = "Your wait ended early: a message came for you, which you'll read next."
 
 const REPLY =
   "The reply is one JSON object: `shell`; `status` (idle, running, waiting, ended or failed); `exit`; `waiting` " +
@@ -67,9 +73,20 @@ const RUNNING = {
     "it keeps running, so follow it with read from the reply's `next`, with a long wait. DO NOT poll read with short " +
     "waits; do other work meanwhile.",
   notes:
-    "it keeps running, and you'll be told when it ends, with its exit code and its last lines. DO NOT poll it with " +
-    "read: read its output so far only if that lets you do useful work now. Keep working on what doesn't need its " +
-    "result, and if you have nothing else to do, end your reply; you'll be resumed when it ends.",
+    "it keeps running, and you'll be told when it ends, with its exit code and its last lines. So don't wait for a " +
+    "long command: keep working on what doesn't need its result, and if you have nothing else to do, end your " +
+    "reply; you'll be resumed when it ends. DO NOT poll it with read or sleep: read its output so far only if that " +
+    "lets you do useful work now. Pass a longer `wait` only when your next step needs the result and there is " +
+    "nothing else to do. A message that reaches you while you wait ends the wait early.",
+}
+
+/** What read's description says of its wait, by whether the host tells the session of a command's end. */
+const READ_WAIT = {
+  read: "use a long wait, not polling with short ones.",
+  notes:
+    "you're told when a command whose reply said it runs on ends, so don't poll: read only when its output lets you " +
+    "do useful work now, and pass a longer `wait` only when your next step needs the result. A message that reaches " +
+    "you while you wait ends the wait early.",
 }
 
 const runDescription = (shells: string, running: string) =>
@@ -90,56 +107,62 @@ const TYPE_PIPES =
   "Type text into the command running in a shell. The shells here take no input, so type is refused: give a " +
   "command its input in the command itself (a here-document, or a file). Replies as run does."
 
-const WAIT = {
+/** The `wait` parameter, with the default of a host with notes or without. */
+const waitParameter = (notes: boolean) => ({
   type: "number",
   minimum: 0,
   maximum: WAIT_MAX_S,
   description:
-    `Seconds to wait for the command to end before replying: default ${WAIT_DEFAULT_S}, at most ${WAIT_MAX_S}.`,
-}
+    `Seconds to wait for the command to end before replying: default ${waitDefault(notes)}, at most ${WAIT_MAX_S}.`,
+})
+const waitDefault = (notes: boolean) => (notes ? WAIT_DEFAULT_S : WAIT_DEFAULT_NO_NOTES_S)
 const WHY = { type: "string", description: "One line for the owner: what this finds out or does." }
 const SHELL = { type: "string", description: 'The shell, by name: "shell 1".' }
 const object = (properties: Record<string, unknown>, required: string[]) =>
   ({ type: "object", properties, required, additionalProperties: false }) as const
 
-const PARAMETERS = {
-  run: object(
-    {
-      command: { type: "string", description: "The command: POSIX sh, printable ASCII, newlines and tabs." },
-      why: WHY,
-      shell: {
-        type: "string",
-        description: 'The shell to run it in, by name ("shell 1"); leave it out, or give "new", for a new shell.',
+/** The five tools' parameters, `wait`'s default by whether the host has notes. */
+const parameters = (notes: boolean) => {
+  const wait = waitParameter(notes)
+  return {
+    run: object(
+      {
+        command: { type: "string", description: "The command: POSIX sh, printable ASCII, newlines and tabs." },
+        why: WHY,
+        shell: {
+          type: "string",
+          description: 'The shell to run it in, by name ("shell 1"); leave it out, or give "new", for a new shell.',
+        },
+        wait,
       },
-      wait: WAIT,
-    },
-    ["command", "why"],
-  ),
-  type: object(
-    {
-      shell: SHELL,
-      text: { type: "string", description: "What to type: printable ASCII." },
-      enter: { type: "boolean", description: "Press Enter after it: default true." },
-      why: WHY,
-      wait: WAIT,
-    },
-    ["shell", "text", "why"],
-  ),
-  read: object(
-    {
-      shell: SHELL,
-      from: {
-        type: "integer",
-        minimum: 0,
-        description: "Where to read from: an earlier reply's `next`; by default where you last read.",
+      ["command", "why"],
+    ),
+    type: object(
+      {
+        shell: SHELL,
+        text: { type: "string", description: "What to type: printable ASCII." },
+        enter: { type: "boolean", description: "Press Enter after it: default true." },
+        why: WHY,
+        wait,
       },
-      wait: WAIT,
-    },
-    ["shell"],
-  ),
-  interrupt: object({ shell: SHELL }, ["shell"]),
-  close: object({ shell: SHELL }, ["shell"]),
-} satisfies Record<ToolName, unknown>
+      ["shell", "text", "why"],
+    ),
+    read: object(
+      {
+        shell: SHELL,
+        from: {
+          type: "integer",
+          minimum: 0,
+          description: "Where to read from: an earlier reply's `next`; by default where you last read.",
+        },
+        wait,
+      },
+      ["shell"],
+    ),
+    interrupt: object({ shell: SHELL }, ["shell"]),
+    close: object({ shell: SHELL }, ["shell"]),
+  } satisfies Record<ToolName, unknown>
+}
 
 /** The five tools' descriptions and parameters, for a terminal of PTY shells or of the workspace's pipes; with
  *  `notes`, the host tells the session when a command still running at its reply ends. */
@@ -148,41 +171,44 @@ export function toolSpecs(
   notes = false,
 ): Record<ToolName, { readonly description: string; readonly parameters: Record<string, unknown> }> {
   const shells = kind === "pty" ? SHELLS_PTY : SHELLS_PIPES
+  const params = parameters(notes)
   return {
-    run: { description: runDescription(shells, notes ? RUNNING.notes : RUNNING.read), parameters: PARAMETERS.run },
-    type: { description: kind === "pty" ? TYPE_PTY : TYPE_PIPES, parameters: PARAMETERS.type },
+    run: { description: runDescription(shells, notes ? RUNNING.notes : RUNNING.read), parameters: params.run },
+    type: { description: kind === "pty" ? TYPE_PTY : TYPE_PIPES, parameters: params.type },
     read: {
       description:
         "Read a shell's output from `from` (an earlier reply's `next`; by default where you last read). While a " +
         "command runs, it waits up to `wait` seconds for the command to end or to stop at a prompt for the owner: " +
-        "use a long wait, not polling with short ones. Replies as run does.",
-      parameters: PARAMETERS.read,
+        `${notes ? READ_WAIT.notes : READ_WAIT.read} Replies as run does.`,
+      parameters: params.read,
     },
     interrupt: {
       description:
         "Interrupt the command you are running in a shell, as Ctrl-C does. Refused for a command the owner started, " +
         "and while a prompt waits for the owner. Replies as run does.",
-      parameters: PARAMETERS.interrupt,
+      parameters: params.interrupt,
     },
     close: {
       description:
         "End a shell, and any command still running in it. Its record stays; run starts a new shell. Replies as run " +
         "does.",
-      parameters: PARAMETERS.close,
+      parameters: params.close,
     },
   }
 }
 
 /** `tool`'s arguments read, or why they can't be: an argument its parameters don't name (`extra` adds the host's
  *  own, on an approved call), or one of the wrong kind. A null reads as left out: a worker hands each optional argument
- *  the model left out as null. A `wait` past two minutes is capped there. */
+ *  the model left out as null. A `wait` past two minutes is capped there; one left out is the default of a host with
+ *  `notes`, or without. */
 export function parseArgs(
   tool: ToolName,
   args: Record<string, unknown>,
   extra: readonly string[] = [],
+  notes = false,
 ): Parsed | string {
   if (typeof args !== "object" || args === null) return `${tool} takes its arguments as an object`
-  const known = new Set([...Object.keys(PARAMETERS[tool].properties), ...extra])
+  const known = new Set([...Object.keys(parameters(notes)[tool].properties), ...extra])
   const unknown = Object.keys(args).find((key) => !known.has(key))
   if (unknown !== undefined) return `${tool} takes no argument ${JSON.stringify(unknown)}`
   const given: Record<string, unknown> = Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null))
@@ -191,7 +217,7 @@ export function parseArgs(
   const shell = given.shell === undefined && tool === "run" ? null : given.shell
   if (shell !== null && typeof shell !== "string") return notText("shell")
   if (tool === "interrupt" || tool === "close") return { tool, shell: shell as string }
-  const waitMs = waitOf(given.wait)
+  const waitMs = waitOf(given.wait, notes)
   if (waitMs === null) return `wait is a number of seconds, from 0 to ${WAIT_MAX_S}`
   if (tool === "read") {
     const { from } = given
@@ -214,10 +240,10 @@ export function parseArgs(
   return { tool, shell: shell as string, text, enter, why, waitMs }
 }
 
-/** A wait in seconds as the milliseconds a reply waits, capped at two minutes; null when it isn't a number of
- *  seconds from 0. */
-function waitOf(wait: unknown): number | null {
-  if (wait === undefined) return WAIT_DEFAULT_S * 1000
+/** A wait in seconds as the milliseconds a reply waits, capped at two minutes, by default that of a host with `notes`
+ *  or without; null when it isn't a number of seconds from 0. */
+function waitOf(wait: unknown, notes: boolean): number | null {
+  if (wait === undefined) return waitDefault(notes) * 1000
   if (typeof wait !== "number" || !Number.isFinite(wait) || wait < 0) return null
   return Math.min(wait, WAIT_MAX_S) * 1000
 }
@@ -235,13 +261,23 @@ export function cardArgs(parsed: Parsed & { tool: "run" | "type" }): Record<stri
 
 /** `reply` as the model reads it, `shell` by its name: one JSON object, with the shell's `error` when it failed,
  *  and a `note` when a secret prompt waits for the owner, or else, with `runsOn`, that the agent will be told of its
- *  running command's end, or `o.note` (why `exit` is null) when given. */
+ *  running command's end, or `o.note` (why `exit` is null) when given; with `early`, first that a message ended the
+ *  wait while the command runs on. */
 export function replyText(
   reply: Reply,
-  o: { name: string; error: string | null; dontAsk: boolean; runsOn?: boolean; note?: string | undefined },
+  o: {
+    name: string
+    error: string | null
+    dontAsk: boolean
+    runsOn?: boolean
+    note?: string | undefined
+    early?: boolean
+  },
 ): string {
   const { status, exit, waiting, output, next, more, skipped, refused } = reply
-  const note = waiting === "secret" ? (o.dontAsk ? SECRET_DONT_ASK : SECRET_ASKED) : o.runsOn ? RUNS_ON : o.note
+  const said = waiting === "secret" ? (o.dontAsk ? SECRET_DONT_ASK : SECRET_ASKED) : o.runsOn ? RUNS_ON : o.note
+  const early = o.early === true && status === "running" && waiting !== "secret" && refused === undefined
+  const note = early ? [EARLY, said].filter(Boolean).join(" ") : said
   return JSON.stringify({
     shell: o.name,
     status,

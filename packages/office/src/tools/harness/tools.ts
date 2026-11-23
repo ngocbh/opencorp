@@ -20,9 +20,11 @@ export interface Harness {
   toolText(part: ToolPart): string
 }
 
-/** A reply's wait, in seconds, unless the call says: the default, and the cap. A steer reaches the agent only between
- *  steps, so a reply comes within two minutes and the agent can read its messages. */
-const WAIT_DEFAULT_S = 60
+/** A reply's wait, in seconds, unless the call says: the default, and the cap. The default is short: a reply comes once
+ *  the turn is under way, the harness works on, and the driver is told when its turn ends. A steer reaches the agent
+ *  only between steps, so a reply comes within two minutes, and sooner when a message comes, and the agent can read
+ *  its messages. */
+const WAIT_DEFAULT_S = 5
 const WAIT_MAX_S = 120
 
 /** The model's tool arguments, read; `session` is the session's name, and `waitMs` the capped wait. */
@@ -61,11 +63,15 @@ function descriptions(h: Harness): Record<ToolName, string> {
       "writable, and the folders your permission lists), with the network as your permission sets it, and it asks " +
       `nothing. Sessions are named in order (${kind} 1, ${kind} 2, …) and keep their conversation until you stop ` +
       `them. The reply comes when ${title}'s turn ends, or after \`wait\` seconds with ${title} still working: it ` +
-      "keeps working, so follow it with history, with a long wait. DO NOT poll history with short waits; do other " +
-      `work meanwhile. ${speakers} ${reply}`,
+      "keeps working, and you'll be told when its turn ends, with the end of its last message. So don't wait on it: " +
+      "DO NOT poll history or sleep; keep working on what doesn't need its result, and if you have nothing else to " +
+      "do, end your reply; you'll be resumed when the turn ends. Pass a longer `wait` only when your next step needs " +
+      "the turn's result and there is nothing else to do. A message that reaches you while you wait ends the wait " +
+      `early. ${speakers} ${reply}`,
     send:
       `Send \`message\` to a ${title} session: a new turn, or, while ${title} works, more for it to read before its ` +
-      `next step. Replies as start does: what ${title} answered, with whatever the owner said since you last read.`,
+      `next step. Waits and replies as start does: what ${title} answered, with whatever the owner said since you ` +
+      "last read.",
     interrupt:
       `Interrupt ${title}'s running turn in a session, as Esc does in ${title}. Refused for a turn the owner started. ` +
       "Replies once the turn has stopped, as start does.",
@@ -74,10 +80,12 @@ function descriptions(h: Harness): Record<ToolName, string> {
       "start a new session to go on. Refused while a turn the owner started runs. Replies as start does.",
     history:
       `Read a ${title} session's record. By default, the conversation from \`from\` (an earlier reply's \`next\`; by ` +
-      "default where you last read), waiting up to `wait` seconds for a running turn to end: use a long wait, not " +
-      `polling. With \`trace\`, the whole record from \`from\` (by default its start): every message, ${h.traced}, as ` +
-      `${title} did them; \`next\` is then the trace's. With \`query\`, the trace's entries that hold that text, ` +
-      "oldest first, from `from`. Replies as start does.",
+      "default where you last read), waiting up to `wait` seconds for a running turn to end. You're told when a turn " +
+      `a reply said runs on ends, so don't poll: read only when what ${title} said lets you do useful work now, and ` +
+      "pass a longer `wait` only when your next step needs the turn's result. A message that reaches you while you " +
+      "wait ends the wait early. With `trace`, the whole record from `from` (by default its start): every message, " +
+      `${h.traced}, as ${title} did them; \`next\` is then the trace's. With \`query\`, the trace's entries that ` +
+      "hold that text, oldest first, from `from`. Replies as start does.",
   }
 }
 

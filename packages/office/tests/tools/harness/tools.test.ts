@@ -7,7 +7,7 @@ const H: Harness = { kind: "claude", title: "Claude Code", traced: "each tool ca
 
 test("the model names a session by the harness's kind, and the reply names it so", () => {
   expect(parseArgs(H, "send", { claude: "claude 2", message: "More." })).toEqual({
-    tool: "send", session: "claude 2", message: "More.", waitMs: 60_000,
+    tool: "send", session: "claude 2", message: "More.", waitMs: 5_000,
   })
   expect(parseArgs(H, "send", { codex: "codex 1", message: "More." })).toBe('send takes no argument "codex"')
   expect(parseArgs(H, "stop", {})).toBe("claude must be text")
@@ -18,11 +18,11 @@ test("the model names a session by the harness's kind, and the reply names it so
 
 test("an empty optional text reads as left out, as a null does; a required one is still refused", () => {
   expect(parseArgs(H, "history", { claude: "claude 1", query: "", trace: true })).toEqual({
-    tool: "history", session: "claude 1", from: undefined, query: undefined, trace: true, waitMs: 60_000,
+    tool: "history", session: "claude 1", from: undefined, query: undefined, trace: true, waitMs: 5_000,
   })
   expect(parseArgs(H, "history", { claude: "claude 1", query: null })).toMatchObject({ query: undefined })
   expect(parseArgs(H, "send", { claude: "", message: "More." })).toEqual({
-    tool: "send", session: "", message: "More.", waitMs: 60_000,
+    tool: "send", session: "", message: "More.", waitMs: 5_000,
   })
   expect(parseArgs(H, "start", { message: "" })).toBe("message must be text to tell Claude Code")
 })

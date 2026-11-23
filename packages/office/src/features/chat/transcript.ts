@@ -69,9 +69,10 @@ interface Send {
   key?: string | null
 }
 
-/** The key of a shell's note, as the office sends it: the shell's id, the command's number there, then, for a note sent
- *  again, more. Only the office sends under a key, so it marks the note as the shell's. */
-const NOTE_KEY = /^terminal:([0-9A-HJKMNP-TV-Z]{26}):\d+(?::|$)/
+/** The key of an instrument's note, as the office sends it: the shell's or the Codex or Claude Code session's id, the
+ *  command's or turn's number there, then, for a note sent again, more. Only the office sends under a key, so it marks
+ *  the note as the instrument's. */
+const NOTE_KEY = /^(?:terminal|codex|claude):([0-9A-HJKMNP-TV-Z]{26}):\d+(?::|$)/
 
 /** A step a node recorded: as the log holds it (ints as bigints) when folded, then the copy `slim` keeps. */
 type Step = Readonly<Record<string, unknown>>
@@ -689,8 +690,8 @@ function assistantMessage(sessionId: string, runId: string, seq: number, at: str
 }
 
 /** The user message of `send` in the run `runId`: its last text part, since earlier ones are the turn's context. A
- *  send under a shell's note key (`NOTE_KEY`) is that shell's note, signed by it; any other names its human author.
- *  `unread` says it still waits in the run's inbox. */
+ *  send under an instrument's note key (`NOTE_KEY`) is that instrument's note, signed by it; any other names its human
+ *  author. `unread` says it still waits in the run's inbox. */
 export function userMessage(sessionId: string, runId: string, send: Send, unread: boolean): Message {
   const id = messageId(runId, send.seq)
   const text = send.message.parts.findLast((part) => part.type === "text") as { text: string } | undefined

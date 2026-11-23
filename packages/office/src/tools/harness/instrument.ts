@@ -12,9 +12,17 @@
  *  **Replies.** A reply is the conversation from where the driver last read: each message once its turn has ended, as
  *  `{author, text}`, its author the one the office knows (the driver, the owner by the approver's identity, or the
  *  harness by its kind), never one read from a text, so neither the harness nor a file it reads can pose as the owner.
- *  It comes when the turn that took the driver's message ends, when the harness waits for the owner, or after the
- *  call's wait (at most two minutes), with the harness still working; `history` then follows it. A long one comes in
- *  pages.
+ *  It comes when the turn that took the driver's message ends, when the harness waits for the owner, after the call's
+ *  wait (5 seconds unless the call says, at most two minutes), or at once when a message for the driver arrives while
+ *  it waits (`messageArrived`), with the harness still working. A long one comes in pages.
+ *
+ *  **Notes.** A turn a reply said runs on gets one note when it ends, for the host to give the chat
+ *  (`HarnessHost.ended`): the session, the turn, how it ended (completed, interrupted or failed) and the end of the
+ *  harness's last message, keyed by the session and the turn's number in it. None comes when a call waiting on the turn
+ *  replied with its end, when the driver interrupted or stopped it, or once the instrument has closed or the office
+ *  stopped. The note moves nothing: history still reads from where the driver last read. The record keeps each note
+ *  owed (`told`), with its text once its turn has ended, until the run has it (`delivered`), so a later office can send
+ *  it after a restart, or `restoredNote` for a turn the office's stop cut off.
  *
  *  **Esc and cut-off calls.** A call's `interrupted` signal (the owner's Esc in the chat) interrupts the turn the call
  *  waits on, and the call replies once that turn has stopped, with what the harness did so far. `cutCalls` (the chat's
@@ -37,10 +45,32 @@ import path from "node:path"
 import { type Instrument, type Message, now } from "@opencorp/protocol"
 import { strerror } from "../../util/errors.ts"
 import { newId } from "../../util/ids.ts"
+import { elapsed, fence, lastLines, oneLine } from "../../util/lines.ts"
 import type { HarnessEvent } from "./adapter.ts"
-import { HarnessRecord, type Said, loadRecords, saveNextName } from "./record.ts"
+import { HarnessRecord, type RecordFile, type Said, loadRecords, saveNextName } from "./record.ts"
 import { type Entry as Shown, type Harness, type Parsed, parseArgs, refusalText, type Reply, type ReplyStatus,
   replyText, type ToolName, TOOLS, toolSpecs } from "./tools.ts"
+
+/** A turn a reply said runs on has ended: its note, as the model reads it, and its session's name. `key` names the turn
+ *  alone (`<kind>:<session id>:<n>`, the session's nth turn), so a note sent again is the same note. */
+export interface TurnEnded {
+  readonly key: string
+  readonly session: string
+  readonly text: string
+}
+
+/** How a wait's time passes: `after` calls `fn` once `ms` have passed, unless the cancel it returns came first. */
+export interface Clock {
+  after(ms: number, fn: () => void): () => void
+}
+
+/** The clock of real time. */
+const REAL_CLOCK: Clock = {
+  after: (ms, fn) => {
+    const timer = setTimeout(fn, ms)
+    return () => clearTimeout(timer)
+  },
+}
 
 /** What `HarnessHost.open` rejects with when the office is stopping: a session it was to continue waits, as the stop
  *  leaves it, for the office's next start. */
@@ -112,6 +142,8 @@ export interface HarnessHost {
   list(instrument: HarnessListing): void
   changed(id: string): void
   remove(id: string): void
+  /** Gets the note of a turn a reply said runs on, once it ends (see the module). */
+  ended(note: TurnEnded): void
 }
 
 /** A tool as the model calls it: an `OfficeTool`, by its shape. `interrupted` is the owner's Esc in the chat. */
@@ -127,13 +159,23 @@ export const PAGE_CHARS = 20_000
 export const MAX_LIVE = 4
 /** How long an interrupt or a stop waits for the harness's turn to end before it replies anyway. */
 const STOP_WAIT_MS = 15_000
+/** What a note shows of the harness's last message: its last lines, at most this many, in at most this many bytes. */
+const NOTE_LINES = 20
+const NOTE_BYTES = 2048
+/** How much of the driver's message, or of an error, a note's first line shows. */
+const NOTE_TEXT = 200
+/** What ends an interrupted turn's last message, as the harnesses' translators write it. */
+const INTERRUPTED_MARK = "[interrupted]"
 /** What replies say, in `h`'s words. */
 function notes(h: Harness) {
   const t = h.title
   return {
     closed: `this chat's ${t} instrument has closed`,
-    running: `${t} is still working: follow its reply with history, with a long wait; do other work meanwhile.`,
-    waiting: `${t} asked the owner a question and waits for their answer: follow it with history, with a long wait.`,
+    running:
+      `${t} is still working: you'll be told when its turn ends. Do other work meanwhile, or end your reply if you ` +
+      "have nothing else to do.",
+    waiting: `${t} asked the owner a question and waits for their answer: you'll be told when its turn ends.`,
+    early: "Your wait ended early: a message came for you, which you'll read next.",
     interrupted: `The owner interrupted you (Esc), so ${t}'s turn stopped: what ${t} did so far is above.`,
     runStopped: `This chat's run stopped, so the ${t} turn you started was interrupted; history reads what it did.`,
     ownersGoesOn: "This chat's run stopped; the owner's turn goes on, and history reads its reply.",
@@ -181,10 +223,29 @@ interface Entry {
   calls: Promise<unknown>
   /** An earlier office's live session, not continued yet: no thread, not listed, and not among the live ones. */
   restored: boolean
+  /** The key of the note owed of the turn under way, once a reply said it runs on. */
+  told: string | null
+  /** When the turn under way started, and where the conversation ended then. */
+  turnStarted: number
+  turnFrom: number
+  /** How many calls wait on the turn now: a reply that comes after its end carries it. */
+  waits: number
+  /** Where the conversation ended when the last reply of it was made: a reply made after a turn's messages settled
+   *  carries its end, though its page stops short of it. */
+  replied: number
+  /** A turn's note that waits on those calls' replies. */
+  untold: Owed | null
+}
+
+/** A turn's note, owed: its key and text, and where the conversation ended once the turn's messages settled. */
+interface Owed {
+  readonly key: string
+  readonly text: string
+  readonly end: number
 }
 
 /** How a wait ended. */
-type Ended = "done" | "timeout" | "interrupted" | "cut"
+type Ended = "done" | "timeout" | "interrupted" | "cut" | "early"
 
 /** One chat's sessions of one harness, as its host binds them, and the tools the agent works them with. */
 export class HarnessInstrument {
@@ -192,6 +253,8 @@ export class HarnessInstrument {
   private readonly notes: ReturnType<typeof notes>
   /** The waits of the calls running now: `cutCalls` and `close` end them, saying why as the abort's reason. */
   private readonly cuts = new Set<AbortController>()
+  /** The same waits, which a message for the driver ends early (`messageArrived`). */
+  private readonly earlies = new Set<AbortController>()
   private made = 0
   private closed = false
   /** Whether the chat's records have been taken (`load`). */
@@ -202,6 +265,7 @@ export class HarnessInstrument {
   constructor(
     private readonly harness: Harness,
     private readonly host: HarnessHost,
+    private readonly clock: Clock = REAL_CLOCK,
   ) {
     this.notes = notes(harness)
     this.load()
@@ -225,6 +289,20 @@ export class HarnessInstrument {
 
   private cut(why: CutWhy): void {
     for (const cut of [...this.cuts]) cut.abort(why)
+  }
+
+  /** A message for the driver arrived: every reply its calls wait on comes now, so it reads the message at its next
+   *  step. The turns go on, and each one's note still comes. A call that starts after it, as one the model asked for
+   *  while the message came, waits on: nothing here knows whether the driver has read it (yian#1806). */
+  messageArrived(): void {
+    for (const early of [...this.earlies]) early.abort()
+  }
+
+  /** The run has the note under `key` (`<kind>:<session id>:<n>`): the session's record owes it no more, so a restart
+   *  never sends it again. */
+  delivered(key: string): void {
+    const id = new RegExp(`^${this.harness.kind}:([^:/]+):\\d+$`).exec(key)?.[1]
+    this.entries.find((e) => e.id === id)?.record.untold(key)
   }
 
   /** The chat ended: ends every wait, asks every live session to stop, ends each an earlier office left, and takes
@@ -324,7 +402,8 @@ export class HarnessInstrument {
     const entry: Entry = {
       id: meta.id, name: meta.name, record, created: meta.started, thread: null, state: "idle", error: null, open: [],
       settled: new Set(), sent: [], turnBy: null, command: null, read: 0, waiters: new Set(),
-      calls: Promise.resolve(), restored: false,
+      calls: Promise.resolve(), restored: false, told: null, turnStarted: 0, turnFrom: 0, waits: 0, replied: 0,
+      untold: null,
     }
     // A position past the log's end, kept before a write of it failed, would hide what comes next.
     if (meta.read !== undefined) entry.read = Math.min(meta.read, record.conversation.end)
@@ -360,7 +439,9 @@ export class HarnessInstrument {
     this.load()
     const cut = new AbortController()
     this.cuts.add(cut)
-    const signals = { interrupted: options.interrupted, cut: cut.signal }
+    const early = new AbortController()
+    this.earlies.add(early)
+    const signals = { interrupted: options.interrupted, cut: cut.signal, early: early.signal }
     try {
       if (parsed.tool === "start") return await this.start(parsed, signals)
       const entry = this.entries.find((e) => e.name === parsed.session)
@@ -379,6 +460,7 @@ export class HarnessInstrument {
       })
     } finally {
       this.cuts.delete(cut)
+      this.earlies.delete(early)
     }
   }
 
@@ -403,6 +485,7 @@ export class HarnessInstrument {
     const entry: Entry = {
       id, name, record, created: now(), thread: null, state: "starting", error: null, open: [], settled: new Set(),
       sent: [], turnBy: null, command: null, read: 0, waiters: new Set(), calls: Promise.resolve(), restored: false,
+      told: null, turnStarted: 0, turnFrom: 0, waits: 0, replied: 0, untold: null,
     }
     this.entries.push(entry)
     this.host.list(this.listing(entry))
@@ -515,24 +598,43 @@ export class HarnessInstrument {
     // Written before the send returned, and perhaps settled already: the turn may have ended meanwhile.
     const mine = entry.sent[before]
     const taken = () => (mine !== undefined && entry.settled.has(mine)) || entry.state === "waiting" || finished(entry)
-    return await this.waitTurn(entry, taken, waitMs, signals)
+    return await this.waiting(entry, () => this.waitTurn(entry, taken, waitMs, signals))
   }
 
-  /** Waits until `taken`, the wait or a signal. On the owner's Esc, and when the chat's run stopped, interrupts the
-   *  turn (on a cut, only one the driver started) and waits for it to stop. */
+  /** Waits until `taken`, the wait, a message for the driver or a signal. On the owner's Esc, and when the chat's run
+   *  stopped, interrupts the turn (on a cut, only one the driver started) and waits for it to stop; nobody is then told
+   *  of the turn's end later. */
   private async waitTurn(entry: Entry, taken: () => boolean, waitMs: number, signals: Signals): Promise<string> {
     const ended = await this.waitFor(entry, taken, waitMs, signals)
     if (ended === "interrupted") {
       await this.stopTurn(entry, { cut: signals.cut })
-      return this.reply(entry, { note: this.notes.interrupted })
+      return this.reply(entry, { note: this.notes.interrupted, tell: false })
     }
-    if (ended !== "cut") return this.reply(entry)
-    if (signals.cut.reason === "close") return this.reply(entry, { note: this.notes.ended })
-    if (signals.cut.reason === "stop") return this.reply(entry, { note: this.notes.stopping })
-    if (!running(entry)) return this.reply(entry)
-    if (this.ownersTurn(entry)) return this.reply(entry, { note: this.notes.ownersGoesOn })
+    if (ended !== "cut") return this.reply(entry, { early: ended === "early" })
+    if (signals.cut.reason === "close") return this.reply(entry, { note: this.notes.ended, tell: false })
+    if (signals.cut.reason === "stop") return this.reply(entry, { note: this.notes.stopping, tell: false })
+    if (!running(entry)) return this.reply(entry, { tell: false })
+    if (this.ownersTurn(entry)) return this.reply(entry, { note: this.notes.ownersGoesOn, tell: false })
     await this.stopTurn(entry, {})
-    return this.reply(entry, { note: this.notes.runStopped })
+    return this.reply(entry, { note: this.notes.runStopped, tell: false })
+  }
+
+  /** Runs `job`, a call that waits on `entry`'s turn and replies with the conversation. A turn that ended while it
+   *  waited gets its note once no such call waits, unless a reply was made after the turn's messages settled: that
+   *  reply carries the end (its status, and its pages from where the driver read). */
+  private async waiting(entry: Entry, job: () => Promise<string>): Promise<string> {
+    entry.waits += 1
+    try {
+      return await job()
+    } finally {
+      entry.waits -= 1
+      const owed = entry.untold
+      if (owed !== null && entry.waits === 0) {
+        entry.untold = null
+        if (entry.replied >= owed.end) entry.record.untold(owed.key)
+        else this.tell(entry, owed)
+      }
+    }
   }
 
   /** Interrupts the running turn, and waits for it to stop (at most `STOP_WAIT_MS`, or until `signals` cut it). */
@@ -541,12 +643,13 @@ export class HarnessInstrument {
     await this.waitFor(entry, () => !running(entry), STOP_WAIT_MS, signals)
   }
 
-  /** The driver's interrupt of its own running turn. */
+  /** The driver's interrupt of its own running turn, which then needs no note. */
   private async interrupt(entry: Entry): Promise<string> {
     if (!running(entry)) {
       return this.reply(entry, { refused: `${this.harness.title} isn't working on a turn in ${entry.name}` })
     }
     if (this.ownersTurn(entry)) return this.reply(entry, { refused: OWNERS_TURN })
+    this.untell(entry)
     try {
       await entry.thread!.interrupt()
     } catch (error) {
@@ -565,6 +668,8 @@ export class HarnessInstrument {
     }
     if (entry.thread === null || finished(entry)) return this.reply(entry)
     if (running(entry) && this.ownersTurn(entry)) return this.reply(entry, { refused: OWNERS_TURN })
+    // The driver ends its own turn: it needs no note of that.
+    this.untell(entry)
     try {
       await entry.thread.stop()
     } catch (error) {
@@ -586,28 +691,38 @@ export class HarnessInstrument {
     if (parsed.trace) return this.reply(entry, { page: pageOf(trace.entries, parsed.from ?? 0, trace.end, trace.start) })
     const from = Math.min(parsed.from ?? entry.read, conversation.end)
     const fresh = () => conversation.end > from || !running(entry)
-    const ended = await this.waitFor(entry, fresh, parsed.waitMs, signals)
-    if (ended === "interrupted") return this.reply(entry, { from, note: this.notes.interrupted })
-    if (ended !== "cut") return this.reply(entry, { from })
-    const cut = signals.cut.reason as CutWhy
-    const note = cut === "close" ? this.notes.ended : cut === "stop" ? this.notes.stopping : this.notes.readGoesOn
-    return this.reply(entry, { from, note })
+    return await this.waiting(entry, async () => {
+      const ended = await this.waitFor(entry, fresh, parsed.waitMs, signals)
+      if (ended === "interrupted") return this.reply(entry, { from, note: this.notes.interrupted, tell: false })
+      if (ended !== "cut") return this.reply(entry, { from, early: ended === "early" })
+      const cut = signals.cut.reason as CutWhy
+      const note = cut === "close" ? this.notes.ended : cut === "stop" ? this.notes.stopping : this.notes.readGoesOn
+      return this.reply(entry, { from, note, tell: false })
+    })
   }
 
   /** The reply for `entry`: the conversation from `from` (where the driver last read, which moves past what it now
    *  reads, and is kept in the record), or the given page of the trace; a note on what to do next, unless one is
-   *  given. */
-  private reply(entry: Entry, o: { from?: number; note?: string; refused?: string; page?: Page } = {}): string {
+   *  given, after saying a message ended the wait when `early`. A reply that says a turn runs on owes its note, unless
+   *  nobody reads it (`tell: false`). */
+  private reply(
+    entry: Entry,
+    o: { from?: number; note?: string; refused?: string; page?: Page; early?: boolean; tell?: boolean } = {},
+  ): string {
     let shown = o.page
     if (shown === undefined) {
       const { conversation } = entry.record
       shown = pageOf(conversation.entries, o.from ?? entry.read, conversation.end, conversation.start)
       entry.read = shown.next
+      entry.replied = conversation.end
       // A reply after the office's stop reaches nobody, so the next office's reads go on from before it.
       if (!this.suspended) entry.record.setRead(entry.read)
     }
     const status = statusOf(entry.state)
-    const note = o.note ?? (o.refused === undefined ? this.defaultNote(entry, status) : undefined)
+    const runsOn = running(entry) && o.refused === undefined
+    if (runsOn && o.tell !== false) this.told(entry)
+    const said = o.note ?? (o.refused === undefined ? this.defaultNote(entry, status) : undefined)
+    const note = o.early && runsOn ? [this.notes.early, said].filter(Boolean).join(" ") : said
     const reply: Reply = {
       session: entry.name, status, ...shown,
       ...(note === undefined ? {} : { note }),
@@ -615,6 +730,30 @@ export class HarnessInstrument {
       ...(o.refused === undefined ? {} : { refused: o.refused }),
     }
     return replyText(this.harness, reply)
+  }
+
+  /** A reply said `entry`'s turn runs on: its end owes the driver a note, whose key the record keeps. */
+  private told(entry: Entry): void {
+    if (entry.told !== null || this.closed || this.suspended) return
+    entry.told = `${this.harness.kind}:${entry.id}:${entry.record.meta.turns ?? 0}`
+    entry.record.told(entry.told)
+  }
+
+  /** The turn under way needs no note: the driver stopped it. */
+  private untell(entry: Entry): void {
+    if (entry.told === null) return
+    entry.record.untold(entry.told)
+    entry.told = null
+  }
+
+  /** The host gets `owed`, a turn's note, unless the instrument has closed or the office stopped. */
+  private tell(entry: Entry, owed: Owed): void {
+    if (this.closed || this.suspended) return
+    try {
+      this.host.ended({ key: owed.key, session: entry.name, text: owed.text })
+    } catch {
+      // The host's notes failed; the turn's end stands in the record.
+    }
   }
 
   private defaultNote(entry: Entry, status: ReplyStatus): string | undefined {
@@ -640,6 +779,8 @@ export class HarnessInstrument {
       if (message.role === "user" && !wasRunning) {
         entry.turnBy = message.author ?? null
         entry.command = message.author === this.host.driver ? textOf(message) : null
+        entry.turnStarted = performance.now()
+        entry.turnFrom = entry.record.conversation.end
         entry.record.setTurn({ by: entry.turnBy })
       }
     } else if (e.type === "part") {
@@ -656,23 +797,70 @@ export class HarnessInstrument {
   }
 
   /** The session's state changed: when no turn runs, its messages settle into the record; once it finishes, the
-   *  record ends. The harness's own id for it is kept once it has one. */
+   *  record ends. The harness's own id for it is kept once it has one. A turn a reply said runs on owes its note now,
+   *  or once the calls waiting on it have replied. */
   private state(entry: Entry, state: ThreadState): void {
     entry.state = state
+    let owed: Owed | null = null
     if (state === "idle" || state === "ended" || state === "failed") {
       const settled = entry.open
       entry.open = []
       for (const m of settled) entry.settled.add(m.id)
       entry.record.add(settled, (author) => this.host.label(author))
+      if (state === "failed") entry.error ??= lastError(settled)
+      if (entry.told !== null && (settled.length > 0 || state !== "idle")) {
+        const text = this.noteText(entry, state, settled)
+        owed = { key: entry.told, text, end: entry.record.conversation.end }
+        entry.record.ended(owed.key, text)
+        entry.told = null
+      }
       entry.turnBy = null
       entry.command = null
       entry.record.setTurn(null)
-      if (state === "failed") entry.error ??= lastError(settled)
     }
     this.learn(entry)
     if (state === "ended" || state === "failed") entry.record.end(state, entry.error)
+    if (owed !== null) {
+      if (entry.waits > 0) entry.untold = owed
+      else this.tell(entry, owed)
+    }
     this.host.changed(entry.id)
     this.wake(entry)
+  }
+
+  /** The note of `entry`'s turn, which ended as `state` with `settled`, its messages: a first line naming the session,
+   *  the turn (by the driver's message, or the owner's) and how it ended; how long it ran; the end of the harness's
+   *  last message, fenced, so no line of it reads as the note's own; and, when the driver hasn't read what comes before
+   *  those lines, how to. */
+  private noteText(entry: Entry, state: ThreadState, settled: readonly Message[]): string {
+    const { kind, title } = this.harness
+    const turn = entry.command
+      ? `the turn on \`${oneLine(entry.command, NOTE_TEXT)}\``
+      : entry.turnBy === this.host.driver ? "your turn" : "the owner's turn"
+    const last = [...settled].reverse().find((m) => m.role === "assistant" && textOf(m) !== "")
+    const text = last === undefined ? "" : textOf(last)
+    const failure = lastError(settled)
+    // Quoted: an error is the harness's text, and no word of it may read as the note's own.
+    const why = (error: string | null) => (error ? `: ${JSON.stringify(oneLine(error, NOTE_TEXT))}` : "")
+    const how = state === "failed"
+      ? `ended: the session failed${why(entry.error)}`
+      : state === "ended"
+        ? "ended: the session ended"
+        : text.endsWith(INTERRUPTED_MARK)
+          ? "was interrupted"
+          : failure !== null ? `failed${why(failure)}` : "completed"
+    const ran = `It ran for ${elapsed((performance.now() - entry.turnStarted) / 1000)}.`
+    const lines = lastLines(text, { lines: NOTE_LINES, bytes: NOTE_BYTES })
+    const quote = fence(lines)
+    const body = lines === "" ? [`${ran} ${title} said nothing.`] : [`${ran} ${title}'s last message ends:`, quote, lines, quote]
+    // More to read than these lines: the message is cut, or others spoke in the turn since the driver last read.
+    const mine = this.host.label(this.host.driver)
+    const from = Math.max(entry.read, entry.turnFrom)
+    const others = entry.record.conversation.entries.filter((e) => e.author !== mine && e.at + e.text.length > from)
+    const unread = lines !== "" && (lines.length < text.length || others.length > 1)
+      ? [`[You haven't read what comes before these lines: call ${kind}_history on ${entry.name}.]`]
+      : []
+    return [`${entry.name}: ${turn} ${how}`, ...body, ...unread].join("\n")
   }
 
   /** Runs `step`, so an observer's failure never reaches the session that told it; after the office's stop, what a
@@ -726,12 +914,14 @@ export class HarnessInstrument {
     if (done()) return Promise.resolve("done")
     if (signals.cut?.aborted) return Promise.resolve("cut")
     if (signals.interrupted?.aborted) return Promise.resolve("interrupted")
+    if (signals.early?.aborted) return Promise.resolve("early")
     return new Promise((resolve) => {
       const finish = (how: Ended) => {
-        clearTimeout(timer)
+        cancel()
         entry.waiters.delete(check)
         signals.cut?.removeEventListener("abort", onCut)
         signals.interrupted?.removeEventListener("abort", onInterrupt)
+        signals.early?.removeEventListener("abort", onEarly)
         resolve(how)
       }
       const check = () => {
@@ -739,10 +929,12 @@ export class HarnessInstrument {
       }
       const onCut = () => finish("cut")
       const onInterrupt = () => finish("interrupted")
-      const timer = setTimeout(() => finish("timeout"), ms)
+      const onEarly = () => finish("early")
+      const cancel = this.clock.after(ms, () => finish("timeout"))
       entry.waiters.add(check)
       signals.cut?.addEventListener("abort", onCut, { once: true })
       signals.interrupted?.addEventListener("abort", onInterrupt, { once: true })
+      signals.early?.addEventListener("abort", onEarly, { once: true })
     })
   }
 
@@ -764,8 +956,9 @@ export class HarnessInstrument {
   }
 }
 
-/** What ends a call's wait: the owner's Esc in the chat, and the instrument's cut, whose reason is a `CutWhy`. */
-type Signals = { readonly interrupted?: AbortSignal; readonly cut: AbortSignal }
+/** What ends a call's wait: the owner's Esc in the chat, the instrument's cut, whose reason is a `CutWhy`, and a
+ *  message for the driver (`early`), after which the turn goes on. */
+type Signals = { readonly interrupted?: AbortSignal; readonly cut: AbortSignal; readonly early?: AbortSignal }
 
 /** Whether a turn runs, or a message waits for the thread to load. */
 function running(entry: Entry): boolean {
@@ -829,4 +1022,17 @@ function lastError(messages: readonly Message[]): string | null {
     if (part?.type === "error") return part.message
   }
   return null
+}
+
+/** The note a later office sends, after a restart, of the turn whose note under `key` a record still owes with no text:
+ *  the turn under way when the office stopped, which the stop cut off; or, when the record no longer names a turn under
+ *  way, one whose end the driver was never told, which history reads. The session keeps its name across a restart. */
+export function restoredNote(harness: Harness, file: Readonly<RecordFile>, key: string): string {
+  const { kind } = harness
+  if (file.turn !== undefined && key === `${kind}:${file.id}:${file.turns ?? 0}`) {
+    return `${file.name}: its turn was stopped when the office stopped\nThe office has restarted since; ` +
+      `${kind}_send continues the session where it was.`
+  }
+  return `${file.name}: the office stopped before you were told how its turn ended\nCall ${kind}_history on ` +
+    `${file.name} to read it.`
 }

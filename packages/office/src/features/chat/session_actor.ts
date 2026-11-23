@@ -85,6 +85,7 @@ import { releasedIn } from "./gate.ts"
 import type { Mode, Where } from "../../runtime/permissions/policy.ts"
 import { HarnessError, notWaiting, runState, SETTLED, writeState } from "../../runtime/sessions/state.ts"
 import { restoreNotes } from "./terminal.ts"
+import { restoreHarnessNotes } from "./instrument.ts"
 import { type LiveCalls, messageId, sentUnread, type Transcript, userMessage, withdrawnSends } from "./transcript.ts"
 import { type ChatFlow, MAIN_CHAT } from "../../company/chat_flow.ts"
 
@@ -243,9 +244,13 @@ export const INTERRUPTED_CALL = "interrupted; outcome unknown"
  *  reply, or queued for a later turn. */
 export type MessageReply = "turn" | "answer" | "steer" | "queued"
 
+/** The key a note owed by an instrument's record is sent under, at the start of a key it is sent again under: the
+ *  terminal's shell, or the Codex or Claude Code session, and the command's or turn's number there. */
+const OWED_KEY = /^(?:terminal|codex|claude):[^:/]+:\d+/
+
 /** An instrument's note about the agent's own work, as `note` takes it: its text, the key its send carries, the
- *  instrument it is signed by (`author`, the shell's name as the chat lists it), and the key of the note the terminal's
- *  record owes (`owed`, cleared once the run has it), if any. */
+ *  instrument it is signed by (`author`, the shell's or the harness session's name as the chat lists it), and the key
+ *  of the note the instrument's record owes (`owed`, cleared once the run has it), if any. */
 interface Note {
   readonly text: string
   readonly key: string
@@ -1067,9 +1072,10 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * A note about the agent's own work, `text` (a command it was told runs on has ended), sent to the run's inbox as a
-   * message signed by the shell it is about (`author`, `shell 1`), under `key`, so a retry or a replay never sends it
-   * twice; yian labels the author, and only the office sends under a key, which marks it as the shell's. It is
+   * A note about the agent's own work, `text` (a command or a Codex or Claude Code turn it was told runs on has ended),
+   * sent to the run's inbox as a message signed by the instrument it is about (`author`, `shell 1` or `codex 1`),
+   * under `key`, so a retry or a replay never sends it twice; yian labels the author, and only the office sends under
+   * a key, which marks it as the instrument's. It is
    * never an answer to the model's open question. A running reply reads it as a steer, a run at rest takes it as a new
    * turn, and over the cost cap it waits for a raise, as a message does; it opens no cap item. After Esc it waits for
    * the next person's message. Notes that come together go to the run in one job, so one turn reads them all. Dropped
@@ -1145,8 +1151,8 @@ export class SessionActor implements LiveCalls {
       if (this.#rehomed.has(`${runId}:${seq}`)) continue
       this.#rehomed.add(`${runId}:${seq}`)
       this.#publishRemoved(messageId(runId, seq))
-      // A note was sent under its shell's key: it goes back under that key too, so it stays the shell's.
-      const owed = sentAs === null ? null : (/^terminal:[^:/]+:\d+/.exec(sentAs)?.[0] ?? null)
+      // A note was sent under its instrument's key: it goes back under that key too, so it stays the instrument's.
+      const owed = sentAs === null ? null : (OWED_KEY.exec(sentAs)?.[0] ?? null)
       if (owed === null) {
         back.push(new Pending({ id: newId(), op: "send", inbox, event: message, key: `withdrawn:${runId}:${seq}` }))
         continue
@@ -1192,11 +1198,14 @@ export class SessionActor implements LiveCalls {
     for (const p of this.#next.splice(0)) await this.#give(p)
   }
 
-  /** The run has `note`: the terminal's record owes it no more, so a restart never sends it again. */
+  /** The run has `note`: its instrument's record owes it no more, so a restart never sends it again. */
   #delivered(note: Note): void {
     if (note.owed === null) return
+    const kind = note.owed.slice(0, note.owed.indexOf(":"))
+    const spec = this.#spec
+    const instrument = kind === "terminal" ? spec?.terminal : kind === "codex" ? spec?.codex : kind === "claude" ? spec?.claude : undefined
     try {
-      this.#spec?.terminal?.delivered(note.owed)
+      instrument?.delivered(note.owed)
     } catch (error) {
       this.#log(`session ${this.sessionId}: a note's record can't be updated (${errorName(error)})`)
     }
@@ -1331,7 +1340,8 @@ export class SessionActor implements LiveCalls {
     const ending = session.status === "ending"
     // Notes the office's stop may have cost: they wait for the next message or answer, as after Esc.
     if (!ending) {
-      const owed = restoreNotes(this.#ctx.paths.sessionDir(this.sessionId))
+      const folder = this.#ctx.paths.sessionDir(this.sessionId)
+      const owed = [...restoreNotes(folder), ...restoreHarnessNotes(folder)]
       this.#heldNotes.push(...owed.map((note) => ({ ...note, owed: note.key })))
     }
     if (!fs.existsSync(this.#logOf(runId))) {
@@ -1704,7 +1714,10 @@ export class SessionActor implements LiveCalls {
       // A reply means the worker took it, though the channel closed before the frame's write reported back.
       if (sent || p.reply !== null) {
         p.live = true
-        if (p.delivery.op === "send") run.turnPending = true
+        if (p.delivery.op === "send") {
+          run.turnPending = true
+          this.#messageArrived()
+        }
         return false
       }
       // The worker read its last frame meanwhile; its exit decides the next spawn.
@@ -3555,6 +3568,8 @@ export class SessionActor implements LiveCalls {
       const spec = await this.#ctx.spec(session)
       this.#spec = spec
       spec.terminal?.onEnded((ended) => this.note(ended.text, ended.key, ended.shell))
+      spec.codex?.onEnded((ended) => this.note(ended.text, ended.key, ended.session))
+      spec.claude?.onEnded((ended) => this.note(ended.text, ended.key, ended.session))
       const due = this.#reconcileDue
       this.#reconcileDue = null
       if (due !== null && due === this.#runId && !this.#finished && !this.#closed) {
@@ -3586,6 +3601,21 @@ export class SessionActor implements LiveCalls {
   /** Who answers for the person: the session's opener, else the pinned CEO. */
   async #owner(session: SessionRecord): Promise<string | null> {
     return session.opened_by ?? (await this.#pinsOf(session)).ceo
+  }
+
+  /** A message reached the running agent's inbox: the replies its terminal, Codex and Claude Code calls wait on come
+   *  now, their commands and turns going on, so it reads the message at its next step. A call the model asked for
+   *  while the message came starts after it and waits on, since Yian doesn't yet tell a tool that a steer waits
+   *  unread (yian#1806). */
+  #messageArrived(): void {
+    const { terminal, codex, claude } = this.#spec ?? {}
+    for (const instrument of [terminal, codex, claude]) {
+      try {
+        instrument?.messageArrived()
+      } catch (error) {
+        this.#log(`session ${this.sessionId}: a wait can't be ended (${errorName(error)})`)
+      }
+    }
   }
 
   /** Interrupts the workspace's file calls and cuts off the terminal's calls in flight, whose commands then stop:

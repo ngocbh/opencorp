@@ -14,7 +14,8 @@
  *
  *  An office stop leaves a live session's record interrupted (`suspend`), and the next start marks one a crash left
  *  running so (`markRecordInterrupted`); the turn it cut off stays in meta.json. A later office goes on writing it once
- *  it continues the session (`resume`). */
+ *  it continues the session (`resume`). meta.json also counts the session's turns, and keeps each note the driver is
+ *  owed of a turn's end (`told`), so a later office can send it after a restart. */
 import fs from "node:fs"
 import path from "node:path"
 import { authoredText, escapeAuthorTags } from "@ngocbh/yian"
@@ -40,6 +41,16 @@ export interface RecordMeta {
  *  (interrupted), from which a later office may run it again. */
 export type RecordState = "running" | "ended" | "failed" | "interrupted"
 
+/** A note the driver is owed of a turn's end: its key, and its text once the turn has ended. */
+export interface OwedNote {
+  key: string
+  text?: string
+}
+
+/** The most notes a record keeps owed; past it, the oldest goes. A note goes once the run has it, so only notes held
+ *  across restarts pile up. */
+export const OWED_MAX = 32
+
 /** The turn under way: who started it, as the author of the message that started it. */
 export interface RecordTurn {
   by: string | null
@@ -52,6 +63,11 @@ export interface RecordFile extends RecordMeta {
   harnessSessionId?: string
   /** The turn under way, while one runs: what an office stop or a crash cuts off. */
   turn?: RecordTurn
+  /** How many turns the session has started: each turn's number, for its note's key. */
+  turns?: number
+  /** The notes the driver is owed of turns' ends, oldest first: each from when a reply said its turn runs on until the
+   *  run has it or something else told the driver of the end. */
+  told?: OwedNote[]
   /** Where the driver last read the conversation. */
   read?: number
   ended?: string
@@ -256,12 +272,42 @@ export class HarnessRecord {
     this.#trySave()
   }
 
-  /** Keeps the turn under way, or that none is (`null`). */
+  /** Keeps the turn under way, or that none is (`null`); a turn that starts when none was under way is counted. */
   setTurn(turn: RecordTurn | null): void {
     const was = this.#file.turn
     if (turn === null ? was === undefined : was !== undefined && was.by === turn.by) return
     if (turn === null) delete this.#file.turn
-    else this.#file.turn = { by: turn.by }
+    else {
+      if (was === undefined) this.#file.turns = (this.#file.turns ?? 0) + 1
+      this.#file.turn = { by: turn.by }
+    }
+    this.#trySave()
+  }
+
+  /** Owes the driver the note under `key`, of the turn under way, once a reply said it runs on; the notes owed before
+   *  stay. */
+  told(key: string): void {
+    const owed = this.#file.told ?? []
+    if (owed.some((note) => note.key === key)) return
+    this.#file.told = [...owed, { key }].slice(-OWED_MAX)
+    this.#trySave()
+  }
+
+  /** The turn of the note owed under `key` has ended: `text` is the note, which a later office sends as it is. */
+  ended(key: string, text: string): void {
+    const note = this.#file.told?.find((owed) => owed.key === key)
+    if (note === undefined) return
+    note.text = text
+    this.#trySave()
+  }
+
+  /** The note under `key` is owed no more: the run has it, or something else told the driver of the turn's end. */
+  untold(key: string): void {
+    const owed = this.#file.told
+    if (owed === undefined || !owed.some((note) => note.key === key)) return
+    const rest = owed.filter((note) => note.key !== key)
+    if (rest.length === 0) delete this.#file.told
+    else this.#file.told = rest
     this.#trySave()
   }
 
@@ -442,6 +488,13 @@ function isSaid(value: unknown): value is Said {
 
 const isOffset = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0
 
+/** Whether `value` is a note owed, as meta.json holds it. */
+function isOwedNote(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false
+  const { key, text } = value as Record<string, unknown>
+  return typeof key === "string" && (text === undefined || typeof text === "string")
+}
+
 /** What a message says, as a person reads it: its texts, and why a turn failed. */
 function words(message: Message): string {
   return message.parts
@@ -469,7 +522,9 @@ function isRecordFile(value: unknown, kind: Harness["kind"]): value is RecordFil
     STATES.has(file.state as string) &&
     (file.harnessSessionId === undefined || (typeof file.harnessSessionId === "string" && file.harnessSessionId !== "")) &&
     (turn === undefined || (typeof turn === "object" && turn !== null && (turn.by === null || typeof turn.by === "string"))) &&
-    (file.read === undefined || isOffset(file.read))
+    (file.read === undefined || isOffset(file.read)) &&
+    (file.turns === undefined || isOffset(file.turns)) &&
+    (file.told === undefined || (Array.isArray(file.told) && file.told.every(isOwedNote)))
   )
 }
 

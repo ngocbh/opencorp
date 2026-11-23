@@ -2,17 +2,25 @@
  *  (`HarnessInstrument`), each the chat's own child session (its sessions' `startInstrument`), under the employee's
  *  permission, with the owner's word winning; each listed as the chat's instrument, with its record in the chat's
  *  `<kind>/<session id>/` folder. After an office restart, a session the stop cut off continues on the employee's next
- *  message, the same child session on the harness's own session (its sessions' `resumeInstrument`). */
+ *  message, the same child session on the harness's own session (its sessions' `resumeInstrument`). The note of a turn
+ *  the employee was told runs on, once it ends, goes to the session's actor (`onEnded`), and after a restart the actor
+ *  holds a note of each one still owed (`restoreHarnessNotes`). */
+import fs from "node:fs"
 import path from "node:path"
 import type { Instruments } from "../../runtime/sessions/instruments.ts"
 import { HarnessError } from "../../runtime/sessions/state.ts"
 import type { SessionRecord, Store } from "../../runtime/store/store.ts"
+import { CLAUDE } from "../../tools/claude/instrument.ts"
+import { CODEX } from "../../tools/codex/tools.ts"
 import {
   HarnessInstrument,
   HarnessStopping,
   type HarnessThread,
+  restoredNote,
   type ThreadEvents,
+  type TurnEnded,
 } from "../../tools/harness/instrument.ts"
+import { loadRecord } from "../../tools/harness/record.ts"
 import type { Harness } from "../../tools/harness/tools.ts"
 import { checkFolder, makePrivateFolder } from "../../util/private_files.ts"
 
@@ -52,9 +60,43 @@ export interface EmployeeInstrumentOptions {
   readonly speakers: { readonly owner: string | null; label(author: string | null): string }
 }
 
+/** The notes a restart may have cost the chat at `folder`: each note of a turn's end a Codex or Claude Code session's
+ *  record still owes the employee, as it was written, or `restoredNote` for a turn the stop cut off, under that note's
+ *  key, so a note the run already has is never sent twice, and signed by the session's name. Oldest session first,
+ *  each one's notes in order. A record that can't be read gives none. */
+export function restoreHarnessNotes(folder: string): { text: string; key: string; author: string }[] {
+  return [CODEX, CLAUDE].flatMap((harness) => {
+    const dir = path.join(folder, harness.kind)
+    let names: string[]
+    try {
+      names = fs.readdirSync(dir)
+    } catch {
+      return []
+    }
+    const sessions: { notes: { text: string; key: string; author: string }[]; started: string }[] = []
+    for (const name of names) {
+      let record: ReturnType<typeof loadRecord>
+      try {
+        record = loadRecord(harness, path.join(dir, name))
+      } catch {
+        continue
+      }
+      const { meta } = record
+      const notes = (meta.told ?? []).map(({ key, text }) => ({
+        text: text ?? restoredNote(harness, meta, key), key, author: meta.name,
+      }))
+      sessions.push({ notes, started: meta.started })
+    }
+    sessions.sort((a, b) => a.started.localeCompare(b.started))
+    return sessions.flatMap((session) => session.notes)
+  })
+}
+
 /** A main chat's instrument of one harness, as its harness binds it (see the module). */
 export class EmployeeInstrument {
   readonly #instrument: HarnessInstrument
+  /** Who gets the notes of turns that ended: the session's actor. */
+  #onEnded: ((note: TurnEnded) => void) | null = null
 
   constructor(harness: Harness, o: EmployeeInstrumentOptions) {
     const { chat, sessions, instruments, speakers } = o
@@ -94,7 +136,24 @@ export class EmployeeInstrument {
       list: (listing) => instruments.add(chat.id, listing),
       changed: (id) => instruments.updated(chat.id, id),
       remove: (id) => instruments.remove(chat.id, id),
+      ended: (note) => this.#onEnded?.(note),
     })
+  }
+
+  /** Gives `listener` (the session's actor) the note of each turn the employee was told runs on, once it ends; it
+   *  replaces any listener before it. */
+  onEnded(listener: (note: TurnEnded) => void): void {
+    this.#onEnded = listener
+  }
+
+  /** The run has the note under `key`: the session's record owes it no more, so a restart never sends it again. */
+  delivered(key: string): void {
+    this.#instrument.delivered(key)
+  }
+
+  /** A message for the employee arrived: the replies its calls wait on come now, the turns going on. */
+  messageArrived(): void {
+    this.#instrument.messageArrived()
   }
 
   /** The model-facing tools: the harness's group. */
