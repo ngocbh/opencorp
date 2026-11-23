@@ -262,11 +262,11 @@ license, the upstream paths and commit, and our paths.
   something finishes, and a click opens it; Medium groups only reads and searches (`Explored: 2 reads, 1 search`);
   High opens those groups. Questions never fold, a call waiting on an approval stays below its group, and the open
   groups are kept per session in memory. The group tree is copied as is, its merge and split included, which only its
-  tests use until the transcript pages. Adapted: a run is an assistant message's consecutive tool parts, which a text,
-  file or error part ends (blank text doesn't); the office's tools map to upstream's by their view (a Codex or Claude
-  Code call as its subagent call, running while its session runs); no thoughts, instruction loads or code-mode
-  scripts; the settings live in `kv.json` and the commands in the palette; the expanded calls keep the transcript's
-  own spacing; no scroll anchors or paging.
+  tests use, since the office sends a transcript whole rather than in pages. Adapted: a run is an assistant message's
+  consecutive tool parts, which a text, file or error part ends (blank text doesn't); the office's tools map to
+  upstream's by their view (a Codex or Claude Code call as its subagent call, running while its session runs); no
+  thoughts, instruction loads or code-mode scripts; the settings live in `kv.json` and the commands in the palette;
+  the expanded calls keep the transcript's own spacing.
 - **Upstream:** `packages/tui/src/routes/session/grouping/{tree,session}.ts`,
   `packages/tui/src/routes/session/activity-summary.ts`, `packages/tui/src/routes/session/group-view.tsx`,
   `packages/tui/src/routes/session/render-context.tsx`, `packages/tui/src/routes/session/rows.ts`
@@ -285,6 +285,28 @@ license, the upstream paths and commit, and our paths.
   `packages/tui/src/routes/session/index.tsx` (`AssistantMessage`, `toolName`), `packages/tui/src/config/keybind.ts`,
   `packages/tui/test/cli/tui/grouping-tree.test.ts`, `packages/tui/test/cli/tui/session-verbosity.test.ts`,
   `packages/tui/test/routes/session/fold-tools-frame.test.tsx`.
+- **What:** ported from current upstream: tail-first transcript mounting. A session opens on its newest entries, by
+  a budget of rendered entries in which a folded group costs one; older ones mount a chunk at a time as the reader
+  nears the top, an anchor holding the view still; message navigation mounts the rest first; and each session's scroll
+  anchor is kept in memory, so the session opens where it was left. The mount budget's and the anchors' tests come
+  with them, and the frame tests' cases. Adapted: an entry is a message, weighed by the rows it renders; an anchor
+  registers a row's own first node rather than a box around it; navigation holds the reader's view while the rest
+  mounts; the anchors are kept per renderer rather than in session tabs; and nothing loads from the office, which
+  sends a session's whole transcript at once, so the history prepend isn't ported.
+- **Upstream:** `packages/tui/src/routes/session/mount-budget.ts`, `packages/tui/src/routes/session/anchors.ts`,
+  `packages/tui/src/routes/session/anchor-view.tsx`, `packages/tui/src/routes/session/group-view.tsx` (its
+  `GroupAnchor`s), `packages/tui/src/routes/session/index.tsx` (`TRANSCRIPT_TAIL_ROWS`, `TRANSCRIPT_BACKFILL_CHUNK`,
+  `afterLayout`, `pinAbove`, `revealOlderRows`, `revealNewerRows`, `ensureAllRows`, `isAwayFromBottom`,
+  `updateAwayFromBottom`, `saveScrollAnchor`, `restoreScrollPosition`, `toBottom`, `moveTranscript`,
+  `session.first`), `packages/tui/src/context/session-tabs.tsx` (`ScrollAnchor`, `scrollAnchor`,
+  `setScrollAnchor`), `packages/tui/test/cli/tui/mount-budget.test.ts`, `packages/tui/test/cli/tui/anchors.test.ts`,
+  `packages/tui/test/context/session-tabs.test.tsx` (the scroll anchor tests),
+  `packages/tui/test/session-mount-budget.test.tsx` and `packages/tui/test/session-history-reveal.test.tsx`, read at
+  commit `4332e24f` (2026-11-21).
+- **Ours:** `packages/tui/src/routes/session/{mount-budget,anchors}.ts`,
+  `packages/tui/src/routes/session/{anchor-view,index,group-view,note-line,render-context}.tsx`,
+  `packages/tui/test/cli/tui/mount-budget.test.ts`, `packages/tui/test/cli/tui/anchors.test.ts`,
+  `packages/tui/test/routes/session/paged-transcript-frame.test.tsx`.
 - **What:** the check before a terminal starts that its folder is a directory, since a PTY's library may start the
   shell in the home instead, ported for learning's shells.
 - **Upstream:** `packages/core/src/persistent-pty/index.ts` (`create`), read at commit `df46f69` (2026-11-16).
