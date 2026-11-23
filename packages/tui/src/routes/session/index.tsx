@@ -69,7 +69,7 @@ import { freeze, frozenList, unfreeze, type Freeze } from "../chat/freeze"
 import { display } from "../../util/printable"
 import { useLocal } from "../../context/local"
 import { Composer } from "./composer"
-import { busyCounts, busyTab, childState, harnessFamily } from "./composer/tabs"
+import { busyCounts, busyTab, childState, HARNESS_TITLE, harnessFamily } from "./composer/tabs"
 import { sessionOwner, speakerLabel } from "./speakers"
 import { NoteLine } from "./note-line"
 
@@ -115,6 +115,8 @@ const context = createContext<{
   showGenericToolOutput: () => boolean
   diffWrapMode: () => "word" | "none"
   tui: ReturnType<typeof useTuiConfig>
+  /** Opens instrument `id` in the right pane, as the session's `onOpen`. */
+  onOpen?: (id: string) => void
 }>()
 
 function use() {
@@ -754,6 +756,9 @@ export function Session(props: SessionProps) {
         showGenericToolOutput,
         diffWrapMode,
         tui: tuiConfig,
+        get onOpen() {
+          return props.onOpen
+        },
       }}
     >
       <box
@@ -1113,6 +1118,7 @@ export type ToolView =
   | "list"
   | "search"
   | "question"
+  | "harness"
   | "generic"
 
 const pick = (input: Record<string, unknown>, map: Record<string, string>) =>
@@ -1163,6 +1169,9 @@ function terminalView(
     return { view: "typed", input: { text: input.text, enter: input.enter !== false, ...state }, output: "" }
   return { view: "terminal", input: { action: tool, ...state }, output: "" }
 }
+
+/** An employee's call to a Codex or Claude Code session: the harness's tool group, then the tool. */
+const HARNESS_CALL = /^(codex|claude)_(start|send|interrupt|stop|history)$/
 
 /** The renderer for an office tool, by the name the model called it (a workspace tool as `workspace_<tool>` when
  *  its flow grants the group, else by its own name), and its input renamed to the fields that renderer reads. A
@@ -1235,6 +1244,16 @@ export function toolView(
       const head = stringValue(input.summary)?.split("\n")[0].replace(/:\s*$/, "")
       return { view: "generic", input, title: `${stringValue(input.kind) ?? "?"}: ${head || "?"}` }
     }
+  }
+  const harness = HARNESS_CALL.exec(tool)
+  if (harness) {
+    // A start names its session only in its reply; the other calls name it in their input.
+    const kind = harness[1]!
+    const reply = terminalReply(output)
+    const session = stringValue(input[kind]) ?? stringValue(reply?.[kind])
+    const message = stringValue(input.message)
+    const { refused, status, error } = reply ?? {}
+    return { view: "harness", input: { harness: kind, call: harness[2], session, message, refused, status, error } }
   }
   return { view: "generic", input }
 }
@@ -1351,6 +1370,9 @@ function ToolPartView(props: { last: boolean; part: ToolPart }) {
         <Match when={view().view === "question"}>
           <Question {...toolprops} />
         </Match>
+        <Match when={view().view === "harness"}>
+          <HarnessCall {...toolprops} />
+        </Match>
         <Match when={true}>
           <GenericTool {...toolprops} />
         </Match>
@@ -1416,6 +1438,8 @@ function InlineTool(props: {
   pending: string
   failure?: string
   spinner?: boolean
+  /** Whether what the call started still runs: its error waits until it stops. */
+  running?: boolean
   separate?: boolean
   children: JSX.Element
   part: ToolPart
@@ -1434,7 +1458,9 @@ function InlineTool(props: {
     const id = props.part.yian_call_id
     return !!id && permission.waiting(ctx.sessionID, id)
   })
-  const error = createMemo(() => (props.part.state === "error" ? (props.part.error ?? "failed") : undefined))
+  const error = createMemo(() =>
+    !props.running && props.part.state === "error" ? (props.part.error ?? "failed") : undefined,
+  )
   const note = createMemo(() => approvalNote(props.part.input ?? {}))
   const interrupted = createMemo(() => props.part.state === "interrupted")
   const failed = createMemo(() => Boolean(error()))
@@ -1621,7 +1647,8 @@ function exitNote(input: Record<string, unknown>) {
   return typeof code === "number" && code !== 0 ? ` (exit ${code})` : ""
 }
 
-/** What a terminal tool's reply says the owner should read: why nothing was done, or why the shell failed. */
+/** What a terminal or harness tool's reply says the owner should read: why nothing was done, or why the shell
+ *  failed. */
 function shellNote(input: Record<string, unknown>) {
   const refused = stringValue(input.refused)
   if (refused) return `refused: ${display(refused)}`
@@ -1958,6 +1985,60 @@ function Question(props: ToolProps) {
         </InlineTool>
       </Match>
     </Switch>
+  )
+}
+
+/**
+ * An employee's call to a Codex or Claude Code session, as upstream's subagent row: the session by the picker's name
+ * (`Codex: codex 1`) and the message, or the call (`interrupt`), then why it was refused or the session failed, as a
+ * terminal call says; `✓` once a start is done and `↳` for a call to a session already started, or a spinner while
+ * the call or the session runs. A click opens the session in the right pane; a call to a session the chat doesn't list
+ * (a start that hasn't replied, or one its host removed) opens nothing.
+ */
+function HarnessCall(props: ToolProps) {
+  const ctx = use()
+  const office = useOffice()
+  const harness = () => props.input.harness as "codex" | "claude"
+  const call = () => stringValue(props.input.call)
+  const name = () => stringValue(props.input.session)
+  const message = createMemo(() => display(stringValue(props.input.message)?.replace(/\s+/g, " ").trim() ?? ""))
+  const child = createMemo(() => {
+    const named = name()
+    if (named === undefined) return undefined
+    return office.state.instruments[ctx.sessionID]?.find((i) => i.kind === harness() && i.name === named)
+  })
+  const continuation = () => call() !== "start"
+  const isRunning = createMemo(() => {
+    const listed = child()
+    if (running(props.part)) return true
+    return !!listed && childState(office.state.sessions.find((s) => s.id === listed.id), listed) === "running"
+  })
+  const what = () => (call() === "start" || call() === "send" ? message() : call())
+  const label = () => {
+    const named = name()
+    const who = named === undefined ? HARNESS_TITLE[harness()] : `${HARNESS_TITLE[harness()]}: ${display(named)}`
+    return what() ? `${who} — ${what()}` : who
+  }
+  const note = createMemo(() => shellNote(props.input))
+  const open = createMemo(() => {
+    const id = child()?.id
+    const onOpen = ctx.onOpen
+    return id && onOpen ? () => onOpen(id) : undefined
+  })
+
+  return (
+    <InlineTool
+      icon={isRunning() ? "│" : continuation() ? "↳" : props.part.state === "completed" ? "✓" : "│"}
+      spinner={isRunning()}
+      running={isRunning()}
+      complete={what()}
+      pending="Delegating…"
+      part={props.part}
+      onClick={open()}
+    >
+      {label()}
+      {note() ? ` · ${note()}` : ""}
+    </InlineTool>
   )
 }
 
