@@ -14,6 +14,9 @@ In the chat, each run of your employee's tool calls shows as one line, such as `
 click it to see the calls. "Verbosity" in the command list (ctrl+p) switches between Low (the default), Medium, which
 folds only reads and searches, and High, which shows every call.
 
+A session's id in your employee's reply is a link to that session; one of the chat's Codex or Claude Code sessions
+opens in [the pane](/instruments/#the-pane).
+
 ## Hire
 
 In that picker, or after opening it with `/people` or ctrl+x p, pick "Hire new…". Fill in Name,

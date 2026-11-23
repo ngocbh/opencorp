@@ -311,6 +311,21 @@ license, the upstream paths and commit, and our paths.
   `packages/tui/test/cli/tui/mount-budget.test.ts`, `packages/tui/test/cli/tui/anchors.test.ts`,
   `packages/tui/test/routes/session/paged-transcript-frame.test.tsx`,
   `packages/tui/test/routes/session/activity-anchor-frame.test.tsx`.
+- **What:** ported from current upstream: session links. In a reply's text a session's id is underlined in the link
+  colour, and a plain click on it (not one that ends a selection, nor a modified one) opens that session; a code span
+  links only when it is exactly an id, and fenced code and table cells never link. Adapted: an id is a bare ULID, so it
+  links only when the TUI's list holds that session and it is neither the transcript's own nor the route's, with no
+  lookup; it keeps its text, since our sessions have no title; the hook runs on the blocks that name a listed session;
+  a click opens the session through the transcript's `onOpen` (one of the chat's Codex or Claude Code sessions in the
+  right pane) or goes there; there is no `@session:` form and no dialog to close.
+- **Upstream:** `packages/tui/src/ui/session-link.ts`, `packages/tui/src/ui/link.tsx` (`plainClick`),
+  `packages/util/src/session-mention.ts`, `packages/tui/src/routes/session/message-parts.tsx` (`TextPart`'s ref),
+  `packages/tui/test/ui/session-link.test.tsx` and `packages/util/src/session-mention.test.ts`, read at commit
+  `4332e24f` (2026-11-21).
+- **Ours:** `packages/tui/src/ui/session-link.ts`, `packages/tui/src/ui/link.ts`,
+  `packages/tui/src/util/session-mention.ts`, `packages/tui/src/routes/session/index.tsx` (`TextPartView`),
+  `packages/tui/test/ui/session-link.test.tsx`, `packages/tui/test/util/session-mention.test.ts`,
+  `packages/tui/test/routes/session/session-links-frame.test.tsx`.
 - **What:** the check before a terminal starts that its folder is a directory, since a PTY's library may start the
   shell in the home instead, ported for learning's shells.
 - **Upstream:** `packages/core/src/persistent-pty/index.ts` (`create`), read at commit `df46f69` (2026-11-16).
