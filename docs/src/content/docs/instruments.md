@@ -119,7 +119,9 @@ it lists claude.
   your employee waited for, or one they interrupted or stopped. If the office restarts before a note reaches your
   employee, your next message carries it, or says the restart stopped the turn.
 - **Two speakers.** The session shows who sent each message, its border in the sender's colour, and the pane's header
-  says `you are driving` while a turn you started runs. The harness reads each message with its author and is
+  says `you are driving` while a turn you started runs. As in the chat, the line under the prompt names who answers:
+  the session, its harness and its model, then `as @you`, since you write there as yourself
+  (`claude 1 Claude Code · claude-opus-5-5 · as @you`). The harness reads each message with its author and is
   told your word wins: your employee reads what you told it with its next answer, and can't interrupt or stop a turn
   you started. A message you or your employee send while Claude Code works joins its turn once its running tool calls
   finish.
