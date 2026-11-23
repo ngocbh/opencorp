@@ -11,6 +11,7 @@ import type { StreamEvent, SubscribeOptions, Subscription } from "./sse"
 import {
   applyLive,
   applyMeta,
+  heldBack,
   putNewest,
   putOlder,
   replay,
@@ -42,8 +43,11 @@ const FOLDER_LIMIT = 500
 const MAX_BUFFERED = 10_000
 /** A synced session's messages are read this many at a time, newest first, as upstream's client reads them. */
 export const MESSAGE_PAGE = 20
-/** The page size of a load of every older message. */
-const ALL_PAGE = 200
+/** The page size of a load of every older message: the office's largest, since it reads the whole transcript for each
+ *  page. */
+const ALL_PAGE = 500
+/** How many times a load of every older message starts over, its cursor gone or replaced, before it gives up. */
+const ALL_TRIES = 5
 
 const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x)
 
@@ -164,6 +168,9 @@ export function createOfficeSync(opts: {
   const olderLoads = new Map<string, Promise<boolean>>()
   // Sessions whose next load replaces their messages: an older page found its cursor gone.
   const replacing = new Set<string>()
+  // While a session's older page loads, the live events for the older messages it may hold (`heldBack`), which go on
+  // it once it is in. Opened and closed in `mutate`, so each event is checked against the window as it is applied.
+  const olderWindows = new Map<string, StreamEvent[]>()
   const listeners = new Map<string, Set<(e: any) => void>>()
 
   function setStatus(next: OfficeStatus, message?: string, failure?: unknown) {
@@ -202,8 +209,23 @@ export function createOfficeSync(opts: {
       return
     }
     if (e.type === "meta") mutate((s) => applyMeta(s, e.event))
-    else if (e.type === "live") mutate((s) => applyLive(s, e.event))
+    else if (e.type === "live") mutate((s) => applyLiveOrHold(s, e))
     fire([e])
+  }
+
+  /** Applies a live event, or holds it for the older page loading that may hold its message (`heldBack`). */
+  function applyLiveOrHold(s: OfficeState, e: StreamEvent & { type: "live" }) {
+    const window = olderWindows.get(e.event.session_id)
+    if (window && heldBack(s, e.event)) window.push(e)
+    else applyLive(s, e.event)
+  }
+
+  /** Closes session `id`'s older-page window: the events it held go on what is held now, which may hold their
+   *  messages. */
+  function closeOlderWindow(s: OfficeState, id: string) {
+    const window = olderWindows.get(id)
+    olderWindows.delete(id)
+    if (window) replay(s, window)
   }
 
   function onStream(e: StreamEvent) {
@@ -429,45 +451,76 @@ export function createOfficeSync(opts: {
 
   /**
    * Loads the next older page of a synced session's messages, or with `all` every older one, and puts it before those
-   * held (`putOlder`); resolves once it is put, or dropped because the held messages moved on meanwhile. One load runs
-   * at a time per session: a call while one runs waits for it, and then loads only with `all`. `beforePublish` runs as
-   * the page goes in, in the same update, with how many messages go in front. A cursor the office no longer takes (its
-   * message is gone) reloads the session's newest page in place of what it holds.
+   * held (`putOlder`). `beforePublish` runs as a page goes in, in the same update, with how many messages go in front.
+   * With `all` it resolves only once the session holds its first message, starting over while a reload (one in
+   * flight is waited for) replaces what is held, and fails after ALL_TRIES rather than leave part of the transcript
+   * where the whole was asked for.
    */
   async function loadOlder(
     id: string,
     options: { all?: boolean; beforePublish?: (added: number) => void } = {},
   ): Promise<void> {
+    if (!options.all) return void (await loadOlderOnce(id, options))
+    for (let tries = 0; tries < ALL_TRIES; tries++) {
+      await loadOlderOnce(id, options)
+      await loads.get(id)?.catch(() => {})
+      await opts.settled?.()
+      if (stopped || !synced.has(id) || opts.state().messageCursor[id] === undefined) return
+    }
+    throw new Error("couldn't load the whole transcript: it changed while it loaded, each time it was tried")
+  }
+
+  /**
+   * Loads one older page of session `id`, or with `all` every older one, and puts it before those held; resolves whether
+   * it went in, or was dropped because the held messages moved on meanwhile. One load runs at a time per session: a
+   * call while one runs waits for it, and then loads only with `all`. The live events for the messages it may hold wait
+   * for it. A cursor the office no longer takes (its message is gone) reloads the session's newest page in place of what
+   * it holds.
+   */
+  async function loadOlderOnce(
+    id: string,
+    options: { all?: boolean; beforePublish?: (added: number) => void },
+  ): Promise<boolean> {
     while (olderLoads.has(id)) {
       const published = await olderLoads.get(id)!.catch(() => false)
-      if (!options.all && published) return
+      if (!options.all && published) return true
     }
     const load = (async () => {
       // What earlier changes put in, the cursor among them, is read once they are applied.
       await opts.settled?.()
       const cursor = opts.state().messageCursor[id]
       if (cursor === undefined || stopped) return false
+      mutate(() => void olderWindows.set(id, []))
       const older: Message[] = []
       let next: string | null = cursor
-      do {
-        const page: MessagesPage = cleanPage(
-          await client.sessions.messagePage(id, { limit: options.all ? ALL_PAGE : MESSAGE_PAGE, before: next }),
-        )
-        older.unshift(...page.messages)
-        next = page.next
-      } while (options.all && next !== null)
+      try {
+        do {
+          const page: MessagesPage = cleanPage(
+            await client.sessions.messagePage(id, { limit: options.all ? ALL_PAGE : MESSAGE_PAGE, before: next }),
+          )
+          older.unshift(...page.messages)
+          next = page.next
+        } while (options.all && next !== null)
+      } catch (e) {
+        mutate((s) => closeOlderWindow(s, id))
+        throw e
+      }
       let put = false
-      mutate((s) => (put = putOlder(s, id, { messages: older, next }, cursor, options.beforePublish)))
+      mutate((s) => {
+        put = putOlder(s, id, { messages: older, next }, cursor, options.beforePublish)
+        closeOlderWindow(s, id)
+      })
       await opts.settled?.()
       return put
     })()
     olderLoads.set(id, load)
     try {
-      await load
+      return await load
     } catch (e) {
       if (!(e instanceof OfficeError && e.code === "bad_cursor") || !synced.has(id)) throw e
       replacing.add(id)
       await syncSession(id)
+      return false
     } finally {
       if (olderLoads.get(id) === load) olderLoads.delete(id)
     }

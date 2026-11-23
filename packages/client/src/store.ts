@@ -211,6 +211,26 @@ function unloaded(s: OfficeState, session: string, list: Message[], id: string) 
   return s.messageCursor[session] !== undefined && list.length > 0 && id < list[0]!.id
 }
 
+/** The message a live event changes, if it changes one. */
+function messageOf(e: LiveEvent): string | undefined {
+  if (e.type === "message.updated") return asMessage(e.data)?.id
+  if (e.type === "message.removed") return asMessageRemoved(e.data)?.id
+  if (e.type === "part.updated") return asPartUpdated(e.data)?.message_id
+  if (e.type === "part.delta") return asPartDelta(e.data)?.message_id
+  return undefined
+}
+
+/**
+ * Whether `applyLive` leaves live event `e` out because the message it changes belongs to its session's older messages
+ * not loaded yet. While their page loads, it may hold the message as it was before the event: the sync holds such an
+ * event back and applies it once the page is in.
+ */
+export function heldBack(s: OfficeState, e: LiveEvent): boolean {
+  const list = s.messages[e.session_id]
+  const id = messageOf(e)
+  return !!list && id !== undefined && !findMessage(list, id) && unloaded(s, e.session_id, list, id)
+}
+
 function insertMessage(list: Message[], msg: Message) {
   const at = list.findIndex((m) => m.id > msg.id)
   list.splice(at < 0 ? list.length : at, 0, msg)
