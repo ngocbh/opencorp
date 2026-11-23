@@ -52,11 +52,11 @@ function codex(office: FakeOffice, chat: string) {
   return s
 }
 
-/** Boots minh's chat on a 120x30 screen with one reply, the text `setup` returns once it has added its sessions. */
-async function boot(setup: (office: FakeOffice, chat: Session) => string) {
+/** Boots minh's chat on a 120x30 screen with a reply of each text `setup` returns once it has added its sessions. */
+async function boot(setup: (office: FakeOffice, chat: Session) => string | string[]) {
   const office = createFakeOffice()
   const chat = office.state.sessions[0]!
-  office.state.messages[chat.id] = [say(office, chat.id, setup(office, chat))]
+  office.state.messages[chat.id] = [setup(office, chat)].flat().map((text) => say(office, chat.id, text))
   const app = await bootFrame(createStub(office), { sessionID: chat.id }, { width: 120, height: 30 })
   await app.until((f) => f.includes("@minh auto ·"))
   return { office, chat, app }
@@ -149,6 +149,48 @@ test("a code span links only when it is exactly a session's id", async () => {
     await app.until(() => underlined(app).length === 1)
     expect(underlined(app).map((s) => s.text.trim())).toEqual([child.id])
     expect(app.frame()).toContain(`codex resume ${child.id}`)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("with a dozen sessions in the office, a reply still links an id, and a reply naming none shows", async () => {
+  let other!: Session
+  const { office, app } = await boot((office) => {
+    const sessions = Array.from({ length: 12 }, () => office.newSession({ person: "minh", cwd: "/tmp/proj" }))
+    other = sessions[5]!
+    office.state.messages[other.id] = [say(office, other.id, "The other chat says hi.")]
+    return [`See ${other.id} for the plan.`, "Nothing to link here."]
+  })
+  try {
+    await app.until((f) => f.includes("Nothing to link here.") && underlined(app).length === 1)
+    expect(underlined(app).map((s) => s.text.trim())).toEqual([other.id])
+    await click(app, other.id)
+    await app.until((f) => f.includes("The other chat says hi."))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a session that comes into the list with a delta naming it links in every block that names it", async () => {
+  const later = "01JQ8Z3V4XKM5N6P7R8S9T0WXZ"
+  const { office, chat, app } = await boot(() => `See ${later} first.`)
+  try {
+    await app.until((f) => f.includes("first."))
+    expect(underlined(app)).toHaveLength(0)
+    const message = office.state.messages[chat.id]![0]!
+    // Written together, both land in one flush: the delta's new block runs the hook before the effect that
+    // re-renders the blocks already naming the session.
+    office.newSession({ id: later, person: "minh", cwd: "/tmp/proj" })
+    office.live({
+      type: "part.delta",
+      session_id: chat.id,
+      data: { message_id: message.id, part_id: message.parts[0]!.id, text: `\n\nThen ${later} again.` },
+    })
+    await app.until((f) => f.includes("again.") && underlined(app).length === 2)
+    expect(underlined(app).map((s) => s.text.trim())).toEqual([later, later])
   } finally {
     await app.stop()
     office.stop()
