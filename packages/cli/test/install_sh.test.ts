@@ -35,8 +35,9 @@ let source = ""
 let bunDir = ""
 /** A folder holding the stub `curl`, whose Bun installer copies the stub `bun`. */
 let stubs = ""
-/** The platform the stub `bun` says it runs on, which names the folder of the binary the stub build writes. */
-const HOST = "stub-x64"
+/** The platform the stub `bun` says it runs on, which names the folder of the binary the stub build writes: this
+ *  machine's, as uninstall.sh names it from `uname`. */
+const HOST = `${process.platform}-${process.arch}`
 /** The binary install.sh builds in the checkout `co`. */
 const built = (co: string) => path.join(co, "packages/cli/dist/npm", `opencorp-${HOST}`, "bin/opencorp")
 
@@ -1342,7 +1343,7 @@ describe("uninstall.sh", () => {
     expect(fs.existsSync(h.clone)).toBe(false)
   })
 
-  test("in a checkout it keeps, removes every build in dist/npm, a staged or replaced one, and one a failed rebuild left", async () => {
+  test("in a checkout it keeps, removes the build install.sh made, staged or replaced, and one a failed rebuild left, but no other", async () => {
     const h = makeHome()
     const mine = checkout(h, "mine")
     expect((await run(h, "install.sh", { from: mine })).code).toBe(0)
@@ -1350,25 +1351,28 @@ describe("uninstall.sh", () => {
     expect((await run(h, "install.sh", { from: mine, extra: { STUB_BUILD_FAILS: "1" } })).code).toBe(0)
     expect(fs.readFileSync(h.wrapper, "utf8")).not.toContain("# compiled, as")
     const npm = path.join(mine, "packages/cli/dist/npm")
-    // The npm shim the build writes beside the binary, a cross build, and a build's staging and replaced folders.
-    const others = ["opencorp", "opencorp-linux-arm64", `opencorp-${HOST}.new`, `opencorp-${HOST}.old`]
-    for (const name of others) writeScript(path.join(npm, name, "bin/opencorp"), "#!/bin/sh\n")
+    // The npm shim the build writes beside the binary, and a build's staging and replaced folders.
+    const made = [`opencorp-${HOST}`, "opencorp", `opencorp-${HOST}.new`, `opencorp-${HOST}.old`]
+    for (const name of made.slice(1)) writeScript(path.join(npm, name, "bin/opencorp"), "#!/bin/sh\n")
+    // A cross build of the user's own.
+    const theirs = path.join(npm, "opencorp-other-arm64/bin/opencorp")
+    writeScript(theirs, "#!/bin/sh\n")
     const r = await run(h, "uninstall.sh")
     expect(r.err).not.toContain("✗")
     expect(r.code).toBe(0)
-    for (const name of [`opencorp-${HOST}`, ...others]) expect(r.out).toContain(`✓ Removed ${path.join(npm, name)}`)
-    // The folders the build made go once empty; the checkout stays.
-    expect(fs.existsSync(path.join(mine, "packages/cli/dist"))).toBe(false)
+    for (const name of made) {
+      expect(r.out).toContain(`✓ Removed ${path.join(npm, name)}`)
+      expect(fs.existsSync(path.join(npm, name)), name).toBe(false)
+    }
+    expect(fs.existsSync(theirs)).toBe(true)
     expect(r.out).toContain(`✓ Left ${mine} in place: install.sh did not clone it.`)
 
-    // Anything else in dist stays, with the folders that hold it.
-    const kept = makeHome()
-    const co = checkout(kept)
-    expect((await run(kept, "install.sh", { from: co })).code).toBe(0)
-    fs.writeFileSync(path.join(co, "packages/cli/dist/npm/notes"), "mine\n")
-    expect((await run(kept, "uninstall.sh")).code).toBe(0)
-    expect(fs.existsSync(built(co))).toBe(false)
-    expect(fs.readFileSync(path.join(co, "packages/cli/dist/npm/notes"), "utf8")).toBe("mine\n")
+    // With nothing else there, the folders the build made go too.
+    const alone = makeHome()
+    const co = checkout(alone)
+    expect((await run(alone, "install.sh", { from: co })).code).toBe(0)
+    expect((await run(alone, "uninstall.sh")).code).toBe(0)
+    expect(fs.existsSync(path.join(co, "packages/cli/dist"))).toBe(false)
   })
 
   test("removes no build in a folder that isn't an OpenCorp checkout, or through a link, whatever the wrapper names", async () => {
@@ -1379,22 +1383,26 @@ describe("uninstall.sh", () => {
     // A folder shaped like a checkout's build, with no checkout around it.
     const victim = path.join(h.dir, "victim")
     writeScript(path.join(victim, "packages/cli/bin/opencorp"), "#!/bin/sh\n")
-    writeScript(path.join(victim, "packages/cli/dist/npm/opencorp-x/bin/opencorp"), "#!/bin/sh\n")
+    writeScript(path.join(victim, "packages/cli/dist/npm", `opencorp-${HOST}`, "bin/opencorp"), "#!/bin/sh\n")
     fs.writeFileSync(h.wrapper, wrapper.replaceAll(co, victim), { mode: 0o755 })
     const u = await run(h, "uninstall.sh", { args: ["--dir", co] })
     expect(u.code).toBe(0)
     expect(u.out).toContain(`✓ Removed ${h.wrapper}`)
-    expect(fs.existsSync(path.join(victim, "packages/cli/dist/npm/opencorp-x/bin/opencorp"))).toBe(true)
+    expect(fs.existsSync(path.join(victim, "packages/cli/dist/npm", `opencorp-${HOST}`, "bin/opencorp"))).toBe(true)
 
-    // A checkout whose dist is a link to another folder: nothing in that folder goes.
-    const linked = makeHome()
-    const mine = checkout(linked)
-    expect((await run(linked, "install.sh", { from: mine })).code).toBe(0)
-    const elsewhere = path.join(linked.dir, "elsewhere")
-    fs.renameSync(path.join(mine, "packages/cli/dist"), elsewhere)
-    fs.symlinkSync(elsewhere, path.join(mine, "packages/cli/dist"))
-    expect((await run(linked, "uninstall.sh")).code).toBe(0)
-    expect(fs.existsSync(path.join(elsewhere, "npm", `opencorp-${HOST}`, "bin/opencorp"))).toBe(true)
+    // A checkout whose packages/cli, dist or dist/npm is a link to another folder: nothing in that folder goes.
+    for (const link of ["packages/cli", "packages/cli/dist", "packages/cli/dist/npm"]) {
+      const linked = makeHome()
+      const mine = checkout(linked)
+      expect((await run(linked, "install.sh", { from: mine })).code).toBe(0)
+      const elsewhere = path.join(linked.dir, "elsewhere")
+      fs.renameSync(path.join(mine, link), elsewhere)
+      fs.symlinkSync(elsewhere, path.join(mine, link))
+      const r = await run(linked, "uninstall.sh")
+      expect(r.code, link).toBe(0)
+      expect(r.err, link).toContain(`⚠ Left the builds in ${path.join(mine, "packages/cli/dist/npm")} in place:`)
+      expect(fs.existsSync(built(mine)), link).toBe(true)
+    }
   })
 
   test("keeps a checkout install.sh didn't clone, at --dir or the default", async () => {
