@@ -173,7 +173,6 @@ export function sideSpec({
   repo,
   session,
   workspace,
-  monitor,
   question,
 }: {
   store: Store
@@ -181,7 +180,6 @@ export function sideSpec({
   repo: CompanyRepo
   session: SessionRecord
   workspace: Workspace
-  monitor: Monitor
   question: QuestionRecord | undefined
 }): RunSpec {
   const person = personOf(repo, session)
@@ -196,7 +194,7 @@ export function sideSpec({
       history_budget: defaults.side_seed_max_chars + SIDE_HISTORY_CHARS,
     },
     groups: ({ session, runId }) =>
-      build(["workspace", "work_items"], { store, session, runId, monitor, workspace, readOnly: true, question }),
+      build(["workspace", "work_items"], { store, session, runId, workspace, readOnly: true, question }),
     memories: profileMemory(git, person.handle),
     skills: [],
     names: [person.handle, person.name],

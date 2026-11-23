@@ -10,9 +10,7 @@ import { Transcript } from "../../../src/features/chat/transcript.ts"
 import { FlowOutsideRepo, loadConfined } from "../../../src/company/flows.ts"
 import { CompanyGit } from "../../../src/company/git.ts"
 import { loadRepo } from "../../../src/company/loader.ts"
-import { Monitor } from "../../../src/runtime/permissions/monitor.ts"
 import { discussion, readSeed, SEED_FILE, writeSeed } from "../../../src/features/questions/side.ts"
-import { SecretStore } from "../../../src/runtime/secrets.ts"
 import { newId, type SessionRecord } from "../../../src/runtime/store/store.ts"
 import { READ_TOOLS } from "../../../src/tools/workspace.ts"
 import { PrivateFileError } from "../../../src/util/private_files.ts"
@@ -214,7 +212,6 @@ async function office() {
   })
   const git = new CompanyGit(root, path.join(dir, "worktrees"))
   const store = openStore()
-  const monitor = new Monitor(root, new SecretStore(path.join(dir, "secrets")))
   const repo = loadRepo(root)
   const head = await git.head()
   const asker = store.createSession(session({ repo_commit: head }))
@@ -223,7 +220,7 @@ async function office() {
     const s = store.createSession(
       session({ repo_commit: head, kind: "side", question_id: asked.id, status: "starting", ...over }),
     )
-    const spec = sideSpec({ store, git, repo, session: s, workspace: NO_WORKSPACE, monitor, question: asked })
+    const spec = sideSpec({ store, git, repo, session: s, workspace: NO_WORKSPACE, question: asked })
     return { session: s, spec }
   }
   return { dir, git, head, repo, side }

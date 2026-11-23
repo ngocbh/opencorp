@@ -379,7 +379,7 @@ export class ChatHarness implements SessionHarness {
       // A side chat explains, it doesn't act.
       const workspace = this.#workspace(session, { writable: false, network: false })
       const question = session.question_id === null ? undefined : store.getQuestion(session.question_id)
-      return sideSpec({ store, git, repo, session, workspace, monitor, question })
+      return sideSpec({ store, git, repo, session, workspace, question })
     }
     const policy = repo.people.get(session.person)?.harness_policy
     const workspace = this.#workspace(session, {
