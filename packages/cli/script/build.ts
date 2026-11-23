@@ -6,7 +6,7 @@
 // package, for this machine, with the running Bun. `install.sh` runs it with no arguments, and the `opencorp` it puts
 // on PATH runs `dist/npm/opencorp-<os>-<cpu>/bin/opencorp`.
 //
-// The compile follows OpenCode's (`packages/cli/script/build.ts`): the Solid transform runs here, and the bundle is
+// The compile follows upstream's (its `packages/cli/script/build.ts`): the Solid transform runs here, and the bundle is
 // minified, split and compiled to bytecode, so it holds no Babel and a start doesn't parse the bundle.
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 import fs from "node:fs"
@@ -148,7 +148,7 @@ for (const { name, os, cpu, target } of builds) {
     ],
     plugins: [solidPlugin],
     format: "esm",
-    // OpenCode's minify, but keeping names: the office's logs and messages name an error by its class, and Bun's
+    // Upstream's minify, but keeping names: the office's logs and messages name an error by its class, and Bun's
     // `keepNames` doesn't reach a compiled bundle. Mangling them saves about a millisecond of start.
     minify: { whitespace: true, syntax: true, identifiers: false },
     bytecode: true,
@@ -160,7 +160,7 @@ for (const { name, os, cpu, target } of builds) {
       outfile: path.join(staging, "bin/opencorp"),
       // The binary never reads the caller's folder: a project's .env, bunfig.toml (and its preloads), tsconfig.json
       // or package.json can be model-written. `--no-install`, as the checkout's wrapper passes: no module a company's
-      // code imports is ever fetched. `--smol`, as OpenCode's binary runs: a smaller heap.
+      // code imports is ever fetched. `--smol`, as upstream's binary runs: a smaller heap.
       autoloadDotenv: false,
       autoloadBunfig: false,
       autoloadTsconfig: false,
