@@ -256,6 +256,19 @@ export interface ApprovalCard {
   readonly into: string | null
 }
 
+/** The state a command or typed line was decided on, which the call checks again before it acts: the shell's folder
+ *  for a command, the line and the command it is typed into for typed text. */
+export type Basis = { readonly cwd: string | null } | { readonly line: string; readonly into: string | null }
+
+/** What the office's gate decided for a terminal call before it started (yian's `beforeToolCall`): what lets it run,
+ *  for its audit row (`by read-only`, `approved by @<who>`), the state it was decided on, and whether its approver
+ *  said Yes on a card. */
+export interface Decided {
+  readonly why: string
+  readonly basis: Basis
+  readonly approved: boolean
+}
+
 /** A session's permissions as its host binds them; the model sets none of them. */
 export interface Permissions {
   mode(): Mode
@@ -265,8 +278,12 @@ export interface Permissions {
   where(): Where
   /** Holds yian call `callId` on an approval card for the session's approver and returns what the call returns
    *  now: yian's `pending()` while the card is open. The host runs the action itself once the approver says Yes
-   *  and completes the call with its result; No completes it with the approver's words. */
-  hold(card: ApprovalCard, callId: string): unknown
+   *  and completes the call with its result; No completes it with the approver's words. A host whose gate holds
+   *  its calls (`decided`) has none, and nothing holds there. */
+  hold?(card: ApprovalCard, callId: string): unknown
+  /** For a host whose gate decides each call before it starts: what it decided for call `callId`, taken once by the
+   *  call that acts on it, or null when it decided nothing. A terminal under such a host decides nothing itself. */
+  decided?(callId: string | undefined): Decided | null
   /** Auto's check, as the host binds it; absent, what it would judge asks. Rejects when `signal` aborts, or when the
    *  check can't record its verdict; the gate then asks. */
   check?(input: CheckInput, signal: AbortSignal): Promise<Verdict>
@@ -316,7 +333,7 @@ export async function gate(
   }
   // Read again: the session may have switched to dontAsk while the check ran, and nobody would answer its card.
   if (perms.mode() === "dontAsk") return { run: false, result: dontAskRefusal(asked.reason) }
-  if (call.callId === undefined)
+  if (call.callId === undefined || perms.hold === undefined)
     return { run: false, result: "Not run: this call can't wait for the owner's approval." }
   const card: ApprovalCard = {
     kind: action.kind, tool: call.tool, action: action.text, args: call.args, why: call.why, reason: asked.reason,
@@ -387,7 +404,8 @@ function withInner(part: SimpleCommand): SimpleCommand[] {
   return [part, ...innerParts(part).flatMap(withInner)]
 }
 
-function checkInput(action: Action, where: Where): CheckInput {
+/** What Auto's check is told of `action`, run `where`. */
+export function checkInput(action: Action, where: Where): CheckInput {
   const on = action.kind === "input" ? (action.into ?? "") : action.text
   return {
     kind: action.kind, command: action.text, profile: where.profile, cwd: where.cwd ?? "",

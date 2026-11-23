@@ -8,7 +8,7 @@ import os from "node:os"
 import path from "node:path"
 import { now } from "@opencorp/protocol"
 import { spawnPty } from "../../platform.ts"
-import type { CheckInput, Permissions } from "../../runtime/permissions/policy.ts"
+import type { ApprovalCard, CheckInput, Permissions } from "../../runtime/permissions/policy.ts"
 import { SAFE_PATH, SandboxUnavailable, scrubbedEnv, startOnTerminal } from "../../runtime/sandbox/run.ts"
 import type { SshPolicy } from "../../runtime/sandbox/ssh_policy.ts"
 import { InstrumentRecord } from "../../tools/terminal/record.ts"
@@ -248,7 +248,7 @@ function startingIn(base: Permissions, paths: ReachPaths, tmpdir: string): Permi
       const credentials = [...(where.credentials ?? []), paths.provider, paths.auth, ...office]
       return { ...where, profile: "ssh", cwd: tmpdir, writable: [], credentials }
     },
-    hold: (card, callId) => base.hold(card, callId),
+    ...(base.hold ? { hold: (card: ApprovalCard, callId: string) => base.hold!(card, callId) } : {}),
     ...(check ? { check: (input: CheckInput, signal: AbortSignal) => check.call(base, input, signal) } : {}),
     ...(blocked ? { blocked: () => blocked.call(base) } : {}),
   }

@@ -268,7 +268,7 @@ test("a switch to dontAsk while Auto's check runs refuses the call, with no card
   expect(rows(h, id).map((r) => [r.outcome, r.detail])).toEqual([["denied", why]])
 })
 
-test("a session's hold refuses rather than hold a card once the session doesn't ask", async () => {
+test("the chat's permissions hold nothing: its terminal acts only on what the gate decided for each call", async () => {
   const fake = await fakeLlm()
   const h = await makeHarness(fake)
   const id = await chat(h, "dontAsk")
@@ -289,12 +289,11 @@ test("a session's hold refuses rather than hold a card once the session doesn't 
     host: {
       liveRun: never,
       completeWithAnswer: never,
-      completeWithOutput: never,
-      loseAnswer: never,
       post: never,
       notice: never,
       settle: never,
-      runner: never,
+      planCommand: never,
+      audited: never,
       release: never,
       completeCall: never,
       onQuestion: never,
@@ -303,14 +302,10 @@ test("a session's hold refuses rather than hold a card once the session doesn't 
     },
   })
   const asked: unknown[] = []
-  const card = {
-    kind: "command" as const, tool: "terminal_run", action: "make", args: { command: "make", why: WHY }, why: WHY,
-    reason: "Ask mode", rules: ["make"], partial: false, into: null,
-  }
   const runId = session(h, id).run_ids.at(-1)!
   const perms = await approvals.permissions(runId, (q) => (asked.push(q), q))
-  const refused = perms.hold(card, `${runId}/chat#0/reply/1/0`)
-  expect(refused).toBe("Not run: this session doesn't ask (dontAsk mode): Ask mode.")
+  expect(perms.hold).toBeUndefined()
+  expect(perms.decided!(`${runId}/chat#0/reply/1/0`)).toBeNull()
   expect(asked).toEqual([])
 })
 
@@ -470,40 +465,43 @@ test("End while Auto's check runs for a terminal command types nothing", async (
   expect(rows(h, id)).toEqual([])
 })
 
-test("No answers the session's other open approval cards with the same words", async () => {
+test("No answers the reply's other calls that would ask with the same words", async () => {
   const fake = await fakeLlm()
   const no = "Not run: the user said no: use make clean"
   fake.script(shell("make", "make test"), says("Cleaning first.", no))
   const h = await makeHarness(fake)
   const id = await chat(h, "ask")
-  const [first, second] = await held(h, id, "build and test", 2)
+  // The reply's later call waits behind the open card, as yian holds it.
+  const [first] = await held(h, id, "build and test")
   await h.harness.answer(first!.id, "use make clean", "text", { by: CEO })
   await replied(h, id, "Cleaning first.")
-  for (const q of [first!, second!]) {
-    expect(h.store.getQuestion(q.id)).toMatchObject({ status: "consumed", answer: "use make clean", answered_by: CEO })
-  }
+  const answered = { status: "consumed", answer: "use make clean", answered_by: CEO }
+  expect(h.store.getQuestion(first!.id)).toMatchObject(answered)
+  expect(h.store.listQuestions({ sessionId: id, source: "approval" })).toHaveLength(1)
   expect(chats(fake).at(-1)!.split(no)).toHaveLength(3)
-  expect(rows(h, id).map((r) => r.outcome)).toEqual(["held", "held"])
+  expect(rows(h, id).map((r) => [r.outcome, r.detail])).toEqual([["held", "Ask mode"], ["denied", no]])
 })
 
-sandboxed("a new rule runs the other open cards it now allows, and leaves the rest open", async () => {
+sandboxed("a new rule lets the reply's later calls it allows run, and the rest still ask", async () => {
   const fake = await fakeLlm()
   fake.script(shell("ls -l", "ls -a", "rm x"), says("Kept x.", "Not run: the user said no: keep x"))
   const h = await makeHarness(fake)
   fs.writeFileSync(path.join(h.folder, "x"), "")
   const id = await chat(h, "ask")
-  const cards = await held(h, id, "list and clean", 3)
-  const byAction = (action: string) => cards.find((c) => c.approval!.action === action)!
-  await h.harness.answer(byAction("ls -l").id, sessionOption(["ls *"]), "option", { by: CEO })
+  // The reply's later calls wait behind the open card, as yian holds it.
+  const [ls] = await held(h, id, "list and clean")
+  expect(ls!.approval!.action).toBe("ls -l")
+  await h.harness.answer(ls!.id, sessionOption(["ls *"]), "option", { by: CEO })
   const approved = () => rows(h, id).filter((r) => r.outcome === "ok")
   await waitFor(() => approved().length === 2, { what: "both listings" })
-  // The approver let `ls -l` run; the rule they added let `ls -a` run, and its row says so.
+  // The approver let `ls -l` run; the rule they added let `ls -a` run with no card, and its row says so.
   const credit = (summary: string) =>
     approved().find((r) => (r.args as { summary: string }).summary === summary)!.detail!.replace(/^exit=0 duration=[\d.]+s /, "")
   expect([credit("command='ls -l'"), credit("command='ls -a'")]).toEqual(["approved by @ngocbh", "by an allow rule"])
-  expect(h.store.getQuestion(byAction("ls -a").id)).toMatchObject({ answer: YES, answered_by: CEO })
-  const rm = byAction("rm x")
-  expect(h.store.getQuestion(rm.id)!.status).toBe("open")
+  const open = () => h.store.listQuestions({ sessionId: id, status: "open", source: "approval" })
+  await waitFor(() => open().length === 1, { what: "rm x's card" })
+  const rm = open()[0]!
+  expect(rm.approval!.action).toBe("rm x")
   expect(fs.existsSync(path.join(h.folder, "x"))).toBe(true)
   await h.harness.answer(rm.id, "keep x", "text", { by: CEO })
   await replied(h, id, "Kept x.")
@@ -572,7 +570,8 @@ sandboxed("Esc while an approved command runs stops it, and the agent's turn end
   await h.harness.interrupt(id)
   expect(await ended(sleeping)).toBe(true)
   await waitFor(() => status(h, id) === "idle", { what: "the turn's end" })
-  await waitFor(async () => (await tools(h, id))[0]?.state === "interrupted", { what: "the call shown interrupted" })
+  // The approved command runs as the employee's own call, which Esc cuts off: it stops the command and replies.
+  await waitFor(async () => (await tools(h, id))[0]?.state !== "running", { what: "the call's end" })
   await waitFor(() => rows(h, id).length === 2, { what: "the command's row" })
   expect(rows(h, id).map((r) => r.outcome)).toEqual(["held", "error"])
   expect(fake.requests()).toHaveLength(1)
@@ -716,16 +715,19 @@ sandboxed("a malformed rules file asks for everything and says why", async () =>
   })
   fs.writeFileSync(path.join(h.folder, "x"), "")
   const id = await chat(h)
-  const cards = await held(h, id, "build it", 2)
-  expect(cards.map((c) => [c.approval!.action, c.approval!.reason, c.options]).sort()).toEqual([
-    ["ls", why, [YES]],
-    ["make", why, [YES]],
-  ])
+  // The reply's later calls wait behind the open card, as yian holds it.
+  const cards = await held(h, id, "build it")
+  expect(cards.map((c) => [c.approval!.action, c.approval!.reason, c.options])).toEqual([["ls", why, [YES]]])
   expect(checks(fake)).toEqual([])
-  // minh's own deny still refuses first.
-  expect(outcomes(h, id).sort()).toEqual([["denied", "Not run: a deny rule: rm *."], ["held", why], ["held", why]])
+  expect(outcomes(h, id)).toEqual([["held", why]])
   await h.harness.answer(cards[0]!.id, "no", "text", { by: CEO })
   await replied(h, id, "Waiting.")
+  // The No settles `make`, which would ask too; minh's own deny still refuses `rm x` first.
+  expect(outcomes(h, id)).toEqual([
+    ["held", why],
+    ["denied", "Not run: the user said no: no"],
+    ["denied", "Not run: a deny rule: rm *."],
+  ])
   h.store.updateSession(id, { mode: "dontAsk" })
   await h.harness.prompt(id, "list it")
   await replied(h, id, "Refused.")
@@ -797,8 +799,8 @@ test("a session's rules files are read again only once HEAD moves", async () => 
     handle: "minh",
     log: never,
     host: {
-      liveRun: never, completeWithAnswer: never, completeWithOutput: never, loseAnswer: never, post: never,
-      notice: never, settle: never, runner: never, release: never, completeCall: never, onQuestion: never,
+      liveRun: never, completeWithAnswer: never, post: never, notice: never, settle: never, planCommand: never,
+      audited: never, release: never, completeCall: never, onQuestion: never,
       released: never, secretValues: never,
     },
   })

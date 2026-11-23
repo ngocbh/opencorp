@@ -16,7 +16,7 @@ import { CEO } from "../../server/helpers.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import { ended, ownSleepers, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import { openStore } from "../../runtime/store/helpers.ts"
-import { fakePipes, json, permissions, rule } from "../../tools/terminal/helpers.ts"
+import { fakePipes, json, permissions } from "../../tools/terminal/helpers.ts"
 import { fakeLlm, type HarnessOffice, makeHarness, noWorkersLeft, running, status, texts } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -198,16 +198,22 @@ test("a command that ends after the agent's next turn has begun keeps the run it
     store,
     mode: () => "auto",
   })
-  const { perms } = permissions({ mode: "ask", rules: [rule("allow", "command", "make *"), rule("allow", "command", "echo *")] })
-  terminal.bind("r1", perms)
+  // Each run's gate let its commands run, as an allow rule does, and held `rm x`.
+  const { perms } = permissions({ mode: "ask" })
+  const ledger = new Map([
+    ["r1/n/1/0", { why: "by an allow rule", basis: { cwd: dir }, approved: false }],
+    ["r2/n/1/0", { why: "by an allow rule", basis: { cwd: dir }, approved: false }],
+  ])
+  const gated = { ...perms, decided: (callId: string | undefined) => ledger.get(callId ?? "") ?? null }
+  terminal.bind("r1", gated)
   const run = terminal.tools().run
   expect(json(await run.call({ command: "make long", why: "x", wait: 0 }, { callId: "r1/n/1/0" }))).toMatchObject({
     status: "running",
   })
   // The next turn's run is built while the command goes on: what it runs and holds is its own.
-  terminal.bind("r2", perms)
+  terminal.bind("r2", gated)
   expect(json(await run.call({ command: "echo next", why: "x" }, { callId: "r2/n/1/0" }))).toMatchObject({ exit: 0 })
-  await run.call({ command: "rm x", why: "x" }, { callId: "r2/n/2/0" })
+  terminal.audited(terminal.plan("run", { command: "rm x", why: "x" }), "held", "Ask mode")
   pipes.end("make long", 0)
   await waitFor(() => store.listAudit().length === 3, { what: "the long command's row" })
   expect(store.listAudit().map((r) => [r.args, r.outcome, r.runId])).toEqual([
@@ -307,18 +313,16 @@ sandboxed("the approvals' re-check reads the terminal's where, and a shell's sta
   const id = await chat(h)
   await h.harness.prompt(id, "build it twice")
   const open = () => h.store.listQuestions({ sessionId: id, status: "open", source: "approval" })
-  await waitFor(() => open().length === 2 && status(h, id) === "waiting", { what: "both cards" })
+  // The reply's later call waits behind the open card, as yian holds it.
+  await waitFor(() => open().length === 1 && status(h, id) === "waiting", { what: "the first card" })
   // Auto's check was told the shell runs on the workspace profile, in the session's folder.
   const checks = h.store.listAudit({ sessionId: id }).filter((r) => r.kind === "check")
-  expect(checks.map((r) => r.args)).toMatchObject([
-    { profile: "workspace", cwd: h.folder },
-    { profile: "workspace", cwd: h.folder },
-  ])
+  expect(checks.map((r) => r.args)).toMatchObject([{ profile: "workspace", cwd: h.folder }])
   const first = open().find((q) => q.approval!.action === a)!
   await h.harness.answer(first.id, sessionOption(["make"]), "option", { by: CEO })
   await replied(h, id, "Built both.")
-  // With make allowed, b's touch is a file operation in the workspace the terminal's sandbox writes, so the re-check
-  // let it run: on the SSH-only reading, which writes nothing, its card would have stayed open.
+  // With make allowed, b's touch is a file operation in the workspace the terminal's sandbox writes, so the gate let
+  // it run once a's card was answered: on the SSH-only reading, which writes nothing, it would have asked.
   expect([fs.existsSync(path.join(h.folder, "a.txt")), fs.existsSync(path.join(h.folder, "b.txt"))]).toEqual([true, true])
   const ran = h.store.listAudit({ sessionId: id }).filter((r) => r.kind === "workspace" && r.outcome === "ok")
   const credit = (summary: string) =>

@@ -40,7 +40,9 @@ while a command runs), and a missing `.mcp.json` can still be created.
 - **The mode.** A chat starts in `auto`: read-only commands and file operations in the project folder run at once,
   and the rest goes to Auto's check, a model call on the office's connection, or asks you. Shift+Tab switches the
   mode to `default`, `ask`, `dontAsk` and back. A card asks you before what the mode doesn't allow; `dontAsk`
-  refuses it instead.
+  refuses it instead. While a card is open, your employee's later commands in that reply wait, and a No refuses
+  those that would ask too. A command a restart or crash cut off once you approved it doesn't run again: your
+  employee reads that its outcome is unknown.
 - **Deny rules.** A deny rule in the company's `rules.yaml` or your employee's `people/<handle>/rules.yaml` refuses
   the commands it matches in every mode, including a line your employee types into a running command. A
   command OpenCorp can't fully read (a `$(…)`, `eval "$CMD"`, `sh -c "$CMD"`, an unclosed quote) could hide one, so

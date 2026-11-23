@@ -167,7 +167,7 @@ test("an approval card survives an office restart, and Yes after it runs the com
   expect(o.office.store.listAudit({ sessionId: sid }).map((r) => r.outcome)).toEqual(["held", "ok"])
 })
 
-test("a restart while an approved command runs never runs it again: the agent reads that its outcome is unknown", async () => {
+test("a restart while an approved command runs never runs it again: the agent reads yian's word that its outcome is unknown", async () => {
   const fake = await fakeLlm()
   fake.script(shellCall("make deploy"), { content: "I'll check first." })
   const o = await chatOffice(fake)
@@ -181,11 +181,12 @@ test("a restart while an approved command runs never runs it again: the agent re
   await waitFor(() => status(o, sid) === "waiting" && !first.hasWorker, { what: "asleep on the card" })
   await first.answer(q.id, YES, "option", { by: CEO })
   await waitFor(() => o.pipes.commands.length === 1, { what: "the command to run" })
-  const actor = await reopen(o, first)
+  // The released command runs in the run's own worker, which the office's stop ends with it.
+  const actor = await stopMidReply(o, first)
   await actor.restore()
   await waitFor(() => texts(o, sid).includes("I'll check first.") && status(o, sid) === "idle", { what: "the reply" })
   expect(o.pipes.commands).toHaveLength(1)
-  expect(lastAsked(fake, "Not run again: the user approved this")).toBe(true)
+  expect(lastAsked(fake, "The tool call was interrupted; its outcome is unknown.")).toBe(true)
   expect(o.office.store.getQuestion(q.id)!.status).toBe("consumed")
 })
 
