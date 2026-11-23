@@ -295,3 +295,47 @@ test("after Esc, a run counts only the calls the frozen view shows", async () =>
     office.stop()
   }
 })
+
+test("a call that waits on a card opened after its run folded comes out below the line", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]!
+  const { app } = await boot(
+    [shell("ls -la"), shell("make deploy", { state: "running", yian_call_id: "held-call" })],
+    office,
+  )
+  try {
+    let f = await app.until((f) => f.includes("1 command"))
+    expect(f).not.toContain("make deploy")
+    office.addApproval(
+      s.id,
+      { kind: "command", tool: "shell", action: "rm -rf build", reason: "Ask mode", rules: [] },
+      { call_id: "held-call" },
+    )
+    f = await app.until((f) => f.includes("make deploy") && f.includes("rm -rf build"))
+    expect(row(f, "1 command").y).toBeLessThan(row(f, "make deploy").y)
+    expect(spins(f, "1 command")).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a group the owner opened stays open when the chat is opened again", async () => {
+  const { office, app } = await boot([shell("make test"), shell("make lint")])
+  try {
+    await app.until((f) => f.includes("+ 2 commands"))
+    await click(app, "+ 2 commands")
+    await app.until((f) => f.includes("make lint"))
+    await runCommand(app, "New session")
+    await app.until((f) => !f.includes("fix it"))
+    await runCommand(app, "Switch session")
+    await app.until((f) => f.includes("@minh · /tmp/proj"))
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("fix it") && f.includes("2 commands"))
+    expect(f).toContain("− 2 commands")
+    expect(f).toContain("make lint")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
