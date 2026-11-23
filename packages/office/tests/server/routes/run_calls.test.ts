@@ -6,11 +6,13 @@ import path from "node:path"
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { RunCall } from "@opencorp/protocol"
 import type { Office } from "../../../src/server/office.ts"
+import { RunLogReader } from "../../../src/runtime/runs/reader.ts"
 import { RunLogs } from "../../../src/runtime/runs/service.ts"
 import { newId } from "../../../src/runtime/store/store.ts"
 import { FakeLLM } from "../../../src/testing/fake_llm.ts"
 import { failedRun, gatedRun, interruptedRun, RUN_HEADER, RUN_KEY, RUN_ORG } from "../../runtime/runs/helpers.ts"
 import { session } from "../../runtime/store/helpers.ts"
+import { waitFor } from "../../helpers.ts"
 import { CEO, makeOffice, type Reply, request, served } from "../helpers.ts"
 
 let dir: string
@@ -148,6 +150,36 @@ test("a log over the limit is too large to read its calls", async () => {
     const r = await get(sock, target)
     expect([r.status, body(r).error]).toEqual([409, "too_large"])
   }
+})
+
+/** A reader that counts the replays queued on it. */
+class CountingReader extends RunLogReader {
+  queued = 0
+
+  override replay<T>(work: () => Promise<T>): Promise<T> {
+    this.queued++
+    return super.replay(work)
+  }
+}
+
+test("a live log that grows past the limit while its call waits for the replays before it is too large", async () => {
+  const office = makeOffice({ log: () => {} })
+  const runId = place(office, gated)
+  const file = office.runs.logPath(runId)
+  const reader = new CountingReader()
+  office.runs = new RunLogs({ store: office.store, runsDir: office.paths.runs, reader, callBytes: fs.statSync(file).size + 10 })
+  const { sock } = await served(office)
+  // Another replay holds the queue while the call's waits behind it.
+  let free!: () => void
+  const before = reader.replay(() => new Promise<void>((resolve) => (free = resolve)))
+  const reply = get(sock, `/runs/${runId}/calls/writer/1`)
+  await waitFor(() => reader.queued === 2, { what: "the call's replay to queue" })
+  // The run writes on: part of a line, past the limit.
+  fs.appendFileSync(file, "x".repeat(100))
+  free()
+  await before
+  const r = await reply
+  expect([r.status, body(r).error]).toEqual([409, "too_large"])
 })
 
 test("a call yian can't rebuild is a 409 naming only the error's type", async () => {

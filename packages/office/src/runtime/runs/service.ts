@@ -309,10 +309,15 @@ export class RunLogs {
     // The message names neither: they are what the client sent.
     if (!this.#listed(runId, () => hasCall(file, node, n))) throw new NotFound(`run ${runId} has no such model call`)
     const fold = await this.#fold(session)
-    const read = () => readCall(file, node, n, fold ?? { env: () => undefined, codeRoot: null })
+    const read = async () => {
+      // A live log may have grown while this waited for the replays before it.
+      if (fs.statSync(file).size > this.#callBytes) throw this.#tooLarge()
+      return readCall(file, node, n, fold ?? { env: () => undefined, codeRoot: null })
+    }
     try {
       return await this.#reader.replay(read)
     } catch (error) {
+      if (error instanceof CallsTooLarge) throw error
       this.#log(`a model call of run ${runId} couldn't be rebuilt (${errorName(error)})`)
       throw new CallUnreadable(`this office can't rebuild this model call (${errorName(error)})`)
     }
@@ -321,11 +326,13 @@ export class RunLogs {
   /** The run's log and session, as `#logIndex` gives them; CallsTooLarge when the log is over `callBytes`. */
   async #callLog(runId: string): Promise<{ file: string; session: SessionRecord }> {
     const { file, index, session } = await this.#logIndex(runId)
-    if (index.offset > this.#callBytes) {
-      const mib = Math.floor(this.#callBytes / 2 ** 20)
-      throw new CallsTooLarge(`this run's log is over ${mib} MiB, too large to read its model calls here; download it`)
-    }
+    if (index.offset > this.#callBytes) throw this.#tooLarge()
     return { file, session }
+  }
+
+  #tooLarge(): CallsTooLarge {
+    const mib = Math.floor(this.#callBytes / 2 ** 20)
+    return new CallsTooLarge(`this run's log is over ${mib} MiB, too large to read its model calls here; download it`)
   }
 
   /** `read`, a read of yian's call list, its failure a CallUnreadable that names only its type. */
