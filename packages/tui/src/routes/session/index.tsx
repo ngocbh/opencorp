@@ -556,6 +556,12 @@ export function Session(props: SessionProps) {
   const memory = scrollMemory(renderer)
 
   let awayTimer: ReturnType<typeof setTimeout> | undefined
+  // Whether the reader has left the newest message, which shows "Jump to latest" under the transcript.
+  const [awayFromBottom, setAwayFromBottom] = createSignal(false)
+  const [latestHovered, setLatestHovered] = createSignal(false)
+  createEffect(() => {
+    if (!awayFromBottom()) setLatestHovered(false)
+  })
   onCleanup(() => {
     if (awayTimer) clearTimeout(awayTimer)
     props.scrollRef?.(undefined)
@@ -693,6 +699,7 @@ export function Session(props: SessionProps) {
       awayTimer = undefined
       if (!scroll || scroll.isDestroyed) return
       const away = preserveWindow || isAwayFromBottom()
+      setAwayFromBottom(away)
       if (!away) {
         if (!renderer.getSelection()) setHiddenRows(undefined)
         scroll.stickyScroll = true
@@ -733,6 +740,7 @@ export function Session(props: SessionProps) {
       : -1
     if (!anchor || index === -1) {
       scroll.scrollTo(scroll.scrollHeight)
+      setAwayFromBottom(false)
       return
     }
     setHiddenRows(rowsBefore(weights(), index, TRANSCRIPT_BACKFILL_CHUNK))
@@ -746,6 +754,7 @@ export function Session(props: SessionProps) {
           memory.setScrollAnchor(props.sessionID, undefined)
           scroll.stickyScroll = true
           scroll.scrollTo(scroll.scrollHeight)
+          setAwayFromBottom(false)
           return
         }
         const contentY = scroll.scrollTop + boundary.node.y - scroll.viewport.y
@@ -805,6 +814,7 @@ export function Session(props: SessionProps) {
     ensureAllRowsPending = undefined
     if (awayTimer) clearTimeout(awayTimer)
     awayTimer = undefined
+    setAwayFromBottom(false)
     memory.setScrollAnchor(props.sessionID, undefined)
     batch(() => {
       setHiddenRows(undefined)
@@ -1294,6 +1304,28 @@ export function Session(props: SessionProps) {
                   )}
                 </For>
               </scrollbox>
+              {/* Upstream's line under the transcript, here in the row the gap leaves above what follows it, so the
+                  transcript keeps its height. */}
+              <box
+                height={1}
+                marginTop={-1}
+                marginBottom={-1}
+                flexShrink={0}
+                flexDirection="row"
+                justifyContent="flex-end"
+              >
+                <Show when={awayFromBottom()}>
+                  <box
+                    id="session-jump-to-latest"
+                    paddingLeft={1}
+                    onMouseOver={() => setLatestHovered(true)}
+                    onMouseOut={() => setLatestHovered(false)}
+                    onMouseUp={toBottom}
+                  >
+                    <text fg={latestHovered() ? theme.text : theme.textMuted}>Jump to latest ↓</text>
+                  </box>
+                </Show>
+              </box>
               <Show when={props.paneNote}>
                 {(note) => (
                   <text fg={theme.warning} flexShrink={0} wrapMode="word">

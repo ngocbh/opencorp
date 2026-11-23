@@ -311,24 +311,27 @@ license, the upstream paths and commit, and our paths.
 - **What:** ported from current upstream: tail-first transcript mounting. A session opens on its newest entries, by
   a budget of rendered entries in which a folded group costs one; older ones mount a chunk at a time as the reader
   nears the top, an anchor holding the view still; a toggled group's line keeps its row; message navigation mounts the
-  rest first; and each session's scroll anchor is kept in memory, so the session opens where it was left. The mount
-  budget's, the anchors' and the activity anchor's tests come with them, and the frame tests' cases. Adapted: an
+  rest first; each session's scroll anchor is kept in memory, so the session opens where it was left; and once the
+  reader leaves the bottom, "Jump to latest ↓" under the transcript takes them back. The mount budget's, the anchors'
+  and the activity anchor's tests come with them, and the frame tests' cases. Adapted: an
   entry is a message, weighed by the rows it renders; an anchor registers a row's own first node rather than a box
   around it; a reads' group's line keeps its row too; navigation holds the reader's view while the rest mounts; the
-  anchors are kept per renderer rather than in session tabs, for the 50 sessions left most recently; and nothing
-  loads from the office, which sends a session's whole transcript at once, so the history prepend isn't ported.
+  anchors are kept per renderer rather than in session tabs, for the 50 sessions left most recently; "Jump to latest"
+  sits in the row the transcript's gap leaves rather than a row of its own; and nothing loads from the office, which
+  sends a session's whole transcript at once, so the history prepend isn't ported.
 - **Upstream:** `packages/tui/src/routes/session/mount-budget.ts`, `packages/tui/src/routes/session/anchors.ts`,
   `packages/tui/src/routes/session/anchor-view.tsx`, `packages/tui/src/routes/session/group-view.tsx` (its
   `GroupAnchor`s, the toggle's anchor), `packages/tui/src/routes/session/message-parts.tsx` (`InlineToolRow`'s
   `onMouseUp`), `packages/tui/src/routes/session/render-context.tsx` (`anchors`, `setGroupExpanded`'s anchor),
   `packages/tui/src/routes/session/index.tsx` (`TRANSCRIPT_TAIL_ROWS`, `TRANSCRIPT_BACKFILL_CHUNK`,
   `afterLayout`, `pinAbove`, `revealOlderRows`, `revealNewerRows`, `ensureAllRows`, `isAwayFromBottom`,
-  `updateAwayFromBottom`, `saveScrollAnchor`, `restoreScrollPosition`, `toBottom`, `moveTranscript`,
-  `session.first`, `setGroupExpanded`), `packages/tui/src/context/session-tabs.tsx` (`ScrollAnchor`, `scrollAnchor`,
+  `updateAwayFromBottom`, `awayFromBottom`, `latestHovered`, the "Jump to latest" row, `saveScrollAnchor`,
+  `restoreScrollPosition`, `toBottom`, `moveTranscript`, `session.first`, `setGroupExpanded`), `packages/tui/src/context/session-tabs.tsx` (`ScrollAnchor`, `scrollAnchor`,
   `setScrollAnchor`), `packages/tui/test/cli/tui/mount-budget.test.ts`, `packages/tui/test/cli/tui/anchors.test.ts`,
   `packages/tui/test/context/session-tabs.test.tsx` (the scroll anchor tests),
-  `packages/tui/test/session-mount-budget.test.tsx`, `packages/tui/test/session-history-reveal.test.tsx` and
-  `packages/tui/test/session-activity-anchor.test.tsx`, read at commit `4332e24f` (2026-11-21).
+  `packages/tui/test/session-mount-budget.test.tsx`, `packages/tui/test/session-history-reveal.test.tsx`,
+  `packages/tui/test/session-activity-anchor.test.tsx` and `packages/tui/test/session-submit-scroll.test.tsx`, read
+  at commit `4332e24f` (2026-11-21).
 - **Ours:** `packages/tui/src/routes/session/{mount-budget,anchors}.ts`,
   `packages/tui/src/routes/session/{anchor-view,index,group-view,message-parts,note-line,render-context}.tsx`,
   `packages/tui/test/cli/tui/mount-budget.test.ts`, `packages/tui/test/cli/tui/anchors.test.ts`,
