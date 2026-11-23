@@ -621,24 +621,31 @@ export function Session(props: SessionProps) {
       { defer: true },
     ),
   )
-  /**
-   * What a load of older messages into transcript `id` runs as they go in: what the reader sees stays in place, and the
-   * mount window keeps its messages, `added` places on. With `mount`, a window that starts at the first message held
-   * starts at the first loaded, so the page mounts, as upstream's history prepend mounts it.
-   */
-  const keepView = (id: string, mount: boolean) => (added: number) => {
-    if (viewID() !== id) return
-    pinAbove()
-    batch(() => {
-      setHiddenRows((h) => (h === undefined || (mount && h === 0) ? h : h + added))
-      setVisibleRowsEnd((end) => (end === undefined ? end : end + added))
-    })
-  }
+  // Whether the older page going in is the one the reader scrolled to: it mounts, as upstream's history prepend mounts it.
+  let mountOlder = false
+  // As older messages of the transcript in view go in, whoever loads them, what the reader sees stays in place, and the
+  // mount window keeps its messages, `added` places on; one that starts at the first message held starts at the first
+  // loaded when the reader asked for them.
+  createEffect(() => {
+    const id = viewID()
+    if (!id) return
+    onCleanup(
+      office.onOlder(id, (added) => {
+        const mount = mountOlder
+        mountOlder = false
+        pinAbove()
+        batch(() => {
+          setHiddenRows((h) => (h === undefined || (mount && h === 0) ? h : h + added))
+          setVisibleRowsEnd((end) => (end === undefined ? end : end + added))
+        })
+      }),
+    )
+  })
   // The office sends a transcript a page at a time: above the first message held, the page before it loads.
   const prependHistory = createHistoryPrepend({
     sessionID: () => viewID() ?? "",
     more: (id) => id !== "" && office.hasOlder(id),
-    loadMore: (id) => office.loadOlder(id, { beforePublish: keepView(id, true) }),
+    loadMore: (id) => office.loadOlder(id, { beforePublish: () => (mountOlder = viewID() === id) }),
     afterLayout,
     active: (id) => viewID() === id && !!scroll && !scroll.isDestroyed,
     scrollBy: (amount) => {
@@ -649,7 +656,7 @@ export function Session(props: SessionProps) {
   /** Loads every older message of the transcript in view, leaving what the reader sees and what is mounted. */
   const loadAll = async () => {
     const id = viewID()
-    if (id && office.hasOlder(id)) await office.loadOlder(id, { all: true, beforePublish: keepView(id, false) })
+    if (id && office.hasOlder(id)) await office.loadOlder(id, { all: true })
   }
   let revealingOlderRows = false
   const revealOlderRows = (scrollBy = 0) => {
@@ -1050,7 +1057,7 @@ export function Session(props: SessionProps) {
           })
         // Past the pages held, it may be in an older one.
         if (last()) jump()
-        else loadAll().then(jump, () => {})
+        else loadAll().then(jump, (error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))
       },
     },
     {

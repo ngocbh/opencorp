@@ -381,7 +381,7 @@ test("copying the transcript copies every message, loaded or not", async () => {
       expect(copied[0]).toContain(`Turn ${t} prompt`)
       expect(copied[0]).toContain(`Turn ${t} answer`)
     }
-    // The older 180 in pages of 200, then mounted no more than before.
+    // The older 180 in one page, as many as the office gives at once, then mounted no more than before.
     expect(reads(office, s.id)).toEqual({ newest: true, older: 1, whole: 0 })
     expect(transcript(app, userID(99)).mounted(userID(0))).toBe(false)
   } finally {

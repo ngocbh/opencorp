@@ -48,6 +48,9 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
       },
     })
 
+    // Each session's views that keep their place as older messages go in, whoever loads them.
+    const olderWatchers = new Map<string, Set<(added: number) => void>>()
+
     const [connections, setConnections] = createSignal<ConnectionList>()
     let connectionsRead = 0
     /**
@@ -100,9 +103,26 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
        * holds; resolves once they are in. `beforePublish` runs as they go in, in the same update, with how many go in
        * front.
        */
-      async loadOlder(id: string, opts?: { all?: boolean; beforePublish?: (added: number) => void }) {
-        await sync.loadOlder(id, opts)
+      async loadOlder(id: string, opts: { all?: boolean; beforePublish?: (added: number) => void } = {}) {
+        await sync.loadOlder(id, {
+          all: opts.all,
+          beforePublish: (added) => {
+            opts.beforePublish?.(added)
+            runEach(olderWatchers.get(id) ?? [], added)
+          },
+        })
         await flush.settled()
+      },
+      /** Calls `fn` as older messages of session `id` go in, whoever loads them, in the same update, after the load's
+       *  own `beforePublish`, with how many go in front; returns an unsubscribe. */
+      onOlder(id: string, fn: (added: number) => void) {
+        const set = olderWatchers.get(id) ?? new Set()
+        olderWatchers.set(id, set)
+        set.add(fn)
+        return () => {
+          set.delete(fn)
+          if (set.size === 0) olderWatchers.delete(id)
+        }
       },
       /** Whether a synced session has older messages than `state` holds. */
       hasOlder: (id: string) => state.messageCursor[id] !== undefined,

@@ -339,14 +339,16 @@ license, the upstream paths and commit, and our paths.
 - **What:** ported from current upstream: a transcript read in pages. The office answers a session's messages a page
   at a time, the newest `limit` before an opaque cursor, oldest first, with the cursor of the page before (base64url
   JSON naming the message, refused as a bad cursor when it isn't one), as upstream's message list does. The client
-  reads the newest 20 when it syncs a session and the 20 before them on request, or every older one 200 at a time,
+  reads the newest 20 when it syncs a session and the 20 before them on request, or every older one 500 at a time,
   one load per session at once, putting a page before the messages held unless they moved on meanwhile and dropping
   those held already; the TUI's history prepend loads the page before when the reader reaches the first message
   loaded, pinning what is in view, and the previous message waits for it. Adapted: without `limit` or `before` the
   route answers the whole list; a cursor names its session too; only older pages, as nothing needs newer ones; the
-  cursor is kept in the client's state and a page goes in only while it is still the one held; a reload keeps the
-  older messages loaded before its newest page; a cursor whose message is gone reloads the newest page; the mount
-  window shifts by what a page adds; the first message loads every page before going up, with no cancel.
+  cursor is kept in the client's state and a page goes in only while it is still the one held; a load of every page
+  starts over while a reload replaces what is held, and fails rather than stop short; a live change to a message of
+  the page loading waits for it; a reload keeps the older messages loaded before its newest page; a cursor whose
+  message is gone reloads the newest page; one load at a time per transcript, not per view; the mount window shifts
+  by what a page adds; the first message loads every page before going up, with no cancel.
 - **Upstream:** `packages/server/src/handlers/message.ts` (the cursor), `packages/client/src/solid/data.ts`
   (`messagePageLimit`, `message.sync`, `message.more`, `message.loadMore`), `packages/tui/src/routes/session/history.ts`
   (`createHistoryPrepend`) and `packages/tui/src/routes/session/index.tsx` (`prependHistory`, `revealOlderRows`,
