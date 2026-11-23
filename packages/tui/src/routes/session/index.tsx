@@ -48,6 +48,7 @@ import { filetype } from "../../util/filetype"
 import { errorMessage } from "../../util/error"
 import { interruptible } from "../../util/status"
 import { useToast } from "../../ui/toast"
+import { useSessionLinks } from "../../ui/session-link"
 import { useCostCap } from "../../component/cost-cap"
 import { useKV } from "../../context/kv.tsx"
 import { usePromptRef } from "../../context/prompt"
@@ -1581,6 +1582,7 @@ function TextPartView(props: { last: boolean; part: TextPart }) {
     <Show when={props.part.text.trim()}>
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
         <markdown
+          ref={useSessionLinks(ctx)}
           syntaxStyle={syntax()}
           streaming={props.last && ctx.streaming()}
           content={props.part.text.trim()}
