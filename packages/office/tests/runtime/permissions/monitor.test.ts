@@ -249,6 +249,24 @@ test("a directory in place of a secret file is an error result", async () => {
   expect(got).toContain("vault_token")
 })
 
+test("an AbortError a kind throws comes back as a fresh AbortError holding only its redacted reason", async () => {
+  const thrown = new DOMException(`stopped while holding ${TOKEN}`, "AbortError")
+  const kinds = { ...KINDS, aborting: { stop: { run: () => Promise.reject(thrown) } } }
+  const { monitor } = await makeMonitor({
+    "assets/vault.yaml": {
+      id: "vault", kind: "aborting", secrets: ["vault_token"], tools: { stop: {} }, grants: [{ who: "minh", can: ["stop"] }],
+    },
+  }, kinds)
+  const error = await monitor.call("minh", "vault__stop", {}).then(() => null, (e: unknown) => e)
+  expect(error).toBeInstanceOf(DOMException)
+  expect(error).not.toBe(thrown)
+  expect((error as DOMException).name).toBe("AbortError")
+  expect((error as DOMException).message).toContain("[redacted]")
+  expect((error as DOMException).message).not.toContain(TOKEN)
+  expect((error as Error).cause).toBeUndefined()
+  expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toContain(TOKEN)
+})
+
 test("a secret changed between two calls is read on the next", async () => {
   const kinds = {
     ...KINDS,
