@@ -30,7 +30,7 @@ import { cancelReplaced, readSeed } from "./history.ts"
 import { MAIN_CHAT } from "../../company/chat_flow.ts"
 import { loadConfined } from "../../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
-import { Delivery, type Job, parseJob, STOP_REASON, type WorkerEnv } from "./job.ts"
+import { Delivery, type Job, MESSAGE_MOVED, parseJob, STOP_REASON, type WorkerEnv } from "./job.ts"
 import { RemoteMemory } from "./remote_memory.ts"
 import {
   askUserStub,
@@ -88,11 +88,12 @@ type Outcome =
   | { refused: string }
   | { failed: string }
 
-/** A queued delivery; a `quiet` one is a message moved from the replaced run, which the office never sent. */
-type Queued = { delivery: Delivery; quiet: boolean }
+/** A queued delivery; a `moved` one is a message moved from the replaced run, which the office never sent, and
+ *  `moved` hears its seq once applied, or null when it wasn't. */
+type Queued = { delivery: Delivery; moved: ((seq: number | null) => void) | null }
 
 /**
- * The deliveries a worker applies to its run, in order, each answered by one `deliver_reply`; a quiet one is answered
+ * The deliveries a worker applies to its run, in order, each answered by one `deliver_reply`; a moved one is answered
  * by nobody, and writes a stderr line instead when it isn't applied.
  *
  * `held` keeps them queued until the run can take them; `open` applies them one at a time; `refusing` answers each
@@ -120,13 +121,18 @@ class Deliveries {
 
   /** Queues `delivery` last. On an open, idle queue it is applied before this returns. */
   push(delivery: Delivery): void {
-    this.#queue.push({ delivery, quiet: false })
+    this.#queue.push({ delivery, moved: null })
     this.#pump()
   }
 
-  /** Queues `deliveries` ahead of everything queued, in their order; `quiet` ones get no `deliver_reply`. */
-  pushFront(deliveries: readonly Delivery[], { quiet = false }: { quiet?: boolean } = {}): void {
-    this.#queue.unshift(...deliveries.map((delivery) => ({ delivery, quiet })))
+  /** Queues `deliveries` ahead of everything queued, in their order. With `moved`, they are messages moved from the
+   *  replaced run: none gets a `deliver_reply`, and `moved` hears each one's seq once applied, or null when it wasn't. */
+  pushFront(deliveries: readonly Delivery[], moved?: (delivery: Delivery, seq: number | null) => void): void {
+    const queued = deliveries.map((delivery) => ({
+      delivery,
+      moved: moved === undefined ? null : (seq: number | null) => moved(delivery, seq),
+    }))
+    this.#queue.unshift(...queued)
     this.#pump()
   }
 
@@ -186,15 +192,19 @@ class Deliveries {
     this.#answer(queued, await this.#apply!(queued.delivery))
   }
 
-  /** Sends `queued`'s `deliver_reply`; for a quiet one, a stderr line when it wasn't applied. */
-  #answer({ delivery, quiet }: Queued, outcome: Outcome): void {
-    if (!quiet) {
+  /** Sends `queued`'s `deliver_reply`; for a moved one, tells its `moved` instead, with a stderr line when it wasn't
+   *  applied. */
+  #answer({ delivery, moved }: Queued, outcome: Outcome): void {
+    if (moved === null) {
       this.#written = this.#reply({ type: "deliver_reply", id: delivery.id, ...outcome })
-    } else if ("refused" in outcome || "failed" in outcome) {
+      return
+    }
+    if ("refused" in outcome || "failed" in outcome) {
       // The reason or the error's type only: the message's text is the person's.
       const why = "refused" in outcome ? outcome.refused : outcome.failed
       process.stderr.write(`opencorp __worker: a moved message was not delivered (${why})\n`)
     }
+    moved("seq" in outcome ? outcome.seq : null)
   }
 }
 
@@ -639,7 +649,9 @@ async function serveJob(
  *  once it can take them; returns the result frame's fields. A chat job runs its flow afresh; with a seed, its
  *  `summary` and `history` inputs are the replaced run's, read from that run's log (confined to the pin), or `""` and
  *  `[]` with a `history_not_seeded` event when they can't be read; the replaced run's unread messages go to the fresh
- *  run first, as quiet deliveries, and with `seed.cancel` that run is cancelled when it hasn't finished. An advance
+ *  run first, as moved deliveries, each followed by a `message_moved` event naming the replaced run, its seq there and
+ *  its seq in the fresh run (null when it couldn't be delivered), and with `seed.cancel` that run is cancelled when it
+ *  hasn't finished. An advance
  *  job applies the deliveries the run can take now, then moves the run on from its log with yian's `advance` (or,
  *  with `advance: false`, only delivers); when yian refuses the advance before appending anything, the fields are
  *  `{status: "not_resumed", run_id, error_type}` and the deliveries still held are refused `not_started`; so are they
@@ -716,6 +728,8 @@ async function runJob(
       if (job.seed.cancel && !signal.aborted) await cancelReplaced(job.seed.log, seedOptions)
       // Ahead of the job's own deliveries, which `serve` queued first. Each keeps its key: a shell's note stays signed
       // by its shell, and a send under a key the fresh run already has appends nothing.
+      const replaced = path.basename(path.dirname(job.seed.log))
+      const from = new Map(seeded.unread.map(({ seq }, n) => [`moved-${n}`, seq]))
       deliveries.pushFront(
         seeded.unread.map(({ message, key }, n) => ({
           id: `moved-${n}`,
@@ -724,7 +738,11 @@ async function runJob(
           event: message,
           ...(key === null ? {} : { key }),
         })),
-        { quiet: true },
+        // The office shows each moved message under its new seq in place of its copy in the replaced run.
+        (delivery, seq) => {
+          const data = { run_id: replaced, from: from.get(delivery.id)!, seq }
+          channel.send({ type: "event", name: MESSAGE_MOVED, data }).catch(() => {})
+        },
       )
     }
     // A memory is a flow input.

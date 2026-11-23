@@ -442,6 +442,26 @@ test("a send stays unread until a take or a steer reads it, and a withdrawn one 
   expect(users().map(([text]) => text)).toEqual(["Plan the trip.", "Also mention Rome."])
 })
 
+test("whether a send is unread reads on only from a cached fold, and its message comes from the log", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Done." })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await apply(job, fake, [send("s1", "do it")])
+  const transcript = new Transcript(runs)
+  const sid = newId()
+  const seq = Number(messages(runs, sid, ["r1"]).at(-1)!.id.split(":")[1])
+  // Nothing cached: no whole log is read.
+  expect(transcript.unread("r1", seq)).toBeNull()
+  const sent = transcript.sentMessage(sid, "r1", seq)!
+  expect([sent.unread, sent.parts.map((part) => (part.type === "text" ? part.text : ""))]).toEqual([true, ["do it"]])
+  expect(transcript.unread("r1", seq)).toBe(true)
+  await advance(job, fake, [])
+  expect(transcript.unread("r1", seq)).toBe(false)
+  expect(transcript.sentMessage(sid, "r1", seq)!.unread).toBe(false)
+  expect(transcript.sentMessage(sid, "r1", seq + 1000)).toBeNull()
+})
+
 test("a reply that streams nothing after a user message gets its output after it", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Working", hold: true }, { content: "Rome." })

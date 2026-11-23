@@ -5,7 +5,7 @@ import path from "node:path"
 import { foldRunLog, inspectRun, PoolCommitRecord } from "@ngocbh/yian/run"
 import type { FakeLLM } from "../../../src/testing/fake_llm.ts"
 import type { Frame } from "../../../src/runtime/worker/channel.ts"
-import type { Job } from "../../../src/runtime/worker/job.ts"
+import { type Job, MESSAGE_MOVED } from "../../../src/runtime/worker/job.ts"
 import { captureStderr, tempDir, waitFor } from "../../helpers.ts"
 import {
   advanceJob,
@@ -267,6 +267,13 @@ test("unread sends of a failed run reach the fresh run once in order", async () 
   expect(texts.slice(-3)).toEqual(["q1", "q2", "next"])
   expect(["q1", "q2", "next", "go"].map((text) => texts.filter((t) => t === text).length)).toEqual([1, 1, 1, 0])
   expect(second.replies.map((reply) => reply.id)).toEqual(["n1"])
+  // Each moved message is named by its seq in the replaced run and in the fresh one, so the office shows it once.
+  const sentAt = (id: string) => office.replies.find((reply) => reply.id === id)!.seq
+  const moved = second.frames.filter((frame) => frame.name === MESSAGE_MOVED).map((frame) => frame.data)
+  expect(moved).toEqual([
+    { run_id: r1.run_id, from: sentAt("q1"), seq: expect.any(Number) },
+    { run_id: r1.run_id, from: sentAt("q2"), seq: expect.any(Number) },
+  ])
 })
 
 test("unread sends of a refused advance reach the fresh run once in order", async () => {
@@ -420,6 +427,9 @@ test("moved messages that cannot be delivered are dropped quietly", async () => 
   await run(r2, rec, { env: fake.env() })
   expect(rec.outcome?.type).toBe("error")
   expect(rec.replies.filter((reply) => reply.id === "moved-0")).toEqual([])
+  const from = delivered.replies.find((reply) => reply.id === "m1")!.seq
+  const events = rec.frames.filter((frame) => frame.name === MESSAGE_MOVED).map((frame) => frame.data)
+  expect(events).toEqual([{ run_id: r1.run_id, from, seq: null }])
   const moved = lines.filter((line) => line.includes("moved message"))
   expect(moved).toEqual(["opencorp __worker: a moved message was not delivered (not_started)"])
   expect(lines.filter((line) => line.includes("m1-words"))).toEqual([])

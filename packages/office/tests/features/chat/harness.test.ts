@@ -5,7 +5,7 @@ import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import type { Scheduler } from "@ngocbh/yian/platform"
 import { iterRunRecords, staticPathOf } from "@ngocbh/yian/run"
-import { type RunUpdated, WorkItem, now } from "@opencorp/protocol"
+import { type LiveEvent, type Message, type RunUpdated, WorkItem, now } from "@opencorp/protocol"
 import { INTERRUPTED_CALL, SessionActor } from "../../../src/features/chat/session_actor.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
 import { MAIN_CHAT } from "../../../src/company/chat_flow.ts"
@@ -1575,6 +1575,55 @@ test("a message sent during a reply that then fails is answered by the fresh run
   expect(errors(h, id)).toHaveLength(1)
   expect(errors(h, id)[0]).toStartWith("The reply failed (")
   expect(await asked(fake, 2)).toContain("more")
+})
+
+/** The user messages a client that read session `sid` as `read` then holds after the live events `events`, merged as its
+ *  store merges them, in id order: each as its id, text and whether it is unread. */
+function heldUsers(read: readonly Message[], events: readonly LiveEvent[], sid: string): [string, string, unknown][] {
+  const held = new Map(read.map((message) => [message.id, structuredClone(message)]))
+  for (const { type, session_id, data } of events) {
+    if (session_id !== sid) continue
+    if (type === "message.removed") held.delete(data.id as string)
+    if (type !== "message.updated") continue
+    const { parts, ...rest } = structuredClone(data) as unknown as Message
+    const local = held.get(rest.id)
+    if (local === undefined) held.set(rest.id, { ...rest, parts })
+    else Object.assign(local, rest, { parts: parts.length > 0 ? parts : local.parts })
+  }
+  return [...held.values()]
+    .filter((message) => message.role === "user")
+    .sort((a, b) => (a.id < b.id ? -1 : 1))
+    .map((message) => [message.id, message.parts.map((part) => (part.type === "text" ? part.text : "")).join(""), message.unread])
+}
+
+test("a message the fresh run of a failed reply takes over replaces its old copy for clients, unread until read", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 500, hold: true }, { content: "Got it." })
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  await h.harness.prompt(id, "hi")
+  await fake.waitForRequests(1)
+  await replyRunning(h)
+  // A client that read the chat now, and every live event after.
+  const read = await h.harness.messages(id)
+  const from = h.lives.length
+  expect(await h.harness.prompt(id, "more")).toBe("steer")
+  const [old] = h.store.getSession(id)!.run_ids
+  const [sent, said, unread] = heldUsers(read, h.lives.slice(from), id).at(-1)!
+  expect([sent.startsWith(`${old}:`), said, unread]).toEqual([true, "more", true])
+  fake.release()
+  await waitFor(
+    () => h.store.getSession(id)!.run_ids.length === 2 && same(texts(h, id), ["Got it."]) && status(h, id) === "idle",
+    { what: "the fresh run's reply" },
+  )
+  const fresh = h.store.getSession(id)!.run_ids[1]!
+  const shown = (await h.harness.messages(id)).filter((message) => message.role === "user")
+  expect(shown.map((message) => [message.id.split(":")[0], message.unread])).toEqual([
+    [old, false],
+    [fresh, false],
+  ])
+  // The old copy is gone, and the fresh run's shows once, read.
+  expect(heldUsers(read, h.lives.slice(from), id)).toEqual(heldUsers(shown, [], id))
 })
 
 test("a failed reply is no longer the running reply", async () => {

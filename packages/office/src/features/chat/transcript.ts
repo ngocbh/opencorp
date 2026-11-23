@@ -188,12 +188,22 @@ export class Transcript {
     return out
   }
 
-  /** Whether the send at `seq` of the run `runId` waits unread in its inbox: its log holds it, no take or steer has
-   *  read it, and no withdraw took it back. */
-  unread(runId: string, seq: number): boolean {
-    if (!safeRunId(runId)) return false
+  /** Whether the send at `seq` of the run `runId` waits unread in its inbox (its log holds it, no take or steer has
+   *  read it, and no withdraw took it back), read on from the run's cached fold; null when none is cached, so a caller
+   *  that must stay cheap never reads a whole log. */
+  unread(runId: string, seq: number): boolean | null {
+    if (!safeRunId(runId) || !this.cache.has(runId)) return null
     const state = this.read(runId)
     return state.sends.has(seq) && !state.read.has(seq)
+  }
+
+  /** The user message of the send at `seq` of the run `runId` (session `sessionId`'s), unread or not as its log says;
+   *  null when its log holds no such send. */
+  sentMessage(sessionId: string, runId: string, seq: number): Message | null {
+    if (!safeRunId(runId)) return null
+    const state = this.read(runId)
+    const send = state.sends.get(seq)
+    return send === undefined ? null : userMessage(sessionId, runId, send, !state.read.has(seq))
   }
 
   /** The id of the first message of the reply still running in the run `runId` (its last reply, if it started, hasn't
@@ -688,6 +698,23 @@ export function userMessage(sessionId: string, runId: string, send: Send, unread
     unread,
     parts: text === undefined ? [] : [{ id: `${id}:0`, type: "text", text: text.text }],
     created_at: send.at,
+  }
+}
+
+/** Whether a send the run just took, at `seq` of the run `runId`, shows unread: as `transcript` says from its cached
+ *  fold, and unread with none cached, since nothing has read the run since (the live relay publishes it read once a
+ *  render shows the run read it). A read that fails shows it read, and `log` hears why. */
+export function sentUnread(
+  transcript: Pick<Transcript, "unread">,
+  runId: string,
+  seq: number,
+  log: (line: string) => void,
+): boolean {
+  try {
+    return transcript.unread(runId, seq) ?? true
+  } catch (error) {
+    log(`whether a message was read can't be told (${errorName(error)}); it shows read`)
+    return false
   }
 }
 

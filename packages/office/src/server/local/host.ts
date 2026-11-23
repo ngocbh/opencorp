@@ -21,7 +21,7 @@ import {
 } from "@opencorp/protocol"
 import { MAIN_CHAT } from "../../company/chat_flow.ts"
 import { LiveRelay } from "../../features/chat/live.ts"
-import { Transcript, userMessage } from "../../features/chat/transcript.ts"
+import { sentUnread, Transcript, userMessage } from "../../features/chat/transcript.ts"
 import { Bus } from "../../runtime/bus.ts"
 import { Check, type CheckRecord, type CheckWorkers, inWorker } from "../../runtime/permissions/classifier.ts"
 import {
@@ -495,9 +495,9 @@ export class LocalHost {
     const event = { role: "user", parts: [{ type: "text" as const, text }], author: by }
     await this.#deliver({ id: newId(), op: "send", inbox: MAIN_CHAT.inbox, event }, (frame) => {
       if (typeof frame.seq !== "number") return
-      const send = { seq: frame.seq, at: now(), message: event }
-      const message = userMessage(this.id, this.#runId, send, this.#transcript.unread(this.#runId, frame.seq))
-      if (message.unread) this.#relay.unreadShown(this.#runId, message.id)
+      const unread = sentUnread(this.#transcript, this.#runId, frame.seq, this.#log)
+      const message = userMessage(this.id, this.#runId, { seq: frame.seq, at: now(), message: event }, unread)
+      if (unread) this.#relay.unreadShown(this.#runId, message.id)
       this.bus.publishLive({ type: "message.updated", session_id: this.id, data: message })
     })
   }

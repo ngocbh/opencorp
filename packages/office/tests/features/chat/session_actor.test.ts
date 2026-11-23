@@ -398,6 +398,25 @@ test("the user message is published live under its send id", async () => {
   expect(published[0]!.session_id).toBe(sid)
 })
 
+test("a message whose read state can't be told is still published, read, and the error's type logged", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "hello" })
+  const o = await chatOffice(fake)
+  const live: LiveEvent[] = []
+  const sid = await newSession(o)
+  const unreadable = () => {
+    throw new RangeError("the log can't be read")
+  }
+  const transcript = { ...spyTranscript(o, []), unread: unreadable }
+  const actor = makeActor(o, sid, { transcript, bus: { publishLive: (event) => void live.push(event) } })
+  await actor.start()
+  await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
+  await actor.prompt("hi")
+  const published = live.filter((event) => event.type === "message.updated").map((event) => event.data)
+  expect(published).toMatchObject([{ role: "user", unread: false, parts: [{ text: "hi" }] }])
+  expect(o.logs).toContain(`session ${sid}: whether a message was read can't be told (RangeError); it shows read`)
+})
+
 test("a message sent while the reply runs is published unread, and again, read, once the reply reads it", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Working", hold: true }, { content: "Rome." })
@@ -506,6 +525,7 @@ function spyTranscript(o: ChatOffice, seen: string[]): ActorContext["transcript"
   return {
     forget: (runIds) => void seen.push(`transcript ${[...runIds].join(" ")}`),
     unread: (runId, seq) => o.transcript.unread(runId, seq),
+    sentMessage: (sessionId, runId, seq) => o.transcript.sentMessage(sessionId, runId, seq),
   }
 }
 
