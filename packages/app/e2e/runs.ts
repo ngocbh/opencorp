@@ -159,7 +159,8 @@ export const LISTING = Array.from({ length: 30 }, (_, i) => `notes-${String(i).p
 
 /**
  * Run 5's `chat#2/reply`: call 2, its first attempt cut short and retried, thinks, then saves the notes (held, then
- * released by @ngocbh) and lists the folder (allowed as read-only, its long listing folded); call 5 says "Done.". And
+ * released by @ngocbh) and lists the folder (allowed as read-only, its long listing folded); call 5 says "Done.", its
+ * system prompt cut by the office. And
  * run 6's `chat#0/reply`: call 1, which an interrupt cut.
  */
 export function runCalls(): RunCalls {
@@ -215,7 +216,8 @@ export function runCalls(): RunCalls {
     attempts: [{ n: 5, started_at: at(11), first_token_at: at(12), finished_at: at(12), error: null, retry_in: null,
                  usage }],
     reply: { role: "assistant", author: null, parts: [{ type: "text", text: "Done." }] },
-    tool_results: [], usage, finish: "stop", interrupted: false, cut: [],
+    // As if its system prompt had been too long to send whole.
+    tool_results: [], usage, finish: "stop", interrupted: false, cut: ["/request/system"],
   }
   const cutShort: RunCall = {
     node_id: "chat#0/reply", n: 1, purpose: "chat", digest_mismatch: false,

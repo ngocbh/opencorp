@@ -361,8 +361,8 @@ export type RunCallToolResult = z.input<typeof RunCallToolResult>
 
 /**
  * GET /runs/{id}/calls/{node}/{n}: one AGENT model call, rebuilt from the run log by yian's `agentCall`: the request
- * it sent, its attempts, the reply and each tool call's result. Strings longer than 64 KiB are cut with "…", each
- * named in `cut`; the log holds them whole.
+ * it sent, its attempts, the reply and each tool call's result. Strings longer than 64K characters (UTF-16 code
+ * units) are cut with "…", each named in `cut`; the log holds them whole.
  */
 export const RunCall = z.strictObject({
   node_id: z.string().min(1),
@@ -385,7 +385,7 @@ export const RunCall = z.strictObject({
   finish: z.string().nullable().default(null),
   /** An interrupt cut the reply, or the agent stopped before acting on all of it. */
   interrupted: z.boolean().default(false),
-  /** JSON pointers of the strings cut at 64 KiB. */
+  /** JSON pointers of the strings cut at 64K characters. */
   cut: z.array(z.string()).default(() => []),
 })
 export type RunCall = z.input<typeof RunCall>

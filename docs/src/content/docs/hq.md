@@ -20,8 +20,8 @@ Click an agent node in the Timeline: its detail lists the node's model calls. Cl
 the run log:
 
 - **Request**: the system prompt, the messages the model read (the history, your messages and tool results,
-  each with who said it), the tools it could call, and the model and its settings. It never holds the model's
-  key, headers or connection.
+  each with who said it), the tools it could call, and the model and its settings. The settings show the
+  provider, model, endpoint and organization the call used, never the model's key or the headers sent with it.
 - **Reply**: the model's thought, folded, and its text.
 - **Tool calls**: each call's arguments and result, and what the office decided for it: why it let the call
   run, a call it held for approval and who approved it, or a call it refused.

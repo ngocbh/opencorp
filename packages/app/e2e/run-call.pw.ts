@@ -76,6 +76,8 @@ test("Escape goes back from a call to its node, then closes the node", async ({ 
   await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 5/ }).click()
   const call = page.getByRole("region", { name: "Model call 5" })
   await expect(call.getByRole("region", { name: "Reply" })).toContainText("Done.")
+  // A text the office cut says where.
+  await expect(call.getByRole("region", { name: "Request" })).toContainText("Cut at 64K characters here")
   await page.keyboard.press("Escape")
   await expect(call).toHaveCount(0)
   await expect(detail).toBeVisible()

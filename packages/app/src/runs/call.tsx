@@ -469,7 +469,7 @@ function LongText(props: { text: string; cut?: boolean; error?: boolean }) {
         </button>
       </Show>
       <Show when={props.cut && (open() || head() === null)}>
-        <p class={`text-xs ${MUTED}`}>Cut at 64 KiB here; the log holds it whole.</p>
+        <p class={`text-xs ${MUTED}`}>Cut at 64K characters here; the log holds it whole.</p>
       </Show>
     </div>
   )
