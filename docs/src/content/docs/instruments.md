@@ -87,8 +87,13 @@ Each other tool call your employee's model makes also goes through the chat's mo
 - **Cards.** Yes runs the call once; No tells your employee what you wrote. While a card is open, the reply's later
   calls wait. An open card survives an office restart, and is decided again by the rules then. A call a stop or crash
   cut off before you approved it isn't run when your employee's work resumes.
-- **Only your employee's calls.** A company flow's own steps that call a tool directly (`call:`, `map`, `loop`) skip
-  the mode and the rules: only the calls your employee's model makes are gated.
+- **Only your employee's calls.** A company flow's own steps that call a tool directly (`call:`, `map`, `loop`), a
+  tool module's tool included, skip the mode and the rules: only the calls your employee's model makes are gated.
+- **Tool modules.** A company flow may grant its agent a tool module's tools (`uses: {crm: ./crm.ts}`, then
+  `tools: [crm]`), its file inside the company repo. A module runs on a worker thread, unsandboxed, as the office's
+  user, so review it as you would any code the company runs. Its tools get no office context (`ctx.context` is
+  `undefined`), so they reach no office tool, secret or session. A module tool that returns `pending()` fails: nothing
+  in the office answers it.
 
 ## Codex and Claude Code
 

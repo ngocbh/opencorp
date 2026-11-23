@@ -709,6 +709,8 @@ async function runJob(
     // The office decides each tool call an agent's model makes before it runs; the run is then gated for good, so
     // every advance of it passes the hook too.
     beforeToolCall: gateHook(rpc),
+    // No `completesCalls`: the office answers no tool module's `pending()`, so yian fails such a call rather than
+    // leave it waiting for good. Host tools that hold their calls are unaffected.
     skills: pickSkills(job.pin, job.person, job.skills),
     signal,
     env: read,

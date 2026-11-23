@@ -361,6 +361,42 @@ test("every tool source of a chat run reaches the office's gate, and ask_user an
   expect(gatedRecords(job)).toEqual([["run_started", true]])
 })
 
+/** A company tool module: one tool, `quote`, that says the amount it quoted and whether it was handed an office
+ *  context. */
+const CRM = `export const quote = {
+  name: "quote",
+  description: "Quote a price.",
+  parameters: { type: "object", properties: { amount: { type: "integer" } }, required: ["amount"] },
+  execute: async (args, ctx) => \`quoted \${args.amount}; context \${ctx?.context === undefined ? "none" : "given"}\`,
+}
+`
+
+/** A flow that calls the module's tool itself (`priced`), then has its agent, granted the module, reply. */
+const MODULED =
+  "id: moduled\nname: moduled\ninput:\n  message: !str\nuses:\n  crm: ./crm.ts\nnodes:\n  priced:\n" +
+  "    kind: call\n    call: {crm: quote}\n    input:\n      amount: 3\n  reply:\n    kind: agent\n    tools: [crm]\n" +
+  '    input:\n      message: ${input.message}\n      priced: ${priced.output}\n    output: !str\n' +
+  '    prompt: "${message} ${priced}"\noutput: ${reply.output}\n'
+
+test("a tool module's tool: an agent's call reaches the gate as a module call, the flow's own call runs ungated, and neither gets an office context", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "", tool_calls: [{ name: "crm_quote", arguments: { amount: 5 } }] }, { content: "done" })
+  const where = base()
+  writeFiles(where.pin, { "flows/moduled.yaml": MODULED, "flows/crm.ts": CRM })
+  const rec = new Gating(() => undefined)
+  const job = makeJob(where, "flows/moduled.yaml", {}, rec)
+  await run(job, rec, { env: fake.env() })
+  expect([rec.outcome?.status, rec.outcome?.output], String(rec.outcome?.message)).toEqual(["succeeded", "done"])
+  // Only the agent's call is gated, as a module's tool.
+  expect(rec.gated.map(({ tool, source, arguments: args }) => ({ tool, source, args }))).toMatchObject([
+    { tool: "crm_quote", source: { kind: "module", alias: "crm", ref: "./crm.ts" }, args: { amount: 5n } },
+  ])
+  // The flow's own call ran before the agent's, with no gate; neither saw an office context.
+  const asked = JSON.stringify(fake.requests().map((r) => r.messages))
+  expect(asked).toContain("quoted 3; context none")
+  expect(asked).toContain("quoted 5; context none")
+})
+
 test("the office's answer runs a call with its note, refuses it, and a gate that fails refuses it", async () => {
   const fake = await fakeLlm()
   fake.script(
