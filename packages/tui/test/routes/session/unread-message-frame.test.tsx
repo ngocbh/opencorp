@@ -49,8 +49,8 @@ function border(lines: CapturedLine[], needle: string) {
 test("an unread message has a grey border and says so with what Esc does, and looks as any other once read", async () => {
   const { office, app, s, steer } = await boot("busy")
   try {
-    const f = await app.until((f) => f.includes("Also mention Rome."))
-    expect(f).toContain(HINT)
+    // The hint names Esc once the session's status reaches the view, which may be a frame after the message.
+    const f = await app.until((f) => f.includes(HINT))
     // The hint is under its own message only.
     const rows = f.split("\n")
     expect(rows.findIndex((r) => r.includes(HINT))).toBe(rows.findIndex((r) => r.includes("Also mention Rome.")) + 1)
@@ -78,10 +78,11 @@ test("an unread message has a grey border and says so with what Esc does, and lo
 test("an unread message names no key while Esc can't stop anything: over the cost cap it waits for a raise", async () => {
   const { office, app } = await boot("waiting", { capped: true })
   try {
-    const f = await app.until((f) => f.includes("Also mention Rome."))
-    const rows = f.split("\n")
-    const row = rows.findIndex((r) => r.includes("Also mention Rome."))
-    expect(rows[row + 1]).toMatch(/┃\s+unread\s*$/)
+    const alone = (f: string) => {
+      const rows = f.split("\n")
+      return /┃\s+unread\s*$/.test(rows[rows.findIndex((r) => r.includes("Also mention Rome.")) + 1] ?? "")
+    }
+    const f = await app.until(alone)
     expect(f).not.toContain("esc to interrupt so")
     expect(border(app.setup.captureSpans().lines, "Also mention Rome.")).toEqual(theme.border)
   } finally {
