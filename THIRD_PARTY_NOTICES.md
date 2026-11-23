@@ -264,9 +264,9 @@ license, the upstream paths and commit, and our paths.
   groups are kept per session in memory. The group tree is copied as is, its merge and split included, which only its
   tests use until the transcript pages. Adapted: a run is an assistant message's consecutive tool parts, which a text,
   file or error part ends (blank text doesn't); the office's tools map to upstream's by their view (a Codex or Claude
-  Code call as its subagent call, running while its session runs); no thoughts, instruction loads or code-mode scripts; the settings live in
-  `kv.json` and the commands in the palette; the expanded calls keep the transcript's own spacing; no scroll anchors
-  or paging.
+  Code call as its subagent call, running while its session runs); no thoughts, instruction loads or code-mode
+  scripts; the settings live in `kv.json` and the commands in the palette; the expanded calls keep the transcript's
+  own spacing; no scroll anchors or paging.
 - **Upstream:** `packages/tui/src/routes/session/grouping/{tree,session}.ts`,
   `packages/tui/src/routes/session/activity-summary.ts`, `packages/tui/src/routes/session/group-view.tsx`,
   `packages/tui/src/routes/session/render-context.tsx`, `packages/tui/src/routes/session/rows.ts`
