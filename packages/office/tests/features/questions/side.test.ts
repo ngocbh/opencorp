@@ -24,6 +24,7 @@ import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import { openStore, question, session } from "../../runtime/store/helpers.ts"
 import { advanceJob, run, type TestWorker } from "../../runtime/worker/helpers.ts"
 import { permissions } from "../../tools/terminal/helpers.ts"
+import { decidedFor } from "../../../src/tools/terminal/terminal.ts"
 
 setDefaultTimeout(30_000)
 
@@ -287,8 +288,13 @@ async function sideOf(h: Harness, cwd: string, over: Partial<Session> = {}): Pro
  *  from the fake LLM at `url`: `000` when it can't connect. */
 async function curl(spec: RunSpec, session: SessionRecord, url: string): Promise<string> {
   const command = `curl -s -m 5 -o /dev/null -w '%{http_code}' ${url}`
-  const { perms } = permissions({ check: async () => ({ verdict: "run", reason: "checks the network" }) })
-  const run = spec.groups({ session, runId: "run-1", permissions: perms }).terminal!.run!
+  const { perms } = permissions()
+  // The run's gate let it run, as Auto's check did: what the terminal acts on.
+  const plan = spec.terminal!.plan("run", { command, why: "checks the network" })
+  if (!plan.decide) throw new Error("the side chat's terminal has nothing to decide")
+  const decided = (callId: string | undefined) =>
+    callId === "run-1/n/1/0" ? decidedFor(plan, "by Auto's check: checks the network", false) : null
+  const run = spec.groups({ session, runId: "run-1", permissions: { ...perms, decided } }).terminal!.run!
   const reply = JSON.parse(String(await run.call({ command, why: "checks the network" }, { callId: "run-1/n/1/0" })))
   return String(reply.output).split("\n")[1]!
 }

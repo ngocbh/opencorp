@@ -10,6 +10,11 @@ setDefaultTimeout(30_000)
 
 const NO_DECISION = "no permission check decided this call"
 
+/** What the gate decided for `command` in a new shell, run in `cwd`. */
+const ran = (command: string, cwd: string | null, why: string, approved = false): Decided => ({
+  why, basis: { cwd }, approved, tool: "terminal_run", text: command, partial: false, shell: null,
+})
+
 /** Permissions under the gate: what it decided for each call id, taken once by the call that acts on it. */
 function gated(): { perms: Permissions; ledger: Map<string, Decided>; held: unknown[] } {
   const ledger = new Map<string, Decided>()
@@ -52,7 +57,7 @@ test("a plan reads what a command would be from the terminal's live state: its a
 
 test("a call the gate decided runs, its row saying why; one it didn't decide runs nothing", async () => {
   const t = hooked()
-  t.ledger.set("r/n/1/0", { why: "by read-only", basis: { cwd: t.dir }, approved: false })
+  t.ledger.set("r/n/1/0", ran("echo hi", t.dir, "by read-only"))
   expect(json(await t.call("run", { command: "echo hi", why: "x" }, { callId: "r/n/1/0" }))).toMatchObject({ exit: 0 })
   await waitFor(() => t.audits.length === 1, { what: "the row" })
   expect(t.audits[0]).toMatchObject({ outcome: "ok", tool: "terminal_run", text: "echo hi", why: "by read-only" })
@@ -70,7 +75,7 @@ test("a call the gate decided runs, its row saying why; one it didn't decide run
 
 test("an approved command runs, its row naming who approved it", async () => {
   const t = hooked()
-  t.ledger.set("r/n/1/0", { why: "approved by @ngocbh", basis: { cwd: t.dir }, approved: true })
+  t.ledger.set("r/n/1/0", ran("echo ok", t.dir, "approved by @ngocbh", true))
   expect(json(await t.call("run", { command: "echo ok", why: "x" }, { callId: "r/n/1/0" }))).toMatchObject({ exit: 0 })
   await waitFor(() => t.audits.length === 1, { what: "the row" })
   expect(t.audits[0]).toMatchObject({ outcome: "ok", why: "approved by @ngocbh" })
@@ -78,13 +83,33 @@ test("an approved command runs, its row naming who approved it", async () => {
 
 test("a shell in another folder than its decision was made in runs nothing: the call is to be checked again", async () => {
   const t = hooked()
-  t.ledger.set("r/n/1/0", { why: "approved by @ngocbh", basis: { cwd: "/elsewhere" }, approved: true })
+  t.ledger.set("r/n/1/0", ran("echo moved", "/elsewhere", "approved by @ngocbh", true))
   const reply = json(await t.call("run", { command: "echo moved", why: "x" }, { callId: "r/n/1/0" }))
   expect(reply.refused).toBe(
     `the shell is in another folder than when this command was approved (/elsewhere, now ${t.dir}); run it again to ` +
       "have it checked there",
   )
   expect(t.fake.commands).toEqual([])
+})
+
+test("a call that isn't what the gate decided runs nothing: another command, or another shell, under its call id", async () => {
+  const t = hooked()
+  t.ledger.set("r/n/1/0", ran("ls", t.dir, "approved by @ngocbh", true))
+  const other = json(await t.call("run", { command: "echo DIFFERENT", why: "x" }, { callId: "r/n/1/0" }))
+  expect(other.refused).toBe("this call isn't the one that was decided; run it again to have it checked")
+  t.ledger.set("r/n/2/0", { ...ran("echo a", t.dir, "by read-only"), shell: "shell 1" })
+  const elsewhere = json(await t.call("run", { command: "echo a", why: "x" }, { callId: "r/n/2/0" }))
+  expect(elsewhere.refused).toBe("this call isn't the one that was decided; run it again to have it checked")
+  expect(t.fake.commands).toEqual([])
+})
+
+test("a call takes what the gate decided for it as it starts, even when it is refused for its own reasons", async () => {
+  const t = hooked()
+  t.ledger.set("r/n/1/0", ran("echo hi", t.dir, "by read-only"))
+  expect(json(await t.call("run", { why: "no command" }, { callId: "r/n/1/0" })).refused).toBeString()
+  t.ledger.set("r/n/2/0", ran("echo hi", t.dir, "by read-only"))
+  expect(json(await t.call("read", { shell: "shell 9" }, { callId: "r/n/2/0" })).refused).toBeString()
+  expect(t.ledger.size).toBe(0)
 })
 
 test("the gate's held and refused calls are the terminal's audit rows, as its own gate wrote them", () => {

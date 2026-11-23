@@ -9,6 +9,7 @@ import { stringify } from "yaml"
 import type { Instrument, ToolPart } from "@opencorp/protocol"
 import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { EmployeeTerminal } from "../../../src/features/chat/terminal.ts"
+import { decidedFor } from "../../../src/tools/terminal/terminal.ts"
 import { sessionOption } from "../../../src/runtime/questions/approval.ts"
 import { Instruments } from "../../../src/runtime/sessions/instruments.ts"
 import { readRecord } from "../../../src/tools/terminal/record.ts"
@@ -200,9 +201,14 @@ test("a command that ends after the agent's next turn has begun keeps the run it
   })
   // Each run's gate let its commands run, as an allow rule does, and held `rm x`.
   const { perms } = permissions({ mode: "ask" })
+  const allowed = (command: string) => {
+    const plan = terminal.plan("run", { command, why: "x" })
+    if (!plan.decide) throw new Error("the terminal has nothing to decide")
+    return decidedFor(plan, "by an allow rule", false)
+  }
   const ledger = new Map([
-    ["r1/n/1/0", { why: "by an allow rule", basis: { cwd: dir }, approved: false }],
-    ["r2/n/1/0", { why: "by an allow rule", basis: { cwd: dir }, approved: false }],
+    ["r1/n/1/0", allowed("make long")],
+    ["r2/n/1/0", allowed("echo next")],
   ])
   const gated = { ...perms, decided: (callId: string | undefined) => ledger.get(callId ?? "") ?? null }
   terminal.bind("r1", gated)

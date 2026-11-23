@@ -132,10 +132,11 @@ test("a tool whose name no rule can write asks in every mode, offering nothing, 
   }
 })
 
-test("the terminal's run and type pass: the terminal still decides its own commands", () => {
+test("the terminal's run and type never run by their source: the command reader decides them, or they are refused", () => {
+  const why = "Not run: the command reader couldn't read what this terminal call would act on."
   for (const mode of MODES) {
     for (const tool of ["run", "type"]) {
-      expect(decide(host("terminal", tool), mode, [rule("deny", "*")], "blocked")).toEqual(run())
+      expect(decide(host("terminal", tool), mode, [rule("allow", "*")])).toEqual({ verdict: "refuse", reason: why })
     }
   }
 })

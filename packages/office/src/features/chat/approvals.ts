@@ -21,13 +21,16 @@ import {
   type Where,
 } from "../../runtime/permissions/policy.ts"
 import { approvalResult, holdApproval, readAnswer, YES } from "../../runtime/questions/approval.ts"
-import type { CommandPlan } from "../../tools/terminal/terminal.ts"
+import { type CommandPlan, decidedFor } from "../../tools/terminal/terminal.ts"
 import type { OnQuestion } from "../../runtime/questions/ask.ts"
 import type { AnswerKind } from "../../runtime/sessions/harness.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store } from "../../runtime/store/store.ts"
 import type { OfficePaths } from "../../util/home.ts"
 import { DETAIL_CHARS, redact } from "../../util/redact.ts"
 import { errorName } from "../../runtime/worker/rpc.ts"
+
+/** What a terminal call is refused with when the gate can't read what it would act on. */
+const CANT_READ = "Not run: the shell this command was for can't be read now; run it again."
 
 /** The flow Auto's check runs, which its audit rows name. */
 const CHECK_TOOL = "classify_command"
@@ -74,6 +77,8 @@ interface Hold {
   readonly runId: string
   readonly callId: string
   readonly call: ToolCall
+  /** Whether it is a terminal command or typed line, which only the command reader decides. */
+  readonly terminal: boolean
   readonly command: Planned | null
   held: boolean
   check: AbortController | null
@@ -138,8 +143,9 @@ export class ChatApprovals {
   readonly #unsaved = new Map<string, string>()
   /** What the last check's usage counts at toward the cost cap: the office connection's `capPrices`. */
   #pricing: { prices: Readonly<Record<string, Price>>; subscription: boolean } = { prices: {}, subscription: false }
-  /** What the gate let each terminal call it decided do, by call id, until the call takes it. */
-  readonly #decided = new Map<string, Decided>()
+  /** What the gate let each terminal call it decided do, by call id, until the call takes it, and whether it decided
+   *  it as the call was gated (then the call starts in that run's job, or never) rather than released it later. */
+  readonly #decided = new Map<string, { decided: Decided; runId: string; gated: boolean }>()
   /** The approver's No to a card, by the reply whose call it held (`<run>/<node>/<n>`): yian checks that reply's later
    *  calls only once the card is answered, and one No settles all of the reply's calls that would ask. */
   readonly #refusedReplies = new Map<string, string>()
@@ -207,33 +213,36 @@ export class ChatApprovals {
       mode: () => this.#session().mode,
       rules: () => this.#rules(),
       where: () => this.#where(),
-      check: (input, signal) => this.#check.judge(input, signal),
       blocked: () => this.#blocked(),
       decided: (callId) => (callId === undefined ? null : this.#take(callId)),
     }
   }
 
   /** What the gate let terminal call `callId` do, taken once: from the ledger, or, for a call its approver said Yes
-   *  to on its card, from the card (its folder, or its line and the command typed into); null when nothing did. */
+   *  to on its card, from the card (its tool, command or line, shell, and folder or command typed into); null when
+   *  nothing did. Only a Yes by a person approves: one no approver stands behind approves nothing. */
   #take(callId: string): Decided | null {
-    const decided = this.#decided.get(callId)
-    if (decided !== undefined) {
+    const entry = this.#decided.get(callId)
+    if (entry !== undefined) {
       this.#decided.delete(callId)
-      return decided
+      return entry.decided
     }
     const card = this.#store.getQuestionByCall(callId)
     const approval = card?.approval
-    if (card === undefined || approval == null || approval.kind === "tool") return null
+    if (card === undefined || approval == null || approval.kind === "tool" || card.answered_by === null) return null
     if (card.status !== "answered" && card.status !== "consumed") return null
     const read = readAnswer(card).answer
     if (read !== "yes" && read !== "session" && read !== "always") return null
+    if (approval.tool !== "terminal_run" && approval.tool !== "terminal_type") return null
     const text = (value: unknown) => (typeof value === "string" ? value : null)
     const basis: Basis =
       approval.kind === "command"
         ? { cwd: text(approval.args.cwd) }
         : { line: text(approval.args.line) ?? "", into: text(approval.args.into) }
-    const why = card.answered_by ? `approved by @${card.answered_by}` : "approved"
-    return { why, basis, approved: true }
+    return {
+      why: `approved by @${card.answered_by}`, basis, approved: true, tool: approval.tool, text: approval.action,
+      partial: approval.partial, shell: text(approval.args.shell),
+    }
   }
 
   /** Reads the agent's and the company's rules files at HEAD again, unless they were read at that commit; the
@@ -320,7 +329,8 @@ export class ChatApprovals {
     }
     if (decision.verdict === "run") {
       if (command !== null) {
-        this.#decided.set(call.callId, { why: `by ${decision.note}`, basis: command.basis, approved: false })
+        const decided = decidedFor(command, `by ${decision.note}`, false)
+        this.#decided.set(call.callId, { decided, runId, gated: true })
       }
       return decision.note === null ? undefined : { run: true, note: decision.note }
     }
@@ -332,7 +342,9 @@ export class ChatApprovals {
       return { refuse: decision.reason }
     }
     const held = { tool, source, arguments: args, attempt }
-    this.#holds.set(call.callId, { runId, callId: call.callId, call: held, command, held: false, check: null })
+    const terminal = command !== null
+    const hold = { runId, callId: call.callId, call: held, terminal, command, held: false, check: null }
+    this.#holds.set(call.callId, hold)
     return pending()
   }
 
@@ -354,7 +366,9 @@ export class ChatApprovals {
 
   /** What the gate decides for `hold` by the session's mode and rules now. */
   #decide(hold: Hold): CallDecision {
-    return hold.command === null ? decideCall(hold.call, this.#policy()) : decideCommand(hold.command, this.#policy())
+    if (hold.command !== null) return decideCommand(hold.command, this.#policy())
+    // A terminal call is never decided by its source: with nothing to read, it is refused.
+    return hold.terminal ? { verdict: "refuse", reason: CANT_READ } : decideCall(hold.call, this.#policy())
   }
 
   /** Yian holds call `callId` of run `runId` (`CallHeld`): marked held at once, so the end of the job that held it
@@ -377,12 +391,15 @@ export class ChatApprovals {
   closed(callId: string): void {
     this.#holds.get(callId)?.check?.abort()
     this.#holds.delete(callId)
+    this.#decided.delete(callId)
   }
 
   /** Run `runId`'s job ended: a call the gate held that yian never held (its agent was interrupted as the gate
    *  decided) has no hold to answer. */
   jobEnded(runId: string): void {
     for (const [callId, hold] of this.#holds) if (hold.runId === runId && !hold.held) this.#holds.delete(callId)
+    // A call the gate let run as it was gated starts in that job, or never.
+    for (const [callId, entry] of this.#decided) if (entry.runId === runId && entry.gated) this.#decided.delete(callId)
     for (const reply of this.#refusedReplies.keys()) {
       if (!reply.startsWith(`${runId}/`)) this.#refusedReplies.delete(reply)
     }
@@ -396,10 +413,12 @@ export class ChatApprovals {
       if (this.#holds.has(call.callId)) continue
       // Arguments it didn't record are none the gate can judge: it asks.
       const known = { tool: call.tool, source: call.source, arguments: call.arguments, attempt: 1 }
-      // A terminal call's plan is read from the shells as they are now.
+      // A terminal call's plan is read from the shells as they are now; one that can't be read is decided by nobody.
       const planned = this.#planned({ source: call.source, arguments: call.arguments })
+      const terminal = planned !== null
       const command = planned === "passes" ? null : planned
-      this.#holds.set(call.callId, { runId, callId: call.callId, call: known, command, held: true, check: null })
+      const hold = { runId, callId: call.callId, call: known, terminal, command, held: true, check: null }
+      this.#holds.set(call.callId, hold)
     }
     // After the restart's own step: what it releases or completes goes to the run as any later delivery does.
     this.#host.post("the held calls", () => this.#recheckHolds(runId, null))
@@ -437,6 +456,13 @@ export class ChatApprovals {
       this.#holds.delete(hold.callId)
       return
     }
+    if (hold.terminal && hold.command === null) {
+      // Nothing the terminal would act on can be read now (its arguments weren't recorded, or its shell is gone): its
+      // open card waits for the owner, and with none the call is refused.
+      if (card !== undefined) return
+      this.#holds.delete(hold.callId)
+      return this.#host.completeCall(hold.callId, CANT_READ)
+    }
     const decision = this.#decide(hold)
     if (card === undefined) return this.#act(hold, decision)
     if (decision.verdict !== "run") return
@@ -451,7 +477,8 @@ export class ChatApprovals {
   #release(hold: Hold, note: string | null, card: QuestionRecord | null, approved: boolean): Promise<void> {
     this.#released.add(hold.callId)
     if (hold.command !== null) {
-      this.#decided.set(hold.callId, { why: `by ${note}`, basis: hold.command.basis, approved })
+      const decided = decidedFor(hold.command, `by ${note}`, approved)
+      this.#decided.set(hold.callId, { decided, runId: hold.runId, gated: false })
     }
     return this.#host.release(hold.callId, note, card)
   }
@@ -529,9 +556,10 @@ export class ChatApprovals {
       if (added) await this.#recheck(card.answered_by)
       return
     }
+    // Before the answer goes: a call of the reply gated meanwhile gets the No, not a card.
+    if (read.answer === "no") this.#refusedReplies.set(replyOf(card.call_id!), approvalResult(card))
     await this.#host.completeWithAnswer(card)
     if (read.answer !== "no") return
-    this.#refusedReplies.set(replyOf(card.call_id!), approvalResult(card))
     await this.#answerOpen(() => card.answer, card.answer_kind ?? "text", card.answered_by)
   }
 

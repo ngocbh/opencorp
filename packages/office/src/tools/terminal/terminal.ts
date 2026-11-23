@@ -151,6 +151,13 @@ export type CommandPlan =
       readonly shell: string | null
     }
 
+/** What the gate decided for the call `plan` says, letting it run as `why` says (`approved` when its approver said
+ *  Yes on a card): `Permissions.decided`'s answer for it. */
+export function decidedFor(plan: CommandPlan & { decide: true }, why: string, approved: boolean): Decided {
+  const { tool, action, basis, shell } = plan
+  return { why, basis, approved, tool, text: action.text, partial: action.partial ?? false, shell }
+}
+
 /** One of a terminal's shells: a PTY shell, or the workspace's pipes shell. */
 export type TerminalShell = PtyShell | PipeShell
 
@@ -168,8 +175,9 @@ export interface TerminalTool {
 /** What a call returns when its stop came after its gate let it run, before it started. */
 const STOPPED = "Not run: stopped before it started."
 const CLOSED = "this terminal has closed"
-/** What a call under the office's gate is refused with when the gate decided nothing for it. */
+/** What a call under the office's gate is refused with when the gate decided nothing for it, or something else. */
 const NO_DECISION = "no permission check decided this call"
+const NOT_DECIDED = "this call isn't the one that was decided; run it again to have it checked"
 /** What a typed line is refused with when the shell moved on while it was checked, or since it was approved. */
 const MOVED =
   "the shell moved on while this line was checked: its unfinished line or its running command changed; read it, " +
@@ -252,13 +260,16 @@ interface Running {
 }
 
 /** How one call runs: the yian call's id, its signal, and whether the owner approved it (no gate). An approved
- *  command carries the folder its card was decided in (`folder`) and what approved it (`credit`). */
+ *  command carries the folder its card was decided in (`folder`) and what approved it (`credit`). Under the office's
+ *  gate, `decided` is what it decided for the call (null: nothing), taken as the call started; undefined for a host
+ *  with no such gate. */
 interface Call {
   readonly callId: string | undefined
   readonly signal: AbortSignal
   readonly approved: boolean
   readonly folder?: string | null
   readonly credit?: string
+  readonly decided?: Decided | null
 }
 
 /** The profile of the sandbox `shells` run in. */
@@ -461,6 +472,9 @@ export class Terminal {
     args: Record<string, unknown>,
     options: { readonly callId?: string; readonly signal?: AbortSignal; readonly interrupted?: AbortSignal },
   ): Promise<unknown> {
+    // Taken first, whatever the call does next: a refused call leaves no decision behind.
+    const gate = this.host.permissions.decided
+    const decided = gate === undefined ? undefined : gate.call(this.host.permissions, options.callId)
     if (this.closed) return refusalText(CLOSED)
     const parsed = parseArgs(tool, args)
     if (typeof parsed === "string") return refusalText(parsed)
@@ -471,7 +485,8 @@ export class Terminal {
     const stops = [own.signal, options.signal, options.interrupted].filter((s) => s !== undefined)
     const signal = AbortSignal.any(stops)
     try {
-      const call: Call = { callId: options.callId, signal, approved: false }
+      const taken = decided === undefined ? {} : { decided }
+      const call: Call = { callId: options.callId, signal, approved: false, ...taken }
       if (parsed.tool === "run") return await this.run(parsed, call)
       const entry = this.find(parsed.shell)
       if (entry === undefined) return refusalText(this.unknown(parsed.shell))
@@ -522,9 +537,9 @@ export class Terminal {
         if (call.approved && call.folder !== folder) {
           return this.text(entry, shell, shell.refusal(MOVED_FOLDER(call.folder ?? null, folder)))
         }
-        const decided = this.decision(call)
+        const decided = call.decided
         if (decided !== undefined) {
-          const moved = this.movedRun(decided, folder)
+          const moved = this.movedRun(decided, parsed, entry.name, folder)
           if (moved !== null) return this.text(entry, shell, shell.refusal(moved))
           if (call.signal.aborted) return STOPPED
           return await this.runIn(entry, shell, parsed, call, decided!.why)
@@ -543,10 +558,10 @@ export class Terminal {
     if (problem !== null) return refusalText(problem)
     const folder = this.where().cwd
     if (call.approved && call.folder !== folder) return refusalText(MOVED_FOLDER(call.folder ?? null, folder))
-    const decided = this.decision(call)
+    const decided = call.decided
     let ran: string
     if (decided !== undefined) {
-      const moved = this.movedRun(decided, folder)
+      const moved = this.movedRun(decided, parsed, null, folder)
       if (moved !== null) return refusalText(moved)
       if (call.signal.aborted) return STOPPED
       ran = decided!.why
@@ -563,18 +578,18 @@ export class Terminal {
     })
   }
 
-  /** Under the office's gate, what it decided for `call` (taken once), or null when it decided nothing; undefined for
-   *  a host with no such gate, whose calls this terminal gates itself. */
-  private decision(call: Call): Decided | null | undefined {
-    const decided = this.host.permissions.decided
-    if (decided === undefined || call.approved) return undefined
-    return decided.call(this.host.permissions, call.callId)
-  }
-
-  /** Why a command decided as `decided` (null: nothing was) can't run in `folder` now: no decision, or its shell is in
-   *  another folder than the gate decided it in; null when it can. */
-  private movedRun(decided: Decided | null, folder: string | null): string | null {
+  /** Why the command `parsed` asks for, in shell `shell` (its name; null for a new one), can't run in `folder` under
+   *  the gate's decision `decided` (null: none): no decision, a decision for another tool, command or shell, or its
+   *  shell is in another folder than the gate decided it in; null when it can. */
+  private movedRun(
+    decided: Decided | null,
+    parsed: Parsed & { tool: "run" },
+    shell: string | null,
+    folder: string | null,
+  ): string | null {
     if (decided === null) return NO_DECISION
+    const same = decided.tool === "terminal_run" && decided.text === parsed.command && decided.shell === shell
+    if (!same) return NOT_DECIDED
     const was = "cwd" in decided.basis ? decided.basis.cwd : undefined
     return was === folder ? null : MOVED_FOLDER(was ?? null, folder)
   }
@@ -719,9 +734,11 @@ export class Terminal {
     if (approved !== null && (approved.line !== line || approved.into !== into)) {
       return this.text(entry, shell, shell.refusal(MOVED_SINCE))
     }
-    const decided = this.decision(call)
+    const decided = call.decided
     if (decided !== undefined) {
       if (decided === null) return this.text(entry, shell, shell.refusal(NO_DECISION))
+      const same = decided.tool === "terminal_type" && decided.text === line && decided.partial === !enter
+      if (!same || decided.shell !== entry.name) return this.text(entry, shell, shell.refusal(NOT_DECIDED))
       const was = "line" in decided.basis ? decided.basis : null
       if (was === null || was.line !== line || was.into !== into) {
         return this.text(entry, shell, shell.refusal(decided.approved ? MOVED_SINCE : MOVED))

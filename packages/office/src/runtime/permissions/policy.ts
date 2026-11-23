@@ -261,12 +261,17 @@ export interface ApprovalCard {
 export type Basis = { readonly cwd: string | null } | { readonly line: string; readonly into: string | null }
 
 /** What the office's gate decided for a terminal call before it started (yian's `beforeToolCall`): what lets it run,
- *  for its audit row (`by read-only`, `approved by @<who>`), the state it was decided on, and whether its approver
- *  said Yes on a card. */
+ *  for its audit row (`by read-only`, `approved by @<who>`), the state it was decided on, whether its approver said
+ *  Yes on a card, and what it decided: the tool, the command or whole typed line, whether that line ends without
+ *  Enter, and the shell it runs in (null for a new one). The call acts only if it is exactly that. */
 export interface Decided {
   readonly why: string
   readonly basis: Basis
   readonly approved: boolean
+  readonly tool: "terminal_run" | "terminal_type"
+  readonly text: string
+  readonly partial: boolean
+  readonly shell: string | null
 }
 
 /** A session's permissions as its host binds them; the model sets none of them. */

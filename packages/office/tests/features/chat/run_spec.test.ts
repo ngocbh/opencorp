@@ -6,6 +6,7 @@ import { stringify } from "yaml"
 import { personInputs, talkingTo } from "../../../src/features/chat/identity.ts"
 import { chatJob, managerSpec, mainSpec, sideSpec } from "../../../src/features/chat/run_spec.ts"
 import { EmployeeTerminal } from "../../../src/features/chat/terminal.ts"
+import { decidedFor } from "../../../src/tools/terminal/terminal.ts"
 import { Instruments } from "../../../src/runtime/sessions/instruments.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
 import { MAIN_CHAT } from "../../../src/company/chat_flow.ts"
@@ -169,9 +170,8 @@ test("a main run's build binds its permissions to the terminal, whose commands a
   // The run's gate held the command, and its approver said Yes: what it decided is the call's to take.
   const plan = terminal.plan("run", { command: "make", why: "builds it" })
   expect(plan).toMatchObject({ decide: true, tool: "terminal_run", action: { kind: "command", text: "make" } })
-  const basis = plan.decide ? plan.basis : { cwd: null }
-  const decided = (id: string | undefined) =>
-    id === callId ? { why: "approved by @ngocbh", basis, approved: true } : null
+  if (!plan.decide) throw new Error("the terminal has nothing to decide")
+  const decided = (id: string | undefined) => (id === callId ? decidedFor(plan, "approved by @ngocbh", true) : null)
   const groups = spec.groups({ session: o.session, runId: "r1", permissions: { ...perms, decided } })
   expect(Object.keys(groups.terminal!)).toEqual(["run", "type", "read", "interrupt", "close"])
   terminal.audited(plan, "held", "Ask mode")

@@ -59,6 +59,7 @@ const BY_RULE = "an allow rule"
 const RELEASED = "released before a stop or crash cut it off"
 const UNNAMED = "its name can't be written in a rule, so no rule covers it"
 const UNREAD = "its arguments couldn't be read"
+const UNREAD_COMMAND = "Not run: the command reader couldn't read what this terminal call would act on."
 /** What the model reads for a call sent again that would ask, whose first try was never released: a stop or crash
  *  may have cut it off while the gate decided, so nobody approved it, and yian can't hold a call that may have run. */
 export const CUT_OFF = "Not run: it was cut off before it was approved."
@@ -72,8 +73,9 @@ const READS = new Set([
 /** What the gate decides for `call` under `policy` (see the module's note). */
 export function decideCall(call: ToolCall, policy: CallPolicy): CallDecision {
   const { source } = call
+  // The command reader decides these on what the terminal would act on (`decideCommand`): never their source.
   if (source.kind === "host" && source.group === "terminal" && (source.tool === "run" || source.tool === "type")) {
-    return { verdict: "run", note: null }
+    return { verdict: "refuse", reason: UNREAD_COMMAND }
   }
   const asks = (reason: string, rules: readonly string[] = []): CallDecision =>
     policy.mode === "dontAsk"
