@@ -12,7 +12,8 @@ const rank = (id: string) => {
   return index < 0 ? order.length : index
 }
 
-/** How the picker marks a Codex or Claude Code session: running a turn now, idle between turns, or ended. */
+/** How the picker marks a Codex or Claude Code session: running a turn now, idle between turns, or ended. One that
+ *  hasn't ended is live: it takes the owner's messages, and the Sessions tab lists it before ctrl+a. */
 export type ChildState = "running" | "idle" | "ended"
 
 /** A harness's name as the picker and the chat's calls say it, before the session's (`Codex: codex 1`). */

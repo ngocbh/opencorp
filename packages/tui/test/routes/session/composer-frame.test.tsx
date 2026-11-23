@@ -1,8 +1,9 @@
 // The picker, ported from the upstream TUI's composer picker. ↓ at the end of a chat's prompt opens it in the prompt's
 // place, on the first tab with something running: Sessions, the chat's Codex and Claude Code sessions (each its child
 // session, marked Running, Idle or Ended), or Shell, its shells. ←/→ switch tabs, ↑/↓ move, Enter opens the row in the
-// right pane, ↑ on the first row or Esc closes; ctrl+d interrupts a session or sends a shell Ctrl-C, and ctrl+a shows
-// what isn't running. The line under the prompt counts what runs, after ↓, and a click opens the picker. A child whose
+// right pane, ↑ on the first row or Esc closes; ctrl+d interrupts a session or sends a shell Ctrl-C. Sessions lists the
+// live sessions, running or idle, and Shell the shells that run; ctrl+a shows the rest. The line under the prompt
+// counts what runs, after ↓, and a click opens the picker. A child whose
 // session ended has no prompt: the picker sits in its place, and Esc goes back to the chat or closes the pane. An idle
 // or running child keeps its prompt, where the owner writes to the harness. Each session keeps its own unsent draft.
 import type { Instrument, Session } from "@opencorp/protocol"
@@ -231,6 +232,37 @@ test("with the shell running and the Codex session ended, ↓ opens Shell; the e
   }
 })
 
+test("Sessions lists the live sessions, running or idle, and ctrl+a only the ended ones; only a running row can be interrupted", async () => {
+  const { fake, chat } = office([{ status: "busy" }, { harness: "claude", status: "idle" }, { status: "ended" }])
+  const app = await boot(fake, chat.id)
+  try {
+    // The line under the prompt still counts only what runs.
+    await app.until((f) => f.includes("@minh auto ·") && f.includes("↓ 1 Codex session"))
+    expect(app.frame()).not.toContain("Claude Code session")
+    await press(app, "down")
+    let f = await app.until((f) => f.includes("Codex: codex 1") && f.includes("Claude Code: claude 1"))
+    expect(row(f, "Codex: codex 1")).toMatch(/Codex: codex 1 +Running$/)
+    expect(row(f, "Claude Code: claude 1")).toMatch(/Claude Code: claude 1 +Idle$/)
+    expect(f).not.toContain("Codex: codex 2")
+    expect(f).toContain("interrupt ctrl+d")
+    expect(f).toContain("show inactive ctrl+a")
+    // The idle row takes messages but has no turn to interrupt.
+    await press(app, "down")
+    f = await app.until((f) => !f.includes("interrupt ctrl+d") && f.includes("show inactive ctrl+a"))
+    expect(f).toContain("Claude Code: claude 1")
+    app.input.pressKey("a", { ctrl: true })
+    f = await app.until((f) => f.includes("Codex: codex 2"))
+    expect(row(f, "Codex: codex 2")).toMatch(/Codex: codex 2 +Ended$/)
+    expect(f).not.toContain("Codex: codex 1")
+    expect(f).not.toContain("Claude Code: claude 1")
+    expect(f).toContain("show active ctrl+a")
+    expect(f).not.toContain("interrupt ctrl+d")
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
+
 test("an ended child opened by its id has no prompt; ↑ on its row goes back to the chat", async () => {
   const { fake, chat, children } = office([{ status: "ended" }, { status: "busy" }])
   const app = await boot(fake, children[0]!.id)
@@ -261,16 +293,16 @@ test("an idle child keeps its prompt in the pane, where the owner's message resu
     // An idle session isn't counted: only what runs.
     expect(app.frame()).not.toContain("Codex session")
     await press(app, "down")
-    await app.until((f) => f.includes("No active sessions"))
-    app.input.pressKey("a", { ctrl: true })
+    // It is live, so the picker lists it as it opens.
     let f = await app.until((f) => f.includes("Codex: codex 1"))
     expect(row(f, "Codex: codex 1")).toMatch(/Idle$/)
+    expect(f).not.toContain("interrupt ctrl+d")
     await app.setup.renderOnce()
     app.input.pressEnter()
     f = await app.until((f) => pane(f).includes("Codex 1 says hello.") && pane(f).includes("╹▀"))
     expect(f).not.toContain(ENDED)
     await press(app, "down")
-    // ctrl+a is remembered: the idle session shows, its own row, in the pane's picker.
+    // The pane's picker lists it too, its own row.
     f = await app.until((f) => pane(f).includes("Codex: codex 1") && !pane(f).includes("╹▀"))
     expect(row(pane(f), "Codex: codex 1")).toMatch(/Idle$/)
     await escape(app)

@@ -58,8 +58,8 @@ while a command runs), and a missing `.mcp.json` can still be created.
   wait shows `unread`, its border grey, until they read it before their next step; Esc stops them, and they read it
   next.
 - **The picker.** ← and → switch its tabs (Sessions, Shell), ↑ and ↓ move, Enter opens in the pane, and Esc or ↑ on
-  the first row closes it. It opens on the first tab with something running and lists what runs; ctrl+a shows the
-  rest (idle and ended), and stays as you set it until you quit.
+  the first row closes it. It opens on the first tab with something running. Sessions lists the live sessions,
+  running or idle, and Shell the shells that run; ctrl+a shows the rest, and stays as you set it until you quit.
 - **Waits.** A command's reply waits 5 seconds unless your employee asks for longer (at most two minutes): a quick
   command replies with its output, and a longer one runs on while your employee does other work or ends their reply.
   A message that reaches your employee during the wait, yours or a note, ends it at once; the command goes on. One
