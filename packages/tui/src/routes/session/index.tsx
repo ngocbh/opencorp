@@ -108,6 +108,8 @@ const context = createContext<{
   width: number
   sessionID: string
   conceal: () => boolean
+  /** Whether the last reply can still grow: the run is on and Esc hasn't frozen the view. */
+  streaming: () => boolean
   showTimestamps: () => boolean
   showDetails: () => boolean
   showGenericToolOutput: () => boolean
@@ -731,6 +733,7 @@ export function Session(props: SessionProps) {
   }))
 
   const lastAssistant = createMemo(() => shown().findLast((x) => x.role === "assistant"))
+  const streaming = () => interruptible(viewStatus()) && !frozen()?.active
 
   return (
     <context.Provider
@@ -740,6 +743,7 @@ export function Session(props: SessionProps) {
         },
         sessionID: props.sessionID,
         conceal,
+        streaming,
         showTimestamps,
         showDetails,
         showGenericToolOutput,
@@ -1062,8 +1066,7 @@ function TextPartView(props: { last: boolean; part: TextPart }) {
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
         <markdown
           syntaxStyle={syntax()}
-          streaming={true}
-          internalBlockMode="top-level"
+          streaming={props.last && ctx.streaming()}
           content={props.part.text.trim()}
           tableOptions={{ style: "grid" }}
           conceal={ctx.conceal()}
