@@ -7,7 +7,7 @@ import path from "node:path"
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { isPending } from "@ngocbh/yian/tools"
 import { type Result, run, SandboxUnavailable } from "../../../src/runtime/sandbox/run.ts"
-import type { Verdict, Where } from "../../../src/runtime/permissions/policy.ts"
+import type { Where } from "../../../src/runtime/permissions/policy.ts"
 import { Terminal } from "../../../src/tools/terminal/terminal.ts"
 import { waitFor } from "../../helpers.ts"
 import {
@@ -125,7 +125,7 @@ test("a run whose reply is cut off stops its command, in a pipes shell and in a 
   const asked = openTerminal({ perms, shells: (dir) => (approvedFake = fakePipes(dir)).shells })
   expect(isPending(await asked.call("run", { command: "make three", why: "x" }))).toBe(true)
   const approval = new AbortController()
-  const approved = asked.terminal.runApproved("terminal_run", held[0]!.card.args, approval.signal, "approved by @ngocbh")
+  const approved = asked.approve(held[0]!.callId, { signal: approval.signal, credit: "approved by @ngocbh" })
   await waitFor(() => approvedFake.running().length === 1, { what: "the approved command" })
   approval.abort()
   expect(json(await approved)).toMatchObject({ status: "idle", exit: null })
@@ -262,22 +262,23 @@ test("a call ends on its interrupt too, so an Esc that came before the call reac
     perms: permissions({ rules: [rule("allow", "command", "make *")] }).perms,
     shells: (dir) => (fake = fakePipes(dir)).shells,
   })
-  const tools = t.terminal.tools()
-  expect(json(await tools.run.call({ command: "make long", why: "x", wait: 0 }, { callId: "r/n/1/0" }))).toMatchObject({
+  expect(json(await t.call("run", { command: "make long", why: "x", wait: 0 }))).toMatchObject({
     status: "running",
   })
   // Esc's cut-off found no call: this read reaches the terminal after it, and only its interrupt says so.
   t.terminal.interruptWaits()
   const interrupt = new AbortController()
-  const read = tools.read.call({ shell: "shell 1", wait: 60 }, { callId: "r/n/2/0", interrupted: interrupt.signal })
+  const read = t.call("read", { shell: "shell 1", wait: 60 }, { interrupted: interrupt.signal })
   interrupt.abort()
   expect(json(await read)).toMatchObject({ shell: "shell 1", status: "running" })
   // The command its run's reply said is running goes on.
   expect(fake.running()).toEqual(["make long"])
   // A run whose interrupt comes while it waits stops its command, as a cut-off does.
   fake.end("make long", 0)
+  // The gate reads the shell as idle before it decides the next command there.
+  await waitFor(() => t.terminal.shells()[0]!.state.status === "idle", { what: "the shell idle" })
   const stop = new AbortController()
-  const run = tools.run.call({ command: "make two", why: "x", wait: 60, shell: "shell 1" }, { callId: "r/n/3/0", interrupted: stop.signal })
+  const run = t.call("run", { command: "make two", why: "x", wait: 60, shell: "shell 1" }, { interrupted: stop.signal })
   await waitFor(() => fake.running().length === 1, { what: "the command" })
   stop.abort()
   expect(json(await run)).toMatchObject({ status: "idle", exit: null })
@@ -463,7 +464,7 @@ test("the host's audit gets a held, a refused and an ended command, with why it 
   expect(json(await t.call("run", { command: "echo hi", why: "x" }))).toMatchObject({ shell: "shell 1", exit: 0 })
   expect(await t.call("run", { command: "rm x", why: "x", shell: "shell 1" })).toBe("Not run: a deny rule: rm *.")
   expect(isPending(await t.call("run", { command: "make", why: "builds it" }))).toBe(true)
-  const approved = t.terminal.runApproved("terminal_run", held[0]!.card.args, new AbortController().signal, "approved by @ngocbh")
+  const approved = t.approve(held[0]!.callId, { credit: "approved by @ngocbh" })
   await waitFor(() => fake.running().length === 1, { what: "the approved command" })
   fake.end("make", 2)
   expect(json(await approved)).toMatchObject({ shell: "shell 2", status: "idle", exit: 2 })
@@ -493,20 +494,6 @@ test("a command that ends after the agent's wait still writes its row when it en
   expect(t.audits[0]).toMatchObject({
     outcome: "ok", text: "make", shell: "shell 1", exit: 0, why: "by Auto's check: builds the project",
   })
-})
-
-test("a call stopped in its check writes no audit row", async () => {
-  let answer: ((verdict: Verdict) => void) | undefined
-  const check = () => new Promise<Verdict>((resolve) => (answer = resolve))
-  const { perms, held, checked } = permissions({ check })
-  let fake!: ReturnType<typeof fakePipes>
-  const t = openTerminal({ perms, shells: (dir) => (fake = fakePipes(dir)).shells, audit: true })
-  const running = t.call("run", { command: "make", why: "x" })
-  await waitFor(() => checked.length === 1, { what: "the check" })
-  t.terminal.interruptWaits()
-  answer!({ verdict: "run", reason: "fine" })
-  expect(await running).toBe("Not run: stopped before Auto's check finished.")
-  expect([t.audits, held, fake.commands, t.terminal.shells()]).toEqual([[], [], [], []])
 })
 
 test("a shell's start reads only the host's base where, never the host's caller", async () => {
@@ -665,7 +652,7 @@ test("an approved command runs only in the folder its card was decided in", asyn
   expect(held[0]!.card.args).toEqual({ command: tar, why: "x", wait: 30, shell: "shell 1", cwd: "~/work" })
   // The agent moves the shell while the card waits.
   expect(json(await t.call("run", { command: "cd ~", why: "x", shell: "shell 1" }))).toMatchObject({ exit: 0 })
-  expect(json(await t.terminal.runApproved("terminal_run", held[0]!.card.args, new AbortController().signal))).toMatchObject({
+  expect(json(await t.approve(held[0]!.callId))).toMatchObject({
     shell: "shell 1",
     refused:
       "the shell is in another folder than when this command was approved (~/work, now ~); run it again to have " +
@@ -674,12 +661,12 @@ test("an approved command runs only in the folder its card was decided in", asyn
   expect(t.record("sh_1").commands.map((c) => c.command)).toEqual(["true", "cd ~"])
   // In the same folder, it runs; a held command for a new shell runs in the folder new shells start in.
   expect(isPending(await t.call("run", { command: "echo there", why: "x", shell: "shell 1" }))).toBe(true)
-  expect(json(await t.terminal.runApproved("terminal_run", held[1]!.card.args, new AbortController().signal))).toMatchObject({
+  expect(json(await t.approve(held[1]!.callId))).toMatchObject({
     exit: 0, output: "$ echo there\nthere\n",
   })
   expect(isPending(await t.call("run", { command: "echo new", why: "x" }))).toBe(true)
   expect(held[2]!.card.args.cwd).toBe("~/work")
-  expect(json(await t.terminal.runApproved("terminal_run", held[2]!.card.args, new AbortController().signal))).toMatchObject({
+  expect(json(await t.approve(held[2]!.callId))).toMatchObject({
     shell: "shell 2", exit: 0,
   })
   // A card names its shell by name, and the host reads the shell's folder by it.
@@ -687,25 +674,18 @@ test("an approved command runs only in the folder its card was decided in", asyn
   expect(t.terminal.where("shell 1").cwd).toBe("~")
 })
 
-test("runApproved runs a terminal_run or terminal_type card and refuses any other tool", async () => {
+test("a held call acts on its Yes as the tool the model called: a typed line types, a command runs in a new shell", async () => {
   const { perms, held } = permissions({ mode: "ask", rules: [rule("allow", "command", "cat")] })
   const t = openTerminal({ perms })
   await t.call("run", { command: "cat", why: "x", wait: 0 })
   expect(isPending(await t.call("type", { shell: "shell 1", text: "typed-once", why: "x", wait: 0 }))).toBe(true)
   expect(isPending(await t.call("run", { command: "echo ran-once", why: "x" }))).toBe(true)
-  const [typed, ran] = held.map((h) => h.card)
-  // A card names its tool as the model called it, and the host passes that name back.
-  expect([typed!.tool, ran!.tool]).toEqual(["terminal_type", "terminal_run"])
-  const signal = new AbortController().signal
-  for (const tool of ["run", "type", "terminal_read", "terminal_interrupt", "terminal_close", "shell"]) {
-    expect(json(await t.terminal.runApproved(tool, ran!.args, signal))).toEqual({
-      refused: `${tool} never waits for the owner's approval; only terminal_run and terminal_type do`,
-    })
-  }
+  // A card names its tool as the model called it.
+  expect(held.map((h) => h.card.tool)).toEqual(["terminal_type", "terminal_run"])
   expect(t.terminal.shells().map((s) => s.name)).toEqual(["shell 1"])
-  expect(json(await t.terminal.runApproved(typed!.tool, typed!.args, signal)).refused).toBeUndefined()
+  expect(json(await t.approve(held[0]!.callId)).refused).toBeUndefined()
   await waitFor(() => t.live("sh_1").includes("typed-once\r\ntyped-once"), { what: "cat's echo" })
-  expect(json(await t.terminal.runApproved(ran!.tool, ran!.args, signal))).toMatchObject({
+  expect(json(await t.approve(held[1]!.callId))).toMatchObject({
     shell: "shell 2", exit: 0, output: "$ echo ran-once\nran-once\n",
   })
   t.terminal.shell("sh_1")!.ownerKeys("\x04")

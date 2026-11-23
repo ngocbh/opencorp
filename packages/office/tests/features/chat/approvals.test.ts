@@ -304,8 +304,7 @@ test("the chat's permissions hold nothing: its terminal acts only on what the ga
   const asked: unknown[] = []
   const runId = session(h, id).run_ids.at(-1)!
   const perms = await approvals.permissions(runId, (q) => (asked.push(q), q))
-  expect(perms.hold).toBeUndefined()
-  expect(perms.decided!(`${runId}/chat#0/reply/1/0`)).toBeNull()
+  expect(perms.decided(`${runId}/chat#0/reply/1/0`)).toBeNull()
   expect(asked).toEqual([])
 })
 

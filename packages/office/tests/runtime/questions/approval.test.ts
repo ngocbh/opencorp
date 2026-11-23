@@ -1,7 +1,6 @@
-/** Approval cards: an agent's call held by its yian call id until the session's approver answers, and what the call
- *  returns once they have. */
+/** Approval cards: an agent's call held by its yian call id until the session's approver answers, and what a call
+ *  completed with the answer returns. */
 import { expect, test } from "bun:test"
-import { isPending } from "@ngocbh/yian/tools"
 import type { Approval } from "@opencorp/protocol"
 import { Answers } from "../../../src/runtime/questions/ask.ts"
 import {
@@ -15,15 +14,11 @@ import {
   YES,
 } from "../../../src/runtime/questions/approval.ts"
 import { INTERRUPTED } from "../../../src/runtime/questions/format.ts"
-import type { Permissions } from "../../../src/runtime/permissions/policy.ts"
 import { openStore, session, thrown } from "../store/helpers.ts"
 
 const RUN = "run-1"
 const RULES = ["git status *", "ls *"]
 const CARD: Approval = { kind: "command", tool: "terminal_run", action: "ls -la", reason: "Ask mode", rules: RULES }
-const UNKNOWN =
-  "Not run again: the user approved this, but the office stopped before its result came back, either before the " +
-  "command ran or while it ran. Check whether it ran before you try it again."
 
 /** A store with one session, its `Answers`, and a `hold` for the session's run; `always` says whether always-rules
  *  are kept. */
@@ -81,11 +76,11 @@ test("a card offers always only where always-rules are kept", () => {
   expect(store.getQuestionByCall(call())!.options).toEqual([YES, sessionOption(RULES)])
 })
 
-test("holding a call stores one card for its call id, asked by the agent, and replies pending", () => {
+test("holding a call stores one card for its call id, asked by the agent, and returns it as stored", () => {
   const { store, s, hold } = setup()
   const result = hold(CARD, call())
-  expect(isPending(result)).toBe(true)
   const card = store.getQuestionByCall(call())!
+  expect(result).toEqual(card)
   expect(card.call_id).toBe("run-1/n/1/0")
   expect(card.asker).toBe(s.person)
   expect([card.source, card.session_id, card.run_id, card.node_id, card.status]).toEqual([
@@ -100,21 +95,13 @@ test("holding a call stores one card for its call id, asked by the agent, and re
     partial: false, into: null,
   })
   expect(card.question).toBe("ls -la")
-  expect(isPending(hold(CARD, call()))).toBe(true)
+  expect(hold(CARD, call()).id).toBe(card.id)
   expect(store.listQuestions({ sessionId: s.id }).map((q) => q.id)).toEqual([card.id])
 
   hold({ kind: "input", tool: "terminal_type", action: "y", reason: "Ask mode", partial: true, into: "ssh h" }, call(2))
   const typed = store.getQuestionByCall(call(2))!
   expect(typed.title).toBe("@minh wants to type into a running command")
   expect([typed.approval?.partial, typed.approval?.into]).toEqual([true, "ssh h"])
-})
-
-test("a hold is what a session's permissions hold a gated call with", () => {
-  const { store, hold } = setup()
-  // The policy's card, read-only rules and all, is one a hold takes.
-  const bound: Permissions["hold"] = hold
-  bound({ ...CARD, kind: "command", args: {}, why: "", rules: RULES, partial: false, into: null }, call())
-  expect(store.getQuestionByCall(call())!.approval!.action).toBe("ls -la")
 })
 
 test("a card that isn't valid is refused, naming only the bad fields", () => {
@@ -151,28 +138,16 @@ test("a typed answer is No with the approver's words; Yes, don't ask again and a
   expect(answered(5, INTERRUPTED, "interrupted")).toEqual({ answer: "interrupted" })
 })
 
-test("a call held again after its card was answered never runs twice", () => {
+test("a call completed with its card's answer gets the No, with the approver's words, or the interrupt; a Yes never completes one", () => {
   const { store, hold } = setup()
-  const answer = (n: number, value: string, kind: "option" | "text" | "interrupted") => {
+  const answered = (n: number, value: string, kind: "option" | "text" | "interrupted") => {
     hold(CARD, call(n))
-    store.answerQuestion(store.getQuestionByCall(call(n))!.id, value, kind, "ngocbh")
-    return hold(CARD, call(n))
+    return approvalResult(store.answerQuestion(store.getQuestionByCall(call(n))!.id, value, kind, "ngocbh"))
   }
-  expect(answer(1, " use rg instead\n", "text")).toBe("Not run: the user said no: use rg instead")
-  expect(answer(2, " \n", "text")).toBe("Not run: the user said no.")
-  expect(answer(3, YES, "option")).toBe(UNKNOWN)
-  expect(answer(4, sessionOption(RULES), "option")).toBe(UNKNOWN)
-  expect(answer(5, INTERRUPTED, "interrupted")).toBe("[interrupted by the user]")
-  // The second hold consumed each card, and a third gets the same reply.
-  expect(store.getQuestionByCall(call(1))!.status).toBe("consumed")
-  expect(hold(CARD, call(1))).toBe("Not run: the user said no: use rg instead")
-  expect(approvalResult(store.getQuestionByCall(call(3))!)).toBe(UNKNOWN)
-})
-
-test("an expired card's call throws, naming only the card", () => {
-  const { store, hold } = setup()
-  hold({ ...CARD, action: "cat planted-secret" }, call())
-  const card = store.setQuestionStatus(store.getQuestionByCall(call())!.id, "stale")
-  const error = thrown(() => hold(CARD, call())) as Error
-  expect(error.message).toBe(`approval card ${card.id} expired before it was answered`)
+  expect(answered(1, " use rg instead\n", "text")).toBe("Not run: the user said no: use rg instead")
+  expect(answered(2, " \n", "text")).toBe("Not run: the user said no.")
+  expect(answered(3, INTERRUPTED, "interrupted")).toBe("[interrupted by the user]")
+  // A Yes releases its call where yian holds it: one completed instead never ran.
+  expect(answered(4, YES, "option")).toBe("Not run: its approval didn't reach the held call.")
+  expect(answered(5, sessionOption(RULES), "option")).toBe("Not run: its approval didn't reach the held call.")
 })

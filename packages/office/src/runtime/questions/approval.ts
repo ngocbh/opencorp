@@ -1,7 +1,6 @@
 /** Approval cards: an agent's call held, by its yian call id, until the session's approver picks Yes, Yes and
- *  don't ask again, or types what to do instead. Nothing here waits: yian holds the call, and the office
- *  answers it by `complete`. */
-import { pending } from "@ngocbh/yian/tools"
+ *  don't ask again, or types what to do instead. Nothing here waits: yian holds the call, and the session's gate
+ *  releases it on a Yes or completes it with any other answer. */
 import {
   APPROVAL_YES, type Approval, approvalAlwaysOption, approvalSessionOption, Question, now, validationMessage,
 } from "@opencorp/protocol"
@@ -18,10 +17,8 @@ export const alwaysOption = approvalAlwaysOption
 /** The typed row's label: a typed answer is No, and its text reaches the agent. */
 export const NO_TYPED = "No, and tell the agent what to do instead"
 
-/** What a held call returns for a Yes whose result never came back. */
-const UNKNOWN_OUTCOME =
-  "Not run again: the user approved this, but the office stopped before its result came back, either before the " +
-  "command ran or while it ran. Check whether it ran before you try it again."
+/** What a held call completed on a Yes returns: a Yes releases its call, so a completed one never ran. */
+const NOT_RELEASED = "Not run: its approval didn't reach the held call."
 
 /** The card a call is held on: the protocol's `Approval`, with its rules read-only. */
 export type HeldCard = Omit<Approval, "rules"> & { readonly rules?: readonly string[] }
@@ -52,28 +49,26 @@ export function readAnswer(question: QuestionRecord): ApprovalAnswer {
   return { answer: "no", say: kind === "text" && typeof answer === "string" ? strip(answer) : "" }
 }
 
-/** What the held call returns when it can't return the action's own output: the approver's No (with the gate's
- *  "Not run:"), an interrupt, or a Yes whose result never came back (the office stopped before or while the action
- *  ran). Never runs anything. */
+/** What a held call completed with its card's answer returns: the approver's No (with the gate's "Not run:"), or an
+ *  interrupt. A Yes releases the call instead; one completed never ran. Never runs anything. */
 export function approvalResult(question: QuestionRecord): string {
   const read = readAnswer(question)
   if (read.answer === "interrupted") return INTERRUPTED
   if (read.answer === "no") {
     return read.say === "" ? "Not run: the user said no." : `Not run: the user said no: ${read.say}`
   }
-  return UNKNOWN_OUTCOME
+  return NOT_RELEASED
 }
 
-/** A `hold` for `session`'s run `runId`: stores the card through `onQuestion` (one per call id) and returns what
- *  the call returns now: `pending()` while it is open, `approvalResult` once answered, and throws for an expired
- *  card, naming only its id. A card that doesn't make a valid question throws a `TypeError` naming only the bad
- *  fields. `always` says whether the host keeps always-rules, which the card then offers. */
+/** A `hold` for `session`'s run `runId`: stores the card through `onQuestion` (one per call id) and returns it as
+ *  stored. A card that doesn't make a valid question throws a `TypeError` naming only the bad fields. `always` says
+ *  whether the host keeps always-rules, which the card then offers. */
 export function holdApproval(
   session: SessionRecord,
   runId: string,
   onQuestion: OnQuestion,
   { always }: { always: boolean },
-): (card: HeldCard, callId: string) => unknown {
+): (card: HeldCard, callId: string) => QuestionRecord {
   return (card, callId) => {
     const t = now()
     const what =
@@ -99,9 +94,6 @@ export function holdApproval(
     const parsed = Question.safeParse(data)
     // Only validationMessage's text leaves: the ZodError and its issues can quote the card's values.
     if (!parsed.success) throw new TypeError(validationMessage(Question, parsed.error, data))
-    const stored = onQuestion(parsed.data)
-    if (stored.status === "open") return pending()
-    if (stored.status === "stale") throw new Error(`approval card ${stored.id} expired before it was answered`)
-    return approvalResult(stored)
+    return onQuestion(parsed.data)
   }
 }

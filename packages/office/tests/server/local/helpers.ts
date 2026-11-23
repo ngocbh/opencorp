@@ -47,7 +47,8 @@ export interface Started {
 
 /** Starts a host for the built-in agent on `fake`, its folder `<temp>/sessions/<id>`, its terminal's shells on plain
  *  PTYs in a fresh folder with their records in the session's `terminal/`. `o.sessions` gives the sessions folder,
- *  `o.flow` another flow, `o.groups` more tool groups and `o.first` the owner's first message. The test's end stops
+ *  `o.flow` another flow, `o.groups` more tool groups, `o.first` the owner's first message and `o.llm` more of the
+ *  model's config. The test's end stops
  *  the host, then removes the folders. */
 export async function startHost(
   fake: FakeLLM,
@@ -56,6 +57,8 @@ export async function startHost(
     flow?: string
     groups?: (binding: SessionBinding) => Record<string, Record<string, OfficeTool>>
     first?: string
+    /** More of the model's `llm_config`: a key, say. */
+    llm?: Record<string, unknown>
   } = {},
 ): Promise<Started> {
   const top = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-local-")))
@@ -76,7 +79,7 @@ export async function startHost(
     flow: { name: "local_chat", text: o.flow ?? FLOW },
     inputs: {},
     ...(o.first === undefined ? {} : { first: o.first }),
-    model: { llm_config: { ...LLM_CONFIG }, env: fake.env() },
+    model: { llm_config: { ...LLM_CONFIG, ...o.llm }, env: fake.env() },
     folder,
     tools: (binding) => {
       bound = binding

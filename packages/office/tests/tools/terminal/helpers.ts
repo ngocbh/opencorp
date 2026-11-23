@@ -1,5 +1,5 @@
-/** Terminal tool group test helpers: permissions that record what they are asked, and a terminal over plain PTYs in
- *  a fresh folder. */
+/** Terminal tool group test helpers: permissions under a gate that decides each call as the office's does and records
+ *  what it holds and checks, and a terminal over plain PTYs in a fresh folder. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -7,15 +7,18 @@ import { onTestFinished } from "bun:test"
 import { pending } from "@ngocbh/yian/tools"
 import { now } from "@opencorp/protocol"
 import { spawnPty } from "../../../src/platform.ts"
-import type {
-  Action, ApprovalCard, CheckInput, Mode, Permissions, Rule, Verdict, Where,
+import { commandCard } from "../../../src/features/chat/gate.ts"
+import { afterCheck, decideCommand } from "../../../src/runtime/permissions/gate.ts"
+import {
+  type Action, type ApprovalCard, type CheckInput, type Decided, judged, type Mode, type Permissions, type Rule,
+  type Verdict, type Where,
 } from "../../../src/runtime/permissions/policy.ts"
 import type { Result } from "../../../src/runtime/sandbox/run.ts"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../../src/testing/fake_ssh.ts"
 import { InstrumentRecord, readRecord, type RecordFile } from "../../../src/tools/terminal/record.ts"
 import type { ShellState } from "../../../src/tools/terminal/shell.ts"
 import {
-  type CommandEnded, Terminal, type TerminalAudit, type TerminalHost, type TerminalShells,
+  type CommandEnded, decidedFor, Terminal, type TerminalAudit, type TerminalHost, type TerminalShells,
 } from "../../../src/tools/terminal/terminal.ts"
 import { goldenPolicy, goldenSshPolicy } from "../../runtime/sandbox/helpers.ts"
 
@@ -25,8 +28,24 @@ export const HOST_WHERE: Where = { profile: "workspace", cwd: "/w", writable: ["
 
 export const rule = (effect: Rule["effect"], kind: Action["kind"], pattern: string): Rule => ({ effect, kind, pattern })
 
-/** Permissions whose mode, rules and block a test changes as it goes (`state`), which record each card they hold and
- *  each check they make; `check`, when given, answers as the test says. */
+/** A terminal tool's call, as the gate saw it. */
+interface GatedCallOf {
+  readonly name: string
+  readonly args: Record<string, unknown>
+}
+
+/** The office's gate as a test drives it: decides a terminal call before it acts, and lets a held one act on Yes. */
+export interface TestGate {
+  /** Decides call `callId` of terminal `terminal`'s tool `name` with `args`: null lets it act, anything else is what
+   *  the call returns (a refusal, or `pending()` for a held call). */
+  decide(terminal: Terminal, name: string, args: Record<string, unknown>, callId: string, signal?: AbortSignal): Promise<unknown>
+  /** The owner's Yes to held call `callId`, credited as `credit`: the call it held, to make again under its id. */
+  approve(callId: string, credit: string): GatedCallOf
+}
+
+/** Permissions under a gate that decides each terminal call as the office's does (`decideCommand` on the terminal's
+ *  plan, then Auto's check in `auto`), with the mode, rules and block a test changes as it goes (`state`); it records
+ *  each card it holds and each check it makes. `check`, when given, answers as the test says. */
 export function permissions(
   o: { mode?: Mode; rules?: Rule[]; where?: Where; check?: (input: CheckInput, signal: AbortSignal) => Promise<Verdict> } = {},
 ) {
@@ -35,15 +54,53 @@ export function permissions(
   }
   const held: { card: ApprovalCard; callId: string }[] = []
   const checked: CheckInput[] = []
-  const perms: Permissions = {
+  const ledger = new Map<string, Decided>()
+  const plans = new Map<string, { plan: Parameters<typeof decidedFor>[0]; call: GatedCallOf }>()
+  const check = o.check && ((input: CheckInput, signal: AbortSignal) => (checked.push(input), o.check!(input, signal)))
+  const gate: TestGate = {
+    async decide(terminal, name, args, callId, signal = new AbortController().signal) {
+      const plan = terminal.plan(name, args)
+      if (!plan.decide) return null
+      const policy = () => ({ mode: state.mode, rules: state.rules, blocked: state.blocked })
+      let decision = decideCommand(plan, policy())
+      if (decision.verdict === "check") {
+        const verdict = await judged(check, decision.input, signal)
+        if (signal.aborted) return "Not run: the call closed while Auto's check ran."
+        decision = afterCheck(verdict, decision.rules, state.mode)
+      }
+      switch (decision.verdict) {
+        case "run":
+          ledger.set(callId, decidedFor(plan, `by ${decision.note}`, false))
+          return null
+        case "refuse":
+          terminal.audited(plan, "denied", decision.reason)
+          return decision.reason
+        case "ask":
+          held.push({ card: commandCard(plan, decision), callId })
+          plans.set(callId, { plan, call: { name, args } })
+          terminal.audited(plan, "held", decision.reason)
+          return pending()
+      }
+    },
+    approve(callId, credit) {
+      const found = plans.get(callId)
+      if (found === undefined) throw new Error(`no held call ${callId}`)
+      ledger.set(callId, decidedFor(found.plan, credit, true))
+      return found.call
+    },
+  }
+  const perms: Permissions & { readonly gate: TestGate } = {
     mode: () => state.mode,
     rules: () => state.rules,
     where: () => o.where ?? HOST_WHERE,
-    hold: (card, callId) => (held.push({ card, callId }), pending()),
-    blocked: () => state.blocked,
-    ...(o.check ? { check: (input: CheckInput, signal: AbortSignal) => (checked.push(input), o.check!(input, signal)) } : {}),
+    decided: (callId) => {
+      const decided = callId === undefined ? undefined : ledger.get(callId)
+      if (callId !== undefined) ledger.delete(callId)
+      return decided ?? null
+    },
+    gate,
   }
-  return { perms, state, held, checked }
+  return { perms, state, held, checked, ledger }
 }
 
 /** A fake ssh in a short folder of its own, removed when the test finishes. */
@@ -109,6 +166,7 @@ export function openTerminal(o: {
     },
   }
   const terminal = new Terminal(host)
+  const gate = (o.perms as Partial<{ gate: TestGate }>).gate
   onTestFinished(async () => {
     await terminal.close()
     fs.rmSync(dir, { recursive: true, force: true })
@@ -121,9 +179,26 @@ export function openTerminal(o: {
     audits,
     /** The notes the host got of commands that ended, in order. */
     notes,
-    /** Calls tool `name` with `args`, as yian would: with a fresh call id unless given. */
-    call: (name: keyof typeof tools, args: Record<string, unknown>, options: { callId?: string; signal?: AbortSignal } = {}) =>
-      tools[name].call(args, { callId: options.callId ?? `r/n/${++calls}/0`, ...(options.signal ? { signal: options.signal } : {}) }),
+    /** Calls tool `name` with `args`, as yian would: with a fresh call id unless given, its signal and the agent's
+     *  interrupt, through the permissions' gate, when they have one, first. */
+    call: async (
+      name: keyof typeof tools,
+      args: Record<string, unknown>,
+      options: { callId?: string; signal?: AbortSignal; interrupted?: AbortSignal } = {},
+    ) => {
+      const callId = options.callId ?? `r/n/${++calls}/0`
+      const signal = options.signal ? { signal: options.signal } : {}
+      const interrupted = options.interrupted ? { interrupted: options.interrupted } : {}
+      const out = gate === undefined ? null : await gate.decide(terminal, name, args, callId, options.signal)
+      return out !== null ? out : tools[name].call(args, { callId, ...signal, ...interrupted })
+    },
+    /** The owner's Yes to held call `callId` (credited as `credit`, by default "approved"): yian releases it, and the
+     *  call is made again under its id. */
+    approve: (callId: string, o: { credit?: string; signal?: AbortSignal } = {}) => {
+      if (gate === undefined) throw new Error("these permissions have no gate")
+      const call = gate.approve(callId, o.credit ?? "approved")
+      return tools[call.name as keyof typeof tools].call(call.args, { callId, ...(o.signal ? { signal: o.signal } : {}) })
+    },
     /** The owner's live view of shell `id` so far, decoded. */
     live: (id: string) => new TextDecoder().decode(Buffer.concat(live.get(id) ?? [])),
     /** Shell `id`'s states as its host was told them. */

@@ -270,6 +270,8 @@ export const GATE_TIMEOUT_MS = 30_000
 /** What a failed gate request's reply says, whatever failed in the office: it reaches the worker's log in yian's
  *  warning, so it never quotes the office's own error. */
 export const GATE_FAILED = "the office's permission check failed"
+/** What a call is refused with by handlers that don't gate their runs' calls (`BaseHandlers.gateCall`). */
+export const UNGATED = "Not run: nothing here decides this session's calls."
 
 /**
  * Yian's `beforeToolCall`, answered by the office: one `gate_call` request per model tool call, carrying the
@@ -507,9 +509,9 @@ export class BaseHandlers implements WorkerHandlers {
     return await named[name]!.call(args, interrupted === undefined ? { callId } : { callId, interrupted })
   }
 
-  /** Runs every call. */
+  /** Refuses every call: a host whose runs call tools decides each one (its gate), so one that doesn't fails closed. */
   gateCall(_worker: unknown, _call: GatedCall): unknown {
-    return { run: true }
+    return { refuse: UNGATED }
   }
 
   memory(_worker: unknown, request: MemoryRequest): Promise<Frame> {

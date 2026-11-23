@@ -6,7 +6,6 @@ import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { GatedCall } from "@ngocbh/yian/tools"
 import {
   inspectRun,
-  iterRunRecords,
   type LiveViewCall,
   pendingCalls,
   type RunInspection,
@@ -82,6 +81,7 @@ import type { Hooks } from "../../runtime/sessions/hooks.ts"
 import { type Price, type Provider, ProviderError } from "../../models/provider.ts"
 import { chatJob, type RunSpec } from "./run_spec.ts"
 import { ChatApprovals } from "./approvals.ts"
+import { releasedIn } from "./gate.ts"
 import type { Mode, Where } from "../../runtime/permissions/policy.ts"
 import { HarnessError, notWaiting, runState, SETTLED, writeState } from "../../runtime/sessions/state.ts"
 import { restoreNotes } from "./terminal.ts"
@@ -3743,20 +3743,6 @@ function costFigure(usd: number): string {
   let figure = Math.round(usd * 1e4) / 1e4
   if (figure < usd) figure += 1e-4
   return figure.toFixed(4)
-}
-
-/** Whether the run log `log` records that call `callId` was released (a `released` step); false when it doesn't, or
- *  can't be read. */
-function releasedIn(log: string, callId: string): boolean {
-  try {
-    for (const entry of iterRunRecords(log, { kinds: ["node_step"], maxLineBytes: LINE_CAP })) {
-      const step = (entry.envelope?.record as { step?: Record<string, unknown> } | undefined)?.step
-      if (step?.kind === "released" && step.call_id === callId) return true
-    }
-  } catch {
-    // Unreadable: not known to be released, so the call isn't let run.
-  }
-  return false
 }
 
 /** Whether `p` wakes the agent: a message (`send`), a call's answer (`complete`) or a held call let run

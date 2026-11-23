@@ -8,7 +8,6 @@ import { isPending } from "@ngocbh/yian/tools"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { type Instrument, now } from "@opencorp/protocol"
 import { STOPPED } from "../../../src/runtime/permissions/classifier.ts"
-import type { ApprovalCard } from "../../../src/runtime/permissions/policy.ts"
 import { sessionOption, YES } from "../../../src/runtime/questions/approval.ts"
 import type { SessionBinding } from "../../../src/runtime/sessions/builtin.ts"
 import type { LiveInstrument } from "../../../src/runtime/sessions/instruments.ts"
@@ -112,7 +111,7 @@ test("a message during the reply steers it, and Esc interrupts it", async () => 
   expect(fake.requests()).toHaveLength(3)
 })
 
-test("a terminal command the mode asks about holds on an approval card; Yes runs it once and completes the call; No completes it with the owner's words and answers the other open cards", async () => {
+test("a terminal command the mode asks about holds on an approval card; Yes runs it once and completes the call; No completes it with the owner's words and settles the reply's later calls", async () => {
   const fake = await fakeLlm()
   fake.script(
     { tool_calls: [terminalCall("run", { command: "echo x >> count", why: "count" })], match: AGENT },
@@ -148,14 +147,11 @@ test("a terminal command the mode asks about holds on an approval card; Yes runs
   await until(host, "idle")
 
   await host.prompt("two more", OWNER)
-  const held = await cards(host, 2)
-  await host.answer(held[0]!.id, "use make instead", "text", OWNER)
+  // One card at a time: yian decides the reply's later call once the card is answered, and the No settles it.
+  const [first] = await cards(host, 1)
+  await host.answer(first!.id, "use make instead", "text", OWNER)
   await replied(host, "Stopped.")
-  expect(host.question(held[1]!.id)).toMatchObject({
-    answer: "use make instead",
-    answer_kind: "text",
-    answered_by: "owner",
-  })
+  expect(host.questions({})).toHaveLength(2)
   expect(results(fake.requests(), 3)).toEqual([
     "Not run: the user said no: use make instead",
     "Not run: the user said no: use make instead",
@@ -207,7 +203,7 @@ test("the mode route cycles the four modes; dontAsk refuses the open cards and a
   expect(fs.existsSync(path.join(work, "b"))).toBe(false)
 })
 
-test("don't ask again adds a session rule, and no card offers always", async () => {
+test("don't ask again adds a session rule that lets the reply's later call run, and no card offers always", async () => {
   const fake = await fakeLlm()
   fake.script(
     {
@@ -225,20 +221,21 @@ test("don't ask again adds a session rule, and no card offers always", async () 
   await until(host, "idle")
   host.setMode("default", OWNER)
   await host.prompt("touch a and b", OWNER)
-  const held = await cards(host, 2)
-  for (const card of held) expect(card.options).toEqual([YES, sessionOption(["touch *"])])
-  await host.answer(held[0]!.id, sessionOption(["touch *"]), "option", OWNER)
+  const [held] = await cards(host, 1)
+  expect(held!.options).toEqual([YES, sessionOption(["touch *"])])
+  await host.answer(held!.id, sessionOption(["touch *"]), "option", OWNER)
   await replied(host, "Both.")
   expect(fs.existsSync(path.join(work, "a"))).toBe(true)
   expect(fs.existsSync(path.join(work, "b"))).toBe(true)
-  expect(host.question(held[1]!.id)).toMatchObject({ answer: YES, answered_by: "owner" })
+  // The rule let the later call run: it had no card.
+  expect(host.questions({})).toHaveLength(1)
   const rule = { effect: "allow", kind: "command", pattern: "touch *" } as const
   expect(host.rules()).toEqual({ rules: [{ ...rule, source: "session", by: null, at: null, note: null }], errors: [] })
 
   await host.prompt("touch c", OWNER)
   await replied(host, "Third.")
   expect(fs.existsSync(path.join(work, "c"))).toBe(true)
-  expect(host.questions({})).toHaveLength(2)
+  expect(host.questions({})).toHaveLength(1)
   host.removeRule({ ...rule, source: "session" }, OWNER)
   expect(host.rules().rules).toEqual([])
 })
@@ -481,7 +478,7 @@ test("an answer once End has begun is refused, and its command never runs", asyn
   expect(fs.existsSync(path.join(work, "a"))).toBe(false)
 })
 
-test("a card a feature holds is never answered by a re-check: a session rule can't approve it", async () => {
+test("a feature's question card is never answered by a session rule", async () => {
   const fake = await fakeLlm()
   fake.script(
     { tool_calls: [terminalCall("run", { command: "touch a", why: "a" })], match: AGENT },
@@ -491,27 +488,17 @@ test("a card a feature holds is never answered by a re-check: a session rule can
   await until(host, "idle")
   host.setMode("default", OWNER)
   // The feature's own card, for what the session rule below would allow.
-  const card: ApprovalCard = {
-    kind: "command",
-    tool: "save",
-    action: "touch b",
-    args: {},
-    why: "save it",
-    reason: "saving asks in every mode",
-    rules: ["touch *"],
-    partial: false,
-    into: null,
-  }
+  const card = { title: "Save it?", question: "touch b", options: ["Save", "Don't"], reason: "saving asks in every mode" }
   const ran: string[] = []
   const runId = host.session()!.run_ids[0]!
   const act = async () => {
     ran.push("save")
     return "saved"
   }
-  expect(isPending(binding.hold(card, `${runId}/feature/1`, act))).toBe(true)
+  expect(isPending(binding.ask(card, `${runId}/feature/1`, act))).toBe(true)
   await host.prompt("touch a", OWNER)
   const [own, gated] = await cards(host, 2)
-  expect(own).toMatchObject({ question: "touch b" })
+  expect(own).toMatchObject({ question: "touch b", source: "ask_user" })
   await host.answer(gated!.id, sessionOption(["touch *"]), "option", OWNER)
   await replied(host, "Made a.")
   expect(fs.existsSync(path.join(work, "a"))).toBe(true)

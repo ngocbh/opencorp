@@ -10,7 +10,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { now } from "@opencorp/protocol"
 import { REASON_CHARS } from "../../runtime/permissions/monitor.ts"
-import type { CheckInput, Mode, Permissions, Where } from "../../runtime/permissions/policy.ts"
+import type { Mode, Permissions, Where } from "../../runtime/permissions/policy.ts"
 import type { Instruments } from "../../runtime/sessions/instruments.ts"
 import type { Store } from "../../runtime/store/store.ts"
 import { shellInstrument } from "../../tools/terminal/instrument.ts"
@@ -28,9 +28,6 @@ import { DETAIL_CHARS, repr } from "../../util/redact.ts"
  *  terminal takes the profile, folder and writable paths from the shells' sandbox. Fixed, so a shell's start never
  *  reads back through the session's actor, whose own `where` is the terminal's. */
 const BASE: Where = { profile: "workspace", cwd: null, writable: [] }
-
-/** What a command decides by before any run's permissions are bound: everything asks, and nothing can hold it. */
-const UNBOUND = "no run of this session is bound to its terminal yet"
 
 /** What an interrupted row says: the office stopped before the command's end. */
 const OFFICE_STOPPED = "the office stopped while it ran"
@@ -219,15 +216,7 @@ export class EmployeeTerminal {
       rules: () => bound()?.rules() ?? [],
       where: () => ({ ...BASE }),
       // The run's gate decides each command before it starts; with no run bound, nothing was decided.
-      decided: (callId: string | undefined) => bound()?.decided?.(callId) ?? null,
-      check: (input: CheckInput, signal: AbortSignal) => {
-        const permissions = bound()
-        return permissions?.check ? permissions.check(input, signal) : Promise.reject(new Error(UNBOUND))
-      },
-      blocked: () => {
-        const permissions = bound()
-        return permissions === null ? UNBOUND : (permissions.blocked?.() ?? null)
-      },
+      decided: (callId: string | undefined) => bound()?.decided(callId) ?? null,
     }
   }
 

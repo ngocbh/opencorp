@@ -1,7 +1,8 @@
 /**
  * Who may do what without asking: a session's mode and rules decide each command an agent runs and each line it
  * types, before it acts, and hand what they don't cover in `auto` and `dontAsk` to Auto's check. It needs no
- * office: the host binds the mode, the rules, where the shell runs, the check and how a card holds the call.
+ * office: the host's gate (`gate.ts`) binds the mode, the rules, where the shell runs and the check, and holds what
+ * asks.
  *
  * The reader (`commands.ts`) can promise that a command line runs without Auto's check or a card only when every
  * part of it is covered: by an allow rule; by a form it knows to be read-only (`auto`, `default`, `dontAsk`); by a
@@ -23,7 +24,7 @@
  * before a program that reads file contents is given a path through an expansion, whose value it can't see; in the
  * workspace sandbox, which keeps the home out, such a read follows the usual rules and the sandbox is the guard.
  * Auto's check never judges a push, `sudo` or a local command for ssh.
- * While the host says the session is blocked (`Permissions.blocked`, a rules file that doesn't load), every action
+ * While the host says the session is blocked (`CallPolicy.blocked`, a rules file that doesn't load), every action
  * asks as a never-automated one does, and `dontAsk` refuses it; deny rules still refuse first.
  *
  * Relative paths start from the shell's folder, which the host gives (`Where.cwd`, null when it can't know it), and
@@ -260,7 +261,7 @@ export interface ApprovalCard {
  *  for a command, the line and the command it is typed into for typed text. */
 export type Basis = { readonly cwd: string | null } | { readonly line: string; readonly into: string | null }
 
-/** What the office's gate decided for a terminal call before it started (yian's `beforeToolCall`): what lets it run,
+/** What the session's gate decided for a terminal call before it started (yian's `beforeToolCall`): what lets it run,
  *  for its audit row (`by read-only`, `approved by @<who>`), the state it was decided on, whether its approver said
  *  Yes on a card, and what it decided: the tool, the command or whole typed line, whether that line ends without
  *  Enter, and the shell it runs in (null for a new one). The call acts only if it is exactly that. */
@@ -274,77 +275,22 @@ export interface Decided {
   readonly shell: string | null
 }
 
-/** A session's permissions as its host binds them; the model sets none of them. */
+/** A session's permissions as its host binds them; the model sets none of them. Its gate (yian's `beforeToolCall`)
+ *  decides each terminal call before it starts, and the call acts only on what it decided. */
 export interface Permissions {
   mode(): Mode
   /** The session's rules, the agent's and the company's, in any order: deny wins, then ask, then allow. */
   rules(): readonly Rule[]
   /** Where the gated tool's shell runs. */
   where(): Where
-  /** Holds yian call `callId` on an approval card for the session's approver and returns what the call returns
-   *  now: yian's `pending()` while the card is open. The host runs the action itself once the approver says Yes
-   *  and completes the call with its result; No completes it with the approver's words. A host whose gate holds
-   *  its calls (`decided`) has none, and nothing holds there. */
-  hold?(card: ApprovalCard, callId: string): unknown
-  /** For a host whose gate decides each call before it starts: what it decided for call `callId`, taken once by the
-   *  call that acts on it, or null when it decided nothing. A terminal under such a host decides nothing itself. */
-  decided?(callId: string | undefined): Decided | null
-  /** Auto's check, as the host binds it; absent, what it would judge asks. Rejects when `signal` aborts, or when the
-   *  check can't record its verdict; the gate then asks. */
-  check?(input: CheckInput, signal: AbortSignal): Promise<Verdict>
-  /** Why every action asks now, as a never-automated one does (a rules file that doesn't load), or null. */
-  blocked?(): string | null
+  /** What the session's gate decided for call `callId`, taken once by the call that acts on it, or null when it
+   *  decided nothing. */
+  decided(callId: string | undefined): Decided | null
 }
-
-/** What a gated tool does before it acts: run now, saying `by` what (for its record), or return `result` as the
- *  call's result (a refusal, or what the card `held` on returns: its `pending()`). */
-export type Gate =
-  | { readonly run: true; readonly by: string }
-  | { readonly run: false; readonly result: unknown; readonly held?: ApprovalCard }
 
 /** What a call returns when it would ask in a session that doesn't (`dontAsk`), for `reason`. */
 export function dontAskRefusal(reason: string): string {
   return `Not run: ${DONT_ASK}${reason}.`
-}
-
-export async function gate(
-  perms: Permissions,
-  action: Action,
-  call: {
-    tool: string
-    why: string
-    args: Readonly<Record<string, unknown>>
-    callId: string | undefined
-    signal: AbortSignal
-  },
-): Promise<Gate> {
-  const mode = perms.mode()
-  const where = perms.where()
-  const never = action.never ?? perms.blocked?.() ?? undefined
-  const decision = decide(never === undefined ? action : { ...action, never }, mode, perms.rules(), where)
-  if (decision.verdict === "allow") return { run: true, by: decision.by }
-  if (decision.verdict === "deny") return { run: false, result: `Not run: ${decision.reason}.` }
-  let asked: { reason: string; rules: readonly string[] } =
-    decision.verdict === "ask" ? decision : { reason: "", rules: decision.rules }
-  if (decision.verdict === "check") {
-    const check = perms.check && ((input: CheckInput, signal: AbortSignal) => perms.check!(input, signal))
-    const verdict = await judged(check, checkInput(action, where), call.signal)
-    if (call.signal.aborted) return { run: false, result: "Not run: stopped before Auto's check finished." }
-    if (verdict.verdict === "run" && !verdict.failed) return { run: true, by: `Auto's check: ${verdict.reason}` }
-    const reason = verdict.failed
-      ? `Auto asks: its check couldn't judge this: ${verdict.reason}`
-      : `Auto's check: ${verdict.reason}`
-    asked = { reason, rules: decision.rules }
-  }
-  // Read again: the session may have switched to dontAsk while the check ran, and nobody would answer its card.
-  if (perms.mode() === "dontAsk") return { run: false, result: dontAskRefusal(asked.reason) }
-  if (call.callId === undefined || perms.hold === undefined)
-    return { run: false, result: "Not run: this call can't wait for the owner's approval." }
-  const card: ApprovalCard = {
-    kind: action.kind, tool: call.tool, action: action.text, args: call.args, why: call.why, reason: asked.reason,
-    rules: asked.rules, partial: action.partial ?? false, into: action.into ?? null,
-  }
-  return { run: false, result: perms.hold(card, call.callId), held: card }
 }
 
 /** A session's own rules, kept in memory for as long as the session's host runs. */

@@ -31,7 +31,8 @@ your username, paths, job lists).
 
 - **The mode.** The chat starts in `auto`: read-only commands and short answers to a prompt (a host key's
   `yes`, Duo's `1`) run at once, and the rest goes to Auto's check, a model call on your connection, or asks
-  you. Press Shift+Tab for `default` or `ask` to approve more of it yourself, as for a careful relearn.
+  you. Press Shift+Tab for `default` or `ask` to approve more of it yourself, as for a careful relearn. While a
+  command waits for your answer, the agent's next commands wait behind it; a No also refuses those that would ask.
 - **The agent's shell** runs in a sandbox that reaches your SSH files (`~/.ssh`, your SSH config, your agent)
   and nothing else of your home or of `~/.opencorp`. Where this machine can't sandbox it (no bubblewrap, say),
   `opencorp hq` says why and asks first whether to run it with none; the default is to stop.

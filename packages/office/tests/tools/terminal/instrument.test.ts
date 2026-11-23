@@ -53,7 +53,10 @@ test("a shell's state, output and size reach the registry; keys and Ctrl-C go to
     fs.rmSync(dir, { recursive: true, force: true })
   })
   const tools = terminal.tools()
-  const reply = json(await tools.run.call({ command: "echo first-4d1", why: "say it" }, { callId: "r/n/1/0" }))
+  const args = { command: "echo first-4d1", why: "say it" }
+  // The gate decides the call first, as the office's does.
+  expect(await perms.gate.decide(terminal, "run", args, "r/n/1/0")).toBeNull()
+  const reply = json(await tools.run.call(args, { callId: "r/n/1/0" }))
   expect(reply).toMatchObject({ shell: "shell 1", status: "idle", exit: 0 })
 
   const [listed] = registry.list(SESSION)

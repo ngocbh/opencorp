@@ -52,7 +52,7 @@ function pipesTerminal(): Terminal {
   return new Terminal({
     shells: { kind: "pipes", sandbox, run: never },
     driver: "minh",
-    permissions: { mode: () => "auto", rules: () => [], where: () => ({ profile: "workspace", cwd: null, writable: [] }), hold: never },
+    permissions: { mode: () => "auto", rules: () => [], where: () => ({ profile: "workspace", cwd: null, writable: [] }), decided: never },
     shellHost: never,
   })
 }
