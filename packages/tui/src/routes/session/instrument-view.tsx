@@ -1,4 +1,4 @@
-import type { Instrument } from "@opencorp/protocol"
+import type { Instrument, Message } from "@opencorp/protocol"
 import { TextAttributes, type RGBA } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
@@ -89,24 +89,24 @@ export function InstrumentPanel(props: {
   return (
     <box flexGrow={1} minWidth={0} minHeight={0}>
       {/* One row, so the screen's room never changes with the header: when it is too narrow the command gives way
-          first, then the status. */}
+          first, then who drives it and the name; the status, which may ask for the owner's password, stays whole. */}
       <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1} gap={1} overflow="hidden">
         <Show when={busy()}>
           <box flexShrink={0}>
             <Spinner color={props.driver.color} />
           </box>
         </Show>
-        <text fg={theme.text} wrapMode="none" flexShrink={0}>
+        <text fg={theme.text} wrapMode="none" flexShrink={1} minWidth={0}>
           <span style={{ fg: props.driver.color }}>
             <b>{props.driver.you ? "you" : `@${display(props.driver.handle ?? props.instrument.driver)}`}</b>
           </span>
           {props.driver.you ? " are driving" : " is driving"}
         </text>
         <text fg={theme.textMuted} wrapMode="none" flexShrink={1} minWidth={0}>
-          {"· "}
-          <span style={{ fg: theme.text }}>{display(props.instrument.name)}</span>
-          {" · "}
-          <span style={{ fg: waiting() ? theme.warning : theme.textMuted }}>{status()}</span>
+          · <span style={{ fg: theme.text }}>{display(props.instrument.name)}</span>
+        </text>
+        <text fg={waiting() ? theme.warning : theme.textMuted} wrapMode="none" flexShrink={0}>
+          · {status()}
         </text>
         <Show when={command()}>
           <text fg={theme.textMuted} wrapMode="none" flexShrink={1000} minWidth={0}>
@@ -179,10 +179,24 @@ export function InstrumentScreen(props: {
     ),
   )
 
+  // The employee's commands in it, as the chat's record of their terminal calls has them, and the one it runs now.
+  const commands = createMemo(() => {
+    const ran = employeeCommands(office.state.messages[props.sessionID] ?? [], props.instrument.name)
+    if (props.instrument.command) ran.add(props.instrument.command)
+    return ran
+  })
+
   return (
     <Show
       when={props.instrument.interactive}
-      fallback={<ShellOutput sessionID={props.sessionID} instrument={props.instrument} color={props.color} />}
+      fallback={
+        <ShellOutput
+          sessionID={props.sessionID}
+          instrument={props.instrument}
+          color={props.color}
+          commands={commands()}
+        />
+      }
     >
       <TerminalPane
         sessionID={props.sessionID}
@@ -195,19 +209,64 @@ export function InstrumentScreen(props: {
   )
 }
 
+/** The commands the chat's terminal calls ran in shell `name`: each `terminal_run` the shell's reply, or its input,
+ *  names. */
+function employeeCommands(messages: readonly Message[], name: string) {
+  const ran = new Set<string>()
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (part.type !== "tool" || part.tool !== "terminal_run" || typeof part.input?.command !== "string") continue
+      let shell = typeof part.input.shell === "string" ? part.input.shell : undefined
+      try {
+        const reply: unknown = JSON.parse(typeof part.output === "string" ? part.output : "")
+        if (reply && typeof reply === "object" && "shell" in reply && typeof reply.shell === "string") shell = reply.shell
+      } catch {}
+      if (shell === name) ran.add(part.input.command)
+    }
+  }
+  return ran
+}
+
+/** `text`'s lines as runs, each one span: the `$ <command>` lines the office wrote for one of `commands`, and the
+ *  rest. A run after the first starts with its newline. */
+export function commandRuns(text: string, commands: ReadonlySet<string>) {
+  // A command's first line, as the office writes it, and how many lines the command takes.
+  const starts = new Map<string, number>()
+  for (const command of commands) {
+    const lines = command.split("\n").map((line) => display(line))
+    const key = `$ ${lines[0]}`
+    starts.set(key, Math.max(starts.get(key) ?? 0, lines.length))
+  }
+  const runs: { text: string; command: boolean }[] = []
+  let left = 0
+  for (const line of text.split("\n")) {
+    left = Math.max(left - 1, starts.get(line) ?? 0)
+    const command = left > 0
+    const last = runs.at(-1)
+    if (last && last.command === command) last.text += "\n" + line
+    else runs.push({ text: (last ? "\n" : "") + line, command })
+  }
+  return runs
+}
+
 /**
  * A pipes shell's output, as lines with its escapes stripped, in the upstream TUI's shell-output layout: the
  * command, a note when the office no longer holds the start, then the output, following its end. The office writes
- * each command the employee runs as a `$ <command>` line, which takes `color`, theirs.
+ * each command the employee runs as a `$ <command>` line; those of `commands` take `color`, theirs.
  */
-function ShellOutput(props: { sessionID: string; instrument: Instrument; color: RGBA }) {
+function ShellOutput(props: {
+  sessionID: string
+  instrument: Instrument
+  color: RGBA
+  commands: ReadonlySet<string>
+}) {
   const { theme } = useTheme()
   const [output, setOutput] = createSignal<string>()
   const [omitted, setOmitted] = createSignal(false)
   const [error, setError] = createSignal<string>()
   // Escapes go whole, so a colour split across two events leaves nothing behind; a lone CR starts a line.
   const text = createMemo(() => display((output() ?? "").replace(/\r\n?/g, "\n")).replace(/\n+$/, ""))
-  const lines = createMemo(() => text().split("\n"))
+  const runs = createMemo(() => commandRuns(text(), props.commands))
   let decoder = new TextDecoder()
 
   /** Shows `next`, its newest part when it is longer than a view keeps. */
@@ -251,12 +310,8 @@ function ShellOutput(props: { sessionID: string; instrument: Instrument; color: 
           }
         >
           <text fg={theme.text} wrapMode="word">
-            <For each={lines()}>
-              {(line, i) => (
-                <span style={{ fg: line.startsWith("$ ") ? props.color : theme.text }}>
-                  {i() < lines().length - 1 ? line + "\n" : line}
-                </span>
-              )}
+            <For each={runs()}>
+              {(run) => <span style={{ fg: run.command ? props.color : theme.text }}>{run.text}</span>}
             </For>
           </text>
         </Show>

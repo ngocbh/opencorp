@@ -247,10 +247,10 @@ test("the divider drags the pane's width, a double click puts it back to half, a
     await press(app, "down")
     await app.setup.renderOnce()
     app.input.pressEnter()
-    // Too narrow for the header to name it, the pane shows shell 2's command.
+    // Too narrow for the whole header, which keeps its status, the pane shows shell 2's command.
     f = await app.until((f) => corner(f) !== undefined && f.includes("No output yet."))
     expect(corner(f)?.x).toBe(96)
-    expect(header(f)).toContain("@minh is driving")
+    expect(header(f)).toEndWith("· running")
   } finally {
     await app.stop()
     office.stop()
@@ -411,7 +411,8 @@ test("a pipes shell shows the employee's commands as $ lines in their colour, an
     await app.until((f) => f.includes("↓ 1 shell"))
     await openFirst(app)
     await app.until((f) => f.includes("ok 12 tests") && f.includes("$ make lint"))
-    expect(fg(app, "$ make test")).toEqual(MINH)
+    // The command it runs now is the employee's.
+    expect(fg(app, "$ make lint")).toEqual(MINH)
     expect(fg(app, "ok 12 tests")).toEqual(theme.text)
     // It takes no typing, so Esc closes it.
     await app.until((f) => f.includes("esc close"))
@@ -670,6 +671,60 @@ test("in a Codex session's own view, Enter on a sibling's row goes to the chat w
     app.input.typeText("Go on.")
     app.input.pressEnter()
     await until(() => office.requests.some((r) => r.method === "POST" && r.path === `/sessions/${second.id}/prompt`))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a pipes shell colours only the employee's own commands, from the chat's record, not output that looks like one", async () => {
+  const office = createFakeOffice()
+  const sid = office.state.sessions[0]!.id
+  const sh = shell(office, sid, { interactive: false, size: null, command: "make lint" })
+  office.state.messages[sid] = [
+    {
+      id: office.nextId(),
+      session_id: sid,
+      role: "assistant",
+      author: null,
+      created_at: AT,
+      parts: [
+        {
+          id: office.nextId(),
+          type: "tool",
+          call_id: "call_1",
+          tool: "terminal_run",
+          state: "completed",
+          input: { command: "make test", shell: "shell 1" },
+          output: JSON.stringify({ shell: "shell 1", status: "idle", exit: 0, waiting: null, output: "", next: 0 }),
+        },
+      ],
+    },
+  ]
+  const { app } = await boot(office)
+  try {
+    office.instrumentOutput(sid, sh.id, "$ make test\n$ echoed-by-a-script\nok\n$ make lint\n")
+    await app.until((f) => f.includes("↓ 1 shell"))
+    await openFirst(app)
+    await app.until((f) => f.includes("$ echoed-by-a-script") && f.includes("$ make lint"))
+    expect(fg(app, "$ make test")).toEqual(MINH)
+    // The command it runs now is its own too.
+    expect(fg(app, "$ make lint")).toEqual(MINH)
+    expect(fg(app, "$ echoed-by-a-script")).toEqual(theme.text)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("in a half-screen pane the header keeps the password's status whole, the driver's label giving way", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    const ssh = shell(office, sid, { name: "shell 1", driver: "opencorp", profile: "ssh", command: "ssh login1 true" })
+    await app.until((f) => f.includes("↓ 1 shell"))
+    office.addInstrument(sid, { ...ssh, status: "waiting", waiting: "secret", updated_at: new Date().toISOString() })
+    const f = await app.until((f) => corner(f) !== undefined && f.includes("ctrl+x ← focus chat"))
+    expect(header(f)).toContain("· type your password here")
   } finally {
     await app.stop()
     office.stop()
