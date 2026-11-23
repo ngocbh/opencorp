@@ -7,7 +7,7 @@
 // on PATH runs `dist/npm/opencorp-<os>-<cpu>/bin/opencorp`.
 //
 // The compile follows OpenCode's (`packages/cli/script/build.ts`): the Solid transform runs here, and the bundle is
-// minified, split and compiled to bytecode, so a start neither runs Babel nor parses the bundle.
+// minified, split and compiled to bytecode, so it holds no Babel and a start doesn't parse the bundle.
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 import fs from "node:fs"
 import path from "node:path"
@@ -153,6 +153,8 @@ for (const { name, os, cpu, target } of builds) {
     minify: { whitespace: true, syntax: true, identifiers: false },
     bytecode: true,
     splitting: true,
+    // Read by the TUI's commands, which then leave out the runtime Solid transform, and Babel with it.
+    define: { OPENCORP_COMPILED: "true" },
     compile: {
       ...(target ? { target } : {}),
       outfile: path.join(staging, "bin/opencorp"),

@@ -1126,6 +1126,12 @@ describe("the built binary", () => {
     killGroup(pid)
   }, 150_000)
 
+  test("the binary holds no Babel: its TUI's JSX was compiled when it was built", () => {
+    const bytes = fs.readFileSync(bin)
+    for (const marker of ["@babel/core", "transformSolidSource", "ensureSolidTransformPlugin"])
+      expect(bytes.includes(marker), marker).toBe(false)
+  })
+
   test("the binary's TUI draws its first frame quickly", async () => {
     // From the start to the alternate screen: about 40 ms here, where the source takes about a second, most of it
     // Babel compiling the TUI's JSX. The bound is generous, for a loaded machine, and the best of five runs counts.

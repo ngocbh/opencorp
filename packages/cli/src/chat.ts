@@ -4,6 +4,9 @@
 import type { OfficeHooks } from "@opencorp/office"
 import type { ChatEnd, LocalSession } from "@opencorp/office/server/local"
 
+/** `true` in the compiled binary, where `script/build.ts` defines it; undefined from source. */
+declare const OPENCORP_COMPILED: true | undefined
+
 /** Whether the TUI can draw here: stdin and stdout are terminals, and TERM names one that moves the cursor. */
 export function drawable(env: Record<string, string | undefined>, stdinTTY: boolean, stdoutTTY: boolean) {
   return stdinTTY && stdoutTTY && !!env.TERM && env.TERM !== "dumb"
@@ -59,8 +62,9 @@ export async function localChat(session: LocalSession, home?: string): Promise<C
       over = true
       return undefined
     })
-    // The TUI is Solid JSX, loaded as `opencorp` loads it: the compiled binary's was transformed when it was built.
-    if (import.meta.url.endsWith(".ts")) (await import("@opentui/solid/bun-plugin")).ensureSolidTransformPlugin()
+    // The TUI is Solid JSX, loaded as `opencorp` loads it: the binary's was compiled when it was built.
+    if (typeof OPENCORP_COMPILED === "undefined")
+      (await import("@opentui/solid/bun-plugin")).ensureSolidTransformPlugin()
     const [{ Effect }, { Global, run: runTui }] = await Promise.all([import("effect"), import("@opencorp/tui")])
     const local = { sessionID: host.id, until }
     const input = { socket: served.socket, token: served.token, person: OWNER, cwd: process.cwd(), args: {}, local }
