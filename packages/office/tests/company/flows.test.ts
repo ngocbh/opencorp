@@ -111,6 +111,23 @@ test("a tool module of each extension yian reads as one loads in a company flow"
   }
 })
 
+test("a tool module outside the repo is refused: by ../, by an absolute path, or through a symlink", async () => {
+  const outside = tempDir()
+  fs.writeFileSync(path.join(outside, "crm.ts"), MODULE)
+  const cases: [string, string][] = [
+    ["../../../crm.ts", "tool module '../../../crm.ts' is outside the code root"],
+    [path.join(outside, "crm.ts"), "a tool module ref is a relative path, starting with ./ or ../"],
+    ["./linked.ts", "tool module './linked.ts' is outside the code root"],
+  ]
+  for (const [ref, why] of cases) {
+    const root = makeCompany({ "shared/flows/chat.yaml": grantingFlow("chat", "crm", ref) })
+    fs.symlinkSync(path.join(outside, "crm.ts"), path.join(root, "shared/flows/linked.ts"))
+    const load = loadConfined(root, path.join(root, "shared/flows/chat.yaml"))
+    await expect(load).rejects.toBeInstanceOf(LoadError)
+    await expect(load).rejects.toThrow(why)
+  }
+})
+
 test("a child flow that grants a tool module loads", async () => {
   const root = makeCompany({
     "shared/flows/chat.yaml": usesFlow("chat", ["echo"]),

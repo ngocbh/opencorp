@@ -36,10 +36,16 @@ export class FlowOutsideRepo extends Error {
  *   `MAX_FLOW_FILE` bytes, or a flow that sets `system.paths` or whose YAML the office can't check for it.
  * @throws {TypeError} For a flow that isn't UTF-8 text.
  * @throws {Error} A system error for a read that fails after the open.
+ *
+ * `modules`, when given, gets each tool module a loaded flow's `uses:` names (`UsedModule`), for lint.
  */
-export async function loadConfined(root: string, file: string): Promise<ComposedFlow> {
+export async function loadConfined(
+  root: string,
+  file: string,
+  { modules }: { modules?: UsedModule[] } = {},
+): Promise<ComposedFlow> {
   try {
-    return await load(resolvePath(root), file, new Set(), new Map())
+    return await load(resolvePath(root), file, new Set(), new Map(), modules ?? [])
   } catch (error) {
     if (!(error instanceof LoadError)) throw error
     // yian wraps what the child resolver throws in its own LoadError.
@@ -113,6 +119,47 @@ function readShape(text: string): unknown {
   }
 }
 
+/** A tool module a company flow's `uses:` names: the flow, repo relative, the alias and the module file's path. */
+export interface UsedModule {
+  readonly flow: string
+  readonly alias: string
+  readonly file: string
+}
+
+// A tool module ref as yian reads one: a relative path to a `.ts`, `.js` or `.mjs` file, then an optional
+// `:<export>`. It mirrors yian's `splitModuleRef` and its extensions, which yian doesn't export, so check it on each
+// yian bump.
+const MODULE_REF = /^(\.{1,2}\/[^\s:]*\.(?:ts|js|mjs))(?::.*)?$/
+
+// The tag of a value `readFlow` read as `!include <path>`, as yian's `isIncludeTag` takes it.
+const INCLUDE = /^!include\s+(\S+)$/
+
+/** The tool modules the flow `doc`, read from folder `dir` and shown as `shown`, names in its `uses:`; a ref read
+ *  with `!include` is read here too, from a file inside `root`. A ref that isn't a module's is a flow's or a
+ *  library's. */
+function usedModules(doc: unknown, dir: string, shown: string, root: string): UsedModule[] {
+  const uses = isRecord(doc) ? doc["uses"] : undefined
+  if (!isRecord(uses)) return []
+  const found: UsedModule[] = []
+  for (const [alias, value] of Object.entries(uses)) {
+    if (typeof value !== "string") continue
+    let ref = value.trim()
+    const included = INCLUDE.exec(ref)?.[1]
+    if (included !== undefined) {
+      const file = path.resolve(dir, included)
+      if (outsideRoot(root, resolvePath(file))) continue // yian refuses it
+      try {
+        ref = fs.readFileSync(file, "utf8").trim()
+      } catch {
+        continue // yian fails the load
+      }
+    }
+    const module = MODULE_REF.exec(ref)?.[1]
+    if (module !== undefined) found.push({ flow: shown, alias, file: path.resolve(dir, module) })
+  }
+  return found
+}
+
 /** Whether the flow `doc` sets `system.paths`, which a custom child resolver would ignore. */
 function declaresSystemPaths(doc: unknown): boolean {
   const system = isRecord(doc) ? doc["system"] : undefined
@@ -183,6 +230,7 @@ async function load(
   file: string,
   loading: ReadonlySet<string>,
   loaded: Map<string, ComposedFlow>,
+  modules: UsedModule[],
 ): Promise<ComposedFlow> {
   // Resolved paths are compared, so /var -> /private/var on macOS and symlinked roots work.
   const resolved = resolvePath(file)
@@ -202,7 +250,7 @@ async function load(
   const importing = new Set([...loading, resolved])
   const childResolver = async (ref: string): Promise<ComposedFlow> => {
     if (ref.includes("\0")) throw new RangeError(`${JSON.stringify(ref)}: embedded null byte`)
-    return await load(root, path.resolve(dir, ref + ".yaml"), importing, loaded)
+    return await load(root, path.resolve(dir, ref + ".yaml"), importing, loaded, modules)
   }
   const options = { childResolver, sourceLabel: shown, baseDir: dir, codeRoot: root }
   if (doc === undefined) {
@@ -213,5 +261,6 @@ async function load(
   }
   const flow = await loadFlow(text, options)
   loaded.set(resolved, flow)
+  modules.push(...usedModules(doc, dir, shown, root))
   return flow
 }

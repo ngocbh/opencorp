@@ -103,6 +103,19 @@ export function embedded(file: string): Buffer {
   return fs.readFileSync(file)
 }
 
+/** The paths `code`, the text of the JavaScript or TypeScript file `file`, imports and requires as literal text: static
+ *  imports and re-exports, and dynamic imports and requires of a literal path. A type-only import isn't one: it never
+ *  loads. Throws a `SyntaxError` naming no text of `code` when it can't be parsed. */
+export function scannedImports(code: string, file: string): string[] {
+  const ext = /\.([cm]?)([jt]s)x?$/.exec(file)
+  const loader = ext === null ? "js" : (`${ext[2]}${file.endsWith("x") ? "x" : ""}` as "js" | "jsx" | "ts" | "tsx")
+  try {
+    return new Bun.Transpiler({ loader }).scanImports(code).map((found) => found.path)
+  } catch {
+    throw new SyntaxError("it can't be parsed")
+  }
+}
+
 // O_CLOEXEC on Linux: the same value on x64 and arm64 (asm-generic).
 const O_CLOEXEC = 0o2000000
 let linuxLibc: { pipe2: (fds: Int32Array, flags: number) => number } | undefined

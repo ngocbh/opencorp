@@ -1,10 +1,12 @@
 /** Check a loaded company repo for problems the schema can't express. */
 import fs from "node:fs"
+import { builtinModules } from "node:module"
 import path from "node:path"
 import { type ComposedFlow, LoadError } from "@ngocbh/yian"
 import { loadSkillDir, type Skill, SkillError } from "@ngocbh/yian/skills"
+import { scannedImports } from "../platform.ts"
 import { MAIN_CHAT } from "./chat_flow.ts"
-import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
+import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath, type UsedModule } from "./flows.ts"
 import { type RepoIssue, repoIssue } from "./issues.ts"
 import { type CompanyRepo, profilePath } from "./loader.ts"
 import { MCP_SERVER_NAME, shownAssetToolName, TOOL_NAME } from "./naming.ts"
@@ -321,6 +323,63 @@ function unusedHarnesses(
     + " can't start a session; add the one it should drive to tools"
 }
 
+/** A file Bun runs as JavaScript or TypeScript, whose imports load too. */
+const CODE_FILE = /\.[cm]?[jt]sx?$/
+/** What an import with no extension may name, tried in order, as a module's runtime resolves one. */
+const TRIED = ["", ".ts", ".tsx", ".mts", ".js", ".jsx", ".mjs", ".cjs", "/index.ts", "/index.js"]
+
+/**
+ * Why each of `modules` (tool modules company flows name) may load code from outside the company repo at `root`: an
+ * import, in the module or in a repo file it imports in turn, that resolves outside the repo (a relative path that
+ * leaves it, through a symlink too), names an absolute path, or names a package, which resolves from a
+ * `node_modules` outside it. Built-ins pass. Only imports written as literal paths are read: one whose path is
+ * computed at run time isn't seen, which yian#1811's confinement would catch.
+ */
+function outsideImports(root: string, modules: readonly UsedModule[]): string[] {
+  const found: string[] = []
+  for (const module of modules) {
+    const start = resolvePath(module.file)
+    const seen = new Set([start])
+    const queue = [start]
+    while (queue.length > 0) {
+      const file = queue.shift()!
+      const where = (rel: string) => `tool module ${path.relative(root, start)}${file === start ? "" : ` (in ${rel})`}`
+      let imports: string[]
+      try {
+        imports = scannedImports(fs.readFileSync(file, "utf8"), file)
+      } catch {
+        continue // yian refuses a module it can't import, naming it
+      }
+      for (const spec of imports) {
+        const outside = (shown: string) =>
+          found.push(`${where(path.relative(root, file))} imports ${shown}, which resolves outside the company repo;`
+            + " a module runs with the owner's full power, so keep all of its code in the repo (yian#1811)")
+        if (spec.startsWith("node:") || spec.startsWith("bun:") || builtinModules.includes(spec.split("/")[0]!)) continue
+        if (path.isAbsolute(spec) || spec.startsWith("file:")) {
+          outside(`.../${path.basename(spec)}`)
+          continue
+        }
+        if (!spec.startsWith("./") && !spec.startsWith("../")) {
+          outside(`the package ${JSON.stringify(spec)}`)
+          continue
+        }
+        const base = path.resolve(path.dirname(file), spec)
+        const exists = TRIED.map((ext) => base + ext).find((name) => isFile(name))
+        const real = resolvePath(exists ?? base)
+        if (outsideRoot(root, real)) {
+          outside(JSON.stringify(spec))
+          continue
+        }
+        if (exists !== undefined && CODE_FILE.test(real) && !seen.has(real)) {
+          seen.add(real)
+          queue.push(real)
+        }
+      }
+    }
+  }
+  return found
+}
+
 /** Agents have a main flow; every main, SOP, and routine flow is a relative path to a file inside the repo
  *  that compiles and isn't a library; an agent that grants an instrument group reads a steer inbox; an SOP or routine
  *  that drives harnesses drives one its person uses (a warning); a main flow declares the inputs the office passes it
@@ -353,8 +412,9 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
         continue
       }
       let flow: ComposedFlow
+      const modules: UsedModule[] = []
       try {
-        flow = await loadConfined(repo.root, resolved)
+        flow = await loadConfined(repo.root, resolved, { modules })
       } catch (error) {
         if (error instanceof FlowOutsideRepo) {
           yield repoIssue(file, "person.flow_outside_repo", `${ref}: ${error.message}`)
@@ -366,6 +426,9 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
           yield repoIssue(file, "person.flow_invalid", `${ref}: ${what}`)
         }
         continue
+      }
+      for (const message of outsideImports(repo.root, modules)) {
+        yield repoIssue(file, "person.module_import_outside", `${ref}: ${message}`)
       }
       // yian loads a library (a file of defs) but won't run one.
       if (flow.library !== null) {

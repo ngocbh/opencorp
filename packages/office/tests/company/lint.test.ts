@@ -630,6 +630,54 @@ test("a company flow that grants a tool module lints clean", async () => {
   expect(await withCode(root, "person.flow_invalid")).toEqual([])
 })
 
+/** A chat flow whose agent grants the tool module `./crm.ts` beside it. */
+const CRM_CHAT = "id: chat\nname: chat\nuses:\n  crm: ./crm.ts\nnodes:\n  reply:\n    kind: agent\n    tools: [crm]\n"
+  + "    output: !str\n    prompt: hi\noutput: ${reply.output}\n"
+
+/** A tool module that imports `imports` (each a statement), then exports one tool. */
+function crmModule(...imports: string[]): string {
+  return `${imports.join("\n")}\nexport const lookup = {\n  name: "lookup",\n  description: "Find one.",\n`
+    + "  parameters: { type: \"object\", properties: {} },\n  execute: async () => \"found\",\n}\n"
+}
+
+test("a tool module whose imports resolve outside the company repo is a lint error, through a file it imports too", async () => {
+  const outside = tempDir()
+  fs.writeFileSync(path.join(outside, "leak.ts"), "export const leak = 1\n")
+  const cases: [string, Record<string, string>][] = [
+    ["../../../leak.ts", { "shared/flows/crm.ts": crmModule('import { leak } from "../../../leak.ts"') }],
+    ["the absolute path", { "shared/flows/crm.ts": crmModule(`import { leak } from "${path.join(outside, "leak.ts")}"`) }],
+    ["./linked.ts", { "shared/flows/crm.ts": crmModule('export { leak } from "./linked.ts"') }],
+    ["left-pad", { "shared/flows/crm.ts": crmModule('import pad from "left-pad"') }],
+    ["../../../leak.ts", {
+      "shared/flows/crm.ts": crmModule('import { help } from "./help.ts"'),
+      "shared/flows/help.ts": 'export { leak as help } from "../../../leak.ts"\n',
+    }],
+  ]
+  for (const [shown, files] of cases) {
+    const root = makeCompany({ "shared/flows/chat.yaml": CRM_CHAT, ...files })
+    fs.symlinkSync(path.join(outside, "leak.ts"), path.join(root, "shared/flows/linked.ts"))
+    fs.writeFileSync(path.join(root, "leak.ts"), "export const leak = 1\n")
+    const issues = await withCode(root, "person.module_import_outside")
+    expect([shown, issues.length]).toEqual([shown, 1])
+    expect(issues[0]!.path).toBe("people/minh/person.yaml")
+    expect(issues[0]!.severity).toBe("error")
+    expect(issues[0]!.message).toContain("shared/flows/")
+    expect(issues[0]!.message).toContain("resolves outside the company repo")
+    expect(issues[0]!.message).toContain("yian#1811")
+    expect(issues[0]!.message).not.toContain(outside)
+  }
+})
+
+test("a tool module that imports only built-ins and files in the repo lints clean", async () => {
+  const root = makeCompany({
+    "shared/flows/chat.yaml": CRM_CHAT,
+    "shared/flows/crm.ts": crmModule('import path from "node:path"', 'import { help } from "./lib/help.ts"',
+      'import type { Thing } from "../../../types.ts"'),
+    "shared/flows/lib/help.ts": 'import os from "os"\nexport const help = os.EOL\n',
+  })
+  expect(await withCode(root, "person.module_import_outside")).toEqual([])
+})
+
 test.each([
   ["main", { main: "../../shared/flows/billing.yaml" }],
   ["SOP", { sops: [{ flow: "../../shared/flows/billing.yaml" }] }],
