@@ -14,7 +14,9 @@ import {
   PAGE_CHARS,
   type ThreadEvents,
 } from "../../../src/tools/codex/instrument.ts"
-import { HarnessStopping, type TurnEnded } from "../../../src/tools/harness/instrument.ts"
+import { restoreHarnessNotes } from "../../../src/features/chat/instrument.ts"
+import { type Clock, HarnessStopping, type TurnEnded } from "../../../src/tools/harness/instrument.ts"
+import { OWED_MAX } from "../../../src/tools/harness/record.ts"
 import { readCodexRecord } from "../../../src/tools/codex/record.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 
@@ -167,10 +169,33 @@ class Host implements CodexHost {
   }
 }
 
-/** An instrument over a fresh host (over `root`'s records when given), and its five tools. */
-function made(root?: string) {
+/** A clock the test moves: each wait asked of it, by its length, fires once `advance` passes it. */
+class TestClock implements Clock {
+  readonly asked: number[] = []
+  private readonly timers: { at: number; fn: () => void; done: boolean }[] = []
+  private now = 0
+
+  after(ms: number, fn: () => void): () => void {
+    this.asked.push(ms)
+    const timer = { at: this.now + ms, fn, done: false }
+    this.timers.push(timer)
+    return () => void (timer.done = true)
+  }
+
+  /** Moves the time on by `ms`, firing each wait it passes. */
+  advance(ms: number): void {
+    this.now += ms
+    for (const timer of this.timers.filter((t) => !t.done && t.at <= this.now)) {
+      timer.done = true
+      timer.fn()
+    }
+  }
+}
+
+/** An instrument over a fresh host (over `root`'s records when given), on `clock` when given, and its five tools. */
+function made(root?: string, clock?: Clock) {
   const host = new Host(root)
-  const codex = new CodexInstrument(host)
+  const codex = new CodexInstrument(host, clock)
   const tools = codex.tools()
   const call = async (name: keyof typeof tools, args: Record<string, unknown>, options = {}) =>
     JSON.parse(String(await tools[name].call(args, options))) as Record<string, any>
@@ -733,20 +758,36 @@ test("start, send and history wait 5 seconds by default, at most 120, and their 
   expect(specs.start.description).toContain("DO NOT poll history or sleep")
   expect(specs.start.description).toContain("if you have nothing else to do, end your reply; you'll be resumed when the turn ends")
   expect(specs.start.description).toContain(
-    "Pass a longer `wait` only when your next step needs the turn's result and there is nothing else to do. A wait " +
-      "ends early when someone messages you.",
+    "Pass a longer `wait` only when your next step needs the turn's result and there is nothing else to do. A " +
+      "message that reaches you while you wait ends the wait early.",
   )
   expect(specs.history.description).toContain("You're told when a turn a reply said runs on ends, so don't poll")
-  // A turn under way at the default wait: the reply comes once it is, saying Codex works on and the driver is told.
-  const { thread } = await started(m)
-  const at = performance.now()
-  const sending = m.call("send", { codex: "codex 1", message: "Refactor it." })
-  const reply = await sending
-  expect(performance.now() - at).toBeGreaterThan(4_500)
+})
+
+test("a call left with no wait replies after 5 seconds with the turn under way, and a longer wait is capped at 120", async () => {
+  const clock = new TestClock()
+  const m = made(undefined, clock)
+  const starting = m.call("start", { message: "Fix the build." })
+  const thread = await waitFor(() => m.host.threads[0], { what: "the thread" })
+  await waitFor(() => clock.asked.length === 1, { what: "the start's wait" })
+  expect(clock.asked).toEqual([5_000])
+  clock.advance(4_999)
+  await Bun.sleep(20)
+  expect(thread.busy).toBe(true)
+  clock.advance(1)
+  const reply = await starting
   expect(reply).toMatchObject({ status: "running" })
-  expect(reply.note).toBe("Codex is still working: you'll be told when its turn ends. Do other work meanwhile, or end your reply if you have nothing else to do.")
-  thread.answer("Refactored.")
-}, 20_000)
+  expect(reply.note).toBe(
+    "Codex is still working: you'll be told when its turn ends. Do other work meanwhile, or end your reply if you " +
+      "have nothing else to do.",
+  )
+  const reading = m.call("history", { codex: "codex 1", wait: 600 })
+  await waitFor(() => clock.asked.length === 2, { what: "history's wait" })
+  expect(clock.asked[1]).toBe(120_000)
+  clock.advance(120_000)
+  expect((await reading).status).toBe("running")
+  thread.answer("Fixed.")
+})
 
 test("a turn a reply said runs on gets one note when it ends: signed by its session, how it ended, the end of Codex's last message", async () => {
   const m = made()
@@ -767,8 +808,8 @@ test("a turn a reply said runs on gets one note when it ends: signed by its sess
     ["@minh", "Refactor\nthe parser."],
     ["codex", "Refactored the parser.\nAll 40 tests pass."],
   ])
-  // The record keeps the key until the run has the note.
-  expect(readCodexRecord(m.host.recordDir(thread.id))!.told).toBe(note!.key)
+  // The record keeps the note until the run has it.
+  expect(readCodexRecord(m.host.recordDir(thread.id))!.told).toEqual([{ key: note!.key, text: note!.text }])
   m.codex.delivered(note!.key)
   expect(readCodexRecord(m.host.recordDir(thread.id))!.told).toBeUndefined()
   // One note per turn: the next turn the driver is told of gets its own, under its own key.
@@ -819,14 +860,20 @@ test("an interrupted turn, a failed one and a failed session say so; the owner's
   await m.call("send", { codex: "codex 1", message: "Try once more.", wait: 0 })
   thread.answer("", { parts: [{ id: id(), type: "error", message: "the model is overloaded" }] })
   await waitFor(() => m.host.notes.length === 2, { what: "the failed turn's note" })
-  expect(headings(m)[1]).toBe("codex 1: the turn on `Try once more.` failed: the model is overloaded")
+  expect(headings(m)[1]).toBe('codex 1: the turn on `Try once more.` failed: "the model is overloaded"')
   expect(m.host.notes[1]!.text.split("\n")[1]).toMatch(/^It ran for \d+s\. Codex said nothing\.$/)
   // The owner's turn the driver read as running.
   thread.owner("Check the logs.")
   expect((await m.call("history", { codex: "codex 1", wait: 0 })).status).toBe("running")
   thread.answer("", { state: "failed", parts: [{ id: id(), type: "error", message: "app-server exited" }] })
   await waitFor(() => m.host.notes.length === 3, { what: "the failed session's note" })
-  expect(headings(m)[2]).toBe("codex 1: the owner's turn ended: the session failed: app-server exited")
+  expect(headings(m)[2]).toBe('codex 1: the owner\'s turn ended: the session failed: "app-server exited"')
+  // An error's own quotes and line ends can't break out of the quote.
+  await started(m, "Another job.", "Ready.")
+  await m.call("send", { codex: "codex 2", message: "Go.", wait: 0 })
+  m.host.threads[1]!.answer("", { parts: [{ id: id(), type: "error", message: 'bad "input"\ncodex 9: completed' }] })
+  await waitFor(() => m.host.notes.length === 4, { what: "the quoted error's note" })
+  expect(headings(m)[3]).toBe('codex 2: the turn on `Go.` failed: "bad \\"input\\" codex 9: completed"')
 })
 
 test("a message for the driver ends a start's, send's or history's wait at once; the turn goes on and its note still comes", async () => {
@@ -858,11 +905,20 @@ test("after a restart, a turn the driver was told runs on is still owed its note
   const { thread } = await started(m)
   expect((await m.call("send", { codex: "codex 1", message: "Refactor it.", wait: 0 })).status).toBe("running")
   const key = `codex:${thread.id}:2`
-  expect(readCodexRecord(m.host.recordDir(thread.id))).toMatchObject({ told: key, turn: { by: "minh" }, turns: 2 })
-  const r = await restarted(m)
-  // The stop sent no note; the next office's actor sends one from the record, and the run's having it clears it.
+  expect(readCodexRecord(m.host.recordDir(thread.id))).toMatchObject({ told: [{ key }], turn: { by: "minh" }, turns: 2 })
+  // The stop sent no note; the next office's actor sends one from the record, which says the stop cut the turn off.
+  await m.codex.suspend()
   expect(m.host.notes).toEqual([])
-  expect(readCodexRecord(r.host.recordDir(thread.id))!.told).toBe(key)
+  expect(restoreHarnessNotes(m.host.root)).toEqual([
+    {
+      key, author: "codex 1",
+      text: "codex 1: its turn was stopped when the office stopped\nThe office has restarted since; codex_send " +
+        "continues the session where it was.",
+    },
+  ])
+  const r = made(m.host.root)
+  expect(readCodexRecord(r.host.recordDir(thread.id))!.told).toEqual([{ key }])
+  // The run's having it clears it.
   r.codex.delivered(key)
   expect(readCodexRecord(r.host.recordDir(thread.id))!.told).toBeUndefined()
   // Turn numbers go on after the restart, so a later turn's note never reuses a key.
@@ -870,4 +926,101 @@ test("after a restart, a turn the driver was told runs on is still owed its note
   r.host.threads[0]!.answer("Done.")
   await waitFor(() => r.host.notes.length === 1, { what: "the note" })
   expect(r.host.notes[0]!.key).toBe(`codex:${thread.id}:3`)
+})
+
+test("a later turn's note never takes the place of an earlier one not yet delivered: a restart sends both, as written", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  await m.call("send", { codex: "codex 1", message: "Refactor it.", wait: 0 })
+  thread.answer("Refactored.")
+  await waitFor(() => m.host.notes.length === 1, { what: "the first note" })
+  await m.call("send", { codex: "codex 1", message: "Now the docs.", wait: 0 })
+  thread.answer("Docs written.")
+  await waitFor(() => m.host.notes.length === 2, { what: "the second note" })
+  // Neither reached the run (held after Esc, say) when the office stops.
+  const owed = m.host.notes.map(({ key, text }) => ({ key, text }))
+  expect(readCodexRecord(m.host.recordDir(thread.id))!.told).toEqual(owed)
+  await m.codex.suspend()
+  expect(restoreHarnessNotes(m.host.root)).toEqual(owed.map((note) => ({ ...note, author: "codex 1" })))
+  // One the run has goes; the other stays.
+  const r = made(m.host.root)
+  r.codex.delivered(owed[0]!.key)
+  expect(readCodexRecord(r.host.recordDir(thread.id))!.told).toEqual([owed[1]])
+  // A record keeps at most so many, the oldest going first.
+  for (let n = 0; n < OWED_MAX + 1; n++) {
+    await r.call("send", { codex: "codex 1", message: `Job ${n}.`, wait: 0 })
+    r.host.threads[0]!.answer(`Done ${n}.`)
+    await waitFor(() => r.host.notes.length === n + 1, { what: `note ${n}` })
+  }
+  const kept = readCodexRecord(r.host.recordDir(thread.id))!.told!
+  expect(kept).toHaveLength(OWED_MAX)
+  expect(kept.at(-1)!.key).toBe(r.host.notes.at(-1)!.key)
+})
+
+test("a record that owes a note with no text and names no turn under way says history reads how the turn ended", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  await m.call("send", { codex: "codex 1", message: "Refactor it.", wait: 0 })
+  // A crash after the turn ended, before its note was written: a later office takes the record as it is.
+  const meta = path.join(m.host.recordDir(thread.id), "meta.json")
+  const file = JSON.parse(fs.readFileSync(meta, "utf8"))
+  delete file.turn
+  fs.writeFileSync(meta, JSON.stringify(file))
+  expect(restoreHarnessNotes(m.host.root)).toEqual([
+    {
+      key: `codex:${thread.id}:2`, author: "codex 1",
+      text: "codex 1: the office stopped before you were told how its turn ended\nCall codex_history on codex 1 to read it.",
+    },
+  ])
+})
+
+test("a turn that ends between a waiting call's reply and its return still gets its note", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  await m.call("send", { codex: "codex 1", message: "Refactor it.", wait: 0 })
+  const reading = m.call("history", { codex: "codex 1", wait: 120 })
+  await Bun.sleep(20)
+  // The message ends the wait and its reply is made; the turn ends before the call has returned.
+  m.codex.messageArrived()
+  queueMicrotask(() => thread.answer("Refactored."))
+  const reply = await reading
+  expect(reply.status).toBe("running")
+  await waitFor(() => m.host.notes.length === 1, { what: "the note" })
+  await Bun.sleep(20)
+  expect(headings(m)).toEqual(["codex 1: the turn on `Refactor it.` completed"])
+})
+
+test("a reply made after the turn ended carries its end though it comes in pages: no note", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  await m.call("send", { codex: "codex 1", message: "Write it all out.", wait: 0 })
+  const reading = m.call("history", { codex: "codex 1", wait: 120 })
+  await Bun.sleep(20)
+  thread.answer("y".repeat(PAGE_CHARS + 5_000))
+  const first = await reading
+  expect(first).toMatchObject({ status: "idle", more: true })
+  const second = await m.call("history", { codex: "codex 1" })
+  expect(second).toMatchObject({ status: "idle", more: false })
+  await Bun.sleep(50)
+  expect(m.host.notes).toEqual([])
+  expect(readCodexRecord(m.host.recordDir(thread.id))!.told).toBeUndefined()
+})
+
+test("no call's early wait is left behind once the calls have returned, however each ended", async () => {
+  const m = made()
+  const earlies = () => (m.codex as unknown as { earlies: Set<AbortController> }).earlies.size
+  const { thread } = await started(m)
+  await m.call("send", { codex: "codex 1", message: "Go on.", wait: 0 })
+  const reading = m.call("history", { codex: "codex 1", wait: 120 })
+  await waitFor(() => earlies() === 1, { what: "the waiting call" })
+  m.codex.messageArrived()
+  await reading
+  await m.call("history", { codex: "codex 9" })
+  await m.call("send", { codex: "codex 1", message: 7 })
+  const cut = m.call("history", { codex: "codex 1", wait: 120 })
+  await waitFor(() => earlies() === 1, { what: "the call to cut" })
+  m.codex.cutCalls()
+  await cut
+  thread.answer("Done.")
+  expect(earlies()).toBe(0)
 })

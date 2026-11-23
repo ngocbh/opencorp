@@ -60,9 +60,10 @@ export interface EmployeeInstrumentOptions {
   readonly speakers: { readonly owner: string | null; label(author: string | null): string }
 }
 
-/** The notes a restart may have cost the chat at `folder`: one (`restoredNote`) for each Codex and Claude Code session
- *  whose record says the employee is still owed a note of a turn's end, under that note's key, so a note the run
- *  already has is never sent twice, and signed by the session's name. A record that can't be read gives none. */
+/** The notes a restart may have cost the chat at `folder`: each note of a turn's end a Codex or Claude Code session's
+ *  record still owes the employee, as it was written, or `restoredNote` for a turn the stop cut off, under that note's
+ *  key, so a note the run already has is never sent twice, and signed by the session's name. Oldest session first,
+ *  each one's notes in order. A record that can't be read gives none. */
 export function restoreHarnessNotes(folder: string): { text: string; key: string; author: string }[] {
   return [CODEX, CLAUDE].flatMap((harness) => {
     const dir = path.join(folder, harness.kind)
@@ -72,7 +73,7 @@ export function restoreHarnessNotes(folder: string): { text: string; key: string
     } catch {
       return []
     }
-    const notes: { text: string; key: string; author: string; started: string }[] = []
+    const sessions: { notes: { text: string; key: string; author: string }[]; started: string }[] = []
     for (const name of names) {
       let record: ReturnType<typeof loadRecord>
       try {
@@ -80,13 +81,14 @@ export function restoreHarnessNotes(folder: string): { text: string; key: string
       } catch {
         continue
       }
-      const { told, started } = record.meta
-      if (told === undefined) continue
-      const last = record.conversation.entries.findLast((e) => e.author === harness.kind)?.text ?? null
-      notes.push({ text: restoredNote(harness, record.meta, last), key: told, author: record.meta.name, started })
+      const { meta } = record
+      const notes = (meta.told ?? []).map(({ key, text }) => ({
+        text: text ?? restoredNote(harness, meta, key), key, author: meta.name,
+      }))
+      sessions.push({ notes, started: meta.started })
     }
-    notes.sort((a, b) => a.started.localeCompare(b.started))
-    return notes.map(({ text, key, author }) => ({ text, key, author }))
+    sessions.sort((a, b) => a.started.localeCompare(b.started))
+    return sessions.flatMap((session) => session.notes)
   })
 }
 

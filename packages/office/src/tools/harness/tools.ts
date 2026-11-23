@@ -66,8 +66,8 @@ function descriptions(h: Harness): Record<ToolName, string> {
       "keeps working, and you'll be told when its turn ends, with the end of its last message. So don't wait on it: " +
       "DO NOT poll history or sleep; keep working on what doesn't need its result, and if you have nothing else to " +
       "do, end your reply; you'll be resumed when the turn ends. Pass a longer `wait` only when your next step needs " +
-      `the turn's result and there is nothing else to do. A wait ends early when someone messages you. ${speakers} ` +
-      reply,
+      "the turn's result and there is nothing else to do. A message that reaches you while you wait ends the wait " +
+      `early. ${speakers} ${reply}`,
     send:
       `Send \`message\` to a ${title} session: a new turn, or, while ${title} works, more for it to read before its ` +
       `next step. Waits and replies as start does: what ${title} answered, with whatever the owner said since you ` +
@@ -82,10 +82,10 @@ function descriptions(h: Harness): Record<ToolName, string> {
       `Read a ${title} session's record. By default, the conversation from \`from\` (an earlier reply's \`next\`; by ` +
       "default where you last read), waiting up to `wait` seconds for a running turn to end. You're told when a turn " +
       `a reply said runs on ends, so don't poll: read only when what ${title} said lets you do useful work now, and ` +
-      "pass a longer `wait` only when your next step needs the turn's result. A wait ends early when someone messages " +
-      `you. With \`trace\`, the whole record from \`from\` (by default its start): every message, ${h.traced}, as ` +
-      `${title} did them; \`next\` is then the trace's. With \`query\`, the trace's entries that hold that text, ` +
-      "oldest first, from `from`. Replies as start does.",
+      "pass a longer `wait` only when your next step needs the turn's result. A message that reaches you while you " +
+      "wait ends the wait early. With `trace`, the whole record from `from` (by default its start): every message, " +
+      `${h.traced}, as ${title} did them; \`next\` is then the trace's. With \`query\`, the trace's entries that ` +
+      "hold that text, oldest first, from `from`. Replies as start does.",
   }
 }
 
