@@ -229,12 +229,13 @@ export function SessionFrame(props: { sessionID: string }) {
     if (current?.id === id && keys) focusRightPane()
   }
   /** Opens instrument `id`, the frame's own or another chat's: a sibling of the Codex or Claude Code session this
-   *  frame shows goes to the chat that lists it, with it in that chat's pane. */
+   *  frame shows goes to the chat that lists it, with it in that chat's pane. A session no chat lists (one that ended
+   *  before the office restarted) opens as its own chat, read-only once it has ended. */
   function openInstrument(id: string) {
     if (instruments().some((i) => i.id === id)) return openPanel(id)
-    const chat =
-      office.state.sessions.find((s) => s.id === id)?.instrument_of ??
-      Object.keys(office.state.instruments).find((sid) => office.state.instruments[sid]?.some((i) => i.id === id))
+    const chat = Object.keys(office.state.instruments).find((sid) =>
+      office.state.instruments[sid]?.some((i) => i.id === id),
+    )
     batch(() => {
       navigate({ type: "session", sessionID: chat ?? id })
       if (chat) panels.open({ id, sessionID: chat }, fullscreenChoice() ? "fullscreen" : "panel")

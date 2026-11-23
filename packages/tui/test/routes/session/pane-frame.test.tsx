@@ -730,3 +730,32 @@ test("in a half-screen pane the header keeps the password's status whole, the dr
     office.stop()
   }
 })
+
+test("a child the chat no longer lists, ended after an office restart, opens as its own chat, read-only", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  // Stored, but not in the chat's list of instruments.
+  office.newSession({
+    person: "minh",
+    cwd: "/tmp/proj",
+    harness: "codex",
+    kind: "instrument",
+    instrument_of: chat.id,
+    status: "ended",
+  })
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await press(app, "down")
+    await app.until((f) => f.includes("No active sessions"))
+    app.input.pressKey("a", { ctrl: true })
+    await app.until((f) => f.includes("Codex: Codex session") && f.includes("Ended"))
+    await app.setup.renderOnce()
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("This Codex session ended.") && f.includes("driven by @minh"))
+    expect(corner(f)).toBeUndefined()
+    expect(f).not.toContain("@minh auto ·")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
