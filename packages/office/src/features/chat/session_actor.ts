@@ -3,7 +3,6 @@
 import fs from "node:fs"
 import path from "node:path"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
-import type { GatedCall } from "@ngocbh/yian/tools"
 import {
   inspectRun,
   type LiveViewCall,
@@ -65,6 +64,7 @@ import {
   type OfficeTool,
   SIGN_IN_UNUSABLE,
   type WorkerHandlers,
+  type OfficeGatedCall,
 } from "../../runtime/worker/rpc.ts"
 import { RegistryClosed, type Worker, workerEnv } from "../../runtime/worker/spawn.ts"
 import {
@@ -2434,7 +2434,7 @@ export class SessionActor implements LiveCalls {
         return SELF_STOPPING.has(group) ? call() : actor.#cancellable(call)
       }
 
-      override gateCall(_worker: unknown, call: GatedCall): unknown {
+      override gateCall(_worker: unknown, call: OfficeGatedCall): unknown {
         if (actor.#closed) throw new Error("the office is stopping")
         return actor.#approvals.gate(run.runId, call)
       }

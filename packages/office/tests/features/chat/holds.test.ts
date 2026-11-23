@@ -256,7 +256,7 @@ test("Auto's check never reads the model key of the run that made the call, thou
 test("a session that doesn't ask refuses what would ask, with no card", async () => {
   const g = await gated("dontAsk")
   expect(await g.gate(MCP)).toEqual({
-    refuse: "Not run: this session doesn't ask (dontAsk mode): Default mode asks before an MCP tool.",
+    refuse: "Not run: this session doesn't ask (dontAsk mode): no allow rule covers an MCP tool.",
   })
   expect(g.cards()).toEqual([])
 })
@@ -321,7 +321,7 @@ test("a mode switch while Auto's check runs wins over its verdict: ask makes a c
   g.o.office.store.updateSession(g.sid, { mode: "dontAsk" })
   check.finish("run")
   expect(await g.delivered("complete", 1)).toMatchObject({
-    result: { output: "Not run: this session doesn't ask (dontAsk mode): Default mode asks before an MCP tool." },
+    result: { output: "Not run: this session doesn't ask (dontAsk mode): no allow rule covers an MCP tool." },
   })
   expect(g.deliveries.filter((d) => d.op === "release")).toEqual([])
 })

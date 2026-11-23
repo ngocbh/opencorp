@@ -12,14 +12,27 @@ const MCP: ToolSource = { kind: "mcp", server: "github", tool: "create_issue" }
 const MODULE: ToolSource = { kind: "module", alias: "crm", ref: "./crm.ts", export: "quote" }
 const MEMORY: ToolSource = { kind: "memory", input: "profile", tool: "append" }
 const FLOW: ToolSource = { kind: "flow", flow: "drive_harness", library: null }
+/** The module tools a granted flow's own steps call, as the worker reads them from the flow. */
+const CRM_QUOTE = { alias: "crm", export: "quote" }
+const BILLING_SEND = { alias: "billing", export: "send" }
 
-/** A first call of `source`, by the name the model sees, with `args`. */
-const call = (source: ToolSource, args: Record<string, unknown> = { title: "Fix" }, attempt = 1): ToolCall => ({
+/** A first call of `source`, by the name the model sees, with `args`; a flow's names the module tools it calls
+ *  (`wraps`), none by default. */
+const call = (
+  source: ToolSource,
+  args: Record<string, unknown> = { title: "Fix" },
+  attempt = 1,
+  wraps: ToolCall["wraps"] = source.kind === "flow" ? [] : undefined,
+): ToolCall => ({
   tool: "the_tool",
   source,
   arguments: args,
   attempt,
+  ...(wraps === undefined ? {} : { wraps }),
 })
+/** What the gate decides for a call of the granted flow `FLOW` whose steps call `wraps`. */
+const flowCall = (wraps: ToolCall["wraps"], mode: Mode, rules: Rule[] = []) =>
+  decideCall(call(FLOW, { goal: "x" }, 1, wraps), { mode, rules, blocked: null })
 const rule = (effect: Rule["effect"], pattern: string): Rule => ({ effect, kind: "tool", pattern })
 const decide = (source: ToolSource, mode: Mode, rules: Rule[] = [], blocked: string | null = null) =>
   decideCall(call(source), { mode, rules, blocked })
@@ -66,6 +79,58 @@ test("memory and flow tools run in every mode; the calls a flow's agents make ar
   }
 })
 
+test("a granted flow whose steps call module tools runs with no card or check in auto, default and ask: granting it pre-approves them", () => {
+  for (const mode of ["auto", "default", "ask"] as const) {
+    expect(flowCall([CRM_QUOTE, BILLING_SEND], mode)).toEqual(run("a granted flow; it calls module crm quote, module billing send"))
+  }
+})
+
+test("a deny rule on a module tool a granted flow calls refuses the flow in every mode, naming the rule and the tool", () => {
+  const rules = [rule("deny", "module crm *"), rule("allow", "flow drive_harness"), rule("allow", "module *")]
+  for (const mode of MODES) {
+    expect(flowCall([BILLING_SEND, CRM_QUOTE], mode, rules)).toEqual({
+      verdict: "refuse",
+      reason: "Not run: a deny rule: module crm *, on module crm quote, which this flow calls.",
+    })
+  }
+})
+
+test("in dontAsk a granted flow runs only when an allow rule covers each module tool it calls", () => {
+  expect(flowCall([CRM_QUOTE, BILLING_SEND], "dontAsk")).toEqual(DONT("no allow rule covers module crm quote, which this flow calls"))
+  expect(flowCall([CRM_QUOTE, BILLING_SEND], "dontAsk", [rule("allow", "module crm *")])).toEqual(
+    DONT("no allow rule covers module billing send, which this flow calls"),
+  )
+  // An allow rule on the flow itself doesn't cover what it calls.
+  expect(flowCall([CRM_QUOTE], "dontAsk", [rule("allow", "flow drive_harness")])).toEqual(
+    DONT("no allow rule covers module crm quote, which this flow calls"),
+  )
+  const both = [rule("allow", "module crm quote"), rule("allow", "module billing *")]
+  expect(flowCall([CRM_QUOTE, BILLING_SEND], "dontAsk", both)).toEqual(
+    run("a granted flow; it calls module crm quote, module billing send"),
+  )
+})
+
+test("a granted flow that calls no module tool runs in every mode, as before", () => {
+  for (const mode of MODES) expect(flowCall([], mode, [rule("deny", "module *")])).toEqual(run())
+})
+
+test("a flow whose module tools can't be read is taken as calling every module tool: a module deny rule or dontAsk refuses it", () => {
+  for (const wraps of [null, undefined]) {
+    const unread = (mode: Mode, rules: Rule[] = []) =>
+      decideCall({ tool: "the_tool", source: FLOW, arguments: {}, attempt: 1, ...(wraps === null ? { wraps } : {}) },
+        { mode, rules, blocked: null })
+    const why = "the module tools this flow calls can't be read"
+    for (const mode of ["auto", "default", "ask"] as const) {
+      expect(unread(mode)).toEqual(run(`a granted flow; ${why}`))
+      expect(unread(mode, [rule("deny", "module crm quote")])).toEqual({
+        verdict: "refuse", reason: `Not run: a deny rule: module crm quote, and ${why}.`,
+      })
+    }
+    expect(unread("dontAsk")).toEqual(DONT(why))
+    expect(unread("dontAsk", [rule("allow", "module *")])).toEqual(run(`a granted flow; ${why}`))
+  }
+})
+
 test("an MCP or module tool goes to Auto's check in auto, asks in default and ask, and is refused in dontAsk", () => {
   for (const [source, words, what] of [
     [MCP, "mcp github create_issue", "an MCP tool"],
@@ -79,7 +144,8 @@ test("an MCP or module tool goes to Auto's check in auto, asks in default and as
     const reason = `Default mode asks before ${what}`
     expect(decide(source, "default")).toEqual({ verdict: "ask", reason, rules: [words] })
     expect(decide(source, "ask")).toEqual({ verdict: "ask", reason: "Ask mode", rules: [words] })
-    expect(decide(source, "dontAsk")).toEqual(DONT(`Default mode asks before ${what}`))
+    // dontAsk asks nothing: only an allow rule could let such a call run there.
+    expect(decide(source, "dontAsk")).toEqual(DONT(`no allow rule covers ${what}`))
   }
 })
 

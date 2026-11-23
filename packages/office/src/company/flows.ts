@@ -1,4 +1,6 @@
-/** Loads company flows with child flows and CODE references confined to the repo, and no tool modules. */
+/** Loads company flows with child flows, CODE references and tool modules confined to the repo. A flow may grant a
+ *  tool module's tools to its agents: the session's gate decides each model call of them, as of any tool (a flow's
+ *  own `call:` of one runs ungated, as its CODE does). */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -21,7 +23,7 @@ export class FlowOutsideRepo extends Error {
 
 /**
  * Loads the flow at `file`; it and its `uses:` children load only from inside `root`, and their CODE
- * references resolve only to files inside it.
+ * references and tool modules resolve only to files inside it.
  *
  * Each file loads at most once per call, however many `uses:` aliases name it. Nothing is kept between
  * calls, so a later call (lint reads the live clone) always reads the files again.
@@ -31,14 +33,19 @@ export class FlowOutsideRepo extends Error {
  *   `root`, among them), and for a child's other problems below.
  * @throws {RangeError} For a reference cycle, a `uses:` ref with a NUL, a flow
  *   that is missing, can't be opened (named by its errno only), isn't a regular file or is over
- *   `MAX_FLOW_FILE` bytes, a flow that sets `system.paths` or whose YAML the office can't check for it, or a
- *   flow with a `uses:` alias that names a tool module or reads its ref with `!include`.
+ *   `MAX_FLOW_FILE` bytes, or a flow that sets `system.paths` or whose YAML the office can't check for it.
  * @throws {TypeError} For a flow that isn't UTF-8 text.
  * @throws {Error} A system error for a read that fails after the open.
+ *
+ * `modules`, when given, gets each tool module a loaded flow's `uses:` names (`UsedModule`), for lint.
  */
-export async function loadConfined(root: string, file: string): Promise<ComposedFlow> {
+export async function loadConfined(
+  root: string,
+  file: string,
+  { modules }: { modules?: UsedModule[] } = {},
+): Promise<ComposedFlow> {
   try {
-    return await load(resolvePath(root), file, new Set(), new Map())
+    return await load(resolvePath(root), file, new Set(), new Map(), modules ?? [])
   } catch (error) {
     if (!(error instanceof LoadError)) throw error
     // yian wraps what the child resolver throws in its own LoadError.
@@ -112,51 +119,51 @@ function readShape(text: string): unknown {
   }
 }
 
+/** A tool module a company flow's `uses:` names: the flow, repo relative, the alias and the module file's path. */
+export interface UsedModule {
+  readonly flow: string
+  readonly alias: string
+  readonly file: string
+}
+
+// A tool module ref as yian reads one: a relative path to a `.ts`, `.js` or `.mjs` file, then an optional
+// `:<export>`. It mirrors yian's `splitModuleRef` and its extensions, which yian doesn't export, so check it on each
+// yian bump.
+const MODULE_REF = /^(\.{1,2}\/[^\s:]*\.(?:ts|js|mjs))(?::.*)?$/
+
+// The tag of a value `readFlow` read as `!include <path>`, as yian's `isIncludeTag` takes it.
+const INCLUDE = /^!include\s+(\S+)$/
+
+/** The tool modules the flow `doc`, read from folder `dir` and shown as `shown`, names in its `uses:`; a ref read
+ *  with `!include` is read here too, from a file inside `root`. A ref that isn't a module's is a flow's or a
+ *  library's. */
+function usedModules(doc: unknown, dir: string, shown: string, root: string): UsedModule[] {
+  const uses = isRecord(doc) ? doc["uses"] : undefined
+  if (!isRecord(uses)) return []
+  const found: UsedModule[] = []
+  for (const [alias, value] of Object.entries(uses)) {
+    if (typeof value !== "string") continue
+    let ref = value.trim()
+    const included = INCLUDE.exec(ref)?.[1]
+    if (included !== undefined) {
+      const file = path.resolve(dir, included)
+      if (outsideRoot(root, resolvePath(file))) continue // yian refuses it
+      try {
+        ref = fs.readFileSync(file, "utf8").trim()
+      } catch {
+        continue // yian fails the load
+      }
+    }
+    const module = MODULE_REF.exec(ref)?.[1]
+    if (module !== undefined) found.push({ flow: shown, alias, file: path.resolve(dir, module) })
+  }
+  return found
+}
+
 /** Whether the flow `doc` sets `system.paths`, which a custom child resolver would ignore. */
 function declaresSystemPaths(doc: unknown): boolean {
   const system = isRecord(doc) ? doc["system"] : undefined
   return isRecord(system) && Object.hasOwn(system, "paths")
-}
-
-// A tool module ref as yian reads one: a path with no whitespace or colon ending in `.ts`, `.js` or `.mjs`, then an
-// optional `:<export>`, once an `@<version>` in the last path segment is set aside. It mirrors yian's
-// `moduleRefParts` (`src/compose/helpers/uses.ts`), which yian doesn't export, so check it on each yian bump.
-const MODULE_REF = /^([^\s:]+\.(?:ts|js|mjs))(?::.*)?$/
-
-// The tag of a value `readFlow` read as `!include <path>` or `!include(T) <path>`, as yian's `isIncludeTag` takes it.
-const INCLUDE_TAG = /^!include(?:\(.*\))?$/
-
-/**
- * Refuses a `uses:` alias of the flow `doc` that names a tool module, whole (`crm: ./crm.ts`) or one export
- * (`quote: ./tools.ts:quote`), or whose ref an `!include` reads from a file the office doesn't look at.
- *
- * A tool module's tools run in the worker with no permission check, so a session's mode couldn't cover their
- * calls. Company flows use none until yian lets a host gate a tool call before it runs.
- *
- * @throws {RangeError} Naming the flow, as `shown`, and the alias.
- */
-function refuseToolModules(doc: unknown, shown: string): void {
-  const uses = isRecord(doc) ? doc["uses"] : undefined
-  if (!isRecord(uses)) return // yian refuses a `uses:` that isn't a mapping
-  for (const [alias, ref] of Object.entries(uses)) {
-    if (typeof ref !== "string") continue // yian refuses a ref that isn't text
-    if (INCLUDE_TAG.test(ref.split(/\s/, 1)[0]!)) {
-      throw new RangeError(
-        `${shown} reads the uses: ref of \`${alias}\` with !include, so the office can't check that it isn't a tool`
-          + " module; write the ref in the flow",
-      )
-    }
-    const text = ref.trim()
-    const at = text.lastIndexOf("@")
-    const module = MODULE_REF.exec(at > text.lastIndexOf("/") ? text.slice(0, at) : text)
-    if (module !== null) {
-      throw new RangeError(
-        `${shown} uses tool module \`${alias}\` (${module[1]}); company flows can't grant tool modules yet, because`
-          + " their calls would run without the office's permission check; use a YAML def library or a host tool"
-          + " group instead",
-      )
-    }
-  }
 }
 
 /**
@@ -223,6 +230,7 @@ async function load(
   file: string,
   loading: ReadonlySet<string>,
   loaded: Map<string, ComposedFlow>,
+  modules: UsedModule[],
 ): Promise<ComposedFlow> {
   // Resolved paths are compared, so /var -> /private/var on macOS and symlinked roots work.
   const resolved = resolvePath(file)
@@ -237,26 +245,22 @@ async function load(
     if (declaresSystemPaths(doc)) {
       throw new RangeError(`${shown}: system.paths is not supported in company flows; use a relative uses: path`)
     }
-    refuseToolModules(doc, shown)
   }
   const dir = path.dirname(resolved)
   const importing = new Set([...loading, resolved])
   const childResolver = async (ref: string): Promise<ComposedFlow> => {
     if (ref.includes("\0")) throw new RangeError(`${JSON.stringify(ref)}: embedded null byte`)
-    return await load(root, path.resolve(dir, ref + ".yaml"), importing, loaded)
+    return await load(root, path.resolve(dir, ref + ".yaml"), importing, loaded, modules)
   }
   const options = { childResolver, sourceLabel: shown, baseDir: dir, codeRoot: root }
   if (doc === undefined) {
     // The office's reader is stricter than yian's (it refuses merge cycles, which yian accepts), so a read
-    // error is never taken as "no system.paths" or "no tool module". yian reports a real syntax error with its
-    // location.
+    // error is never taken as "no system.paths". yian reports a real syntax error with its location.
     await loadFlow(text, options)
-    throw new RangeError(
-      `${shown}: the office can't read this flow's YAML to check it for system.paths and tool modules;`
-        + " simplify its YAML",
-    )
+    throw new RangeError(`${shown}: the office can't read this flow's YAML to check it for system.paths; simplify its YAML`)
   }
   const flow = await loadFlow(text, options)
   loaded.set(resolved, flow)
+  modules.push(...usedModules(doc, dir, shown, root))
   return flow
 }

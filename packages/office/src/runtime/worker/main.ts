@@ -6,6 +6,7 @@ import {
   cancel,
   close as closeInbox,
   complete,
+  type ComposedFlow,
   DeliveryRefused,
   interrupt,
   release,
@@ -30,6 +31,7 @@ import { cancelReplaced, readSeed } from "./history.ts"
 import { MAIN_CHAT } from "../../company/chat_flow.ts"
 import { loadConfined } from "../../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
+import { flowModuleTools } from "./wraps.ts"
 import { Delivery, type Job, MESSAGE_MOVED, parseJob, STOP_REASON, type WorkerEnv } from "./job.ts"
 import { RemoteMemory } from "./remote_memory.ts"
 import {
@@ -668,6 +670,8 @@ async function runJob(
 ): Promise<Frame> {
   const read = reader(env)
   const flow = job.kind === "chat" ? await loadConfined(job.pin, path.join(job.pin, job.flow)) : null
+  let loading: Promise<ComposedFlow> | null = flow === null ? null : Promise.resolve(flow)
+  const composed = () => (loading ??= loadConfined(job.pin, path.join(job.pin, job.flow)))
   const runs = path.dirname(path.dirname(job.log))
   if (job.log !== path.join(runs, job.run_id, "log.jsonl")) {
     throw new RangeError("a job's log must be <runs>/<run_id>/log.jsonl")
@@ -707,8 +711,11 @@ async function runJob(
     live,
     tools: jobTools(job, rpc),
     // The office decides each tool call an agent's model makes before it runs; the run is then gated for good, so
-    // every advance of it passes the hook too.
-    beforeToolCall: gateHook(rpc),
+    // every advance of it passes the hook too. A flow's call names the module tools its own steps call, read from the
+    // job's flow (loaded once, an advance's only when it gates a flow's call).
+    beforeToolCall: gateHook(rpc, { wraps: async (call) => flowModuleTools(await composed(), call.node, call.tool) }),
+    // No `completesCalls`: the office answers no tool module's `pending()`, so yian fails such a call rather than
+    // leave it waiting for good. Host tools that hold their calls are unaffected.
     skills: pickSkills(job.pin, job.person, job.skills),
     signal,
     env: read,

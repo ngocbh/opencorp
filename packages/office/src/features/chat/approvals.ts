@@ -3,7 +3,7 @@
  *  the rules a "don't ask again" or an "always" adds. */
 import path from "node:path"
 import type { PendingCall } from "@ngocbh/yian/run"
-import type { GatedCall, GateDecision } from "@ngocbh/yian/tools"
+import type { GateDecision } from "@ngocbh/yian/tools"
 import { OFFICE, type RemoveRuleRequest, type RuleFileError } from "@opencorp/protocol"
 import { CompanyRepoBusy, type CompanyGit } from "../../company/git.ts"
 import { addRules, readRules, removeRule, type Rule as SavedRule, RulesRefused } from "../../company/rules.ts"
@@ -21,7 +21,7 @@ import type { AnswerKind } from "../../runtime/sessions/harness.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store } from "../../runtime/store/store.ts"
 import type { CommandPlan } from "../../tools/terminal/terminal.ts"
 import type { OfficePaths } from "../../util/home.ts"
-import { errorName } from "../../runtime/worker/rpc.ts"
+import { errorName, type OfficeGatedCall } from "../../runtime/worker/rpc.ts"
 import { CallGate } from "./gate.ts"
 
 /** What a session's approvals need of its actor. Each is called inside the actor's serial queue, as the answer or
@@ -264,7 +264,7 @@ export class ChatApprovals {
   }
 
   /** The gate's decision on tool call `call` of run `runId` (`CallGate.gate`). */
-  gate(runId: string, call: GatedCall): GateDecision {
+  gate(runId: string, call: OfficeGatedCall): GateDecision {
     return this.#gate.gate(runId, call)
   }
 

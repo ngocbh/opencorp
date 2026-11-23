@@ -619,21 +619,98 @@ test("system paths through a merge key is refused", async () => {
   await systemPathsIssue("x-base: &base\n  paths: [lib]\nsystem:\n  <<: *base\n")
 })
 
-test("a company flow that uses a tool module is a lint error naming it", async () => {
+test("a company flow that grants a tool module lints clean", async () => {
   const flow = "id: chat\nname: chat\nuses:\n  crm: ./crm.ts\nnodes:\n  reply:\n    kind: agent\n    tools: [crm]\n"
     + "    output: !str\n    prompt: hi\noutput: ${reply.output}\n"
   const root = makeCompany({
     "shared/flows/chat.yaml": flow,
-    "shared/flows/crm.ts": "export function lookup(input: { name: string }): string {\n  return input.name\n}\n",
+    "shared/flows/crm.ts": "export const lookup = {\n  name: \"lookup\",\n  description: \"Find one.\",\n"
+      + "  parameters: { type: \"object\", properties: {} },\n  execute: async () => \"found\",\n}\n",
   })
-  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
-  expect(rest).toEqual([])
-  expect(issue!.path).toBe("people/minh/person.yaml")
-  expect(issue!.message).toBe(
-    "../../shared/flows/chat.yaml: RangeError: shared/flows/chat.yaml uses tool module `crm` (./crm.ts); company"
-      + " flows can't grant tool modules yet, because their calls would run without the office's permission check;"
-      + " use a YAML def library or a host tool group instead",
-  )
+  expect(await withCode(root, "person.flow_invalid")).toEqual([])
+})
+
+/** A chat flow whose agent grants the tool module `./crm.ts` beside it. */
+const CRM_CHAT = "id: chat\nname: chat\nuses:\n  crm: ./crm.ts\nnodes:\n  reply:\n    kind: agent\n    tools: [crm]\n"
+  + "    output: !str\n    prompt: hi\noutput: ${reply.output}\n"
+
+/** A tool module that imports `imports` (each a statement), then exports one tool. */
+function crmModule(...imports: string[]): string {
+  return `${imports.join("\n")}\nexport const lookup = {\n  name: "lookup",\n  description: "Find one.",\n`
+    + "  parameters: { type: \"object\", properties: {} },\n  execute: async () => \"found\",\n}\n"
+}
+
+test("a tool module whose imports resolve outside the company repo is a lint error, through a file it imports too", async () => {
+  const outside = tempDir()
+  fs.writeFileSync(path.join(outside, "leak.ts"), "export const leak = 1\n")
+  const cases: [string, Record<string, string>][] = [
+    ["../../../leak.ts", { "shared/flows/crm.ts": crmModule('import { leak } from "../../../leak.ts"') }],
+    ["the absolute path", { "shared/flows/crm.ts": crmModule(`import { leak } from "${path.join(outside, "leak.ts")}"`) }],
+    ["./linked.ts", { "shared/flows/crm.ts": crmModule('export { leak } from "./linked.ts"') }],
+    ["left-pad", { "shared/flows/crm.ts": crmModule('import pad from "left-pad"') }],
+    ["../../../leak.ts", {
+      "shared/flows/crm.ts": crmModule('import { help } from "./help.ts"'),
+      "shared/flows/help.ts": 'export { leak as help } from "../../../leak.ts"\n',
+    }],
+  ]
+  for (const [shown, files] of cases) {
+    const root = makeCompany({ "shared/flows/chat.yaml": CRM_CHAT, ...files })
+    fs.symlinkSync(path.join(outside, "leak.ts"), path.join(root, "shared/flows/linked.ts"))
+    fs.writeFileSync(path.join(root, "leak.ts"), "export const leak = 1\n")
+    const issues = await withCode(root, "person.module_import_outside")
+    expect([shown, issues.length]).toEqual([shown, 1])
+    expect(issues[0]!.path).toBe("people/minh/person.yaml")
+    expect(issues[0]!.severity).toBe("error")
+    expect(issues[0]!.message).toContain("shared/flows/")
+    expect(issues[0]!.message).toContain("resolves outside the company repo")
+    expect(issues[0]!.message).toContain("yian#1811")
+    expect(issues[0]!.message).not.toContain(outside)
+  }
+})
+
+/** A flow `id` whose agent grants `alias` (a `uses:` ref of `ref`) and, when given, the child flow `child`. */
+function aliasing(id: string, alias: string, ref: string, child?: string): string {
+  const uses = child === undefined ? "" : `  ${child}: ${child}\n`
+  const tools = child === undefined ? alias : `${alias}, ${child}`
+  return `id: ${id}\nname: ${id}\ndescription: ${id}\nuses:\n  ${alias}: ${ref}\n${uses}nodes:\n  reply:\n    kind: agent\n`
+    + `    tools: [${tools}]\n    output: !str\n    prompt: hi\noutput: \${reply.output}\n`
+}
+
+test("a tool module with two aliases in the company's flows is a lint error naming both and their files: rules name it by its alias", async () => {
+  for (const childRef of ["./crm.ts", "./crm.ts:lookup"]) {
+    const root = makeCompany({
+      "shared/flows/chat.yaml": aliasing("chat", "crm", "./crm.ts", "child"),
+      "shared/flows/child.yaml": aliasing("child", childRef.includes(":") ? "lookup" : "c", childRef),
+      "shared/flows/crm.ts": crmModule(),
+    })
+    const issues = await withCode(root, "flow.module_aliases")
+    expect([childRef, issues.length]).toEqual([childRef, 1])
+    const other = childRef.includes(":") ? "lookup" : "c"
+    expect(issues[0]!.severity).toBe("error")
+    expect(issues[0]!.message).toBe(
+      `tool module shared/flows/crm.ts has two aliases: \`crm\` in shared/flows/chat.yaml and \`${other}\` in`
+        + " shared/flows/child.yaml; tool rules name a module by its alias, so give it one alias in every flow",
+    )
+  }
+})
+
+test("a tool module with one alias in every flow that names it lints clean", async () => {
+  const root = makeCompany({
+    "shared/flows/chat.yaml": aliasing("chat", "crm", "./crm.ts", "child"),
+    "shared/flows/child.yaml": aliasing("child", "crm", "./crm.ts"),
+    "shared/flows/crm.ts": crmModule(),
+  })
+  expect(await withCode(root, "flow.module_aliases")).toEqual([])
+})
+
+test("a tool module that imports only built-ins and files in the repo lints clean", async () => {
+  const root = makeCompany({
+    "shared/flows/chat.yaml": CRM_CHAT,
+    "shared/flows/crm.ts": crmModule('import path from "node:path"', 'import { help } from "./lib/help.ts"',
+      'import type { Thing } from "../../../types.ts"'),
+    "shared/flows/lib/help.ts": 'import os from "os"\nexport const help = os.EOL\n',
+  })
+  expect(await withCode(root, "person.module_import_outside")).toEqual([])
 })
 
 test.each([

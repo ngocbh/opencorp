@@ -14,7 +14,7 @@ import { approvalResult, type HeldCard, readAnswer, YES } from "../../runtime/qu
 import { LINE_CAP } from "../../runtime/runs/reader.ts"
 import type { AnswerKind } from "../../runtime/sessions/harness.ts"
 import type { QuestionRecord } from "../../runtime/store/store.ts"
-import { errorName } from "../../runtime/worker/rpc.ts"
+import { errorName, type OfficeGatedCall } from "../../runtime/worker/rpc.ts"
 import { type CommandPlan, decidedFor } from "../../tools/terminal/terminal.ts"
 import { redact } from "../../util/redact.ts"
 
@@ -160,7 +160,7 @@ export class CallGate {
   /** The gate's decision on tool call `call` of run `runId` (`decideCall` by the session's mode and rules now), as
    *  yian takes it: a run, with its note; a refusal; or `pending()`, holding the call until it is decided again once
    *  yian holds it (`held`). */
-  gate(runId: string, call: GatedCall): GateDecision {
+  gate(runId: string, call: OfficeGatedCall): GateDecision {
     const { tool, source, arguments: args, attempt } = call
     const command = this.#planned(call)
     if (command === "passes") return undefined
@@ -181,7 +181,8 @@ export class CallGate {
     const refused = this.#refusedReplies.get(replyOf(call.callId))
     if (refused !== undefined && decision.verdict !== "refuse") decision = { verdict: "refuse", reason: refused }
     if (decision.verdict === "refuse") return { refuse: decision.reason }
-    const held = { tool, source, arguments: args, attempt }
+    // A flow's call keeps the module tools it calls, so it is decided again by them.
+    const held = { tool, source, arguments: args, attempt, ...(call.wraps === undefined ? {} : { wraps: call.wraps }) }
     const terminal = command !== null
     const hold = { runId, callId: call.callId, call: held, terminal, command, held: false, check: null }
     this.#holds.set(call.callId, hold)

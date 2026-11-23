@@ -83,12 +83,31 @@ Each other tool call your employee's model makes also goes through the chat's mo
 - **Tool rules.** A rule of kind `tool` in `rules.yaml` names calls by where their tool comes from, such as
   `host codex start`, `mcp github create_issue`, `module crm *`, `memory profile append` or `flow drive_harness`. A
   last `*` stands for one or more words. Deny rules refuse in every mode, then ask rules ask, then allow rules run.
-  "Don't ask again" and "Always allow" add the call's exact words.
+  "Don't ask again" and "Always allow" add the call's exact words. A rule names a tool module by its `uses:` alias
+  (`crm` in `module crm *`), so the company's lint refuses a module file given two aliases.
 - **Cards.** Yes runs the call once; No tells your employee what you wrote. While a card is open, the reply's later
   calls wait. An open card survives an office restart, and is decided again by the rules then. A call a stop or crash
   cut off before you approved it isn't run when your employee's work resumes.
-- **Only your employee's calls.** A company flow's own steps that call a tool directly (`call:`, `map`, `loop`) skip
-  the mode and the rules: only the calls your employee's model makes are gated.
+- **Granted flows.** A flow you grant your employee runs when they call it, in every mode, with no card or check:
+  granting it approves what it does. Its own steps that call a tool directly (`call:`, `map`, `loop`, or a
+  `call(...)` in a binding) skip the mode, but not your rules on the tool modules they call, in the flow or the flows
+  it calls: a deny rule on one (such as `module crm *`) refuses the flow in every mode, and in `dontAsk` the flow runs
+  only if an allow rule covers each one. An ask rule on one doesn't ask: granting the flow approved it. When OpenCorp
+  can't read which module tools a flow calls, it counts the flow as calling every one. A CODE step that imports a
+  module and calls it in its own code isn't seen, so grant such a flow only if you trust it. The calls the flow's own
+  agents make are gated as your employee's are.
+- **Tool modules.** A company flow may grant its agent a tool module's tools (`uses: {crm: ./crm.ts}`, then
+  `tools: [crm]`); the file must be inside the company repo. A module gets nothing from the office through `ctx`
+  (`ctx.context` is `undefined`), but it runs with your full power: on a worker thread, with no sandbox, as you. It can
+  read the model connection's environment, the worker's channel to the office and everything in `~/.opencorp`. Grant
+  only code you would run yourself.
+  - Its top-level code runs at every run start and resume. A tool's argument validator, if it has one, reads the
+    model's arguments before the mode and rules decide the call.
+  - The company's lint reports an error for a module, or a repo file it imports, whose import resolves outside the
+    repo: a path that leaves it, an absolute path, a symlink out of it, or a package. It reads only imports written as
+    literal paths, never one computed at run time;
+    [yian#1811](https://github.com/ngocbh/yian/issues/1811) tracks confining them.
+  - A module tool that returns `pending()` fails: nothing in the office answers it.
 
 ## Codex and Claude Code
 

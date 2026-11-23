@@ -7,14 +7,20 @@
  * a rules file doesn't load, every call but a read asks, as a command does; then ask rules ask, then allow rules run;
  * then the call's row decides. Host tools run in every mode: the workspace's file tools are held to the workspace by
  * its sandbox, the company's and the toolbox's by their own checks, the harness instruments by the employee's
- * permission. Only starting a Codex or Claude Code session asks, and only in `ask` mode. Memory and flow tools run:
- * the calls a granted flow's agents make are gated on their own. A tool module's or an MCP server's tool, which no
- * reader can judge, goes to Auto's check in `auto`, asks in `default` and `ask`, and is refused in `dontAsk`.
+ * permission. Only starting a Codex or Claude Code session asks, and only in `ask` mode. Memory tools run. A tool
+ * module's or an MCP server's tool, which no reader can judge, goes to Auto's check in `auto`, asks in `default` and
+ * `ask`, and is refused in `dontAsk` unless an allow rule covers it.
+ *
+ * A granted flow runs with no card or check: granting it approved what it does. The calls its agents' models make are
+ * gated on their own, but its own steps' calls (a TOOL, `call`, `map` or `loop` node, in it and in the flows it calls)
+ * never reach the gate, so the module tools they call (`ToolCall.wraps`, read from the flow by the worker) are weighed
+ * here: a deny rule on one refuses the flow in every mode, and in `dontAsk` each must be covered by an allow rule; an
+ * ask rule on one doesn't ask, as granting the flow approved it. A flow whose module tools can't be read counts as
+ * calling every one; one that calls none runs in every mode. Rules name a module by its `uses:` alias, which the
+ * company's lint keeps to one per module file. A CODE step that calls a module in its own code isn't seen.
  *
  * The terminal's `run` and `type` are decided by the command reader instead (`decideCommand`), on what the
  * terminal's plan reads from its shells: the same mode, rules, reader and Auto's check its own gate used.
- * A flow's own steps that call a tool (a TOOL, `call`, `map` or `loop` node) never reach the gate: only agents' calls
- * are gated by the session's mode.
  */
 import type { ToolSource } from "@ngocbh/yian/tools"
 import type { Approval } from "@opencorp/protocol"
@@ -31,6 +37,17 @@ export interface ToolCall {
   readonly source: ToolSource
   readonly arguments: Readonly<Record<string, unknown>> | null
   readonly attempt: number
+  /** For a flow's call: the tool modules' tools its own steps call (`call:`, `map`, `loop`, in it and the flows it
+   *  calls), as the worker read them from the flow; null or absent when they couldn't be read, which counts as every
+   *  module tool. */
+  readonly wraps?: readonly WrappedTool[] | null
+}
+
+/** A tool module's tool a flow calls itself: its `uses:` alias and its export, as `module <alias> <export>` names
+ *  it. */
+export interface WrappedTool {
+  readonly alias: string
+  readonly export: string
 }
 
 /** What the gate decides by: the session's mode, its rules (the session's, the agent's and the company's; only `tool`
@@ -86,6 +103,10 @@ export function decideCall(call: ToolCall, policy: CallPolicy): CallDecision {
   const own = policy.rules.filter((r) => r.kind === "tool" && toolRuleMatches(r.pattern, words))
   const denied = own.find((r) => r.effect === "deny")
   if (denied) return { verdict: "refuse", reason: `Not run: a deny rule: ${denied.pattern}.` }
+  if (source.kind === "flow") {
+    const wrapped = refusedWraps(call.wraps ?? null, policy)
+    if (wrapped !== null) return wrapped
+  }
   if (policy.blocked !== null && !isRead(words)) return asks(policy.blocked)
   // Nothing can judge a call whose arguments are unknown, nor offer a rule for it.
   if (call.arguments === null) return asks(UNREAD)
@@ -113,13 +134,58 @@ function row(
     }
     return { verdict: "run", note: null }
   }
-  if (source.kind === "memory" || source.kind === "flow") return { verdict: "run", note: null }
+  if (source.kind === "memory") return { verdict: "run", note: null }
+  if (source.kind === "flow") return { verdict: "run", note: wrapsNote(call.wraps ?? null) }
   const what = source.kind === "mcp" ? "an MCP tool" : "a tool module's tool"
   if (mode === "ask") return asks("Ask mode", exact)
+  // dontAsk asks nothing, and no check judges there: only an allow rule lets such a call run.
+  if (mode === "dontAsk") return asks(`no allow rule covers ${what}`, exact)
   if (mode !== "auto") return asks(`Default mode asks before ${what}`, exact)
   const command = `${exact[0]} ${jsonText(call.arguments)}`
   if (new TextEncoder().encode(command).length > MAX_CHECK_BYTES) return asks(TOO_LONG, exact)
   return { verdict: "check", input: { kind: "tool", command, profile: "none", cwd: "", host: "" }, rules: exact }
+}
+
+const UNREAD_WRAPS = "the module tools this flow calls can't be read"
+
+/** A granted flow's note when it calls module tools: granting the flow approved them. */
+function wrapsNote(wraps: readonly WrappedTool[] | null): string | null {
+  if (wraps === null) return `a granted flow; ${UNREAD_WRAPS}`
+  if (wraps.length === 0) return null
+  return `a granted flow; it calls ${wraps.map((tool) => wrappedWords(tool).join(" ")).join(", ")}`
+}
+
+/** `tool`'s words, as a rule names a model's call of it. */
+function wrappedWords(tool: WrappedTool): string[] {
+  return ["module", tool.alias, tool.export]
+}
+
+/**
+ * The refusal of a call of a flow whose own steps call module tools `wraps` (null: every module tool), or null to go
+ * on: a deny rule on one of them refuses it in every mode, and in `dontAsk` each must be covered by an allow rule
+ * (an allow rule on the flow itself covers none of them). Granting the flow approved them otherwise: no card or check.
+ */
+function refusedWraps(wraps: readonly WrappedTool[] | null, policy: CallPolicy): CallDecision | null {
+  const tools = policy.rules.filter((r) => r.kind === "tool")
+  if (wraps === null) {
+    // Every module tool: a rule that could name one, or cover them all.
+    const denied = tools.find((r) => r.effect === "deny" && (/^module\s/u.test(r.pattern.trim()) || r.pattern.trim() === "*"))
+    if (denied) return { verdict: "refuse", reason: `Not run: a deny rule: ${denied.pattern}, and ${UNREAD_WRAPS}.` }
+    const all = tools.some((r) => r.effect === "allow" && ["module *", "*"].includes(r.pattern.trim()))
+    return policy.mode === "dontAsk" && !all ? { verdict: "refuse", reason: dontAskRefusal(UNREAD_WRAPS) } : null
+  }
+  for (const tool of wraps) {
+    const denied = tools.find((r) => r.effect === "deny" && toolRuleMatches(r.pattern, wrappedWords(tool)))
+    if (denied) {
+      const named = wrappedWords(tool).join(" ")
+      return { verdict: "refuse", reason: `Not run: a deny rule: ${denied.pattern}, on ${named}, which this flow calls.` }
+    }
+  }
+  if (policy.mode !== "dontAsk") return null
+  const uncovered = wraps.find((tool) =>
+    !tools.some((r) => r.effect === "allow" && toolRuleMatches(r.pattern, wrappedWords(tool))))
+  if (uncovered === undefined) return null
+  return { verdict: "refuse", reason: dontAskRefusal(`no allow rule covers ${wrappedWords(uncovered).join(" ")}, which this flow calls`) }
 }
 
 /** What the gate decides for a terminal command or typed line (`action`, run `where`), by the command reader
