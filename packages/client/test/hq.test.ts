@@ -174,6 +174,8 @@ test("the Run Logs reads hit /api/runs with their query params", async () => {
   await c.runs.nodes(RUN, 80)
   await c.runs.events(RUN, 13)
   await c.runs.event(RUN, 7)
+  await c.runs.calls(RUN, "chat#2/reply")
+  await c.runs.call(RUN, "chat#2/reply", 4)
   expect(seen.map((s) => `${s.method} ${s.path}${s.query}`)).toEqual([
     `GET /api/runs?flow=chat&person=minh&status=idle&q=a1b2&before=${RUN}&limit=50`,
     "GET /api/runs",
@@ -183,8 +185,20 @@ test("the Run Logs reads hit /api/runs with their query params", async () => {
     `GET /api/runs/${RUN}/nodes?before=80`,
     `GET /api/runs/${RUN}/events?after=13`,
     `GET /api/runs/${RUN}/events/7`,
+    `GET /api/runs/${RUN}/calls?node=chat%232%2Freply`,
+    `GET /api/runs/${RUN}/calls/chat%232/reply/4`,
   ])
   expect(c.runs.logUrl(RUN)).toBe(`${base}/runs/${RUN}/log`)
+})
+
+test("a model call of a node id no path can carry is not_found without a request", async () => {
+  const { seen, base } = serve()
+  const c = createOfficeClient({ baseUrl: base })
+  for (const node of ["", "a//b", "../x", "a/.", "/a"]) {
+    const e = await failure(c.runs.call(RUN, node, 1))
+    expect([e instanceof OfficeError && e.status, (e as OfficeError).code]).toEqual([404, "not_found"])
+  }
+  expect(seen).toEqual([])
 })
 
 test("runs.list sends since, until, and a status list comma-joined", async () => {

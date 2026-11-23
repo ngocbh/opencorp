@@ -1083,9 +1083,7 @@ export class RunLogReader {
       && ["from", "take", "steps"].some((form) => (payload[form] ?? null) !== null)
     if (fold === undefined || !derived || index.offset > this.foldBytes) return event
     // Replays queue behind each other and each reads the log as it is on its turn, so the size is checked again then.
-    const replay = this.folding.then(() => fs.statSync(path).size > this.foldBytes ? null : foldRunLog(path, fold))
-    // The chain keeps neither the replayed log nor its error.
-    this.folding = replay.then(() => {}, () => {})
+    const replay = this.replay(async () => (fs.statSync(path).size > this.foldBytes ? null : foldRunLog(path, fold)))
     let value: TypedValue | null
     try {
       value = (await replay)?.records[seq]?.value ?? null
@@ -1093,6 +1091,14 @@ export class RunLogReader {
       return event
     }
     return value === null ? event : eventAt(path, index, seq, value) ?? event
+  }
+
+  /** Runs `work`, which replays a whole log, once the replays queued before it have settled: one replay at a time. */
+  replay<T>(work: () => Promise<T>): Promise<T> {
+    const turn = this.folding.then(work)
+    // The chain keeps neither the replayed log nor its error.
+    this.folding = turn.then(() => {}, () => {})
+    return turn
   }
 
   /**

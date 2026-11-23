@@ -1,11 +1,11 @@
 /** Run Logs routes: the list of runs, one run's children, and one run's page (its header, node attempts, records, one
- *  record and its log), plus GET /runs/{id}/live, which streams a run's records and live frames. Read-only, on the
- *  office socket and HQ's /api allowlist. */
+ *  record, its log, and its agents' model calls), plus GET /runs/{id}/live, which streams a run's records and live
+ *  frames. Read-only, on the office socket and HQ's /api allowlist. */
 import fs from "node:fs"
 import path from "node:path"
-import { RunDetail, RunEvent, RunEventPage, RunNodePage, RunPage } from "@opencorp/protocol"
+import { RunCall, RunCallList, RunDetail, RunEvent, RunEventPage, RunNodePage, RunPage } from "@opencorp/protocol"
 import { type Index, lineEvent, logEvents, NotALog, UnreadableLog } from "../../runtime/runs/reader.ts"
-import { NoLog, PAGE } from "../../runtime/runs/service.ts"
+import { CallsTooLarge, CallUnreadable, NoLog, PAGE } from "../../runtime/runs/service.ts"
 import { NotFound } from "../../runtime/store/store.ts"
 import { PING } from "../../runtime/bus.ts"
 import { HttpError, type Params, RawReply, type Route } from "../http.ts"
@@ -108,6 +108,8 @@ async function runCall<T>(read: () => Promise<T>): Promise<T> {
     if (error instanceof NotFound) throw new HttpError(404, "not_found", error.message)
     // An unknown or retired schema, a line that isn't a record, seqs out of order.
     if (error instanceof UnreadableLog) throw new HttpError(409, "unsupported_schema", error.message)
+    if (error instanceof CallsTooLarge) throw new HttpError(409, "too_large", error.message)
+    if (error instanceof CallUnreadable) throw new HttpError(409, "not_supported", error.message)
     throw error
   }
 }
@@ -135,6 +137,20 @@ export function runEvents(ctx: RequestContext, params: Params): Promise<RunEvent
 export function runEvent(ctx: RequestContext, params: Params): Promise<RunEvent> {
   const seq = intParam(params.seq, "seq", 0, SEQ_MAX, 0)
   return runCall(() => ctx.office.runs.event(params.id!, seq))
+}
+
+/** `GET /runs/{id}/calls?node=<node id>`: the model calls the node made, oldest first. */
+export function runCalls(ctx: RequestContext, params: Params): Promise<RunCallList> {
+  const node = param(ctx, "node")
+  if (!node) throw new HttpError(422, "invalid_body", "node is required: the agent node whose calls to list")
+  return runCall(() => ctx.office.runs.calls(params.id!, node))
+}
+
+/** `GET /runs/{id}/calls/{node}/{n}`: one model call rebuilt, `n` the step of any of its attempts. The node id's
+ *  segments are the path's (`chat%230/reply`); it is only compared with the log's ids, never joined into a path. */
+export function runModelCall(ctx: RequestContext, params: Params): Promise<RunCall> {
+  const n = intParam(params.n, "n", 1, SEQ_MAX, 0)
+  return runCall(() => ctx.office.runs.call(params.id!, params.node!, n))
 }
 
 /** A run's whole log as stored, as a JSONL attachment no cache keeps. The log is opened before the reply, so a run
@@ -423,6 +439,9 @@ export function runRoutes(pingMs: number = PING_MS): Route<RequestContext>[] {
     { method: "GET", path: "/runs/:id/events/:seq", reply: RunEvent, handler: runEvent },
     // No HEAD: a handler can't tell it from GET, and this one opens the log.
     { method: "GET", path: "/runs/:id/log", head: false, handler: runLog },
+    { method: "GET", path: "/runs/:id/calls", reply: RunCallList, handler: runCalls },
+    // No HEAD either: this one replays the log.
+    { method: "GET", path: "/runs/:id/calls/*node/:n", head: false, reply: RunCall, handler: runModelCall },
     live(pingMs),
   ]
 }

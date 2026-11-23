@@ -277,6 +277,9 @@ const GUARDED: [string, (c: Client, bad: string) => Promise<unknown>, (bad: stri
   ["runs.nodes", (c, b) => c.runs.nodes(b), (b) => `no run ${b}`],
   ["runs.events", (c, b) => c.runs.events(b), (b) => `no run ${b}`],
   ["runs.event", (c, b) => c.runs.event(b, 1), (b) => `no run ${b}`],
+  ["runs.calls", (c, b) => c.runs.calls(b, "reply"), (b) => `no run ${b}`],
+  // Its node id's segments are guarded too, a node of several segments being one id: tested in hq.test.ts.
+  ["runs.call", (c, b) => c.runs.call(b, "reply", 1), (b) => `no run ${b}`],
   ["devices.add", (c, b) => c.devices.add(b, body), (b) => `no person @${b}`],
   ["devices.remove", (c, b) => c.devices.remove(b, "mac"), (b) => `no person @${b}`],
   ["devices.remove (name)", (c, b) => c.devices.remove("ann", b), () => "@ann has no device by that name"],
