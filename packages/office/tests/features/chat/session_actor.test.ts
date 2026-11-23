@@ -30,7 +30,7 @@ import {
 import { type QuestionRecord, StoreUnwritable } from "../../../src/runtime/store/store.ts"
 import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
-import { type Delivery, STOP_REASON } from "../../../src/runtime/worker/job.ts"
+import { type Delivery, MESSAGE_MOVED, STOP_REASON } from "../../../src/runtime/worker/job.ts"
 import { type Worker, WorkerExists } from "../../../src/runtime/worker/spawn.ts"
 import type { Frame } from "../../../src/runtime/worker/channel.ts"
 import type { OfficeTool, WorkerHandlers } from "../../../src/runtime/worker/rpc.ts"
@@ -58,6 +58,7 @@ import {
   PRICES,
   PRICEY,
   reopen,
+  replyRunning,
   say,
   type ScriptedWorker,
   scriptedWorker,
@@ -388,11 +389,87 @@ test("the user message is published live under its send id", async () => {
   expect(published).toHaveLength(1)
   await waitFor(() => texts(o, sid).includes("hello") && status(o, sid) === "idle", { what: "the reply" })
   const message = o.transcript.messages(sid, session(o, sid).run_ids).find((m) => m.role === "user")!
-  const { created_at: _, ...shown } = message
-  const { created_at: __, ...sent } = published[0]!.data as typeof message
+  // Whether the turn had taken it yet when it was published is the run's timing; the relay sends it again once read.
+  const { created_at: _, unread: ___, ...shown } = message
+  const { created_at: __, unread, ...sent } = published[0]!.data as typeof message
   expect(sent).toEqual(shown)
+  expect(typeof unread).toBe("boolean")
   expect(sent).toMatchObject({ role: "user", author: CEO, parts: [{ type: "text", text: "hi" }] })
   expect(published[0]!.session_id).toBe(sid)
+})
+
+test("a message whose read state can't be told is still published, read, and the error's type logged", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "hello" })
+  const o = await chatOffice(fake)
+  const live: LiveEvent[] = []
+  const sid = await newSession(o)
+  const unreadable = () => {
+    throw new RangeError("the log can't be read")
+  }
+  const transcript = { ...spyTranscript(o, []), unread: unreadable }
+  const actor = makeActor(o, sid, { transcript, bus: { publishLive: (event) => void live.push(event) } })
+  await actor.start()
+  await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
+  await actor.prompt("hi")
+  const published = live.filter((event) => event.type === "message.updated").map((event) => event.data)
+  expect(published).toMatchObject([{ role: "user", unread: false, parts: [{ text: "hi" }] }])
+  expect(o.logs).toContain(`session ${sid}: whether a message was read can't be told (RangeError); it shows read`)
+})
+
+test("a message sent while the reply runs is published unread, and again, read, once the reply reads it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Working", hold: true }, { content: "Rome." })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  const sub = o.office.bus.subscribe(sid)
+  onTestFinished(() => sub.close())
+  await actor.prompt("Plan the trip.")
+  await fake.waitForRequests(1, 30_000)
+  // Once the actor knows the reply runs, a message steers it; the held call can't read it, since the reply reads a
+  // steer before its next model call.
+  await replyRunning(o)
+  expect(await actor.prompt("Also mention Rome.")).toBe("steer")
+  const events: LiveEvent[] = []
+  const drain = async () => {
+    while (sub.queued > 0) {
+      const item = await sub.next(0)
+      if (item !== null && item !== PING && item[0] === "live") events.push(item[1])
+    }
+  }
+  await drain()
+  const steer = (event: LiveEvent) =>
+    event.type === "message.updated" && JSON.stringify(event.data.parts).includes("Also mention Rome.")
+  expect(events.filter(steer).map((event) => event.data.unread)).toEqual([true])
+  fake.release()
+  await waitFor(() => texts(o, sid).includes("Rome.") && status(o, sid) === "idle", { what: "the reply" })
+  await drain()
+  expect(events.filter(steer).map((event) => event.data.unread)).toEqual([true, false])
+  const shown = o.transcript.messages(sid, session(o, sid).run_ids).filter((m) => m.role === "user")
+  const id = events.find(steer)!.data.id
+  expect(shown.map((m) => [m.id === id, m.unread])).toEqual([
+    [false, false],
+    [true, false],
+  ])
+})
+
+test("a moved message drops its old copy only when the run it names is the session's", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const { worker, handlers } = workers[0]!
+  const removed = () => o.lives.filter((event) => event.type === "message.removed").map((event) => event.data.id)
+  const moved = (run: string, from: number) => {
+    handlers.event(worker, { type: "event", name: MESSAGE_MOVED, data: { run_id: run, from, seq: null } })
+  }
+  // A run that isn't the session's, then the session's: the actor handles them in order.
+  moved("01JZZZZZZZZZZZZZZZZZZZZZZZ", 3)
+  moved(runId, 4)
+  await waitFor(() => removed().length > 0, { what: "the old copy dropped" })
+  expect(removed()).toEqual([`${runId}:${String(4).padStart(12, "0")}`])
 })
 
 test("live calls is empty while a worker runs the run and null otherwise", async () => {
@@ -450,6 +527,7 @@ function spyLive(o: ChatOffice, seen: string[]): ActorContext["live"] {
   return {
     frame: (worker, frame) => o.live.frame(worker, frame),
     calls: (runId) => o.live.calls(runId),
+    unreadShown: (runId, id) => o.live.unreadShown(runId, id),
     detach: (worker) => {
       seen.push("detach")
       o.live.detach(worker)
@@ -461,13 +539,22 @@ function spyLive(o: ChatOffice, seen: string[]): ActorContext["live"] {
   }
 }
 
+/** The office's transcript, recording each `forget` in `seen` without forgetting. */
+function spyTranscript(o: ChatOffice, seen: string[]): ActorContext["transcript"] {
+  return {
+    forget: (runIds) => void seen.push(`transcript ${[...runIds].join(" ")}`),
+    unread: (runId, seq) => o.transcript.unread(runId, seq),
+    sentMessage: (sessionId, runId, seq) => o.transcript.sentMessage(sessionId, runId, seq),
+  }
+}
+
 test("a finished session forgets its live runs only after its worker exits", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
   const workers = scriptedWorker(o)
   const seen: string[] = []
   const live = spyLive(o, seen)
-  const transcript = { forget: (runIds: Iterable<string>) => void seen.push(`transcript ${[...runIds].join(" ")}`) }
+  const transcript = spyTranscript(o, seen)
   const sid = await newSession(o)
   const actor = makeActor(o, sid, { live, transcript })
   await actor.start()
@@ -502,7 +589,7 @@ test("a finished actors lingering worker forgets only the runs it finished at it
   const workers = scriptedWorker(o)
   const seen: string[] = []
   const live = spyLive(o, seen)
-  const transcript = { forget: (runIds: Iterable<string>) => void seen.push(`transcript ${[...runIds].join(" ")}`) }
+  const transcript = spyTranscript(o, seen)
   const sid = await newSession(o)
   const old = makeActor(o, sid, { live, transcript })
   await old.start()
@@ -3058,9 +3145,19 @@ test("a reply that fails over the cost cap holds its fresh run until the cap is 
   expect(o.jobs.at(-1)).toMatchObject({ kind: "chat", run_id: runId, advance: true, deliver: [{ op: "send" }] })
   await waitFor(() => texts(o, sid).includes("Got it.") && status(o, sid) === "idle", { what: "the fresh reply" })
   expect(texts(o, sid, "user")).toEqual(["hi", "more"])
-  // The message is still shown live once the fresh run takes it.
-  const shown = o.lives.filter((event) => event.type === "message.updated" && event.data.role === "user")
-  expect(shown.map((event) => (event.data.parts as { text: string }[]).at(-1)!.text)).toEqual(["hi", "more"])
+  // The message is still shown live once the fresh run takes it. One published unread comes again once read, under
+  // its id.
+  const shown = new Map<unknown, string>()
+  for (const event of o.lives) {
+    if (event.type === "message.updated" && event.data.role === "user") {
+      shown.set(event.data.id, (event.data.parts as { text: string }[]).at(-1)!.text)
+    }
+  }
+  expect([...shown.values()]).toEqual(["hi", "more"])
+  // The failure's notice says it is read, as every message the office builds does.
+  const notices = o.lives.filter((event) => event.type === "message.updated" && event.data.role === "assistant")
+  expect(notices.filter((event) => JSON.stringify(event.data.parts).includes('"error"')).map((e) => e.data.unread))
+    .toEqual([false])
 })
 
 test("end while the fresh run of a failed reply is held closes it without a model call", async () => {

@@ -45,7 +45,7 @@ export class Translator {
   /** Adds a user message; `author` is the human who sent it. A message mid-turn is a steer: what Claude Code writes
    *  next opens a new assistant message. */
   user(text: string, author: string | null): void {
-    const message: Message = { id: newId(), session_id: this.sessionId, role: "user", author,
+    const message: Message = { id: newId(), session_id: this.sessionId, role: "user", author, unread: false,
       parts: [{ id: newId(), type: "text", text }], created_at: now() }
     if (this.#message !== null) this.#steered = true
     this.emit({ type: "message", message })
@@ -55,7 +55,7 @@ export class Translator {
   error(text: string): void {
     const part: ErrorPart = { id: newId(), type: "error", message: text }
     this.emit({ type: "message", message: { id: newId(), session_id: this.sessionId, role: "assistant", author: null,
-      parts: [part], created_at: now() } })
+      unread: false, parts: [part], created_at: now() } })
   }
 
   /** Esc dropped the messages sent before any turn took them: an assistant message of its own with the marker. */
@@ -188,7 +188,7 @@ export class Translator {
     if (this.#message === null) {
       this.#message = newId()
       this.emit({ type: "message", message: { id: this.#message, session_id: this.sessionId, role: "assistant",
-        author: null, parts: [], created_at: now() } })
+        author: null, unread: false, parts: [], created_at: now() } })
     }
     this.#tail = part
     this.emit({ type: "part", messageId: this.#message, part: structuredClone(part) })

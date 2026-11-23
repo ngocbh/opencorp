@@ -15,8 +15,10 @@ import {
 import { errorName } from "./rpc.ts"
 import { MAIN_CHAT } from "../../company/chat_flow.ts"
 
-/** A send of the replaced run that nothing read: its message, and the key the office sent it under, if any. */
+/** A send of the replaced run that nothing read: its seq there, its message, and the key the office sent it under, if
+ *  any. */
 export interface UnreadSend {
+  readonly seq: number
   readonly message: Message
   readonly key: string | null
 }
@@ -97,7 +99,7 @@ function carried(records: FoldedRun["records"]): { summary: string; history: Mes
  * them. A withdraw's sends are the office's again (Esc sends them anew), so none is moved.
  */
 function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
-  const sends = new Map<number, UnreadSend>()
+  const sends = new Map<number, Omit<UnreadSend, "seq">>()
   const takes = new Map<number, readonly number[]>()
   const consumed = new Set<number>()
   for (const entry of entries) {
@@ -125,7 +127,7 @@ function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
       }
     }
   }
-  return [...sends].filter(([seq]) => !consumed.has(seq)).map(([, send]) => send)
+  return [...sends].filter(([seq]) => !consumed.has(seq)).map(([seq, send]) => ({ seq, ...send }))
 }
 
 /**

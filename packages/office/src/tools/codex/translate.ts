@@ -373,7 +373,7 @@ class Live {
   constructor(private readonly sessionId: string, private readonly emit: (e: HarnessEvent) => void) {}
 
   user(text: string, author: string | null): void {
-    const message: Message = { id: newId(), session_id: this.sessionId, role: "user", author,
+    const message: Message = { id: newId(), session_id: this.sessionId, role: "user", author, unread: false,
       parts: [{ id: newId(), type: "text", text }], created_at: now() }
     for (const node of this.messages.keys()) this.steered.add(node)
     this.emit({ type: "message", message })
@@ -382,7 +382,7 @@ class Live {
   error(text: string): void {
     const part: ErrorPart = { id: newId(), type: "error", message: text }
     this.emit({ type: "message", message: { id: newId(), session_id: this.sessionId, role: "assistant", author: null,
-      parts: [part], created_at: now() } })
+      unread: false, parts: [part], created_at: now() } })
   }
 
   /** Opens `node`'s message; when a steer came after it, the old message is closed first. */
@@ -464,7 +464,7 @@ class Live {
     if (id === undefined) {
       this.messages.set(node, id = newId())
       this.emit({ type: "message", message: { id, session_id: this.sessionId, role: "assistant", author: null,
-        parts: [], created_at: now() } })
+        unread: false, parts: [], created_at: now() } })
     }
     return id
   }

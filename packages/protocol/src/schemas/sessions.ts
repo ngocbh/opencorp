@@ -167,6 +167,12 @@ export const Message = z.strictObject({
    * name there, `shell 1`). Only the office sets it. Null for every other message.
    */
   instrument: z.strictObject({ id: Ulid, name: z.string().min(1) }).nullable().default(null),
+  /**
+   * A user message of a yian chat that waits in its run's inbox: no turn has taken it and the running reply hasn't
+   * read it as a steer. Once the run reads it, `message.updated` sends it again with this false, under the same id.
+   * False for every other message.
+   */
+  unread: z.boolean().default(false),
   parts: z.array(Part),
   created_at: Timestamp,
 })

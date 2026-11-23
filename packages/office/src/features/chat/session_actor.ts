@@ -56,7 +56,7 @@ import {
 import type { Env } from "../../util/env.ts"
 import type { OfficePaths } from "../../util/home.ts"
 import { type Frame, FrameTooLarge } from "../../runtime/worker/channel.ts"
-import { type Delivery, type Job, type Seed, STOP_REASON } from "../../runtime/worker/job.ts"
+import { type Delivery, type Job, MESSAGE_MOVED, type Seed, STOP_REASON } from "../../runtime/worker/job.ts"
 import {
   type AskRequest,
   BaseHandlers,
@@ -85,7 +85,7 @@ import { ChatApprovals } from "./approvals.ts"
 import type { Mode, Where } from "../../runtime/permissions/policy.ts"
 import { HarnessError, notWaiting, runState, SETTLED, writeState } from "../../runtime/sessions/state.ts"
 import { restoreNotes } from "./terminal.ts"
-import { type LiveCalls, messageId, type Transcript, userMessage, withdrawnSends } from "./transcript.ts"
+import { type LiveCalls, messageId, sentUnread, type Transcript, userMessage, withdrawnSends } from "./transcript.ts"
 import { type ChatFlow, MAIN_CHAT } from "../../company/chat_flow.ts"
 
 /** What every actor of an office shares. */
@@ -124,9 +124,9 @@ export interface ActorContext {
   readonly checkMs?: number
   readonly hooks: Hooks
   readonly answers: Answers
-  readonly transcript: Pick<Transcript, "forget">
+  readonly transcript: Pick<Transcript, "forget" | "unread" | "sentMessage">
   /** The office's live relay, fed each worker's live frames; the actor's `calls` reads it. */
-  readonly live: Pick<LiveRelay, "frame" | "detach" | "calls" | "forget">
+  readonly live: Pick<LiveRelay, "frame" | "detach" | "calls" | "forget" | "unreadShown">
   /** The run spec of `session` (Python's restorers); may throw a `HarnessError`. */
   spec(session: SessionRecord): RunSpec | Promise<RunSpec>
   /** The clock and sleeps of the wake-at timer (yian's `Scheduler`; `realScheduler` in the office). */
@@ -2454,6 +2454,9 @@ export class SessionActor implements LiveCalls {
       case "history_not_seeded":
         this.#log(`session ${this.sessionId}: its fresh run starts without history (${typeName(data.error_type)})`)
         return
+      case MESSAGE_MOVED:
+        this.#moved(run.runId, data)
+        return
       case "CallClosed":
         if (typeof data.call_id === "string" && typeof data.reason === "string") {
           this.#closedCall(run.runId, data.call_id, data.reason)
@@ -2750,8 +2753,6 @@ export class SessionActor implements LiveCalls {
     })
   }
 
-  /** Publishes the user message of the `send` the run took at `seq`, as the transcript will show it. `sent` is the
-   *  message `prompt` built. */
   /** Tells the session's clients that message `id` is no more: a send the run took back. */
   #publishRemoved(id: string): void {
     try {
@@ -2762,12 +2763,39 @@ export class SessionActor implements LiveCalls {
     }
   }
 
+  /** Publishes the user message of the `send` the run took at `seq`: unread unless the run has read it already
+   *  (`sentUnread`), and then the live relay publishes it again once the run has. `sent` is the message `prompt`
+   *  built. */
   #publishMessage(runId: string, seq: number, sent: unknown, key: string | undefined): void {
-    const message = userMessage(this.sessionId, runId, { seq, at: now(), message: sent as RunMessage, key })
+    const unread = sentUnread(this.#ctx.transcript, runId, seq, (line) => this.#log(`session ${this.sessionId}: ${line}`))
     try {
+      const message = userMessage(this.sessionId, runId, { seq, at: now(), message: sent as RunMessage, key }, unread)
+      if (unread) this.#ctx.live.unreadShown(runId, message.id)
       this.#ctx.bus.publishLive({ type: "message.updated", session_id: this.sessionId, data: message })
     } catch (error) {
       this.#log(`session ${this.sessionId}: a message can't be shown (${errorName(error)})`)
+    }
+  }
+
+  /**
+   * The fresh run `runId` took over send `from` of the run it replaced, `run_id`, as its send `seq` (null when it
+   * couldn't), as a `message_moved` event's `data` says: clients drop the old copy and get the fresh run's, as its log
+   * shows it, unread until the run reads it, when the live relay publishes it again. A `run_id` that isn't one of the
+   * session's runs is ignored, so a worker can't hide another run's message.
+   */
+  #moved(runId: string, data: Record<string, unknown>): void {
+    const { run_id: replaced, from, seq } = data
+    if (typeof replaced !== "string" || !Number.isSafeInteger(from)) return
+    if (!this.#session().run_ids.includes(replaced)) return
+    this.#publishRemoved(messageId(replaced, from as number))
+    if (!Number.isSafeInteger(seq)) return
+    try {
+      const message = this.#ctx.transcript.sentMessage(this.sessionId, runId, seq as number)
+      if (message === null) return
+      if (message.unread) this.#ctx.live.unreadShown(runId, message.id)
+      this.#ctx.bus.publishLive({ type: "message.updated", session_id: this.sessionId, data: message })
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a moved message can't be shown (${errorName(error)})`)
     }
   }
 
@@ -2779,6 +2807,7 @@ export class SessionActor implements LiveCalls {
       session_id: this.sessionId,
       role: "assistant",
       author: null,
+      unread: false,
       parts: [{ id: newId(), type: "error", message: text }],
       created_at: now(),
     }

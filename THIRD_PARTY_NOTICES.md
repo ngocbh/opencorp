@@ -226,6 +226,15 @@ license, the upstream paths and commit, and our paths.
   commit `4332e24f` (2026-11-21).
 - **Ours:** `packages/tui/src/routes/session/index.tsx` (`toolView`, `HarnessCall`, `InlineTool`),
   `packages/tui/test/routes/session/harness-calls-frame.test.tsx`.
+- **What:** the pending message's look, ported from current upstream: a user message whose delivery is pending draws
+  its left border in the border colour instead of its speaker's, its text unchanged. Adapted: pending is a chat
+  message its run hasn't read yet (`unread`), and a muted line under it says `unread` and, while Esc can stop the
+  reply, what Esc does. The "Pending steer" dialog (Move to queue, Delete) isn't ported: Yian can neither take back
+  one message nor hold one until the turn ends, so a click opens the message's actions as before.
+- **Upstream:** `packages/tui/src/routes/session/index.tsx` (`UserMessage` and its `delivery`, `pendingDelivery`),
+  read at commit `4332e24f` (2026-11-21).
+- **Ours:** `packages/tui/src/routes/session/index.tsx` (`UserMessage`, `unreadHint`),
+  `packages/tui/test/routes/session/unread-message-frame.test.tsx`.
 - **What:** the check before a terminal starts that its folder is a directory, since a PTY's library may start the
   shell in the home instead, ported for learning's shells.
 - **Upstream:** `packages/core/src/persistent-pty/index.ts` (`create`), read at commit `df46f69` (2026-11-16).

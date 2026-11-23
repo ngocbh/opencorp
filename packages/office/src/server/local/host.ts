@@ -21,7 +21,7 @@ import {
 } from "@opencorp/protocol"
 import { MAIN_CHAT } from "../../company/chat_flow.ts"
 import { LiveRelay } from "../../features/chat/live.ts"
-import { Transcript, userMessage } from "../../features/chat/transcript.ts"
+import { sentUnread, Transcript, userMessage } from "../../features/chat/transcript.ts"
 import { Bus } from "../../runtime/bus.ts"
 import { Check, type CheckRecord, type CheckWorkers, inWorker } from "../../runtime/permissions/classifier.ts"
 import {
@@ -483,10 +483,14 @@ export class LocalHost {
     return [PersonSchema.parse({ handle, name, kind: "agent", title: "Built-in agent", manager: null })]
   }
 
-  /** The session's transcript, read from its run's log, with the calls in flight. */
+  /** The session's transcript, read from its run's log, with the calls in flight. While the session is live, the live
+   *  relay hears which it shows unread, and publishes each again once the run reads it. */
   async messages(): Promise<Message[]> {
     await this.#transcript.refresh([this.#runId])
-    return this.#transcript.messages(this.id, [this.#runId], this.#relay)
+    const messages = this.#transcript.messages(this.id, [this.#runId], this.#relay)
+    if (this.#finished) return messages
+    for (const message of messages) if (message.unread) this.#relay.unreadShown(this.#runId, message.id)
+    return messages
   }
 
   /** A message from `by`: the next turn, or a steer of the running reply. */
@@ -495,7 +499,9 @@ export class LocalHost {
     const event = { role: "user", parts: [{ type: "text" as const, text }], author: by }
     await this.#deliver({ id: newId(), op: "send", inbox: MAIN_CHAT.inbox, event }, (frame) => {
       if (typeof frame.seq !== "number") return
-      const message = userMessage(this.id, this.#runId, { seq: frame.seq, at: now(), message: event })
+      const unread = sentUnread(this.#transcript, this.#runId, frame.seq, this.#log)
+      const message = userMessage(this.id, this.#runId, { seq: frame.seq, at: now(), message: event }, unread)
+      if (unread) this.#relay.unreadShown(this.#runId, message.id)
       this.bus.publishLive({ type: "message.updated", session_id: this.id, data: message })
     })
   }

@@ -405,6 +405,71 @@ test("a user message mid reply comes before what the model says after reading it
   ])
 })
 
+test("a send stays unread until a take or a steer reads it, and a withdrawn one shows no more", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Working", tool_calls: [{ id: "c1", name: "toolbox_stub" }] }, { content: "Rome." })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  const transcript = new Transcript(runs)
+  const sid = newId()
+  const users = () =>
+    messages(runs, sid, ["r1"], { transcript })
+      .filter((m) => m.role === "user")
+      .map((m) => [(m.parts[0] as { text: string }).text, m.unread])
+  await apply(job, fake, [send("s1", "Plan the trip.")])
+  expect(users()).toEqual([["Plan the trip.", true]])
+  // What the transcript shows once the steer is in the inbox, before the reply's next model call reads it.
+  let during: unknown[] = []
+  class Steering extends DeliverDuringTool {
+    override async toolCall(worker: TestWorker, group: string, name: string, args: Record<string, unknown>) {
+      const result = await super.toolCall(worker, group, name, args)
+      during = users()
+      return result
+    }
+  }
+  await run(advanceJob(job, {}), new Steering(send("during", "Also mention Rome.")), { env: fake.env() })
+  expect(during).toEqual([
+    ["Plan the trip.", false],
+    ["Also mention Rome.", true],
+  ])
+  expect(users()).toEqual([
+    ["Plan the trip.", false],
+    ["Also mention Rome.", false],
+  ])
+  // Every message says whether it is unread, the replies included.
+  const all = messages(runs, sid, ["r1"], { transcript })
+  expect(all.map((m) => [m.role, m.unread])).toEqual([
+    ["user", false],
+    ["assistant", false],
+    ["user", false],
+    ["assistant", false],
+  ])
+  await apply(job, fake, [send("s2", "Never mind.")])
+  expect(users().at(-1)).toEqual(["Never mind.", true])
+  await apply(job, fake, [{ id: "w", op: "withdraw", inbox: "messages" }])
+  expect(users().map(([text]) => text)).toEqual(["Plan the trip.", "Also mention Rome."])
+})
+
+test("whether a send is unread reads on only from a cached fold, and its message comes from the log", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Done." })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await apply(job, fake, [send("s1", "do it")])
+  const transcript = new Transcript(runs)
+  const sid = newId()
+  const seq = Number(messages(runs, sid, ["r1"]).at(-1)!.id.split(":")[1])
+  // Nothing cached: no whole log is read.
+  expect(transcript.unread("r1", seq)).toBeNull()
+  const sent = transcript.sentMessage(sid, "r1", seq)!
+  expect([sent.unread, sent.parts.map((part) => (part.type === "text" ? part.text : ""))]).toEqual([true, ["do it"]])
+  expect(transcript.unread("r1", seq)).toBe(true)
+  await advance(job, fake, [])
+  expect(transcript.unread("r1", seq)).toBe(false)
+  expect(transcript.sentMessage(sid, "r1", seq)!.unread).toBe(false)
+  expect(transcript.sentMessage(sid, "r1", seq + 1000)).toBeNull()
+})
+
 test("a reply that streams nothing after a user message gets its output after it", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Working", hold: true }, { content: "Rome." })

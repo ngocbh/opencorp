@@ -55,6 +55,11 @@ export type Delivery = z.output<typeof Delivery>
 export const Seed = z.strictObject({ log: absolute, env: z.record(z.string(), z.string()), cancel: z.boolean() })
 export type Seed = z.output<typeof Seed>
 
+/** The event a worker sends once it moved one of the replaced run's unread messages into the fresh run: its data is
+ *  `{run_id, from, seq}`, the replaced run, the message's seq there, and its seq in the fresh run (null when it
+ *  couldn't be delivered). */
+export const MESSAGE_MOVED = "message_moved"
+
 /** The run a `chat` run nests under in yian's run index, and that run's node, if one node started it. */
 export const Parent = z.strictObject({ run_id: z.string().min(1), node: z.string().min(1).nullable().default(null) })
 export type Parent = z.output<typeof Parent>

@@ -175,7 +175,8 @@ interface Entry {
  *
  * After each snapshot that builds and each `start` or `record` it applies, it renders the worker's run with the
  * transcript and publishes, on the worker's session, what changed among its assistant messages since the run was last
- * shown; a `chunk` of a shown live part is published as a `part.delta`. What was shown is kept per run until `forget`.
+ * shown, and each user message clients hold unread that the run has read since (`unreadShown`); a `chunk` of a shown
+ * live part is published as a `part.delta`. What was shown is kept per run until `forget`.
  *
  * A viewer `join`s a run's view and gets every frame the view applies after it; a duplicate record or chunk the view
  * ignored isn't passed on. Each viewer queues at most `queueSize` items (a lagging viewer's chunks of one call merge
@@ -189,6 +190,8 @@ export class LiveRelay implements LiveCalls {
   readonly #queueSize: number
   readonly #runs = new Map<string, Entry>()
   readonly #shown = new Map<string, Shown>()
+  /** By run, the ids of the user messages clients hold unread: told so (`unreadShown`), or rendered so. */
+  readonly #unread = new Map<string, Set<string>>()
 
   constructor(options: {
     bus: Pick<Bus, "publishLive">
@@ -254,7 +257,18 @@ export class LiveRelay implements LiveCalls {
 
   /** Drops what was shown of `runIds` (a session that ended). */
   forget(runIds: Iterable<string>): void {
-    for (const runId of runIds) this.#shown.delete(runId)
+    for (const runId of runIds) {
+      this.#shown.delete(runId)
+      this.#unread.delete(runId)
+    }
+  }
+
+  /** Clients were shown user message `id` of run `runId` unread, as the actor publishes a send the run hasn't read: the
+   *  first render of the run that shows it read publishes it again, read. */
+  unreadShown(runId: string, id: string): void {
+    let ids = this.#unread.get(runId)
+    if (ids === undefined) this.#unread.set(runId, (ids = new Set()))
+    ids.add(id)
   }
 
   /** The calls in flight of `runId`'s view; [] while its worker's view is being built; null when no worker feeds it. */
@@ -332,11 +346,13 @@ export class LiveRelay implements LiveCalls {
 
   /** Renders `worker`'s run with the relay's live calls of the run (none once no worker feeds it) and publishes its
    *  assistant messages' changes since it was last shown, and whole once each part whose live call ended since then,
-   *  then moves its floor. A render or publish that throws is logged. */
+   *  then moves its floor; then publishes the user messages the run read since (`#read`). A render or publish that
+   *  throws is logged. */
   #show(worker: LiveWorker): void {
     const { run_id: runId, session_id: sessionId } = worker.job
     try {
-      const rendered = this.#transcript.messages(sessionId, [runId], this).filter((m) => m.role === "assistant")
+      const all = this.#transcript.messages(sessionId, [runId], this)
+      const rendered = all.filter((m) => m.role === "assistant")
       const live = new Set((this.calls(runId) ?? []).map((call) => `${runId}:${call.node}:${call.n}`))
       const floor = floorOf(rendered, live)
       let shown = this.#shown.get(runId)
@@ -379,9 +395,26 @@ export class LiveRelay implements LiveCalls {
       }
       if (floor > shown.floor) shown.floor = floor
       for (const id of shown.messages.keys()) if (id < shown.floor) shown.messages.delete(id)
+      this.#read(worker, all)
     } catch (error) {
       this.#log(`run ${runId}: live events were not published (${errorName(error)})`)
     }
+  }
+
+  /** Publishes each user message of `rendered`, a render of `worker`'s run, that clients hold unread and the run has
+   *  read; then holds the ids of those it shows unread. A render reads the log to its end, so a message clients were
+   *  told is unread, which the log then had, is in every later render until a withdraw takes it back. */
+  #read(worker: LiveWorker, rendered: readonly Message[]): void {
+    const runId = worker.job.run_id
+    const held = this.#unread.get(runId)
+    const unread = new Set<string>()
+    for (const message of rendered) {
+      if (message.role !== "user") continue
+      if (message.unread) unread.add(message.id)
+      else if (held?.has(message.id)) this.#publish(worker, "message.updated", message)
+    }
+    if (unread.size > 0) this.#unread.set(runId, unread)
+    else this.#unread.delete(runId)
   }
 
   /** Publishes `text`, the next chunk of `worker`'s call `node`/`n`, as a delta of the call's text part, if that part
