@@ -834,6 +834,41 @@ test("with the chat's own card waiting behind a Codex card, ctrl+t says it answe
   }
 })
 
+test("once the chat's card closes and the Codex card ctrl+t left for it went stale, a draft gets the keys back", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const older = codex(office, chat.id, "busy", "codex 1")
+  const younger = codex(office, chat.id, "busy", "codex 2")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 2 Codex sessions"))
+    app.input.typeText("half a")
+    await app.until((f) => f.includes("half a"))
+    const c1 = office.addQuestion(harnessCard(older.id, "1", ["Approve", "Deny"]))
+    await app.until((f) => f.includes("ctrl+t to answer"))
+    app.input.pressKey("t", { ctrl: true })
+    await app.until((f) => f.includes("$ touch a"))
+    const own = office.addQuestion({ session_id: chat.id, question: "Which branch?", options: ["main", "dev"] })
+    await app.until((f) => f.includes("@minh asks: Which branch? · ctrl+t to answer"))
+    app.input.pressKey("t", { ctrl: true })
+    await app.until((f) => f.includes("1. main"))
+    office.expire(c1.id)
+    const c2 = office.addQuestion({ ...harnessCard(younger.id, "2", ["Approve", "Deny"]), question: "$ touch b" })
+    await app.until((f) => f.includes("Codex asks: Codex wants to run a command (waiting)"))
+    await Bun.sleep(100)
+    app.input.pressKey("1")
+    await until(() => office.state.questions[own.id]!.status !== "open")
+    // The card ctrl+t came from is gone, so the draft gets the keys back, as it would have had them.
+    await app.until((f) => f.includes("half a") && f.includes("ctrl+t to answer"))
+    app.input.typeText(" 1")
+    await app.until((f) => f.includes("half a 1"))
+    expect(sent(office, `/questions/${c2.id}/answer`)).toEqual([])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a Codex session's card that opens while the chat's prompt holds a draft leaves the keys there; ctrl+t gives them", async () => {
   const office = createFakeOffice()
   const chat = office.state.sessions[0]!

@@ -223,17 +223,19 @@ export function Session(props: SessionProps) {
   // The chat's own card ctrl+t gives the keys to from the stacked card that has them, which it waits behind.
   const ownNext = createMemo(() => (active() ? own()[0] : undefined))
   // Whether one of the chat's own cards has the keys, and who had them before it took the prompt's place, to get them
-  // back once it closes: a stacked card (its id); the prompt (null) when it had them over folded cards or held a
-  // draft; else nobody (undefined), and the next card takes them as any card opening does.
+  // back once it closes: the stacked card that had them (`backTo`) while it is still open; else the prompt
+  // (`promptBack`) when it had them over folded cards or held a draft; else the next card, as any card opening does.
+  // The prompt is unmounted while the card shows, so its draft is read as the card takes its place.
   let ownHasKeys = false
-  let backTo: string | null | undefined
+  let backTo: string | undefined
+  let promptBack = false
   /** Gives the keys to card `next`, or to the prompt. */
   function give(next: string | undefined) {
     const toOwn = !!next && own().some((q) => q.id === next)
     if (toOwn && !ownHasKeys) {
       const k = keyed()
-      const promptHad = (k === undefined && stacked().length > 0) || !!promptRef.current?.current.input
-      backTo = k && cards().some((q) => q.id === k) ? k : promptHad ? null : undefined
+      backTo = k && cards().some((q) => q.id === k) ? k : undefined
+      promptBack = (k === undefined && stacked().length > 0) || !!promptRef.current?.current.input
     }
     ownHasKeys = toOwn
     setKeyed(next)
@@ -256,7 +258,8 @@ export function Session(props: SessionProps) {
       if (ownHasKeys) {
         const to = backTo
         backTo = undefined
-        return give(to === null ? undefined : to && stacked().some((q) => q.id === to) ? to : stacked()[0]?.id)
+        if (to && stacked().some((q) => q.id === to)) return give(to)
+        return give(promptBack ? undefined : stacked()[0]?.id)
       }
       if (k || (opened && !promptRef.current?.current.input)) give(stacked()[0]?.id)
     })
