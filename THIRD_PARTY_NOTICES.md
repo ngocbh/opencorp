@@ -239,7 +239,8 @@ license, the upstream paths and commit, and our paths.
   its descendants', and answers a child's where it is; a child lists only its own. Adapted: the requests are the open
   Codex cards of the chat's Codex and Claude Code sessions, shown above the chat's prompt as in the child's own view
   (the first card or the prompt holding the keys), waiting as lines while one of the chat's own cards holds the
-  prompt's place; Esc on one interrupts that child.
+  prompt's place; the card with the keys keeps them until it closes or ctrl+t moves them, a card that opens meanwhile
+  waiting as a line, the chat's own included; Esc on one interrupts that child.
 - **Upstream:** `packages/tui/src/routes/session/index.tsx` (`descendantSessionIDs`, `permissions`, `forms`, the
   prompt's `Switch`), read at commit `4332e24f` (2026-11-21).
 - **Ours:** `packages/tui/src/routes/session/composer/tabs.ts` (`familyQuestions`),
