@@ -80,7 +80,7 @@ async function listening(p: string): Promise<string> {
   return p
 }
 
-test("an SSH-only policy binds ~/.ssh read-only, known_hosts and the status file for data, and nothing of hq/cm", () => {
+test("an SSH-only policy binds ~/.ssh read-only, known_hosts and the status file for data, and nothing of hq/cm-<id>", () => {
   const h = layout()
   const policy = h.make()
   expect(policy.kind).toBe("ssh")
@@ -93,7 +93,7 @@ test("an SSH-only policy binds ~/.ssh read-only, known_hosts and the status file
   expect(policy.ccache).toBeNull()
   expect(policy.credentials).toEqual([])
   expect(policy.notes).toEqual([])
-  // The shell's own control sockets go in its temp folder; the office's, in hq/cm, are never mounted.
+  // The shell's own control sockets go in its temp folder; the office's, in hq/cm-<id>, are never mounted.
   expect(policy.controlDir).toBe(path.join(h.tmp, "cm"))
   expect(fs.statSync(policy.controlDir).isDirectory()).toBe(true)
   expect(mode(policy.controlDir)).toBe(0o700)
@@ -196,7 +196,7 @@ test("a policy that would bind hq, the home, provider.json, auth.json or a conne
     expect(() => h.make({ tmpdir }), tmpdir).toThrow(UnsafeProfile)
   }
   expect(() => h.make({ statusFile: h.provider })).toThrow(UnsafeProfile)
-  // The status file is bound read-write, so it may only be the wrapper's own, in hq/ssh.
+  // The status file is bound read-write, so it may only be the wrapper's own, in hq/<name>/ssh.
   expect(() => h.make({ statusFile: path.join(h.home, "secret.txt") })).toThrow(UnsafeProfile)
   expect(() => h.make({ statusFile: path.join(h.hq, "cm-0a1b2c", "status.4242") })).toThrow(UnsafeProfile)
   // The destination's ssh folder is in hq, and the status file in it: never hq itself, nor a folder elsewhere.
@@ -256,7 +256,7 @@ test("a known_hosts, status file, ticket or socket folder that is a link, or has
   expect(() => h.make()).not.toThrow()
 })
 
-test("a hard link to a credential inside ~/.ssh or hq/ssh is refused", () => {
+test("a hard link to a credential inside ~/.ssh or hq/<name>/ssh is refused", () => {
   const h = layout()
   for (const [link, target] of [
     [path.join(h.ssh, "innocent"), h.provider],
@@ -352,7 +352,7 @@ test("an ssh outside the system folders is bound read-only, and refused where it
 })
 
 test.skipIf(process.platform !== "linux")(
-  "on Linux a wrapper in hq/ssh is mounted over ssh, the system's ssh and the visit's wrapper, and ssh at REAL_SSH",
+  "on Linux a wrapper in hq/<name>/ssh is mounted over ssh, the system's ssh and the visit's wrapper, and ssh at REAL_SSH",
   () => {
     const h = layout()
     const wrapper = h.file(path.join(h.hqSsh, "agent-ssh"), "#!/bin/sh\n", 0o700)

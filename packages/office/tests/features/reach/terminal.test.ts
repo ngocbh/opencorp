@@ -351,7 +351,7 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
     expect(t.fake.tty()).toEqual(["1"])
   })
 
-  test("hq/provider.json, hq/auth.json, hq/cm and the rest of the home can't be read from learning's shell", async () => {
+  test("hq/provider.json, hq/auth.json, hq/cm-<id> and the rest of the home can't be read from learning's shell", async () => {
     const { perms, held } = permissions({ check: RUNS })
     const t = await learning({ perms })
     const { provider, auth, dir: hq, cm } = t.paths
@@ -370,7 +370,7 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
     expect(output).toContain("[cat 1]")
     expect(output).toMatch(/\[cm [12]\]/)
     if (process.platform === "linux") {
-      // bubblewrap makes the mount points of what the profile binds, ~/.ssh and hq/ssh, and nothing else of the home.
+      // bubblewrap makes the mount points of what the profile binds, ~/.ssh and hq/<name>/ssh, and nothing else of the home.
       const after = (marker: string) => output.slice(output.indexOf(`${marker}\n`) + marker.length + 1).split("\n")
       expect(after("-- home").slice(0, 2)).toEqual([".opencorp", ".ssh"])
       expect(after("-- hq")[0]).toBe("ssh")

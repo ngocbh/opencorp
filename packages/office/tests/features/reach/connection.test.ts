@@ -58,10 +58,10 @@ test("the chain test runs the replay and the node master in OpenCorp's connectio
   expect(typeof conn).toBe("object")
   expect(conn.spec).toEqual(t.spec)
   expect(conn.socket).toBe(t.remote.socket)
-  // One login: the node's hop rode login1's master, which reach.sh's ssh left in hq/cm.
+  // One login: the node's hop rode login1's master, which reach.sh's ssh left in its hq/cm-<id>.
   expect(t.fake.tty()).toEqual(["hunter2"])
   expect(t.fake.logins()).toEqual(["login1", "node1"])
-  // Both ran with the visit's config; the master is OpenCorp's own, on hq/cm/node, as the shell's running command.
+  // Both ran with the visit's config; the master is OpenCorp's own, on hq/cm-<id>/node, as the shell's running command.
   const calls = t.fake.calls()
   const master = calls.find((argv) => argv.includes("-M"))!
   expect(master.slice(0, 4)).toEqual(["-F", t.ctx.paths.config, "-M", "-S"])

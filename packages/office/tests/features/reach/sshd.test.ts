@@ -446,9 +446,9 @@ describe.skipIf(!REAL)("a real sshd", () => {
   /** The client's own connection sharing for the login node, as the owner keeps it in `~/.ssh/config`. */
   const SHARING = ["Host localhost", "  ControlMaster auto", "  ControlPath {mine}/%C", "  ControlPersist 30"]
 
-  test("with ControlMaster, ControlPath and ControlPersist in the client's config, the visit's login master is in the client's folder and outlives the visit, while the node master in hq/cm ends with it", async () => {
+  test("with ControlMaster, ControlPath and ControlPersist in the client's config, the visit's login master is in the client's folder and outlives the visit, while the node master in hq/cm-<id> ends with it", async () => {
     const { v, done, paths, mine } = await realVisit(SHARING)
-    // The node's hop rode the login master in the client's folder: hq/cm holds the node master alone.
+    // The node's hop rode the login master in the client's folder: hq/cm-<id> holds the node master alone.
     expect(fs.readdirSync(paths.cm)).toEqual(["node"])
     const logins = fs.readdirSync(mine)
     expect(logins).toHaveLength(1)
@@ -460,7 +460,7 @@ describe.skipIf(!REAL)("a real sshd", () => {
     expect((await runChild(controlArgv(SSH, path.join(mine, logins[0]!), "check"), RUN)).code).toBe(0)
   })
 
-  test("with none set, the visit's masters are in hq/cm, one login serves the visit, and they end with it", async () => {
+  test("with none set, the visit's masters are in hq/cm-<id>, one login serves the visit, and they end with it", async () => {
     const { v, done, paths, mine } = await realVisit(["# The client shares nothing."])
     const names = fs.readdirSync(paths.cm).sort()
     // reach.sh's login to localhost left the one master the node's hop rode, beside the node master.

@@ -1,4 +1,4 @@
-/** The agent's SSH-only policy for learning's shells: hq/ssh read-only for the wrapper and the agent's config, the
+/** The agent's SSH-only policy for learning's shells: hq/<name>/ssh read-only for the wrapper and the agent's config, the
  *  user's ssh config read-only, and nothing else of hq. */
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
@@ -32,7 +32,7 @@ async function home() {
   return { root, dir, ssh, paths, tmpdir }
 }
 
-test("hq's agent policy binds hq/ssh read-only and nothing else of hq, hq/cm included", async () => {
+test("hq's agent policy binds hq/<name>/ssh read-only and nothing else of hq, no cm-* folder included", async () => {
   const h = await home()
   const policy = await agentPolicy(h.paths, { home: h.dir, tmpdir: h.tmpdir, ssh: SSH, env: {} })
   expect(policy.home).toBe(h.dir)
