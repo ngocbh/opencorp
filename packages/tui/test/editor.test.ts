@@ -101,7 +101,7 @@ test.skipIf(process.platform === "win32")(
         },
         async resume() {
           calls.push("resume")
-          // As OpenTUI 0.8 does once the renderer is gone.
+          // As OpenTUI does once the renderer is gone.
           throw new Error("Native scene resume requires completed suspension")
         },
         requestRender() {

@@ -100,6 +100,18 @@ license, the upstream paths and commit, and our paths.
   `packages/tui/src/context/theme.tsx`, `packages/tui/src/editor.ts`, `packages/tui/src/app.tsx`,
   `packages/tui/src/ui/dialog-select.tsx`, `packages/tui/test/fixture/frame.ts`,
   `packages/tui/test/app-lifecycle.test.tsx` and `packages/tui/test/ui/embedded-terminal.test.tsx`.
+- **What:** the TUI's move to OpenTUI 0.9.4, the version current upstream runs, as upstream's move made it: text
+  without padding, which 0.9 draws inside (0.8 drew over it); Markdown without `internalBlockMode`, streaming only
+  while a reply can still grow; the prompt without its deferred size and cursor updates; and the autocomplete's
+  `deleteCells`, which deletes a range of cells without moving the cursor there first.
+- **Upstream:** `packages/tui/src/prompt/content.ts` (`deleteCells`),
+  `packages/tui/src/component/prompt/autocomplete.tsx`, `packages/tui/src/component/prompt/index.tsx`,
+  `packages/tui/src/ui/dialog-select.tsx`, `packages/tui/src/routes/session/index.tsx` and
+  `packages/tui/src/routes/session/message-parts.tsx`, as commit `4c5298bc` (2026-11-19) changed them.
+- **Ours:** `packages/tui/src/prompt/content.ts`, `packages/tui/src/component/prompt/autocomplete.tsx`,
+  `packages/tui/src/component/prompt/index.tsx`, `packages/tui/src/ui/dialog-select.tsx`,
+  `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/routes/profile/index.tsx`,
+  `packages/tui/src/routes/home.tsx` and `packages/tui/test/cli/tui/inline-tool-wrap-snapshot.test.tsx`.
 - **What:** the terminal title and renderer teardown, ported whole: a title is never set on a destroyed or suspended
   renderer and has its control characters replaced with spaces, and a destroyed renderer is left alone. Its tests
   come with it, and the SIGHUP test reads the cleared title from what the renderer writes, as upstream's does.
@@ -420,7 +432,8 @@ installed alongside OpenCorp, under their own licenses. Apart from the Yian code
 of their code is copied here.
 
 OpenTUI's native library (`@opentui/core-<os>-<cpu>`) bundles FFmpeg (LGPL-2.1-or-later), Ghostty, Little CMS, libwebp,
-stb, Wuffs and zlib. The built packages (`packages/cli/script/build.ts`) ship every license and notice file it ships
+stb, Wuffs, Yoga and zlib, with code from Zig's and LLVM's runtimes and, in the Windows builds, MinGW-w64's and its
+gdtoa. The built packages (`packages/cli/script/build.ts`) ship every license and notice file it ships
 (`LICENSE*`, `AUTHORS*`, `PATENTS*`, `FFMPEG-SOURCE.md`) beside the library, under `assets/<package>/`, and refuse a
 package whose license names the LGPL but that lacks `LICENSE-FFMPEG` or `FFMPEG-SOURCE.md`
 (`packages/cli/script/notices.ts`).
