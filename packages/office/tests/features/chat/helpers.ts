@@ -718,6 +718,7 @@ export async function chatOffice(
     bus: office.bus,
     connections: office.connections,
     workers: registry,
+    environ: registry.environ,
     hooks,
     answers,
     transcript,

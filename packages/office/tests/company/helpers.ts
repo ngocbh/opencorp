@@ -85,8 +85,9 @@ nodes:
 output: \${chat.output.turns}
 `
 
-/** `base` without `GIT_*` variables or unset values, and without the user's or system git config. */
-export function gitEnv(base: Record<string, string | undefined> = process.env): Record<string, string> {
+/** `base` (by default only this process's `PATH`, never its home) without `GIT_*` variables or unset values, and
+ *  without the user's or system git config. */
+export function gitEnv(base: Record<string, string | undefined> = { PATH: process.env.PATH }): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(base)) {
     if (!key.startsWith("GIT_") && value !== undefined) env[key] = value

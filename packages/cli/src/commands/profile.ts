@@ -49,7 +49,7 @@ async function edit(editor: string, file: string, text: string): Promise<string 
  * editor left it. Exits 1 on office errors, an empty save, a save that isn't UTF-8 and an unsaved
  * edit, 2 on usage errors, 3 when the office isn't running.
  */
-export const run: CommandRun = async (argv) => {
+export const run: CommandRun = async (argv, env) => {
   let dir: string | undefined
   // The user's latest changed text until the office accepts it; kept if `opencorp` exits first.
   let unsaved: string | undefined
@@ -67,9 +67,9 @@ export const run: CommandRun = async (argv) => {
     }
     const [sub, name, ...rest] = positionals
     if (sub !== "edit" || name === undefined || rest.length > 0) throw new Usage("expected edit PERSON")
-    const editor = process.env.VISUAL || process.env.EDITOR
+    const editor = env.VISUAL || env.EDITOR
     if (!editor) throw new Usage("set $EDITOR (or $VISUAL)")
-    const client = officeClient(localIdentity())
+    const client = officeClient(localIdentity(env), env)
     const who = await person(client, name)
     let base = await client.profiles.get(who.handle)
     // mkdtemp makes the dir private (0700), so other users can't read or swap the file.
@@ -118,7 +118,7 @@ export const run: CommandRun = async (argv) => {
       }
     }
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning(e)
+    if (e instanceof OfficeUnavailable) return officeNotRunning(e, env)
     // parseArgs throws a TypeError coded ERR_PARSE_ARGS_… for an unknown flag.
     const parse = e instanceof TypeError && "code" in e && String(e.code).startsWith("ERR_PARSE")
     const usage = e instanceof Usage || parse

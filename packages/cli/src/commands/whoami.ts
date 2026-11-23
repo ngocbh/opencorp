@@ -22,7 +22,7 @@ const USAGE = "usage: opencorp whoami"
  * `opencorp whoami`: the handle and device in this device's identity, and who the office takes it to be. With no
  * identity file it says to log in; a file it can't use gets only the warning that says why.
  */
-export const run: CommandRun = async (argv) => {
+export const run: CommandRun = async (argv, env) => {
   try {
     if (parseArgs({ args: argv, options: { help: { type: "boolean", short: "h" } } }).values.help) {
       console.log(USAGE)
@@ -32,11 +32,11 @@ export const run: CommandRun = async (argv) => {
     console.error(`opencorp whoami: ${e instanceof Error ? e.message : e}`)
     return 2
   }
-  const me = localIdentity()
-  if (me) console.log(`This device: ${me.device}, as @${me.handle} (${identityPath()})`)
-  else if (absent(identityPath())) console.log("This device has no identity; run `opencorp login`")
+  const me = localIdentity(env)
+  if (me) console.log(`This device: ${me.device}, as @${me.handle} (${identityPath(env)})`)
+  else if (absent(identityPath(env))) console.log("This device has no identity; run `opencorp login`")
   try {
-    const office = await officeClient(me).whoami()
+    const office = await officeClient(me, env).whoami()
     console.log(
       office.device
         ? `The office: @${office.person}, from device ${office.device}`
@@ -44,7 +44,7 @@ export const run: CommandRun = async (argv) => {
     )
     return 0
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning(e)
+    if (e instanceof OfficeUnavailable) return officeNotRunning(e, env)
     console.error(`opencorp whoami: ${e instanceof Error ? e.message : e}`)
     return 1
   }

@@ -16,6 +16,7 @@ import { Terminal } from "../../../src/tools/terminal/terminal.ts"
 import { newId } from "../../../src/util/ids.ts"
 import { waitFor } from "../../helpers.ts"
 import { plainShells } from "../../tools/terminal/helpers.ts"
+import { testEnviron } from "../../runtime/worker/helpers.ts"
 
 /** The built-in agent's flow, in the chat flow's shape. */
 export const FLOW = fs.readFileSync(new URL("../../fixtures/local_chat.yaml", import.meta.url), "utf8")
@@ -99,6 +100,8 @@ export async function startHost(
   host = await LocalHost.start(spec, {
     log: () => {},
     ...o,
+    // The workers start on a temp home, under the folder this host removes once closed.
+    environ: o.environ ?? testEnviron(path.join(top, "env")),
     spawn: (dir, env, options) => {
       const out = (o.spawn ?? spawnProcess)(dir, env, options)
       if (out.child.pid !== undefined) spawned.push({ dir, pid: out.child.pid })

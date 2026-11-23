@@ -14,9 +14,9 @@ import { Delivery, type Job } from "./job.ts"
 import { reap } from "./reaper.ts"
 import { errorName, type JobWorker, OfficeRequests, type WorkerHandlers } from "./rpc.ts"
 
-/** The environment a worker starts with: `INHERITED_ENV` and `LC_*` from the office's (`environ`), set values
- *  only. */
-export function workerEnv(environ: Env = process.env): Record<string, string> {
+/** The environment a worker starts with: `INHERITED_ENV` and `LC_*` from the office's (`environ`, which every caller
+ *  names), set values only. */
+export function workerEnv(environ: Env): Record<string, string> {
   const kept: readonly string[] = INHERITED_ENV
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(environ)) {
@@ -387,7 +387,8 @@ export interface WorkerPool {
 export class WorkerRegistry implements WorkerPool {
   readonly #store: Store
   readonly #log: SpawnLog
-  readonly #environ: Env
+  /** The office's environment its workers start from (`workerEnv`). */
+  readonly environ: Env
   readonly #maxFrame: number | undefined
   readonly #spawn: typeof spawnProcess
   readonly #onExit: (worker: Worker) => void
@@ -397,30 +398,31 @@ export class WorkerRegistry implements WorkerPool {
   readonly #parked = new Map<string, { worker: Worker; release: () => void }>()
   #closed = false
 
-  /** A registry recording its workers in `store`. Workers start with `workerEnv(environ)`, frames capped at
-   *  `maxFrame`, through `spawn`; `log` gets the spawn code's lines; `onExit` runs once a started worker is gone and
-   *  forgotten, before its `handlers.exited`. At most `maxParked` workers stay `park`ed. */
+  /** A registry recording its workers in `store`. Workers start with `workerEnv(environ)` (the office's environment,
+   *  which the caller names: the daemon's own, a test's temp one), frames capped at `maxFrame`, through `spawn`; `log`
+   *  gets the spawn code's lines; `onExit` runs once a started worker is gone and forgotten, before its
+   *  `handlers.exited`. At most `maxParked` workers stay `park`ed. */
   constructor(
     store: Store,
     {
       log = noLog,
-      environ = process.env,
+      environ,
       maxFrame,
       spawn = spawnProcess,
       onExit = () => {},
       maxParked = MAX_PARKED,
     }: {
       log?: SpawnLog
-      environ?: Env
+      environ: Env
       maxFrame?: number
       spawn?: typeof spawnProcess
       onExit?: (worker: Worker) => void
       maxParked?: number
-    } = {},
+    },
   ) {
     this.#store = store
     this.#log = neverThrows(log)
-    this.#environ = environ
+    this.environ = environ
     this.#maxFrame = maxFrame
     this.#spawn = spawn
     this.#onExit = onExit
@@ -444,7 +446,7 @@ export class WorkerRegistry implements WorkerPool {
     if (this.#closed) throw new RegistryClosed()
     if (this.#workers.has(sessionId)) throw new WorkerExists(sessionId)
     reap(this.#store, sessionId)
-    const spawnEnv = { ...workerEnv(this.#environ), ...env }
+    const spawnEnv = { ...workerEnv(this.environ), ...env }
     const { child, channel } = this.#spawn(sessionDir, spawnEnv, { maxFrame: this.#maxFrame })
     let worker: Worker
     try {

@@ -1,8 +1,9 @@
 import fs from "node:fs"
 import { parseArgs } from "node:util"
 import { createOfficeClient, UnknownDevice } from "@opencorp/client"
-import { defaultSocket } from "@opencorp/client/node"
+import { defaultSocket, type Env } from "@opencorp/client/node"
 import { tuiAssetRoot } from "@opencorp/office/platform"
+import { withTuiHome } from "../chat"
 import type { CommandRun } from "../main"
 import { localIdentity, officeDown, officeNotRunning } from "../office"
 import { terminal } from "../setup"
@@ -64,10 +65,11 @@ export const realTuiDeps: TuiDeps = {
 }
 
 /**
- * `opencorp [tui]`: opens the TUI on this folder. Refuses, in one line and before it asks the office anything, when
- * the assets folder is missing or there's no terminal to draw on, so `--prompt` without a terminal sends nothing.
+ * `opencorp [tui]`: opens the TUI on this folder, for the office at `env`'s home. Refuses, in one line and before it
+ * asks the office anything, when the assets folder is missing or there's no terminal to draw on, so `--prompt` without
+ * a terminal sends nothing.
  */
-export async function tui(argv: string[], deps: TuiDeps = realTuiDeps): Promise<number> {
+export async function tui(argv: string[], env: Env, deps: TuiDeps = realTuiDeps): Promise<number> {
   let parsed
   try {
     parsed = parseTuiArgs(argv)
@@ -94,11 +96,11 @@ export async function tui(argv: string[], deps: TuiDeps = realTuiDeps): Promise<
     console.error("opencorp: the TUI needs a terminal (stdin and stdout a TTY, TERM set and not dumb)")
     return 1
   }
-  const socket = defaultSocket()
+  const socket = defaultSocket(env)
   // Asked before the TUI loads, so no office is one line, not a TUI waiting on the socket.
   const down = await officeDown(socket)
-  if (down) return officeNotRunning(down)
-  const token = localIdentity()?.token
+  if (down) return officeNotRunning(down, env)
+  const token = localIdentity(env)?.token
   // Likewise a device the office refuses: one line, not a TUI that can't load anything. Who the office takes this
   // TUI as goes to it: only a session's approver is asked to type a shell's password.
   let person: string | undefined
@@ -119,10 +121,11 @@ export async function tui(argv: string[], deps: TuiDeps = realTuiDeps): Promise<
     import("effect"),
     import("@opencorp/tui"),
   ])
-  await Effect.runPromise(
-    runTui({ socket, token, person, cwd: process.cwd(), args }).pipe(Effect.provide(Global.layer)),
+  // The TUI keeps its state under `env`'s home: the office that opens after `opencorp init --home H` is H's.
+  await withTuiHome(env.OPENCORP_HOME, () =>
+    Effect.runPromise(runTui({ socket, token, person, cwd: process.cwd(), args }).pipe(Effect.provide(Global.layer))),
   )
   return typeof process.exitCode === "number" ? process.exitCode : 0
 }
 
-export const run: CommandRun = (argv) => tui(argv)
+export const run: CommandRun = (argv, env) => tui(argv, env)

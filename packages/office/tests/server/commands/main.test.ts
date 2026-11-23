@@ -17,13 +17,14 @@ import { afterStop, main, type Setup } from "../../../src/server/commands/main.t
 import { type OnboardOptions, SET_UP, setupConnectionFile, WHO } from "../../../src/features/setup/onboard.ts"
 import { KeyboardInterrupt, type Prompter, TtyPrompter } from "../../../src/features/setup/prompts.ts"
 import type { Unread } from "../../../src/runtime/service/service.ts"
-import { selfCommand, selfSpawnEnv } from "../../../src/platform.ts"
+import { selfCommand } from "../../../src/platform.ts"
 import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
 import { OfficePaths } from "../../../src/util/home.ts"
 import { fakeLlm } from "../../features/chat/helpers.ts"
-import { git, gitEnv } from "../../company/helpers.ts"
+import { git } from "../../company/helpers.ts"
 import { shortDir, tempDir } from "../../helpers.ts"
 import { daemonHost, killedAtEnd, makeHost, NO_LISTING, Runner, SRC, standIn } from "../../features/setup/helpers.ts"
+import { ownerEnv } from "../../../src/testing/office.ts"
 
 // onTestFinished hooks inherit it, and a daemon's stop can take 25 s plus a SIGKILL.
 setDefaultTimeout(30_000)
@@ -608,7 +609,7 @@ function realOffice(spawned: ReturnType<typeof killedAtEnd>) {
   const dir = shortDir()
   fs.mkdirSync(path.join(dir, "office"), { mode: 0o700 })
   fs.writeFileSync(path.join(dir, "office", "hq.json"), '{"tcp": false}')
-  const environ = { ...gitEnv(selfSpawnEnv(process.env)), HOME: tempDir() }
+  const environ = ownerEnv(tempDir())
   const host = daemonHost(dir, spawned)
   const install = async (argv: string[], stdin: Readable = Readable.from([])) => {
     const s = { ...standIns(dir), host, environ, stdin }
@@ -820,8 +821,7 @@ function childEnv(dir: string): Record<string, string> {
     fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho "${name} $*" >> ${log}\nexit 1\n`, { mode: 0o755 })
   }
   return {
-    ...gitEnv(selfSpawnEnv(process.env)),
-    HOME: path.join(dir, "user"),
+    ...ownerEnv(path.join(dir, "user")),
     OPENCORP_HOME: path.join(dir, "user", ".opencorp"),
     PATH: `${bin}:${process.env.PATH}`,
   }

@@ -1,4 +1,4 @@
-import { afterEach, expect, onTestFinished, test } from "bun:test"
+import { afterAll, expect, onTestFinished, test } from "bun:test"
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
@@ -32,10 +32,9 @@ const notRunningAt = (home: string) =>
 
 const WRAPPER = path.resolve(import.meta.dir, "../bin/opencorp")
 
-const saved = { ...process.env }
-afterEach(() => {
-  process.env = { ...saved }
-})
+// The home folder the commands get, in place of the real one: the install runs in it.
+const HOME_DIR = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-office-")))
+afterAll(() => fs.rmSync(HOME_DIR, { recursive: true, force: true }))
 
 /**
  * Runs the wrapper with `args` in `cwd` with exactly `env` and stdin closed, leading its own process group; resolves
@@ -61,34 +60,34 @@ async function runWrapper(args: string[], cwd: string, env: Record<string, strin
   }
 }
 
-/** Deps whose spawn records each call and resolves to `code`, run in the real home dir. */
-function fake(code = 0, spawnCwd = () => fs.realpathSync(os.homedir())) {
+/** Deps whose spawn records each call and resolves to `code`. */
+function fake(code = 0) {
   const calls: { argv: string[]; cwd: string; env: Record<string, string> }[] = []
   const deps: Deps = {
     spawn: async (argv, { cwd, env }) => {
       calls.push({ argv, cwd, env })
       return code
     },
-    spawnCwd,
   }
   return { deps, calls }
 }
 
 /** The arguments `installSpawn` passes the install for `command` and `args`, run from `/somewhere`. */
 function passed(command: string, args: string[]) {
-  return installSpawn(command, args, {}, () => "/somewhere").argv.slice(selfCommand().length + 2)
+  return installSpawn(command, args, {}, () => "/somewhere", HOME_DIR).argv.slice(selfCommand().length + 2)
 }
 
-test("installSpawn runs the office install entry in this binary with the setup env and the home dir as cwd", () => {
+test("installSpawn runs the office install entry in this binary with the setup env, in the folder it is given", () => {
   const spec = installSpawn(
     "doctor",
     ["--home", "/h"],
     { PATH: "/bin", BUN_OPTIONS: "x", NODE_OPTIONS: "y", LD_PRELOAD: "z", SSH_AUTH_SOCK: "s" },
     () => "/somewhere",
+    HOME_DIR,
   )
   expect(spec.argv).toEqual([...selfCommand(), "install", "doctor", "--home", "/h"])
   expect(spec.env).toEqual({ PATH: "/bin", SSH_AUTH_SOCK: "s" })
-  expect(spec.cwd).toBe(fs.realpathSync(os.homedir()))
+  expect(spec.cwd).toBe(HOME_DIR)
 })
 
 test("a relative home is made absolute against the callers folder; ~ and empty values pass unchanged", () => {
@@ -101,7 +100,7 @@ test("a relative home is made absolute against the callers folder; ~ and empty v
   for (const args of [["--home", "~/x"], ["--home=~"], ["--home="], ["--home", "-x"], ["--home", "/abs"], ["--home"]])
     expect(passed("start", args)).toEqual(args)
   expect(passed("doctor", ["--home", "a", "--home=b"])).toEqual(["--home", "/somewhere/a", "--home=/somewhere/b"])
-  const env = (value: string) => installSpawn("start", [], { OPENCORP_HOME: value }, () => "/somewhere").env
+  const env = (value: string) => installSpawn("start", [], { OPENCORP_HOME: value }, () => "/somewhere", HOME_DIR).env
   expect(env("rel")).toEqual({ OPENCORP_HOME: "/somewhere/rel" })
   expect(env("-x")).toEqual({ OPENCORP_HOME: "/somewhere/-x" })
   for (const value of ["~/o", "", "/abs"]) expect(env(value)).toEqual({ OPENCORP_HOME: value })
@@ -112,7 +111,7 @@ test("a relative local from path is made absolute; urls and scp paths pass uncha
   try {
     fs.mkdirSync(path.join(work, "acme"))
     const from = (command: string, args: string[]) =>
-      installSpawn(command, args, {}, () => work).argv.slice(selfCommand().length + 2)
+      installSpawn(command, args, {}, () => work, HOME_DIR).argv.slice(selfCommand().length + 2)
     expect(from("onboard", ["--from", "acme"])).toEqual(["--from", path.join(work, "acme")])
     expect(from("onboard", ["--from=acme"])).toEqual([`--from=${path.join(work, "acme")}`])
     for (const value of ["missing", "https://x/y.git", "git@host:acme.git", "~/acme", "/abs"])
@@ -127,25 +126,24 @@ test("the callers folder is read only when a relative value needs it", () => {
   const gone = () => {
     throw Object.assign(new Error("no cwd"), { code: "ENOENT" })
   }
-  expect(installSpawn("start", ["--home", "/abs"], {}, gone).argv.slice(-2)).toEqual(["--home", "/abs"])
-  expect(installSpawn("start", [], { OPENCORP_HOME: "~/o" }, gone).argv.at(-1)).toBe("start")
-  expect(installSpawn("start", ["--home", "rel"], {}, gone).argv.slice(-2)).toEqual(["--home", "rel"])
-  expect(installSpawn("start", [], { OPENCORP_HOME: "rel" }, gone).env).toEqual({ OPENCORP_HOME: "rel" })
+  expect(installSpawn("start", ["--home", "/abs"], {}, gone, HOME_DIR).argv.slice(-2)).toEqual(["--home", "/abs"])
+  expect(installSpawn("start", [], { OPENCORP_HOME: "~/o" }, gone, HOME_DIR).argv.at(-1)).toBe("start")
+  expect(installSpawn("start", ["--home", "rel"], {}, gone, HOME_DIR).argv.slice(-2)).toEqual(["--home", "rel"])
+  expect(installSpawn("start", [], { OPENCORP_HOME: "rel" }, gone, HOME_DIR).env).toEqual({ OPENCORP_HOME: "rel" })
 })
 
 test("a missing home folder is one line and exit 1", async () => {
-  const { deps, calls } = fake(0, () => {
-    throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" })
-  })
+  const { deps, calls } = fake(0)
+  const missing = path.join(HOME_DIR, "missing")
   const err: string[] = []
   const error = console.error
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
-    expect(await install("start", [], deps)).toBe(1)
+    expect(await install("start", [], { HOME: missing }, deps)).toBe(1)
   } finally {
     console.error = error
   }
-  expect(err).toEqual([`opencorp start: your home folder ${os.homedir()} doesn't exist`])
+  expect(err).toEqual([`opencorp start: your home folder ${missing} doesn't exist`])
   expect(calls).toEqual([])
 })
 
@@ -157,13 +155,16 @@ test("start, stop, restart, doctor and offboard run the install with their flags
     { cmd: "doctor", run: doctor, code: 1, flags: ["--home", "/h"] },
     { cmd: "offboard", run: offboard, code: 1, flags: ["--yes", "--delete-company", "--home", "/h"] },
   ]
+  // A home folder by a path that isn't its real one: the install runs in the real one.
+  const link = path.join(fs.mkdtempSync(path.join(HOME_DIR, "link-")), "home")
+  fs.symlinkSync(HOME_DIR, link)
   for (const { cmd, run, code, flags } of runs) {
     const { deps, calls } = fake(code)
-    expect(await run(flags, deps)).toBe(code)
+    expect(await run(flags, { HOME: link, BUN_OPTIONS: "x" }, deps)).toBe(code)
     expect(calls).toHaveLength(1)
     expect(calls[0].argv).toEqual([...selfCommand(), "install", cmd, ...flags])
-    expect(calls[0].cwd).toBe(fs.realpathSync(os.homedir()))
-    expect(calls[0].env.BUN_OPTIONS).toBeUndefined()
+    expect(calls[0].cwd).toBe(HOME_DIR)
+    expect(calls[0].env).toEqual({ HOME: link })
   }
   const { commands } = await import("../src/main")
   expect(commands.restart.summary).toBe("Stop the office and start it again")
@@ -428,7 +429,7 @@ test("the probe tells an office that's too slow or answers with an error from on
 test("`opencorp` and login on an office whose health check fails say so, not that it crashed", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
   fs.mkdirSync(path.join(home, "office"))
-  process.env.OPENCORP_HOME = home
+  const env = { HOME: HOME_DIR, OPENCORP_HOME: home }
   const unix = path.join(home, "office", "office.sock")
   const server = Bun.serve({ unix, fetch: () => new Response("", { status: 503 }) })
   const err: string[] = []
@@ -436,8 +437,8 @@ test("`opencorp` and login on an office whose health check fails say so, not tha
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
     // On a terminal: without one, the TUI refuses before it asks the office.
-    expect(await tui(["--continue"], { terminal: () => true, assetRoot: () => null })).toBe(3)
-    expect(await main(["login", "--device", "mac"])).toBe(3)
+    expect(await tui(["--continue"], env, { terminal: () => true, assetRoot: () => null })).toBe(3)
+    expect(await main(["login", "--device", "mac"], env)).toBe(3)
     const line = "The office answered its health check with HTTP 503. Run `opencorp doctor`."
     expect(err).toEqual([line, line])
     expect(fs.existsSync(path.join(home, "identity.json"))).toBe(false)
@@ -450,13 +451,13 @@ test("`opencorp` and login on an office whose health check fails say so, not tha
 
 test("`opencorp` with no office says so and exits 3 before loading the TUI", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
-  process.env.OPENCORP_HOME = home
+  const env = { HOME: HOME_DIR, OPENCORP_HOME: home }
   const err: string[] = []
   const error = console.error
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
     // On a terminal: without one, the TUI refuses before it asks the office.
-    expect(await tui(["--continue"], { terminal: () => true, assetRoot: () => null })).toBe(3)
+    expect(await tui(["--continue"], env, { terminal: () => true, assetRoot: () => null })).toBe(3)
     expect(err).toEqual([notRunningAt(home)])
   } finally {
     console.error = error
@@ -466,18 +467,18 @@ test("`opencorp` with no office says so and exits 3 before loading the TUI", asy
 
 test("officeNotRunning says why a socket that's there can't be reached, and returns 3 either way", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
-  process.env.OPENCORP_HOME = home
+  const env = { HOME: HOME_DIR, OPENCORP_HOME: home }
   const socket = path.join(home, "office.sock")
   const lines: string[] = []
   const print = (line: string) => void lines.push(line)
   try {
-    expect(officeNotRunning(socket, print)).toBe(3)
-    expect(officeNotRunning(new OfficeUnavailable(socket), print)).toBe(3)
+    expect(officeNotRunning(socket, env, print)).toBe(3)
+    expect(officeNotRunning(new OfficeUnavailable(socket), env, print)).toBe(3)
     await staleSocket(socket)
-    expect(officeNotRunning(new OfficeUnavailable(socket), print)).toBe(3)
-    expect(officeNotRunning(new OfficeDropped(socket, "POST", "/sessions/S1/end"), print)).toBe(3)
-    expect(officeNotRunning(new OfficeTimeout("GET", "/health", 2000), print)).toBe(3)
-    expect(officeNotRunning(new OfficeError(500, "bad_response", "GET /health: HTTP 500"), print)).toBe(3)
+    expect(officeNotRunning(new OfficeUnavailable(socket), env, print)).toBe(3)
+    expect(officeNotRunning(new OfficeDropped(socket, "POST", "/sessions/S1/end"), env, print)).toBe(3)
+    expect(officeNotRunning(new OfficeTimeout("GET", "/health", 2000), env, print)).toBe(3)
+    expect(officeNotRunning(new OfficeError(500, "bad_response", "GET /health: HTTP 500"), env, print)).toBe(3)
     expect(lines).toEqual([
       notRunningAt(home),
       notRunningAt(home),

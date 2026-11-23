@@ -12,8 +12,9 @@ import { onTestFinished } from "bun:test"
 import { args } from "../../src/util/proc.ts"
 import { installFakeClaude } from "../../src/testing/fake_claude.ts"
 import { FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import { ownerEnv } from "../../src/testing/office.ts"
 import { OfficePaths } from "../../src/util/home.ts"
-import { git, gitEnv } from "../company/helpers.ts"
+import { git } from "../company/helpers.ts"
 import { cwdOf, ps, psStat, waitFor } from "../helpers.ts"
 
 export const REPO = path.resolve(import.meta.dirname, "../../../..")
@@ -21,7 +22,6 @@ export const REPO = path.resolve(import.meta.dirname, "../../../..")
 export const OPENCORP = path.join(REPO, "packages/cli/bin/opencorp")
 export const FAKE_CODEX = path.join(REPO, "packages/office/src/testing/fake_codex.ts")
 const SERVICE_TOOLS = ["launchctl", "systemctl", "loginctl", "tmux"]
-const SSH_VARS = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
 /** Python's `wait_for` default. */
 const WAIT = 40_000
 /** The pairing URL `opencorp hq` prints for HQ's TCP listener: its port and code. */
@@ -233,15 +233,14 @@ export async function openOffice({
   }
 
   llm = await FakeLLM.start()
-  const env = gitEnv(process.env)
-  // The CLI runs as from a local terminal with no harness override or config folder, whatever this process was
-  // started with.
-  for (const name of ["OPENCORP_CODEX_BIN", "OPENCORP_CLAUDE_BIN", "CLAUDE_CONFIG_DIR", ...SSH_VARS]) delete env[name]
-  Object.assign(env, {
+  // The CLI runs as from a local terminal on a temp owner home, with no harness override or config folder, whatever
+  // this process was started with.
+  const env = {
+    ...ownerEnv(path.join(root, "owner")),
     PATH: [tools, process.env.PATH].filter(Boolean).join(":"),
     OPENCORP_HOME: home,
     OPENCORP_BUN: process.execPath,
-  })
+  }
   const office = new RunningOffice(root, llm, env)
   if (onboard) await office.onboard({ device })
   return office
@@ -295,7 +294,7 @@ export class RunningOffice {
       throw new Error(`opencorp init exited ${done.code}:\n${done.stdout}${done.stderr}`)
     this.llm.forget() // tests count the office's model calls from the first
     if (device) {
-      // The client's identityPath() reads OPENCORP_HOME from this process's env, which a test never changes.
+      // The office's identity.json, read by its path: this process's env names no office.
       const file = path.join(this.home, "identity.json")
       const identity = readIdentity(file)
       if (identity === undefined) throw new Error(`init left no identity at ${file}`)

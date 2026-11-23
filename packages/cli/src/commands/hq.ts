@@ -2,9 +2,10 @@
 // its HQ; anywhere else, the office's visit reaches HQ over SSH (`@opencorp/office/features/reach/run`). The code is only
 // ever printed or put in a 0600 file: never in a process's arguments, where other users could read it.
 import { isMissingRoute, isNotImplemented, OfficeTimeout, OfficeUnavailable } from "@opencorp/client"
-import { defaultSocket, opencorpHome } from "@opencorp/client/node"
+import { defaultSocket, type Env, opencorpHome } from "@opencorp/client/node"
 import { otherPort, SETTINGS_IGNORED } from "@opencorp/office/server/hq/config"
 import type { VisitOptions } from "@opencorp/office/features/reach/run"
+import type { LocalSession } from "@opencorp/office/server/local"
 import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
 import os from "node:os"
 import path from "node:path"
@@ -26,8 +27,6 @@ export const LOCAL_PORT = 49381
  * port is `LOCAL_PORT`, since the socket forward is the fallback for when that port is busy and mustn't bind it too.
  */
 export const socketPort = (port: number) => (port === LOCAL_PORT ? LOCAL_PORT + 1 : LOCAL_PORT)
-
-type Env = Record<string, string | undefined>
 
 /** Whether this is an SSH session: sshd sets `SSH_CONNECTION` and `SSH_CLIENT`, and `SSH_TTY` with a terminal. */
 const overSsh = (env: Env) => !!(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
@@ -171,6 +170,7 @@ const NO_HQ = "opencorp hq: this office has no HQ yet; update the checkout and r
 
 /** What `hq` reads from and does to the machine; tests pass fakes. */
 export type HqDeps = {
+  /** The environment: its office home and socket, and whether this is an SSH session or has a display. */
   env: Env
   platform: string
   hostname(): string
@@ -182,8 +182,9 @@ export type HqDeps = {
   visit(options: VisitOptions): Promise<number>
 }
 
-export const realHqDeps: HqDeps = {
-  env: process.env,
+/** The real machine, with the environment `env`. */
+export const realHqDeps = (env: Env): HqDeps => ({
+  env,
   platform: process.platform,
   hostname: () => os.hostname(),
   spawn: (argv) => void Bun.spawn(argv, { stdio: ["ignore", "ignore", "ignore"] }).unref(),
@@ -192,11 +193,13 @@ export const realHqDeps: HqDeps = {
   visit: async (options) => {
     // Loaded only for a visit: it brings in yian and the SSH plumbing.
     const v = await import("@opencorp/office/features/reach/run")
-    const deps = v.realVisitDeps(opencorpHome())
-    // Learning is a chat in the TUI: where the TUI can't draw, the visit refuses it.
-    return v.visit(options, terminal() ? { ...deps, learnChat: localChat } : deps)
+    const deps = v.realVisitDeps(opencorpHome(env))
+    // Learning is a chat in the TUI: where the TUI can't draw, the visit refuses it. Its TUI keeps its state under
+    // `env`'s home too.
+    const learnChat = (session: LocalSession) => localChat(session, env.OPENCORP_HOME)
+    return v.visit(options, terminal() ? { ...deps, learnChat } : deps)
   },
-}
+})
 
 /** No office answers on office.sock (`OfficeDropped` is an `OfficeUnavailable`): these exit 3, as `officeNotRunning`
  *  says why. */
@@ -205,10 +208,10 @@ const noOffice = (e: unknown) => e instanceof OfficeUnavailable || e instanceof 
 /** `--check --json`: GET /hq on the local office as one line of JSON. Never mints, never leaves this machine. */
 async function checkJson(deps: HqDeps): Promise<number> {
   try {
-    deps.print(JSON.stringify(await officeClient(localIdentity()).hq.status()))
+    deps.print(JSON.stringify(await officeClient(localIdentity(deps.env), deps.env).hq.status()))
     return 0
   } catch (e) {
-    if (noOffice(e)) return officeNotRunning(e, deps.error)
+    if (noOffice(e)) return officeNotRunning(e, deps.env, deps.error)
     deps.error(isMissingRoute(e) || isNotImplemented(e) ? NO_HQ : `opencorp hq: ${e instanceof Error ? e.message : e}`)
     return 1
   }
@@ -232,7 +235,7 @@ type Values = {
  * Where none answers, it reaches HQ over SSH (`--port` picks the local port, `--relearn` learns the path again with
  * the agent); `--json` and `--check` never do.
  */
-export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<number> {
+export async function hq(argv: string[], deps: HqDeps): Promise<number> {
   let values: Values
   try {
     ;({ values } = parseArgs({
@@ -274,7 +277,7 @@ export async function hq(argv: string[], deps: HqDeps = realHqDeps): Promise<num
     return remoteOnly === null ? local(values, deps) : usage(`${remoteOnly} is for reaching HQ from another machine`, deps)
   // Only an office that isn't there takes the remote path: a slow one, or one answering with an error, is reported
   // by the local path, as before.
-  if ((await officeDown(defaultSocket())) instanceof OfficeUnavailable) {
+  if ((await officeDown(defaultSocket(deps.env))) instanceof OfficeUnavailable) {
     if (values.handle !== undefined) return usage("--handle works only on HQ's machine", deps)
     return deps.visit({
       signIn: !!values["sign-in"],
@@ -298,8 +301,8 @@ function usage(message: string, deps: HqDeps): number {
 async function local(values: Values, deps: HqDeps): Promise<number> {
   const noOpen = !!values["no-open"]
   try {
-    const office = officeClient(localIdentity())
-    const hqJson = path.join(opencorpHome(), "office", "hq.json")
+    const office = officeClient(localIdentity(deps.env), deps.env)
+    const hqJson = path.join(opencorpHome(deps.env), "office", "hq.json")
     // Read before minting, so no code is made when HQ can't be reached. Unreadable (an older office, say): as before.
     const status = await office.hq.status().catch(() => null)
     const tcp = status?.tcp
@@ -344,11 +347,11 @@ async function local(values: Values, deps: HqDeps): Promise<number> {
     }
     return 0
   } catch (e) {
-    if (noOffice(e)) return officeNotRunning(e, deps.error)
+    if (noOffice(e)) return officeNotRunning(e, deps.env, deps.error)
     if (isMissingRoute(e) || isNotImplemented(e)) deps.error(NO_HQ)
     else deps.error(`opencorp hq: ${e instanceof Error ? e.message : e}`)
     return 1
   }
 }
 
-export const run: CommandRun = (argv) => hq(argv)
+export const run: CommandRun = (argv, env) => hq(argv, realHqDeps(env))

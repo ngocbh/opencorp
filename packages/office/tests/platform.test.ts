@@ -308,7 +308,7 @@ test(
         "--outfile",
         "out/probe",
       ],
-      { cwd: dir, env: process.env, limit: 300_000 },
+      { cwd: dir, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: tempDir() }, limit: 300_000 },
     )
     expect(build.code, build.stdout + build.stderr).toBe(0)
 

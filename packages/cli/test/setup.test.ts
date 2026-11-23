@@ -1,20 +1,17 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { selfCommand } from "@opencorp/office/platform"
 import { type SetupDeps, drawable, setUp } from "../src/setup"
 
-const HOME_DIR = fs.realpathSync(os.homedir())
-
-const saved = { ...process.env }
-afterEach(() => {
-  process.env = { ...saved }
-})
+// The home folder the commands get, in place of the real one: the install runs in it.
+const HOME_DIR = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-setup-")))
+afterAll(() => fs.rmSync(HOME_DIR, { recursive: true, force: true }))
 
 /** SetupDeps whose install exits `code`, on a terminal it can draw on or not; the office exits 7. Each records what
- *  it got: the install's argv and folder in `calls`, its env in `envs`. */
-function fake(opts: { code?: number; terminal?: boolean; spawnCwd?: () => string } = {}) {
+ *  it got: the install's argv and folder in `calls`, its env in `envs`, and the office home it opened in `offices`. */
+function fake(opts: { code?: number; terminal?: boolean } = {}) {
   const calls: { argv: string[]; cwd: string }[] = []
   const envs: Record<string, string>[] = []
   const offices: (string | undefined)[] = []
@@ -24,15 +21,17 @@ function fake(opts: { code?: number; terminal?: boolean; spawnCwd?: () => string
       envs.push(env)
       return opts.code ?? 0
     },
-    spawnCwd: opts.spawnCwd ?? (() => HOME_DIR),
     terminal: () => opts.terminal ?? true,
-    openOffice: async () => {
-      offices.push(process.env.OPENCORP_HOME)
+    openOffice: async (env) => {
+      offices.push(env.OPENCORP_HOME)
       return 7
     },
   }
   return { deps, calls, envs, offices }
 }
+
+/** The env the commands run with: `HOME_DIR` as HOME, and `more`. */
+const env = (more: Record<string, string> = {}) => ({ HOME: HOME_DIR, ...more })
 
 const COMMANDS = ["init", "onboard"] as const
 const install = (command: string, ...argv: string[]) => [...selfCommand(), "install", command, ...argv]
@@ -40,7 +39,7 @@ const install = (command: string, ...argv: string[]) => [...selfCommand(), "inst
 test("init and onboard run the install on this terminal, then open the office where it draws", async () => {
   for (const command of COMMANDS) {
     const { deps, calls, offices } = fake()
-    expect(await setUp(command, ["--service", "tmux"], deps)).toBe(7)
+    expect(await setUp(command, ["--service", "tmux"], env(), deps)).toBe(7)
     expect(calls).toEqual([{ argv: install(command, "--service", "tmux"), cwd: HOME_DIR }])
     expect(offices).toHaveLength(1)
   }
@@ -49,11 +48,11 @@ test("init and onboard run the install on this terminal, then open the office wh
 test("--provider-stdin or no drawable terminal opens no office", async () => {
   for (const command of COMMANDS) {
     const piped = fake({ code: 4 })
-    expect(await setUp(command, ["--service", "tmux", "--provider-stdin"], piped.deps)).toBe(4)
+    expect(await setUp(command, ["--service", "tmux", "--provider-stdin"], env(), piped.deps)).toBe(4)
     expect(piped.calls).toEqual([{ argv: install(command, "--service", "tmux", "--provider-stdin"), cwd: HOME_DIR }])
     expect(piped.offices).toEqual([])
     const undrawn = fake({ terminal: false, code: 5 })
-    expect(await setUp(command, ["--service", "background"], undrawn.deps)).toBe(5)
+    expect(await setUp(command, ["--service", "background"], env(), undrawn.deps)).toBe(5)
     expect(undrawn.calls).toEqual([{ argv: install(command, "--service", "background"), cwd: HOME_DIR }])
     expect(undrawn.offices).toEqual([])
   }
@@ -64,7 +63,7 @@ for (const command of COMMANDS) {
     for (const flag of ["-h", "--help"]) {
       test(`with ${flag}, runs the install on this terminal and opens no office`, async () => {
         const { deps, calls, offices } = fake({ code: 4 })
-        expect(await setUp(command, ["--service", "tmux", flag], deps)).toBe(4)
+        expect(await setUp(command, ["--service", "tmux", flag], env(), deps)).toBe(4)
         expect(calls).toEqual([{ argv: install(command, "--service", "tmux", flag), cwd: HOME_DIR }])
         expect(offices).toEqual([])
       })
@@ -72,7 +71,7 @@ for (const command of COMMANDS) {
 
     test("an install that exits non-zero returns its code and opens no office", async () => {
       const { deps, offices } = fake({ code: 130 })
-      expect(await setUp(command, [], deps)).toBe(130)
+      expect(await setUp(command, [], env(), deps)).toBe(130)
       expect(offices).toEqual([])
     })
 
@@ -85,10 +84,9 @@ for (const command of COMMANDS) {
         [["--home=/tmp/h"], ["--home=/tmp/h"], "/tmp/h"],
         [["--home", "rel"], ["--home", rel], rel],
       ] as [string[], string[], string][]) {
-        // setUp points this process at the office it opens.
-        process.env.OPENCORP_HOME = "/tmp/elsewhere"
+        // The office that opens gets --home as its OPENCORP_HOME.
         const { deps, calls, envs, offices } = fake()
-        expect(await setUp(command, argv, deps)).toBe(7)
+        expect(await setUp(command, argv, env({ OPENCORP_HOME: "/tmp/elsewhere" }), deps)).toBe(7)
         expect(calls.map((c) => c.argv)).toEqual([install(command, ...given)])
         expect(envs.map((env) => env.OPENCORP_HOME)).toEqual(["/tmp/elsewhere"])
         expect(offices).toEqual([home])
@@ -96,35 +94,31 @@ for (const command of COMMANDS) {
     })
 
     test("a missing home folder is one line and exit 1, and opens no office", async () => {
-      const { deps, calls, offices } = fake({
-        spawnCwd: () => {
-          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
-        },
-      })
+      const { deps, calls, offices } = fake()
+      const missing = path.join(HOME_DIR, "missing")
       const err: string[] = []
       const error = console.error
       console.error = (...a: unknown[]) => void err.push(a.join(" "))
       try {
-        expect(await setUp(command, [], deps)).toBe(1)
+        expect(await setUp(command, [], { HOME: missing }, deps)).toBe(1)
       } finally {
         console.error = error
       }
-      expect(err).toEqual([`opencorp ${command}: your home folder ${os.homedir()} doesn't exist`])
+      expect(err).toEqual([`opencorp ${command}: your home folder ${missing} doesn't exist`])
       expect(calls).toEqual([])
       expect(offices).toEqual([])
     })
 
     test("without --home, or with an empty one, OPENCORP_HOME is left as it was", async () => {
-      process.env.OPENCORP_HOME = "/tmp/elsewhere"
+      const elsewhere = env({ OPENCORP_HOME: "/tmp/elsewhere" })
       const set = fake()
-      await setUp(command, ["--service", "tmux"], set.deps)
+      await setUp(command, ["--service", "tmux"], elsewhere, set.deps)
       expect(set.offices).toEqual(["/tmp/elsewhere"])
       const empty = fake()
-      await setUp(command, ["--home="], empty.deps)
+      await setUp(command, ["--home="], elsewhere, empty.deps)
       expect(empty.offices).toEqual(["/tmp/elsewhere"])
-      delete process.env.OPENCORP_HOME
       const unset = fake()
-      await setUp(command, [], unset.deps)
+      await setUp(command, [], env(), unset.deps)
       expect(unset.offices).toEqual([undefined])
     })
   })

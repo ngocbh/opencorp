@@ -92,9 +92,9 @@ const STOP_MS = END_KILL_MS - END_STOP_MS
 
 /** What the host is given beside the session. */
 export interface LocalHostOptions {
-  /** The environment workers start from: `workerEnv` keeps what they may have, the model's env goes on top.
-   *  `process.env` by default. */
-  readonly environ?: Env
+  /** The environment workers start from, which the caller names: `workerEnv` keeps what they may have, the model's
+   *  env goes on top. */
+  readonly environ: Env
   /** Gets the host's log lines: never a key, the owner's keys or a message's text. */
   readonly log?: (line: string) => void
   /** How long, in ms, Auto's check may take before it asks. */
@@ -287,7 +287,7 @@ export class LocalHost {
         options.log?.(line)
       } catch {}
     }
-    this.#workers = new HostWorkers(options.environ ?? process.env, options.spawn ?? spawnProcess, this.#log)
+    this.#workers = new HostWorkers(options.environ, options.spawn ?? spawnProcess, this.#log)
     this.instruments = new Instruments((event) => this.bus.publishLive(event))
     this.#transcript = new Transcript(path.join(spec.folder, "runs"), { log: this.#log })
     this.#relay = new LiveRelay({ bus: this.bus, transcript: this.#transcript, log: this.#log })
@@ -319,7 +319,7 @@ export class LocalHost {
   /** Starts `spec`'s session: takes its sessions folder's lock, marks the shells earlier sessions left running as
    *  interrupted, writes the flow's pin, binds the tools, starts the flow in its worker and sends the owner's first
    *  message. Throws, leaving nothing running, when it can't: `SessionsBusy` while another host holds the folder. */
-  static async start(spec: BuiltinSession<Terminal>, options: LocalHostOptions = {}): Promise<LocalHost> {
+  static async start(spec: BuiltinSession<Terminal>, options: LocalHostOptions): Promise<LocalHost> {
     if (!FLOW_NAME.test(spec.flow.name)) throw new RangeError("a flow's name is letters, digits, _ and -")
     const host = new LocalHost(spec, options)
     try {

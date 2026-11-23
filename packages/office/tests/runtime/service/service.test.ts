@@ -21,10 +21,10 @@ import {
 import * as launchd from "../../../src/runtime/service/launchd.ts"
 import * as service from "../../../src/runtime/service/service.ts"
 import * as systemd from "../../../src/runtime/service/systemd.ts"
-import { selfSpawnEnv } from "../../../src/platform.ts"
 import { company } from "../../company/helpers.ts"
 import { NO_GROUP, cwdOf, envNames, fifo, isGone, ps, reexecMarks, shortDir, startGroup, tempDir } from "../../helpers.ts"
 import { Runner, daemonHost, killedAtEnd, makeHost, standIn } from "../../features/setup/helpers.ts"
+import { ownerEnv } from "../../../src/testing/office.ts"
 
 /** A `which` that finds every program in `/usr/bin`. */
 const found = (name: string) => `/usr/bin/${name}`
@@ -859,7 +859,7 @@ test(
     const spawned = killedAtEnd()
     const dir = shortDir()
     const home = companyHome(dir)
-    const one = launch(home, { environ: { ...selfSpawnEnv(process.env), HOME: tempDir() } })
+    const one = launch(home, { environ: ownerEnv(tempDir()) })
     const host = daemonHost(dir, spawned)
     await service.install(one, host, "background")
     await service.wait(one, host)
@@ -884,8 +884,7 @@ test(
     const project = tempDir()
     const one = launch(home, {
       environ: {
-        ...selfSpawnEnv(process.env),
-        HOME: home,
+        ...ownerEnv(home),
         OPENAI_API_KEY: "sk-test-not-a-key-0000",
         BUN_OPTIONS: "--preload /nonexistent.ts",
         PWD: project,
@@ -942,7 +941,7 @@ test(
     const spawned = killedAtEnd()
     const dir = shortDir()
     const home = companyHome(dir)
-    const one = launch(home, { environ: { ...selfSpawnEnv(process.env), HOME: tempDir() } })
+    const one = launch(home, { environ: ownerEnv(tempDir()) })
     const host = daemonHost(dir, spawned)
     await service.install(one, host, "background")
     await service.wait(one, host)
@@ -964,7 +963,7 @@ test(
     const spawned = killedAtEnd()
     const dir = shortDir()
     const home = companyHome(dir)
-    const one = launch(home, { environ: { ...selfSpawnEnv(process.env), HOME: tempDir() } })
+    const one = launch(home, { environ: ownerEnv(tempDir()) })
     const host = daemonHost(dir, spawned)
     await service.install(one, host, "background")
     await service.wait(one, host)
@@ -988,7 +987,7 @@ test(
     const spawned = killedAtEnd()
     const dir = shortDir()
     const home = companyHome(dir)
-    const one = launch(home, { environ: { ...selfSpawnEnv(process.env), HOME: tempDir() } })
+    const one = launch(home, { environ: ownerEnv(tempDir()) })
     const host = daemonHost(dir, spawned)
     await service.install(one, host, "background")
     await service.wait(one, host)

@@ -33,11 +33,17 @@ const OFFICE = "OpenCorp office <office@opencorp.local>"
 const GROUP = "id: eng\nname: Eng\nparent: null\nhead: null\n"
 const GIT_URL = new URL("../../src/company/git.ts", import.meta.url).href
 
-/** A base company in a fresh temp dir and a `CompanyGit` on it built with `options`. */
-function setup(options?: CompanyGitOptions) {
+/** An environment for git with only this process's `PATH`, a temp `HOME` and `extra`: never the real home. */
+function plainEnv(extra: Record<string, string> = {}): Record<string, string> {
+  return { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: tempDir(), ...extra }
+}
+
+/** A base company in a fresh temp dir and a `CompanyGit` on it built with `options` (its env `plainEnv()` unless
+ *  given). */
+function setup(options: CompanyGitOptions = {}) {
   const tmp = tempDir()
   const root = company(tmp)
-  return { tmp, company: root, g: new CompanyGit(root, path.join(tmp, "worktrees"), options) }
+  return { tmp, company: root, g: new CompanyGit(root, path.join(tmp, "worktrees"), { env: plainEnv(), ...options }) }
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -631,7 +637,7 @@ test("staged rename commits both paths", async () => {
 
 test("git dir in the environment is ignored", async () => {
   const other = writeRepo(path.join(tempDir(), "other"), { "x.txt": "x\n" })
-  const { company, g } = setup({ env: { ...process.env, GIT_DIR: path.join(other, ".git"), GIT_WORK_TREE: other } })
+  const { company, g } = setup({ env: plainEnv({ GIT_DIR: path.join(other, ".git"), GIT_WORK_TREE: other }) })
   expect(await g.head()).toBe(git(company, "rev-parse", "HEAD"))
   fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
   await g.commit([PROFILE], "edit")
@@ -642,7 +648,7 @@ test("init creates the repo on main with a clean env", async () => {
   const dir = tempDir()
   const other = writeRepo(path.join(tempDir(), "other"), { "x.txt": "x\n" })
   const before = git(other, "rev-parse", "HEAD")
-  await new CompanyGit(dir, dir, { env: { ...process.env, GIT_DIR: path.join(other, ".git") } }).init()
+  await new CompanyGit(dir, dir, { env: plainEnv({ GIT_DIR: path.join(other, ".git") }) }).init()
   expect(fs.existsSync(path.join(dir, ".git"))).toBe(true)
   expect([git(other, "rev-parse", "HEAD"), git(other, "status", "--porcelain")]).toEqual([before, ""])
   expect(git(dir, "symbolic-ref", "HEAD")).toBe("refs/heads/main")
@@ -655,7 +661,7 @@ test("author env does not override the office", async () => {
     GIT_COMMITTER_NAME: "leaked",
     GIT_COMMITTER_EMAIL: "leaked",
   }
-  const { company, g } = setup({ env: { ...process.env, ...leaked } })
+  const { company, g } = setup({ env: plainEnv(leaked) })
   fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
   await g.commit([PROFILE], "edit")
   expect(git(company, "log", "-1", "--format=%an <%ae>|%cn <%ce>")).toBe(`${OFFICE}|${OFFICE}`)
@@ -664,8 +670,7 @@ test("author env does not override the office", async () => {
 test("user git config is ignored", async () => {
   const home = tempDir()
   fs.writeFileSync(path.join(home, ".gitconfig"), "[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n")
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")))
-  const { company, g } = setup({ env: { ...env, HOME: home } })
+  const { company, g } = setup({ env: plainEnv({ HOME: home }) })
   fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
   await g.commit([PROFILE], "edit")
   expect(git(company, "log", "-1", "--format=%s")).toBe("edit")
@@ -859,9 +864,9 @@ test("the users xdg git attributes and ignore files are not read", async () => {
     fs.writeFileSync(path.join(config, "attributes"), "*.md text\n")
     fs.writeFileSync(path.join(config, "ignore"), "profile.md\n")
   }
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("XDG_")))
-  for (const extra of [{}, { XDG_CONFIG_HOME: xdg }]) {
-    const { company, g } = setup({ env: { ...env, HOME: home, ...extra } })
+  const extras: Record<string, string>[] = [{}, { XDG_CONFIG_HOME: xdg }]
+  for (const extra of extras) {
+    const { company, g } = setup({ env: plainEnv({ HOME: home, ...extra }) })
     const added = "people/new/memory/profile.md"
     const crlf = "# New\r\n"
     fs.mkdirSync(path.join(company, "people/new/memory"), { recursive: true })
@@ -1144,7 +1149,7 @@ test("commit info has the subject author name and time", async () => {
 
 test("git runs in the C locale whatever the office's", async () => {
   const recording = envGit(tempDir())
-  const env = { ...process.env, LC_ALL: "de_DE.UTF-8", LANG: "de_DE.UTF-8", LANGUAGE: "de" }
+  const env = plainEnv({ LC_ALL: "de_DE.UTF-8", LANG: "de_DE.UTF-8", LANGUAGE: "de" })
   const { company, g } = setup({ git: recording.git, env })
   fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
   await g.commit([PROFILE], "edit")
@@ -1703,19 +1708,6 @@ function cloneState(root: string): { index: Buffer; worktrees: string; refs: str
   }
 }
 
-/** Points the temp dir at a new folder for the rest of the test, so what another process puts in the shared one
- *  can't show up in it; returns that folder. */
-function privateTmp(): string {
-  const dir = tempDir()
-  const saved = process.env.TMPDIR
-  process.env.TMPDIR = dir
-  onTestFinished(() => {
-    if (saved === undefined) delete process.env.TMPDIR
-    else process.env.TMPDIR = saved
-  })
-  return dir
-}
-
 test("pending sorts profile hand edits from other uncommitted changes", async () => {
   const { company, g } = setup()
   fs.mkdirSync(path.join(company, "people/ngocbh/memory"))
@@ -1764,8 +1756,9 @@ test("pending never writes the index", async () => {
 })
 
 test("export tree writes the commit with the overlay from the working tree and nothing in the clone", async () => {
-  const { tmp, company, g } = setup()
-  const scratch = privateTmp()
+  // A temp folder of its own, so what another process puts in the shared one can't show up in it.
+  const scratch = tempDir()
+  const { tmp, company, g } = setup({ tmpdir: scratch })
   const before = cloneState(company)
   const committed = fs.readFileSync(path.join(company, "shared/flows/chat.yaml"), "utf8")
   fs.writeFileSync(path.join(company, "shared/flows/chat.yaml"), "id: edited\n")

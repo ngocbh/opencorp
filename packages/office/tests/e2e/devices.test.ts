@@ -13,8 +13,8 @@ import { createOfficeClient } from "./packages/client/src/client"
 import { readIdentity } from "./packages/client/src/identity"
 import { defaultSocket, identityPath } from "./packages/client/src/paths"
 
-const me = readIdentity(identityPath())
-const client = createOfficeClient({ socket: defaultSocket(), token: me?.token })
+const me = readIdentity(identityPath(process.env))
+const client = createOfficeClient({ socket: defaultSocket(process.env), token: me?.token })
 const seen = { whoami: await client.whoami(), people: (await client.people.list()).map((p) => p.handle) }
 const stream = await new Promise((resolve) => {
   const sub = client.events.subscribe((e) => {

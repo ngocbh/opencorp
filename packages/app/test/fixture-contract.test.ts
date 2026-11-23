@@ -262,10 +262,9 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(dist, "build.json"), `${JSON.stringify({ build: "contract", api: apiId() })}\n`)
   fs.writeFileSync(path.join(dist, "index.html"), "<!doctype html><title>HQ</title>\n")
   const port = await freePort()
-  // Bun's and Node's options from this process would change how the fixture runs.
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith("BUN_") && key !== "NODE_OPTIONS"),
-  )
+  // Only PATH and a temp HOME: this process's Bun and Node options would change how the fixture runs, and its home
+  // is the owner's.
+  const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dist }
   const argv = ["--no-install", "--no-env-file", "--config=/dev/null", "e2e/fixture.ts", "--port", String(port)]
   fixture = spawn(process.execPath, [...argv, "--dist", dist], { cwd: APP, env, stdio: ["ignore", "ignore", "pipe"] })
   let stderr = ""

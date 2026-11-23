@@ -291,6 +291,39 @@ test("unread sends of a refused advance reach the fresh run once in order", asyn
   expect(["a", "b"].map((text) => texts.filter((t) => t === text).length)).toEqual([1, 1])
 })
 
+test("a moved send keeps its key and author, so the same send to the fresh run appends nothing", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "ok" })
+  const r1 = await waitingChat(fake)
+  const note = { ...send("m1", "make ended", "shell 1"), key: "terminal:01KAAAAAAAAAAAAAAAAAAAAAAA:1" }
+  const unread = advanceJob(r1, { advance: false, deliver: [note] })
+  expect(waitingAt(await run(unread, new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#0/heard"])
+  // The office sends the note again, as a restart does, beside the moved one.
+  const r2 = nextRun(r1, { seed: seedOf(r1, fake), deliver: [{ ...note, id: "n1" }] })
+  expect(waitingAt(await run(r2, new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#1/heard"])
+  const sent = fs
+    .readFileSync(r2.log, "utf8")
+    .split("\n")
+    .filter((line) => line.includes('"kind":"pool_commit"') && line.includes('"send_key":'))
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toContain(`"send_key":"${note.key}"`)
+  // The model reads it once, signed by its shell.
+  expect(userTexts(fake, 0)).toEqual(['<authored_message author="shell 1">\nmake ended\n</authored_message>'])
+})
+
+test("a send a withdraw took back is not moved", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "ok" })
+  const r1 = await waitingChat(fake)
+  const withdraw = { id: "w1", op: "withdraw", inbox: "messages" } as const
+  const taken = advanceJob(r1, { advance: false, deliver: [send("a", "taken back"), withdraw, send("b", "kept")] })
+  const rec = await run(taken, new TemplateOffice(), { env: fake.env() })
+  expect(rec.replies.find((reply) => reply.id === "w1")?.withdrawn).toHaveLength(1)
+  const r2 = nextRun(r1, { seed: seedOf(r1, fake) })
+  expect(waitingAt(await run(r2, new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#1/heard"])
+  expect(userTexts(fake, 0)).toEqual(["kept"])
+})
+
 test("a send a failed reply read as a steer is not moved", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Looking.", tool_calls: [{ name: "toolbox_stub" }] }, { error: 400 })

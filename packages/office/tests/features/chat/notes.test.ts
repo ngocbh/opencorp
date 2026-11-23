@@ -478,3 +478,67 @@ test("a delivered note is owed no more: after a model switch and a restart, it i
   expect(notes(o, sid)).toHaveLength(1)
   expect(asked(fake, 5, "(gone)")).toBe(false)
 })
+
+test("a note unread at a model switch arrives in the new run signed by its shell, exactly once", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all"), ASK_USER, { match: heading("shell 1", "make all", 0), content: "On two." }, { content: "Again." })
+  const { o, end } = await notesOffice(fake, { second: "stub-2" })
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  await card(o, sid, "ask_user")
+  await waitFor(() => !actor.hasWorker, { what: "the run asleep on the question" })
+  // The note waits unread in the inbox behind the question when the owner switches the model.
+  end("make all", 0)
+  const old = actor.runId!
+  await waitFor(() => loggedNotes(o, old).length === 1, { what: "the note in the inbox" })
+  await waitFor(() => !actor.hasWorker, { what: "the delivering worker's exit" })
+  await actor.setModel("second", "stub-2")
+  await waitFor(() => texts(o, sid).includes("On two.") && status(o, sid) === "idle", { what: "the fresh run's reply" })
+  const fresh = actor.runId!
+  expect(fresh).not.toBe(old)
+  // The fresh run has it under the shell's key, and the model reads it signed by the shell.
+  expect(loggedNotes(o, fresh)).toHaveLength(1)
+  expect(asked(fake, 3, 'author="shell 1"')).toBe(true)
+  const shown = o.transcript
+    .messages(sid, session(o, sid).run_ids)
+    .filter((m) => m.parts.some((part) => part.type === "text" && part.text.startsWith(heading("shell 1", "make all", 0))))
+  expect(shown.map((m) => [m.role, m.author, m.instrument?.name ?? null])).toEqual([["user", null, "shell 1"]])
+  // A restart sends nothing again.
+  const restarted = await reopen(o, actor)
+  await restarted.restore()
+  await restarted.prompt("again")
+  await waitFor(() => texts(o, sid).includes("Again.") && status(o, sid) === "idle", { what: "the last reply" })
+  expect(notes(o, sid)).toHaveLength(1)
+  expect(loggedNotes(o, fresh)).toHaveLength(1)
+})
+
+test("after Esc, a model switch moves none of what Esc took back: each message and the note reach the model once", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all"), { content: "never shown", hold: true }, { content: "On both." }, { content: "On two." })
+  const { o, end } = await notesOffice(fake, { second: "stub-2" })
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  await fake.waitForRequests(2, 30_000)
+  // While the model answers: the note, then two messages of the owner's, all unread when Esc takes them back.
+  end("make all", 0)
+  await waitFor(() => loggedNotes(o, actor.runId!).length === 1, { what: "the note in the inbox" })
+  expect(await actor.prompt("msg-one")).toBe("steer")
+  expect(await actor.prompt("msg-two")).toBe("steer")
+  await actor.interrupt()
+  fake.release()
+  await waitFor(() => texts(o, sid).includes("On both.") && status(o, sid) === "idle" && !actor.hasWorker, {
+    what: "the owner's messages answered",
+  })
+  // The fresh run on the new model reads the old turns once, and the held note once, with the next message.
+  await actor.setModel("second", "stub-2")
+  await actor.prompt("and the build?")
+  await waitFor(() => texts(o, sid).includes("On two.") && status(o, sid) === "idle", { what: "the fresh run's reply" })
+  expect(session(o, sid).run_ids).toHaveLength(2)
+  const fourth = JSON.stringify(fake.requests()[3]!.messages)
+  const count = (text: string) => fourth.split(JSON.stringify(text).slice(1, -1)).length - 1
+  expect([count("msg-one"), count("msg-two"), count(heading("shell 1", "make all", 0)), count("and the build?")]).toEqual([
+    1, 1, 1, 1,
+  ])
+  expect(texts(o, sid, "user").filter((text) => text.startsWith("msg-"))).toEqual(["msg-one", "msg-two"])
+  expect(notes(o, sid)).toHaveLength(1)
+})

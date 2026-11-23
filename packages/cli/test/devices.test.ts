@@ -13,7 +13,6 @@ import { droppingSocket } from "./sockets"
 const root = fs.mkdtempSync("/tmp/acd-")
 const trusted = path.join(root, "a")
 const other = path.join(root, "b")
-const saved = process.env.OPENCORP_HOME
 let office: FakeOffice
 // Every line opencorp printed in this file, checked at the end for any token it wrote.
 const printed: string[] = []
@@ -65,7 +64,6 @@ afterEach(() => {
   issued.length = 0
   fs.rmSync(trusted, { recursive: true, force: true })
   fs.rmSync(other, { recursive: true, force: true })
-  process.env.OPENCORP_HOME = saved
 })
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }))
 /** The token in `home`'s identity.json, or undefined when there's none or the file isn't an identity. */
@@ -78,7 +76,6 @@ const tokenOf = (home: string) => {
 }
 /** Runs `opencorp argv` as the device whose home is `home`, capturing stdout and stderr. */
 async function opencorp(home: string, ...argv: string[]) {
-  process.env.OPENCORP_HOME = home
   const out: string[] = []
   const err: string[] = []
   const log = console.log
@@ -86,7 +83,7 @@ async function opencorp(home: string, ...argv: string[]) {
   console.log = (...a: unknown[]) => void out.push(a.join(" "))
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
-    return { code: await main(argv), out: out.join("\n"), err: err.join("\n") }
+    return { code: await main(argv, { HOME: root, OPENCORP_HOME: home }), out: out.join("\n"), err: err.join("\n") }
   } finally {
     console.log = log
     console.error = error

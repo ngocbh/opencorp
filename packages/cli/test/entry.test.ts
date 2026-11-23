@@ -405,6 +405,12 @@ test(
 
 const CLI = path.join(CHECKOUT, "packages/cli")
 
+/** The env a build runs with: this test's PATH and `home` (made here) as HOME, so it never reads the real home. */
+function buildEnv(home: string): Record<string, string> {
+  fs.mkdirSync(home, { recursive: true })
+  return { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home }
+}
+
 test("the build refuses to replace a folder it did not write", () => {
   // `opencorp` is also the default clone name, so an outdir above a checkout would otherwise delete it.
   const out = path.join(fs.mkdtempSync(path.join(tmp, "build-")), "out")
@@ -415,7 +421,13 @@ test("the build refuses to replace a folder it did not write", () => {
   const result = spawnSync(
     process.execPath,
     ["--no-env-file", "--config=/dev/null", "script/build.ts", "--outdir", out],
-    { cwd: CLI, env: process.env, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" },
+    {
+      cwd: CLI,
+      env: buildEnv(path.join(path.dirname(out), "home")),
+      encoding: "utf8",
+      timeout: 60_000,
+      killSignal: "SIGKILL",
+    },
   )
   expect(result.status, result.stderr).toBe(1)
   expect(result.stderr.trimEnd().split("\n")).toHaveLength(1)
@@ -586,7 +598,7 @@ describe("the built binary", () => {
     fs.mkdirSync(home)
     const build = await runDetached(
       [process.execPath, "--no-env-file", "--config=/dev/null", "script/build.ts", "--outdir", npmOut],
-      { cwd: CLI, env: process.env, limit: 600_000, groups },
+      { cwd: CLI, env: buildEnv(home), limit: 600_000, groups },
     )
     if (build.code !== 0) throw new Error(`the build exited ${build.code}:\n${build.stdout}\n${build.stderr}`)
     // The first run of a fresh binary can take minutes on macOS while the system scans it.

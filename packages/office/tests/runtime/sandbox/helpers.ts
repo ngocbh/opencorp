@@ -247,8 +247,8 @@ export async function gone(marker: string): Promise<boolean> {
 }
 
 /** Runs `env` in the sandbox (a writable workspace `ws`, no network, tmpdir `tmp`) from a Bun child whose
- *  environment is this process's plus `env`, and returns the child: its stdout is the sandboxed `env`
- *  output. A test sets secrets this way because it never changes its own environment. */
+ *  environment is this process's `PATH`, a temp `HOME` and `env`, and returns the child: its stdout is the sandboxed
+ *  `env` output. A test sets secrets this way because it never changes its own environment. */
 export function envInChild(ws: string, tmp: string, env: Record<string, string>): SpawnSyncReturns<string> {
   const script = path.join(tempDir(), "child.ts")
   fs.writeFileSync(
@@ -262,7 +262,7 @@ export function envInChild(ws: string, tmp: string, env: Record<string, string>)
     ].join("\n"),
   )
   return spawnSync(process.execPath, ["--no-install", "--no-env-file", "--config=/dev/null", script], {
-    env: { ...process.env, ...env },
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: tempDir(), ...env },
     encoding: "utf8",
     timeout: 30_000,
   })

@@ -16,8 +16,12 @@ if (!internal && !import.meta.url.endsWith(".ts")) {
   process.env.OTUI_ASSET_ROOT = join(dirname(process.execPath), "..", "assets")
 }
 
-/** A command's entry point: takes the arguments after its name, resolves to an exit code. */
-export type CommandRun = (argv: string[]) => Promise<number>
+// Not an `import type` at the top: the dispatch above must be this file's first statement.
+type Env = import("@opencorp/client/node").Env
+
+/** A command's entry point: takes the arguments after its name and the environment it runs with (whose home, socket,
+ *  identity and editor it uses), resolves to an exit code. */
+export type CommandRun = (argv: string[], env: Env) => Promise<number>
 
 /** Every command, by name, with the arguments the help shows after it. The first is the default when `opencorp` gets
  *  no command name. */
@@ -91,13 +95,13 @@ function unknown(name: string): number {
   return 2
 }
 
-/** Runs the command `argv` names (or the default); resolves to the process exit code. */
-export async function main(argv: string[]): Promise<number> {
+/** Runs the command `argv` names (or the default) with the environment `env`; resolves to the process exit code. */
+export async function main(argv: string[], env: Env): Promise<number> {
   const [first, ...rest] = argv
   // `help help` and `help -h` ask for this help, which the checks below print.
   if (first === "help" && rest.length > 0 && !["help", "-h", "--help"].includes(rest[0]!)) {
     const named = command(rest[0]!)
-    return named ? (await named.load()).run(["--help"]) : unknown(rest[0]!)
+    return named ? (await named.load()).run(["--help"], env) : unknown(rest[0]!)
   }
   if (first === "-h" || first === "--help" || first === "help") {
     console.log(help())
@@ -107,10 +111,11 @@ export async function main(argv: string[]): Promise<number> {
     console.log((await import("../package.json", { with: { type: "json" } })).default.version)
     return 0
   }
-  if (first === undefined || first.startsWith("-")) return (await commands[DEFAULT].load()).run(argv)
+  if (first === undefined || first.startsWith("-")) return (await commands[DEFAULT].load()).run(argv, env)
   const named = command(first)
   if (!named) return unknown(first)
-  return (await named.load()).run(rest)
+  return (await named.load()).run(rest, env)
 }
 
-if (import.meta.main && !internal) process.exitCode = await main(process.argv.slice(2))
+// The one place a command gets this process's environment.
+if (import.meta.main && !internal) process.exitCode = await main(process.argv.slice(2), process.env)

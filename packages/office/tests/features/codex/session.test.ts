@@ -201,7 +201,7 @@ test("a codex app server runs with the harness PATH and its own fresh temp folde
   expect(fs.existsSync(tmp)).toBe(false)
 })
 
-test("a session on a codex its standalone installer put in ~/.codex loads its thread from the office's copy in the owner's cache, which a later start mends, and which a session on an updated codex removes once nothing runs from it", async () => {
+test("a session on a codex its standalone installer put in ~/.codex loads its thread from the office's copy in the owner's cache, which a later start mends, and which a session on an updated codex removes once unused for a day and nothing runs from it", async () => {
   const h = makeCodex()
   // A native program in Codex's place (bun, which runs the fake), laid out as the standalone installer lays Codex out.
   const release = (version: string) => {
@@ -244,7 +244,9 @@ test("a session on a codex its standalone installer put in ~/.codex loads its th
     await r.sessions.end(id)
     await waitFor(() => status(h, id) === "ended", { what: "the end" })
   }
-  // Once none runs from it, the next session's start removes it.
+  // Once none has started from it for a day and none runs from it, the next session's start removes it.
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000 - 60_000)
+  fs.utimesSync(path.join(copy, "last-used"), dayAgo, dayAgo)
   await r.sessions.end(await started(fs.realpathSync(tempDir())))
   expect(copies()).toHaveLength(1)
   expect(fs.existsSync(copy)).toBe(false)

@@ -23,7 +23,7 @@ const { values } = parseArgs({
 
 const REPLY = "Looked at it. The flaky test waits on a timer; I'd swap it for a fake clock and rerun."
 
-const real = values.socket ?? (values.office ? defaultSocket() : undefined)
+const real = values.socket ?? (values.office ? defaultSocket(process.env) : undefined)
 let office: TestOffice | undefined
 let cwd = process.cwd()
 if (!real) {
@@ -51,7 +51,7 @@ try {
     run({
       socket: real ?? office!.socket,
       // A real office may need this device's token; the temp office has no devices, so it takes none.
-      token: real ? readIdentity(identityPath())?.token : undefined,
+      token: real ? readIdentity(identityPath(process.env))?.token : undefined,
       cwd,
       args: { sessionID: values.session, continue: values.continue, person: values.person },
     }).pipe(Effect.provide(Global.layer)),

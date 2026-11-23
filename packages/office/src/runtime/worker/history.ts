@@ -15,13 +15,19 @@ import {
 import { errorName } from "./rpc.ts"
 import { MAIN_CHAT } from "../../company/chat_flow.ts"
 
+/** A send of the replaced run that nothing read: its message, and the key the office sent it under, if any. */
+export interface UnreadSend {
+  readonly message: Message
+  readonly key: string | null
+}
+
 /** What a fresh run takes from the run it replaces. */
 export interface Seeded {
   readonly summary: string
   /** The kept turns, one list of messages each; one trailing empty turn dropped. */
   readonly history: Message[][]
-  /** The replaced run's sends no turn or steer read. */
-  readonly unread: Message[]
+  /** The replaced run's sends no turn or steer read, each with its key, so a shell's note stays the shell's. */
+  readonly unread: UnreadSend[]
   /** The type of the error that kept the history from being seeded; `null` when it was seeded. */
   readonly error: string | null
 }
@@ -53,7 +59,7 @@ export async function readSeed(log: string, options: SeedOptions): Promise<Seede
   } catch (error) {
     seeded = { summary: "", history: [], error: errorName(error) }
   }
-  let unread: Message[] = []
+  let unread: UnreadSend[] = []
   try {
     unread = unreadSends(entries ?? [...iterRunRecords(log)])
   } catch {
@@ -86,18 +92,20 @@ function carried(records: FoldedRun["records"]): { summary: string; history: Mes
 }
 
 /**
- * The sends to the main chat's inbox, in log order, that no accepted take and no steer step consumed. A take commit
- * counts once a success names it: an orphan one's events go back to unread, as yian re-offers them.
+ * The sends to the main chat's inbox, in log order, that no accepted take, steer step or withdraw consumed, with their
+ * keys. A take commit counts once a success names it: an orphan one's events go back to unread, as yian re-offers
+ * them. A withdraw's sends are the office's again (Esc sends them anew), so none is moved.
  */
-function unreadSends(entries: readonly RunLogEntry[]): Message[] {
-  const sends = new Map<number, Message>()
+function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
+  const sends = new Map<number, UnreadSend>()
   const takes = new Map<number, readonly number[]>()
   const consumed = new Set<number>()
   for (const entry of entries) {
     const record = entry.envelope.record
     if (record instanceof PoolCommitRecord) {
       if (record.nodeId === START && record.key === SEND_KEY && record.value !== null) {
-        sends.set(entry.seq, TypedValue.fromWire(record.value).toObject() as Message)
+        const message = TypedValue.fromWire(record.value).toObject() as Message
+        sends.set(entry.seq, { message, key: record.sendKey })
       } else if (record.take !== null) {
         takes.set(entry.seq, record.take.events)
       }
@@ -105,6 +113,10 @@ function unreadSends(entries: readonly RunLogEntry[]): Message[] {
       // yian doesn't export the success and step record classes, so their fields are read by the record's kind.
       const commit = (record as { commit?: unknown }).commit
       for (const seq of typeof commit === "number" ? (takes.get(commit) ?? []) : []) consumed.add(seq)
+    } else if (entry.kind === "inbox_withdrawn") {
+      const { inbox, events } = record as { inbox?: unknown; events?: unknown }
+      // Event seqs are bigints.
+      if (inbox === MAIN_CHAT.inbox && Array.isArray(events)) for (const seq of events) consumed.add(Number(seq))
     } else if (entry.kind === "node_step") {
       const step = (record as { step?: Record<string, unknown> }).step
       if (step?.kind === "steer" && step.inbox === MAIN_CHAT.inbox && Array.isArray(step.from)) {
@@ -113,7 +125,7 @@ function unreadSends(entries: readonly RunLogEntry[]): Message[] {
       }
     }
   }
-  return [...sends].filter(([seq]) => !consumed.has(seq)).map(([, message]) => message)
+  return [...sends].filter(([seq]) => !consumed.has(seq)).map(([, send]) => send)
 }
 
 /**

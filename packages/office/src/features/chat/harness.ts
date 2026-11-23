@@ -185,6 +185,7 @@ export class ChatHarness implements SessionHarness {
         return { ...spec, groups: (ctx) => this.#counted(spec.groups(ctx)) }
       },
       scheduler,
+      environ: workers.environ,
       runIndex: office.runIndex,
       runChanged: (runId) => office.runChanged(runId),
       log,

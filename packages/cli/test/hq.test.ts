@@ -281,16 +281,13 @@ test("over SSH, or with no URL, the app not being built is said too", () => {
 
 let office: FakeOffice | undefined
 let home: string
-const saved = process.env.OPENCORP_HOME
 beforeEach(() => {
   home = fs.mkdtempSync("/tmp/ocp-")
   fs.mkdirSync(path.join(home, "office"))
-  process.env.OPENCORP_HOME = home
 })
 afterEach(() => {
   office?.stop()
   office = undefined
-  process.env.OPENCORP_HOME = saved
   fs.rmSync(home, { recursive: true, force: true })
 })
 
@@ -302,13 +299,14 @@ const start = (hq: FakeOpts["hq"], more: Omit<FakeOpts, "hq" | "socket"> = {}) =
 /** The body of the last POST /hq/pair the fake office got. */
 const pairBody = () => office!.requests.findLast((r) => r.method === "POST" && r.path === "/hq/pair")?.body
 
+/** Fake deps for the office at `home`, with `env` beside it and on `platform`. */
 function deps(env: Record<string, string> = {}, platform = "darwin") {
   const spawned: string[][] = []
   const printed: string[] = []
   const errors: string[] = []
   const visits: VisitOptions[] = []
   const d: HqDeps = {
-    env,
+    env: { HOME: home, OPENCORP_HOME: home, ...env },
     platform,
     hostname: () => "mac",
     spawn: (argv) => void spawned.push(argv),

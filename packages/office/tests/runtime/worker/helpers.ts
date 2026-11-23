@@ -11,6 +11,7 @@ import { selfCommand, selfSpawnEnv } from "../../../src/platform.ts"
 import type { Store } from "../../../src/runtime/store/store.ts"
 import { PROFILE_SETTINGS } from "../../../src/company/profile.ts"
 import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
+import { ownerEnv } from "../../../src/testing/office.ts"
 import { Channel, ChannelClosed, type Frame, socketChannel } from "../../../src/runtime/worker/channel.ts"
 import { encode } from "../../../src/runtime/worker/codec.ts"
 import { type Delivery, Job, groupSpecs, type JobInput, type WorkerEnv } from "../../../src/runtime/worker/job.ts"
@@ -286,30 +287,42 @@ export function makeJob(
   })
 }
 
+/** The office environment a test's workers start from, under the temp folder `root`: the owner's temp home and its
+ *  folders (`ownerEnv`) and a temp `TMPDIR`, with only `PATH` and the locale of this process's. */
+export function testEnviron(root: string): Record<string, string> {
+  const tmp = path.join(root, "tmp")
+  fs.mkdirSync(tmp, { recursive: true, mode: 0o700 })
+  return { ...ownerEnv(path.join(root, "home")), TMPDIR: tmp }
+}
+
 /**
- * A `WorkerRegistry` over `store` with `options` (its `log` a no-op unless given). Each child it spawns, through
- * `options.spawn` or `spawnProcess`, is noted with its start time. At test end the registry closes all its workers,
- * then the group of each noted child still running with its start time is killed. Tests that made their temp root
- * or store first have lost both by then: the registry logs the store failures, and the kills still run.
+ * A `WorkerRegistry` over `store` with `options` (its `log` a no-op unless given, its `environ` a temp one,
+ * `testEnviron`, unless given). Each child it spawns, through `options.spawn` or `spawnProcess`, is noted with its
+ * start time. At test end the registry closes all its workers, then the group of each noted child still running with
+ * its start time is killed. Tests that made their temp root or store first have lost both by then: the registry logs
+ * the store failures, and the kills still run.
  */
 export function makeRegistry(
   store: Store = openStore(),
-  options: NonNullable<ConstructorParameters<typeof WorkerRegistry>[1]> = {},
+  options: Partial<ConstructorParameters<typeof WorkerRegistry>[1]> = {},
 ): WorkerRegistry {
   const spawned: { pid: number; started: number | null }[] = []
   const spawnChild = options.spawn ?? spawnProcess
-  const registry = new WorkerRegistry(store, {
+  let registry: WorkerRegistry | undefined
+  // Registered before the temp environment's removal: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    await registry?.closeAll(5000)
+    for (const { pid, started } of spawned) if (started !== null && sameProcess(pid, started)) killGroup(pid)
+  })
+  registry = new WorkerRegistry(store, {
     log: () => {},
     ...options,
+    environ: options.environ ?? testEnviron(tempDir()),
     spawn: (...args) => {
       const out = spawnChild(...args)
       if (out.child.pid !== undefined) spawned.push({ pid: out.child.pid, started: startTime(out.child.pid) })
       return out
     },
-  })
-  onTestFinished(async () => {
-    await registry.closeAll(5000)
-    for (const { pid, started } of spawned) if (started !== null && sameProcess(pid, started)) killGroup(pid)
   })
   return registry
 }
@@ -606,8 +619,8 @@ export interface WorkerExit {
 
 /**
  * Starts `opencorp __worker` as the office does: through `selfCommand()`, leading its own process group, in `cwd`,
- * with only `PATH`, `HOME` and `TMPDIR` of this process's env plus `env`. With `channel`, the office's end of the
- * socket at the child's fd 3 is `office`; without, fd 3 is left to Bun. At test end the office end closes and the
+ * with only `PATH` and `TMPDIR` of this process's env, a temp `HOME`, and `env`. With `channel`, the office's end of
+ * the socket at the child's fd 3 is `office`; without, fd 3 is left to Bun. At test end the office end closes and the
  * group is killed if its leader is still the process that started (pid and start time). `exited` waits for stderr
  * to close after `exit`, so a grandchild holding the worker's stderr keeps it pending until the test times out; the
  * test-end kill then skips the group, since its leader is gone (pid and start time no longer match).
@@ -624,7 +637,7 @@ export function spawnWorker({
   const [command, ...args] = selfCommand()
   const child = spawn(command, [...args, "__worker"], {
     cwd,
-    env: selfSpawnEnv({ PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...env }),
+    env: selfSpawnEnv({ PATH: process.env.PATH, HOME: tempDir(), TMPDIR: process.env.TMPDIR, ...env }),
     detached: true,
     stdio: ["ignore", "pipe", "pipe", channel ? "pipe" : "ignore"],
   })

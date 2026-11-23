@@ -40,7 +40,7 @@ const TOKEN = /^act_[A-Za-z0-9_-]{43}$/
  * identity the office doesn't list yet gets its `opencorp devices add` line printed again, for the same token;
  * `--force` replaces it with a new token.
  */
-export const run: CommandRun = async (argv) => {
+export const run: CommandRun = async (argv, env) => {
   let values
   try {
     ;({ values } = parseArgs({
@@ -60,16 +60,16 @@ export const run: CommandRun = async (argv) => {
     console.log(USAGE)
     return 0
   }
-  const file = identityPath()
+  const file = identityPath(env)
   const device = values.device ?? deviceName()
   if (!DEVICE_NAME.test(device)) {
     console.error("opencorp login: --device takes lowercase letters, digits, '.', '_' and '-', starting with a letter or digit")
     return 2
   }
-  const socket = defaultSocket()
+  const socket = defaultSocket(env)
   // Checked before anything is written, so no office leaves no half-made identity.
   const down = await officeDown(socket)
-  if (down) return officeNotRunning(down)
+  if (down) return officeNotRunning(down, env)
   let known: Identity | undefined
   // The device named by an identity whose token can't be sent; unchecked, as only its token could ask the office.
   let unsent: Listed | undefined
