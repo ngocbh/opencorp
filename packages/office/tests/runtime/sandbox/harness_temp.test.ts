@@ -47,6 +47,21 @@ test("a session's folder is made fresh and private, and is removed even where a 
   expect(() => freshFolder(root, "")).toThrow()
 })
 
+test("a session's folder a command swapped for a link is replaced at the next start, the link removed and not followed", () => {
+  // On macOS a command may write the folder's own entry, so it can put a link in its place mid-session.
+  const root = harnessRoot("claude", fs.realpathSync(tempDir()))
+  const target = fs.realpathSync(tempDir())
+  fs.writeFileSync(path.join(target, "kept"), "x")
+  const dir = freshFolder(root, "S1")
+  fs.rmdirSync(dir)
+  fs.symlinkSync(target, dir)
+  expect(freshFolder(root, "S1")).toBe(dir)
+  const stat = fs.lstatSync(dir)
+  expect([stat.isSymbolicLink(), stat.isDirectory(), stat.mode & 0o777]).toEqual([false, true, 0o700])
+  expect(fs.readdirSync(dir)).toEqual([])
+  expect(fs.readdirSync(target)).toEqual(["kept"])
+})
+
 test("the fence is an empty file of the user's alone, made once", () => {
   const root = harnessRoot("claude", fs.realpathSync(tempDir()))
   const fence = fenceIn(root)

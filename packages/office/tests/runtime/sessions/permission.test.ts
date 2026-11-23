@@ -99,10 +99,10 @@ test("the employee's harness gets the person's folders as listed", () => {
   for (const folder of listed) expect(filesystem[folder.path]).toBe(folder.access)
   expect(filesystem[fence]).toBe("deny")
   expect(filesystem[officeHome]).toBe("deny")
-  // Claude Code adds each, writes the writable ones only, and denies writes to the read-only ones.
+  // Claude Code adds each (and its temp folder), writes the writable ones only, and denies writes to the read-only ones.
   const claude = claudeStart(p)
   const fsSettings = (claude.settings.sandbox as any).filesystem
-  expect(claude.addDirs).toEqual(listed.map((folder) => folder.path))
+  expect(claude.addDirs).toEqual([...listed.map((folder) => folder.path), tmp])
   expect(fsSettings.allowWrite).toEqual([ws, tmp, ml, shared])
   expect(fsSettings.denyWrite).toEqual(expect.arrayContaining([cargo, path.join(home, ".ssh")]))
   expect(fsSettings.denyWrite).not.toContain(ml)

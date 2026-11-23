@@ -85,25 +85,30 @@ test("a start is the chat's child session, under the employee's permission, told
   expect(fs.existsSync(path.join(h.sessions.mcpRoot(), session.id))).toBe(false)
 })
 
-test("each session's Claude Code has a temp folder of its own as TMPDIR and working folder, outside the office's home, holding nothing of the office's but its instructions, and gone with it", async () => {
+test("each session's Claude Code has a temp folder of its own as TMPDIR and working folder (--add-dir), empty at its start and outside the office's home, its instructions apart from it, and both gone with it", async () => {
   const h = makeClaude()
   const first = await started(h)
   const second = await started(h, "01JA1H0000000000000000CA02")
-  const folders = starts(h).map((start) => {
+  const ids = [first.id, second.id]
+  const folders = starts(h).map((start, i) => {
     const tmp = start.env!.TMPDIR as string
-    expect(start.flags!.settings.permissions.additionalDirectories).toEqual([tmp])
-    expect(start.flags!["add-dir"] ?? []).not.toContain(tmp)
+    expect(start.flags!["add-dir"]).toEqual([tmp])
+    expect(start.flags!.settings.permissions.additionalDirectories).toBeUndefined()
+    // The instructions are in the session's own folder for them, beside its temp folder, not in it.
+    const prompt = path.join(h.sessions.root(), `${ids[i]}.prompt`)
+    expect(start.flags!["append-system-prompt-file"]).toBe(path.join(prompt, "opencorp.instructions.md"))
+    expect(fs.statSync(prompt).mode & 0o777).toBe(0o700)
     return tmp
   })
-  expect(folders).toEqual([first.id, second.id].map((id) => path.join(h.sessions.root(), id)))
+  expect(folders).toEqual(ids.map((id) => path.join(h.sessions.root(), id)))
   for (const tmp of folders) {
     expect(fs.statSync(tmp).mode & 0o777).toBe(0o700)
     expect(tmp.startsWith(h.office.paths.home + path.sep)).toBe(false)
-    // The appended instructions, which Claude Code reads at its start and which it is told anyway.
-    expect(fs.readdirSync(tmp)).toEqual(["opencorp.instructions.md"])
+    expect(fs.readdirSync(tmp)).toEqual([])
   }
   await h.sessions.end(first.id)
   expect(fs.existsSync(folders[0]!)).toBe(false)
+  expect(fs.existsSync(`${folders[0]!}.prompt`)).toBe(false)
   expect(fs.existsSync(folders[1]!)).toBe(true)
 })
 
@@ -354,6 +359,7 @@ test("an office stop ends every session, and a restart ends what a crash left li
   new HarnessRecord(CLAUDE, dir, { id: left.id, name: "claude 2", driver: "minh", chat: chat.id, started: left.created_at })
   fs.mkdirSync(path.join(h.sessions.root(), left.id))
   fs.mkdirSync(path.join(h.sessions.root(), `${left.id}.bin`))
+  fs.mkdirSync(path.join(h.sessions.root(), `${left.id}.prompt`))
   fs.mkdirSync(path.join(h.sessions.mcpRoot(), left.id, "cwd"), { recursive: true })
   fs.writeFileSync(path.join(h.sessions.mcpRoot(), left.id, "opencorp.mcp.json"), "{}")
   // Another office's, or one that isn't a session's, stays.
@@ -365,6 +371,7 @@ test("an office stop ends every session, and a restart ends what a crash left li
   expect(readClaudeRecord(dir)!.state).toBe("interrupted")
   expect(fs.existsSync(path.join(h.sessions.root(), left.id))).toBe(false)
   expect(fs.existsSync(path.join(h.sessions.root(), `${left.id}.bin`))).toBe(false)
+  expect(fs.existsSync(path.join(h.sessions.root(), `${left.id}.prompt`))).toBe(false)
   expect(fs.existsSync(path.join(h.sessions.mcpRoot(), left.id))).toBe(false)
   expect(fs.existsSync(path.join(h.sessions.mcpRoot(), "not-a-session"))).toBe(true)
 })
