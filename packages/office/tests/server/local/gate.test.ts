@@ -6,7 +6,7 @@ import path from "node:path"
 import { iterRunRecords } from "@ngocbh/yian/run"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { sessionOption, YES } from "../../../src/runtime/questions/approval.ts"
-import { OWNER } from "../../../src/server/local/host.ts"
+import { END_STOP_MS, OWNER } from "../../../src/server/local/host.ts"
 import { fakeLlm } from "../../features/chat/helpers.ts"
 import { waitFor } from "../../helpers.ts"
 import { AGENT, CHECK, cards, open, said, startHost, terminalCall, until } from "./helpers.ts"
@@ -226,4 +226,50 @@ test("Esc closes a held call: its card is answered interrupted, a later Yes is r
   expect(() => host.answer(card!.id, YES, "option", OWNER)).toThrow("is not open")
   await until(host, "idle")
   expect(fs.existsSync(path.join(work, "a"))).toBe(false)
+})
+
+test("Esc while Auto's check judges a held call stops the check: no card, nothing runs, and the session goes idle", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    { tool_calls: [terminalCall("run", { command: "touch esc", why: "e" })], match: AGENT },
+    { tool_calls: [verdict("run", "it makes an empty file")], hold: true, match: CHECK },
+  )
+  onTestFinished(() => fake.release())
+  const { host, folder, work } = await startHost(fake)
+  await until(host, "idle")
+  await host.prompt("touch esc", OWNER)
+  await waitFor(() => fake.requests().some((r) => JSON.stringify(r).includes(CHECK)), { what: "the check's request" })
+  await until(host, "busy")
+  await host.interrupt()
+  await until(host, "idle")
+  fake.release()
+  const verdicts = path.join(folder, "checks", "verdicts.jsonl")
+  await waitFor(() => fs.existsSync(verdicts), { what: "the check's record" })
+  expect(JSON.parse(fs.readFileSync(verdicts, "utf8"))).toMatchObject({ verdict: "ask", failed: true })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  expect(host.questions({})).toEqual([])
+  expect(fs.existsSync(path.join(work, "esc"))).toBe(false)
+})
+
+test("End while Auto's check judges a held call ends the session at once: no card, and nothing runs", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    { tool_calls: [terminalCall("run", { command: "touch end", why: "e" })], match: AGENT },
+    { tool_calls: [verdict("run", "it makes an empty file")], hold: true, match: CHECK },
+  )
+  onTestFinished(() => fake.release())
+  const { host, work } = await startHost(fake)
+  await until(host, "idle")
+  await host.prompt("touch end", OWNER)
+  await waitFor(() => fake.requests().some((r) => JSON.stringify(r).includes(CHECK)), { what: "the check's request" })
+  await until(host, "busy")
+  const started = performance.now()
+  await host.end()
+  await host.ended
+  // Well under the wait End gives a busy run before it asks the worker to stop.
+  expect(performance.now() - started).toBeLessThan(END_STOP_MS - 1_000)
+  fake.release()
+  expect(host.session()!.status).toBe("ended")
+  expect(host.questions({})).toEqual([])
+  expect(fs.existsSync(path.join(work, "end"))).toBe(false)
 })

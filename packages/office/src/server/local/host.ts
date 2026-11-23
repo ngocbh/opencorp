@@ -553,7 +553,8 @@ export class LocalHost {
    *  nothing. */
   async end(): Promise<void> {
     if (this.#finished || this.#ending) return
-    const busy = this.#job === "running" || this.#approved.size > 0 || this.#open().length > 0
+    // A held call Auto's check judges has no card yet: it is busy too.
+    const busy = this.#job === "running" || this.#approved.size > 0 || this.#open().length > 0 || this.#gate.busy
     this.#ending = true
     this.#settle()
     this.#stopCalls()
