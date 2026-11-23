@@ -13,6 +13,8 @@ import {
   PairRequest,
   Person,
   Question,
+  RunCall,
+  RunCallList,
   RunDetail,
   RunEvent,
   RunEventPage,
@@ -44,9 +46,11 @@ import {
   listRuns,
   liveStream,
   liveTarget,
+  runCalls,
   runEvent,
   runEvents,
   runLog,
+  runModelCall,
   runNodes,
 } from "../routes/runs.ts"
 import { listSessions } from "../routes/sessions.ts"
@@ -298,6 +302,9 @@ export const ROUTES: readonly Route<HqContext>[] = [
   { method: "GET", path: "/api/runs/:id/events/:seq", reply: RunEvent, handler: runEvent },
   // No HEAD, as on the socket: the handler opens the log. The GET catch-all then answers HEAD with 404.
   { method: "GET", path: "/api/runs/:id/log", head: false, handler: runLog },
+  // A run's model calls: a node's list, and one call rebuilt from the log (no HEAD: it replays the log).
+  { method: "GET", path: "/api/runs/:id/calls", reply: RunCallList, handler: runCalls },
+  { method: "GET", path: "/api/runs/:id/calls/*node/:n", head: false, reply: RunCall, handler: runModelCall },
   // A run's live stream (`hqLive`); HEAD is refused here, as on /api/events.
   {
     method: "GET",

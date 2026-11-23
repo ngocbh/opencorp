@@ -6,7 +6,7 @@ import path from "node:path"
 import { HEADERS } from "@opencorp/office/server/hq/guard"
 import type { BrowserSession, RunDetail, RunEvent, RunSummary } from "@opencorp/protocol"
 import { acme, source, type Data, type Source } from "./company"
-import { runLogs, runPages, summaryOf, wholeEvents, type RunPages, type Runs } from "./runs"
+import { runCalls, runLogs, runPages, summaryOf, wholeEvents, type RunCalls, type RunPages, type Runs } from "./runs"
 
 /** The value after the command-line flag `name`, or undefined. */
 function arg(name: string): string | undefined {
@@ -80,6 +80,8 @@ type Fixture = Data & {
   runPages: RunPages
   /** The whole record GET /api/runs/{id}/events/{seq} answers, by run id and seq, where it differs from the page's. */
   wholeEvents: Record<string, Record<number, RunEvent>>
+  /** Agent nodes' model calls, by run id and node id. */
+  calls: RunCalls
   /** An office older than Run Logs: /api/runs and everything under it answer 404 no_route. */
   noRuns: boolean
 }
@@ -90,6 +92,7 @@ const fresh = (): Fixture => ({
   runs: runLogs(),
   runPages: runPages(runLogs()),
   wholeEvents: wholeEvents(),
+  calls: runCalls(),
   noRuns: false,
 })
 // `logins` keeps each sign-in's handle and label, never its password.
@@ -250,6 +253,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     const found = state.workItems[workItem]
     return found ? json(found) : json({ error: "not_found", message: `no work item ${workItem}` }, 404)
   }
+  const callPath = /^\/api\/runs\/([^/]+)\/calls(?:\/(.+)\/([^/]+))?$/.exec(p)
+  if (callPath) return callRoute(url, callPath[1]!, callPath[2], callPath[3])
   const runPath = /^\/api\/runs\/([^/]+)(\/nodes|\/events|\/events\/(\d+)|\/log)?$/.exec(p)
   if (runPath) return runRoute(url, runPath[1]!, runPath[2] ?? "", runPath[3])
   switch (p) {
@@ -381,6 +386,28 @@ function runRoute(url: URL, id: string, rest: string, seq: string | undefined): 
     return found ? json(found) : json({ error: "not_found", message: `run ${id} has no record ${seq}` }, 404)
   }
   return json({ error: "not_found", message: `no route ${url.pathname}` }, 404)
+}
+
+/** A run's model calls as the office answers them, from `state.calls`: `?node=` lists a node's, and `node` (its
+ * segments as the path's, percent-encoded) with `n` (any attempt's) is one call. */
+function callRoute(url: URL, id: string, node: string | undefined, n: string | undefined): Response {
+  const page = state.runPages[id]
+  if (!page) return json({ error: "not_found", message: `no run ${id}` }, 404)
+  const { log_state, log_message } = page.detail
+  if (log_state === "not_started" || log_state === "missing") return json({ error: "no_log", message: "this run has no log" }, 404)
+  if (log_state === "unsupported_schema") return json({ error: "unsupported_schema", message: log_message }, 409)
+  const byNode = state.calls[id] ?? {}
+  if (node === undefined) {
+    const wanted = url.searchParams.get("node")
+    if (!wanted) return json({ error: "invalid_body", message: "node is required: the agent node whose calls to list" }, 422)
+    return json({ calls: byNode[wanted]?.list ?? [] })
+  }
+  if (!/^[0-9]+$/.test(n!) || Number(n) < 1)
+    return json({ error: "invalid_body", message: "n must be an integer from 1 to 9007199254740991" }, 422)
+  const name = node.split("/").map(decodeURIComponent).join("/")
+  const at = Number(n)
+  const found = byNode[name]?.calls.find((call) => call.attempts.some((attempt) => attempt.n === at))
+  return found ? json(found) : json({ error: "not_found", message: `run ${id} has no such model call` }, 404)
 }
 
 /** /__fixture/*: how tests set the office up and read what the app asked for. */

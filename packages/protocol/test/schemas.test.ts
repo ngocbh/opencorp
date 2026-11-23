@@ -22,7 +22,9 @@ const NAMES = [
   "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "SetModeRequest",
   "RepoIssue", "CompanyView", "CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile", "RunSummary",
   "RunPage", "RunUsage", "RunDetail", "RunNode", "RunDivider", "RunNodePage", "RunEvent", "RunEventPage",
-  "RunLiveRecord", "RunLiveCall", "RunLiveStart", "RunLiveChunk", "RunLiveEnd", "RunUpdated", "PersonCost",
+  "RunLiveRecord", "RunLiveCall", "RunLiveStart", "RunLiveChunk", "RunLiveEnd", "RunUpdated", "RunCallEntry",
+  "RunCallList", "RunCallUsage", "RunCallAttempt", "RunCallPart", "RunCallMessage", "RunCallTool", "RunCallRequest",
+  "RunCallToolResult", "RunCall", "PersonCost",
   "CostReport", "ApiVersion", "AppBuild", "Health", "HqTcp", "HqStatus",
   "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession", "HqLoginRequest", "HireRequest",
   "HireResponse", "ApiError", "AnswerRequest", "SideChatRequest", "SendBackRequest", "ProfileWriteRequest",
@@ -130,8 +132,8 @@ const BODIES = [
   "SetModeRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin",
   "CompanyView", "CostReport", "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
   "HqLoginRequest", "CompanyTree", "CompanyFile", "RunPage", "RunDetail", "RunNodePage", "RunEventPage",
-  "RunEvent", "OfficeInfo", "RuleList", "RemoveRuleRequest", "InstrumentKeysRequest", "InstrumentSizeRequest",
-  "InstrumentScreen",
+  "RunEvent", "RunCallList", "RunCall", "OfficeInfo", "RuleList", "RemoveRuleRequest", "InstrumentKeysRequest",
+  "InstrumentSizeRequest", "InstrumentScreen",
 ]
 
 test("every route body has a fixture", () => {
@@ -268,6 +270,29 @@ test("a tool part keeps the model's call id, and yian's once the call waited on 
   expect(Schemas.ToolPart.parse(part).yian_call_id).toBeNull()
   const held = Schemas.ToolPart.parse({ ...part, yian_call_id: "run-1/chat#0/reply/1/0" })
   expect([held.call_id, held.yian_call_id]).toEqual(["call_1", "run-1/chat#0/reply/1/0"])
+})
+
+test("a model call's message parts are text, reasoning, refusal, a tool call, a tool result or media", () => {
+  const parts = [
+    { type: "text", text: "hi" },
+    { type: "reasoning", text: "thinking" },
+    { type: "refusal", text: "no" },
+    { type: "tool_call", id: "c1", name: "lookup", arguments: { topic: "owls" } },
+    { type: "tool_result", call_id: "c1", name: "lookup", content: "owls hoot" },
+    { type: "media", mime: "image/png" },
+  ]
+  const message = Schemas.RunCallMessage.parse({ role: "assistant", parts })
+  expect(message.parts.map((part) => part.type)).toEqual(["text", "reasoning", "refusal", "tool_call", "tool_result", "media"])
+  expect(message.author).toBeNull()
+  expect(Schemas.RunCallPart.safeParse({ type: "image", url: "x" }).success).toBe(false)
+})
+
+test("a model call's tool result says how the gate let it run, held it and released it", () => {
+  const result = Schemas.RunCallToolResult.parse({
+    call_id: "c2", name: "save", arguments: { topic: "owls" }, output: "saved", is_error: false, held: true,
+    release_note: "approved by @ngocbh",
+  })
+  expect([result.note, result.closed, result.held, result.release_note]).toEqual([null, null, true, "approved by @ngocbh"])
 })
 
 const INSTRUMENTS = [

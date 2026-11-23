@@ -1,0 +1,1 @@
+{"node_id": "reply", "n": 1, "purpose": "chat", "request": null, "digest_mismatch": false, "attempts": [], "reply": null, "tool_results": [], "usage": null, "finish": "stop", "interrupted": false, "api_key": "sk-x"}

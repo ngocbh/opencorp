@@ -221,3 +221,171 @@ export const RunUpdated = z.strictObject({
   current_nodes: z.array(z.string()).default(() => []),
 })
 export type RunUpdated = z.input<typeof RunUpdated>
+
+/** One AGENT model call of a run, as GET /runs/{id}/calls lists it (yian's `agentCalls`). */
+export const RunCallEntry = z.strictObject({
+  /** The agent node that made it. */
+  node_id: z.string().min(1),
+  /** Its last attempt's step number in the node: the `n` GET /runs/{id}/calls/{node}/{n} takes. */
+  n: z.int().min(1),
+  /** chat, structured_native or structured_fallback. */
+  purpose: z.string(),
+  /** The model it reached. */
+  model: z.string(),
+  /** When its first attempt started. */
+  started_at: z.string(),
+  /** 1, plus one per retry. */
+  attempts: z.int().min(1),
+  /** The last attempt's finish reason (`interrupted` for a reply an interrupt cut); null when it failed. */
+  finish: z.string().nullable().default(null),
+})
+export type RunCallEntry = z.input<typeof RunCallEntry>
+
+/** GET /runs/{id}/calls?node=<node id>: the node's model calls, oldest first. */
+export const RunCallList = z.strictObject({
+  calls: z.array(RunCallEntry),
+})
+export type RunCallList = z.input<typeof RunCallList>
+
+/** The tokens a model call's attempt used, each null when the provider didn't report it. */
+export const RunCallUsage = z.strictObject({
+  input_tokens: z.int().min(0).nullable(),
+  output_tokens: z.int().min(0).nullable(),
+  cache_read_tokens: z.int().min(0).nullable(),
+  cache_creation_tokens: z.int().min(0).nullable(),
+  reasoning_tokens: z.int().min(0).nullable(),
+})
+export type RunCallUsage = z.input<typeof RunCallUsage>
+
+/** One attempt of a model call. */
+export const RunCallAttempt = z.strictObject({
+  n: z.int().min(1),
+  started_at: z.string(),
+  /** When its first event arrived; null when none did. */
+  first_token_at: z.string().nullable().default(null),
+  /** When its step was written, right after it returned or failed. */
+  finished_at: z.string(),
+  /** A failed attempt's error, its message scrubbed of credentials by yian; null for a reply. */
+  error: z.strictObject({ kind: z.string(), message: z.string() }).nullable().default(null),
+  /** Seconds a failed attempt waited before its retry; null when it wasn't retried, or replied. */
+  retry_in: z.number().min(0).nullable().default(null),
+  usage: RunCallUsage.nullable().default(null),
+})
+export type RunCallAttempt = z.input<typeof RunCallAttempt>
+
+/** One part of a model call's message. Provider data the log keeps beside a part isn't shown. */
+export const RunCallPart = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.enum(["text", "reasoning", "refusal"]), text: z.string() }),
+  z.strictObject({
+    type: z.literal("tool_call"),
+    id: z.string(),
+    name: z.string(),
+    /** The parsed arguments; null when they didn't parse (see `raw_arguments`). */
+    arguments: z.record(z.string(), z.unknown()).nullable().default(null),
+    raw_arguments: z.string().nullable().default(null),
+  }),
+  z.strictObject({
+    type: z.literal("tool_result"),
+    call_id: z.string(),
+    name: z.string(),
+    content: z.string(),
+    is_error: z.boolean().nullable().default(null),
+  }),
+  /** A file the message carried, by its type and name. */
+  z.strictObject({ type: z.literal("media"), mime: z.string(), name: z.string().nullable().default(null) }),
+])
+export type RunCallPart = z.input<typeof RunCallPart>
+
+/** A message a model call sent or got back. */
+export const RunCallMessage = z.strictObject({
+  /** user, assistant or tool. */
+  role: z.string(),
+  /** Who said it, when the run recorded a speaker. */
+  author: z.string().nullable().default(null),
+  parts: z.array(RunCallPart),
+})
+export type RunCallMessage = z.input<typeof RunCallMessage>
+
+/** A tool the model could call. */
+export const RunCallTool = z.strictObject({
+  name: z.string(),
+  description: z.string(),
+  /** Its arguments' JSON Schema. */
+  parameters: z.record(z.string(), z.unknown()),
+  strict: z.boolean().nullable().default(null),
+})
+export type RunCallTool = z.input<typeof RunCallTool>
+
+/** The request a model call sent, rebuilt from the run log. */
+export const RunCallRequest = z.strictObject({
+  model: z.string(),
+  /** The model config the call used, without the key, headers or connection. */
+  params: z.record(z.string(), z.unknown()),
+  /** The system prompt; null without one. */
+  system: z.string().nullable().default(null),
+  /** The other messages in order: the prompt, the history, steers and tool results. */
+  messages: z.array(RunCallMessage),
+  tools: z.array(RunCallTool).default(() => []),
+  /** auto, required, none, a named tool, or null for the provider's default. */
+  tool_choice: z.union([z.enum(["auto", "required", "none"]), z.strictObject({ name: z.string() })]).nullable().default(null),
+  parallel_tool_calls: z.boolean().nullable().default(null),
+  /** The schema a structured reply had to match. */
+  output_format: z
+    .strictObject({ name: z.string(), schema: z.record(z.string(), z.unknown()), strict: z.boolean().nullable() })
+    .nullable()
+    .default(null),
+})
+export type RunCallRequest = z.input<typeof RunCallRequest>
+
+/** One tool call of a model call's reply, with its recorded result and what the office's gate said of it. */
+export const RunCallToolResult = z.strictObject({
+  call_id: z.string(),
+  name: z.string(),
+  /** The parsed arguments; null when they didn't parse (the call never reached its tool). */
+  arguments: z.record(z.string(), z.unknown()).nullable().default(null),
+  /** The text the model read; null while no result is recorded. */
+  output: z.string().nullable().default(null),
+  is_error: z.boolean().nullable().default(null),
+  /** skipped, interrupted, timed_out, crashed or failed for a result yian wrote in place of running it, refused for
+   *  a call the gate refused; null for a call that ran. */
+  closed: z.string().nullable().default(null),
+  started_at: z.string().nullable().default(null),
+  /** The note the gate ran the call with, such as why it was allowed. */
+  note: z.string().nullable().default(null),
+  /** Whether the gate held it for an answer. */
+  held: z.boolean(),
+  /** The note a held call was released with, such as who approved it. */
+  release_note: z.string().nullable().default(null),
+})
+export type RunCallToolResult = z.input<typeof RunCallToolResult>
+
+/**
+ * GET /runs/{id}/calls/{node}/{n}: one AGENT model call, rebuilt from the run log by yian's `agentCall`: the request
+ * it sent, its attempts, the reply and each tool call's result. Strings longer than 64K characters (UTF-16 code
+ * units) are cut with "…", each named in `cut`; the log holds them whole.
+ */
+export const RunCall = z.strictObject({
+  node_id: z.string().min(1),
+  /** The call's last attempt. */
+  n: z.int().min(1),
+  purpose: z.string(),
+  /** Null when it couldn't be rebuilt from the log. */
+  request: RunCallRequest.nullable(),
+  /** The rebuilt request differs from what an attempt recorded sending. */
+  digest_mismatch: z.boolean().default(false),
+  /** Every attempt, oldest first. */
+  attempts: z.array(RunCallAttempt),
+  /** What the last attempt got back, what arrived before a failure included; null when nothing did. */
+  reply: RunCallMessage.nullable(),
+  /** Each tool call of the reply, in call order. */
+  tool_results: z.array(RunCallToolResult).default(() => []),
+  /** The last attempt's usage. */
+  usage: RunCallUsage.nullable().default(null),
+  /** The last attempt's finish reason; null when it failed. */
+  finish: z.string().nullable().default(null),
+  /** An interrupt cut the reply, or the agent stopped before acting on all of it. */
+  interrupted: z.boolean().default(false),
+  /** JSON pointers of the strings cut at 64K characters. */
+  cut: z.array(z.string()).default(() => []),
+})
+export type RunCall = z.input<typeof RunCall>

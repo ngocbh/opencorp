@@ -1,13 +1,15 @@
 /** Synthetic yian run logs for the run tests: one record per line as yian writes them, each record's seq its line
  *  number. Every int in a payload is a `bigint`, which yian's writer writes as an int. And real logs of flows that run
- *  without a model. */
+ *  without a model, and of agents that run against the fake model. */
 import { onTestFinished } from "bun:test"
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { loadFlow } from "@ngocbh/yian"
-import { logJson, runFlow, runLogPath } from "@ngocbh/yian/run"
+import { loadFlow, tool } from "@ngocbh/yian"
+import { advance, type BeforeToolCall, interrupt, logJson, release, runFlow, runLogPath } from "@ngocbh/yian/run"
+import { pending } from "@ngocbh/yian/tools"
 import { SCHEMA } from "../../../src/runtime/runs/reader.ts"
+import { type FakeLLM, LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
 
 export const RUN = "01JA1H000000000000000000R1"
 export const FP = "f".repeat(64)
@@ -239,4 +241,139 @@ export function fifoAt(file: string, { unblock = true }: { unblock?: boolean } =
     child.kill("SIGKILL")
     fs.rmSync(file, { force: true })
   })
+}
+
+// An agent `writer` that may call `lookup`, `save` and `wipe`.
+export const TOOLS_FLOW = `id: tools
+name: tools
+input:
+  topic: !str
+nodes:
+  writer:
+    kind: agent
+    input:
+      topic: \${input.topic}
+    tools: [lookup, save, wipe]
+    system_prompt: Be exact.
+    prompt: Write about \${topic}.
+    output: !str
+output: \${writer.output}
+`
+// An agent `reply` that reads steers from `notes`, so an interrupt reaches its model call.
+export const STEERED_FLOW = `id: steered
+name: steered
+input:
+  message: !str
+  notes: !Inbox(str)
+nodes:
+  reply:
+    kind: agent
+    input:
+      message: \${input.message}
+    steer_inbox: \${input.notes}
+    system_prompt: Help.
+    prompt: \${message}
+    output: !Optional(str)
+output: \${reply.output}
+`
+
+/** The model key the agent runs below send, and a header value sent with it: no view of them may show either. */
+export const RUN_KEY = "sk-run-key-7d1e4c92b5a8"
+export const RUN_HEADER = "hdr-secret-3f9a61c2e0b7"
+/** The header RUN_HEADER is sent as. */
+const HEADER = "x-team-token"
+/** The organization the failed run names: a setting, which a view shows. */
+export const RUN_ORG = "org-acme-research"
+
+/** A host tool `name` taking `{topic}` and answering `<name>:<topic>`. */
+function topicTool(name: string) {
+  return tool({
+    name,
+    description: `Tool ${name}.`,
+    parameters: { type: "object", properties: { topic: { type: "string" } }, required: ["topic"] },
+    execute: (args) => `${name}:${(args as { topic: string }).topic}`,
+  })
+}
+
+/**
+ * Records run `runId` of TOOLS_FLOW (topic "owls") at `<runsDir>/<runId>/log.jsonl` against `fake`, with RUN_KEY as
+ * its host key and RUN_HEADER as a header sent with it, and returns the log. Call 1 asks for lookup, save and wipe: the gate runs lookup with the note
+ * "read-only", holds save, which is then released with "approved by @ngocbh", and refuses wipe. Call 2's first attempt
+ * is cut short and retried; the retry replies "Done.".
+ */
+export async function gatedRun(fake: FakeLLM, runsDir: string, runId: string): Promise<string> {
+  fake.script(
+    {
+      tool_calls: ["lookup", "save", "wipe"].map((name, i) => ({ name, arguments: { topic: "owls" }, id: `c${i + 1}` })),
+    },
+    { content: "Do", cut: true },
+    { content: "Done." },
+  )
+  const tools = { lookup: topicTool("lookup"), save: topicTool("save"), wipe: topicTool("wipe") }
+  const held: string[] = []
+  const beforeToolCall: BeforeToolCall = (call) => {
+    if (call.tool === "lookup") return { run: true, note: "read-only" }
+    if (call.tool === "wipe") return { refuse: "Not run: a deny rule: wipe *." }
+    held.push(call.callId)
+    return pending()
+  }
+  const env = (name: string) => fake.env()[name]
+  const log = runLogPath(runsDir, runId)
+  const headers = { [HEADER]: RUN_HEADER }
+  const llmConfig = { ...LLM_CONFIG, api_key: RUN_KEY, headers }
+  const options = { log, runId, numWorkers: 0, env, tools, beforeToolCall, llmConfig }
+  const first = await runFlow(await loadFlow(TOOLS_FLOW), { topic: "owls" }, options)
+  if (first.status !== "waiting" || held.length !== 1) throw new Error(`the gated run is ${first.status}, not held`)
+  await release(log, held[0]!, { note: "approved by @ngocbh" })
+  const done = await advance({ log, tools, beforeToolCall, env, apiKey: RUN_KEY, headers })
+  if (done.status !== "succeeded") throw new Error(`the gated run ended ${done.status}: ${done.failure?.message}`)
+  return log
+}
+
+/**
+ * Records run `runId` of STEERED_FLOW at `<runsDir>/<runId>/log.jsonl` on OpenAI's provider with RUN_ORG as its
+ * organization (only that provider takes one), RUN_KEY and RUN_HEADER, and returns the log. With a key the call goes to
+ * the Responses API, which `fake` doesn't serve, so it fails and the run with it; the call is still recorded.
+ */
+export async function failedRun(fake: FakeLLM, runsDir: string, runId: string): Promise<string> {
+  const log = runLogPath(runsDir, runId)
+  const llmConfig = {
+    provider: "openai",
+    model: "gpt-5",
+    base_url: `${fake.baseUrl}/v1`,
+    organization: RUN_ORG,
+    api_key: RUN_KEY,
+    headers: { [HEADER]: RUN_HEADER },
+  }
+  const result = await runFlow(await loadFlow(STEERED_FLOW), { message: "Hi." }, {
+    log,
+    runId,
+    numWorkers: 0,
+    env: () => undefined,
+    llmConfig,
+  })
+  if (result.status !== "failed") throw new Error(`the run on OpenAI ended ${result.status}`)
+  return log
+}
+
+/** Records run `runId` of STEERED_FLOW at `<runsDir>/<runId>/log.jsonl` against `fake`, its one model call cut by an
+ *  interrupt while its reply streams, and returns the log. */
+export async function interruptedRun(fake: FakeLLM, runsDir: string, runId: string): Promise<string> {
+  fake.script({ content: "Let me think about that for a while.", hold: true, hold_after: 2 })
+  const env = (name: string) => fake.env()[name]
+  const log = runLogPath(runsDir, runId)
+  const asked = fake.requests().length
+  const running = runFlow(await loadFlow(STEERED_FLOW), { message: "Think." }, {
+    log,
+    runId,
+    numWorkers: 0,
+    env,
+    llmConfig: LLM_CONFIG,
+  })
+  await fake.waitForRequests(asked + 1)
+  await interrupt(log, "notes")
+  fake.release()
+  const result = await running
+  if (result.status !== "succeeded") throw new Error(`the steered run ended ${result.status}`)
+  return log
 }

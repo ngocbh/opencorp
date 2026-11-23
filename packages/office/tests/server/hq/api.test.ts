@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
 import type { RunIndexRow } from "@ngocbh/yian/run"
-import { RunLiveRecord } from "@opencorp/protocol"
+import { RunCall, RunLiveRecord } from "@opencorp/protocol"
 import { parse, stringify } from "yaml"
 import { hashPassword } from "../../../src/runtime/auth/passwords.ts"
 import { SECRET_KEYS } from "../../../src/company/secret_keys.ts"
@@ -13,6 +13,7 @@ import { TTL } from "../../../src/server/hq/sessions.ts"
 import { readEvents, refresh } from "../../../src/runtime/runs/reader.ts"
 import { RunLogs } from "../../../src/runtime/runs/service.ts"
 import { newId } from "../../../src/runtime/store/store.ts"
+import { FakeLLM } from "../../../src/testing/fake_llm.ts"
 import { git } from "../../company/helpers.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import {
@@ -30,7 +31,7 @@ import {
   take,
   within,
 } from "../helpers.ts"
-import { chatLog, committed, fifoAt, runStarted, started } from "../../runtime/runs/helpers.ts"
+import { chatLog, committed, fifoAt, gatedRun, RUN_HEADER, RUN_KEY, runStarted, started } from "../../runtime/runs/helpers.ts"
 import { question, session, workItem } from "../../runtime/store/helpers.ts"
 import { HOST, ORIGIN, PORT, dist, makeHq, signedIn, web } from "./helpers.ts"
 
@@ -394,6 +395,40 @@ test("one runs routes are on the allowlist", async () => {
     expect([(await client.get(`/api/runs/${runId}${suffix}`)).status, suffix]).toEqual([200, suffix])
   // No HEAD on the download: HQ's GET catch-all answers it, as any method HQ doesn't serve.
   expect((await client.request("HEAD", `/api/runs/${runId}/log`)).status).toBe(404)
+})
+
+test("a run's model calls are on the allowlist, behind sign-in, for this office's runs only", async () => {
+  const office = makeOffice({ log: () => {} })
+  const hq = await makeHq(office)
+  // At no commit of the company: the run was loaded from text, under no code root.
+  const runId = addRun(office, "tools", CEO)
+  // A log in this office's runs folder that its store doesn't hold.
+  const stray = newId()
+  const fake = await FakeLLM.start()
+  try {
+    await gatedRun(fake, office.paths.runs, runId)
+    await gatedRun(fake, office.paths.runs, stray)
+  } finally {
+    await fake.close()
+  }
+  const anonymous = await web(hq)
+  for (const target of [`/api/runs/${runId}/calls?node=writer`, `/api/runs/${runId}/calls/writer/1`]) {
+    const r = await anonymous.get(target)
+    expect([r.status, (r.json() as Body).error]).toEqual([401, "sign_in_required"])
+  }
+  const client = await signedIn(hq)
+  const list = await client.get(`/api/runs/${runId}/calls`, { query: { node: "writer" } })
+  expect([list.status, (list.json() as { calls: unknown[] }).calls.length]).toEqual([200, 2])
+  const r = await client.get(`/api/runs/${runId}/calls/writer/1`)
+  expect(r.status).toBe(200)
+  expect(RunCall.parse(r.json()).tool_results.find((t) => t.name === "save")!.release_note).toBe("approved by @ngocbh")
+  expect([r.text.includes(RUN_KEY), r.text.includes(RUN_HEADER)]).toEqual([false, false])
+  // No HEAD: HQ's GET catch-all answers it, as any method HQ doesn't serve.
+  expect((await client.request("HEAD", `/api/runs/${runId}/calls/writer/1`)).status).toBe(404)
+  for (const target of [`/api/runs/${stray}/calls/writer/1`, `/api/runs/${stray}/calls?node=writer`]) {
+    const refused = await client.get(target)
+    expect([refused.status, (refused.json() as Body).error]).toEqual([404, "not_found"])
+  }
 })
 
 test("a run log that is a symlink isn't downloaded", async () => {
