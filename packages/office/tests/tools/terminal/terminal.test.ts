@@ -386,8 +386,10 @@ test("the owner's close ends a shell, its record says who closed it, the agent g
   expect(t.terminal.shells()[0]!.state.status).toBe("ended")
   expect(t.record("sh_1")).toMatchObject({ state: "ended", closedBy: "ngocbh" })
   await waitFor(() => t.notes.length === 1, { what: "the note" })
-  // Signed by the shell, under a key of its own, so it is never sent twice.
-  expect(t.notes[0]).toEqual({ key: "terminal:sh_1:1:closed", shell: "shell 1", text: "shell 1: closed by @ngocbh." })
+  // Signed by the shell, under a key of its own, so it is never sent twice; quiet, as the owner's own act.
+  expect(t.notes[0]).toEqual({
+    key: "terminal:sh_1:1:closed", shell: "shell 1", text: "shell 1: closed by @ngocbh.", quiet: true,
+  })
   // A later call on it says who closed it; its output still reads.
   const refused = "@ngocbh closed this shell; run with no shell to start a new one"
   expect(json(await t.call("run", { command: "echo again", why: "x", shell: "shell 1" }))).toMatchObject({ refused })
