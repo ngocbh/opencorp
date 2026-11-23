@@ -9,6 +9,7 @@ import {
   onCleanup,
   Show,
   Switch,
+  untrack,
   useContext,
 } from "solid-js"
 import { createStore } from "solid-js/store"
@@ -20,6 +21,7 @@ import {
   type Instrument,
   isInstrumentNote,
   type Message,
+  type Question as OfficeQuestion,
   type TextPart,
   type ToolPart,
 } from "@opencorp/protocol"
@@ -184,31 +186,62 @@ export function Session(props: SessionProps) {
   const session = createMemo(() => office.state.sessions.find((s) => s.id === props.sessionID))
   // The open cards here: this session's own first, then, in a chat, its Codex and Claude Code sessions'.
   const cards = createMemo(() => familyQuestions(office.state, props.sessionID))
-  // This session's own first card.
-  const question = createMemo(() => {
-    const first = cards()[0]
-    return first?.session_id === props.sessionID ? first : undefined
-  })
   // A Codex session shows every open card above a prompt that stays; the first card or the prompt has the keys.
   const codex = createMemo(() => session()?.harness === "codex")
   // A Codex or Claude Code session: a harness of its own, which takes a message mid-turn into the running turn.
   const harnessed = createMemo(() => session()?.harness === "codex" || session()?.harness === "claude")
+  // The cards above a prompt that stays: a Codex session's own, or a chat's Codex sessions', shown in the chat as in
+  // their own view.
+  const stacked = createMemo(() => (harnessed() ? cards() : cards().filter((q) => q.session_id !== props.sessionID)))
+  // The chat's own cards, which take the prompt's place in turn.
+  const own = createMemo(() => (harnessed() ? [] : cards().filter((q) => q.session_id === props.sessionID)))
+  // The card with the keys, or none while the prompt has them. It keeps them until it closes or ctrl+t moves them,
+  // wherever a card that opens meanwhile sorts, the chat's own included: keys typed for it, a secret's rest say, must
+  // never land on another card.
+  const [keyed, setKeyed] = createSignal<string>()
+  const held = createMemo(() => cards().find((q) => q.id === keyed()))
+  // The chat's own card in the prompt's place: the one with the keys, else its first unless a stacked card has them.
+  const question = createMemo(() => {
+    const h = held()
+    return h ? own().find((q) => q.id === h.id) : own()[0]
+  })
   // A card on the chat (an approval, a question), which takes what room it needs and scrolls in the rest.
   const card = createMemo(() => !codex() && question() !== undefined)
   const permission = usePermission()
-  // Whether the chat's mode can be switched here. Never while one of its own cards is open: the card hides the prompt
-  // and its mode label, and a switch to dontAsk would answer an approval card. A Codex session's card in the chat
-  // does neither: the prompt stays under it, and dontAsk leaves it open.
-  const switchable = () => permission.mode(props.sessionID) !== null && !question()
-  // The cards above a prompt that stays: a Codex session's own, or a chat's Codex sessions', shown in the chat as in
-  // their own view. They wait as lines while one of the chat's own cards holds the prompt's place.
-  const stacked = createMemo(() => (harnessed() ? cards() : cards().filter((q) => q.session_id !== props.sessionID)))
-  const stackOpen = createMemo(() => stacked().length > 0 && (harnessed() ? codex() : !question()))
-  const [focus, setFocus] = createSignal<"card" | "prompt">("card")
-  const cardFocused = createMemo(() => stackOpen() && focus() === "card")
-  // Cards opening when none were open take the keys, unless this side's prompt holds a draft: keys typed for the
-  // prompt must never land on a card, where a digit or Enter picks an option.
-  createEffect(on(stackOpen, (open) => open && setFocus(promptRef.current?.current.input ? "prompt" : "card")))
+  // Whether the chat's mode can be switched here. Never while one of its own cards is open, in its place or waiting:
+  // the card hides the prompt and its mode label, and a switch to dontAsk would answer an approval card. A Codex
+  // session's card in the chat does neither: the prompt stays under it, and dontAsk leaves it open.
+  const switchable = () => permission.mode(props.sessionID) !== null && own().length === 0
+  // Whether a stacked card can have the keys: not while one of the chat's own cards holds the prompt's place.
+  const stackOpen = createMemo(() => stacked().length > 0 && !question() && (!harnessed() || codex()))
+  // The stacked card with the keys, shown whole; every other card shows as a line.
+  const active = createMemo(() => {
+    const h = held()
+    return h && stackOpen() && stacked().some((q) => q.id === h.id) ? h : undefined
+  })
+  // Once the card with the keys closes, or while the prompt has them, the usual rules pick who has them next: the
+  // chat's own first card takes the prompt's place; else the next stacked card does, or, when none were open, the
+  // first unless this side's prompt holds a draft. Keys typed for the prompt must never land on a card, where a digit
+  // or Enter picks an option.
+  let stackWasOpen = false
+  createEffect(() => {
+    const k = keyed()
+    const open = stackOpen()
+    const opened = open && !stackWasOpen
+    stackWasOpen = open
+    if (k && cards().some((q) => q.id === k)) return
+    untrack(() => {
+      const first = own()[0]
+      if (first) setKeyed(first.id)
+      else if (k || (opened && !promptRef.current?.current.input)) setKeyed(stacked()[0]?.id)
+    })
+  })
+  // The lines above the prompt, or above the chat's own card in its place: the stacked card with the keys first, then
+  // every other card, the chat's own included, as a line; while no stacked card has the keys, the stacked cards.
+  const lines = createMemo(() => {
+    const a = active()
+    return a ? [a, ...cards().filter((q) => q.id !== a.id)] : stacked()
+  })
   // The card whose side chat is showing; the view shows the side session in place of the chat.
   const [sideOf, setSideOf] = createSignal<string>()
   const sideQuestion = createMemo(() => {
@@ -714,7 +747,7 @@ export function Session(props: SessionProps) {
         category: "Session",
         hidden: true,
         enabled: stackOpen() && dialog.stack.length === 0,
-        run: () => setFocus((f) => (f === "card" ? "prompt" : "card")),
+        run: () => setKeyed(active() ? undefined : stacked()[0]?.id),
       },
     ],
     bindings: tuiConfig.keybinds.gather("session.card", ["session.card.focus"]),
@@ -921,18 +954,22 @@ export function Session(props: SessionProps) {
                 />
                 <Show when={!composerVisible()}>
                   {/* Keyed by id, so a card whose question is re-read (a reconnect) keeps its state. */}
-                  <For each={stacked().map((q) => q.id)}>
+                  <For each={lines().map((q) => q.id)}>
                     {(id, i) => (
                       <Show when={office.state.questions[id]}>
-                        {(q) => (
-                          <HarnessCard
-                            question={q()}
-                            active={i() === 0 && cardFocused()}
-                            waiting={i() > 0 || !stackOpen()}
-                            // Esc on a Codex session's card in its chat stops that session's turn, not the chat's.
-                            onInterrupt={q().session_id === props.sessionID ? interrupt : undefined}
-                          />
-                        )}
+                        {(q) =>
+                          own().some((o) => o.id === id) ? (
+                            <WaitingCard question={q()} />
+                          ) : (
+                            <HarnessCard
+                              question={q()}
+                              active={id === active()?.id}
+                              waiting={i() > 0 || !stackOpen()}
+                              // Esc on a Codex session's card in its chat stops that session's turn, not the chat's.
+                              onInterrupt={q().session_id === props.sessionID ? interrupt : undefined}
+                            />
+                          )
+                        }
                       </Show>
                     )}
                   </For>
@@ -945,7 +982,7 @@ export function Session(props: SessionProps) {
                         fallback={
                           <Prompt
                             visible={true}
-                            inactive={cardFocused()}
+                            inactive={active() !== undefined}
                             ref={bind}
                             onSend={lift}
                             onSubmit={() => toBottom()}
@@ -988,7 +1025,7 @@ export function Session(props: SessionProps) {
                   >
                     <Prompt
                       visible={true}
-                      inactive={cardFocused()}
+                      inactive={active() !== undefined}
                       ref={bind}
                       onSend={lift}
                       onSubmit={() => toBottom()}
@@ -1003,6 +1040,22 @@ export function Session(props: SessionProps) {
         </Show>
       </box>
     </context.Provider>
+  )
+}
+
+/** One of the chat's own cards while a card of its Codex sessions has the keys: one line, which takes no keys. */
+function WaitingCard(props: { question: OfficeQuestion }) {
+  const office = useOffice()
+  const { theme } = useTheme()
+  const title = () => {
+    const q = props.question
+    if (q.source === "approval") return display(q.title ?? "Permission required")
+    return `${personLabel(office.state.people, q.asker)} asks: ${display(q.title ?? q.question)}`
+  }
+  return (
+    <box paddingLeft={2}>
+      <text fg={theme.textMuted} wrapMode="none">{`${title()} (waiting)`}</text>
+    </box>
   )
 }
 

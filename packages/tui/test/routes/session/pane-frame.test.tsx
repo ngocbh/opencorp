@@ -61,8 +61,8 @@ function shell(office: FakeOffice, sid: string, fields: Partial<Instrument> = {}
   })
 }
 
-/** Adds a Codex session minh's chat `chat` drives, its child session, listed as the chat's instrument `codex 1`. */
-function codex(office: FakeOffice, chat: string, status: Session["status"]) {
+/** Adds a Codex session minh's chat `chat` drives, its child session, listed as the chat's instrument `name`. */
+function codex(office: FakeOffice, chat: string, status: Session["status"], name = "codex 1") {
   const child = office.newSession({
     person: "minh",
     cwd: "/tmp/proj",
@@ -75,7 +75,7 @@ function codex(office: FakeOffice, chat: string, status: Session["status"]) {
     id: child.id,
     session_id: chat,
     kind: "codex",
-    name: "codex 1",
+    name,
     driver: "minh",
     profile: "harness",
     interactive: false,
@@ -625,29 +625,128 @@ test("a Codex session's card, open before its chat was, shows in the chat above 
   }
 })
 
-test("the chat's own card comes first, a Codex session's waiting as a line behind it, then taking the keys", async () => {
+/** A Codex card asking for a secret, from the session `sid`'s harness. */
+const secretCard = (sid: string, n: string) => ({
+  session_id: sid,
+  source: "harness" as const,
+  node_id: n,
+  run_id: "turn_1",
+  question: "Token?",
+  questions: [{ question: "Paste the deploy token", header: "Token", options: [], secret: true }],
+})
+
+/** Opens an approval card on the chat `sid` for `make deploy` in shell 1. */
+const deployApproval = (office: FakeOffice, sid: string) =>
+  office.addApproval(sid, {
+    kind: "command",
+    tool: "terminal_run",
+    action: "make deploy",
+    args: { shell: "shell 1", command: "make deploy" },
+    reason: "Ask mode",
+    rules: [],
+  })
+
+/** Types `hunt` into the secret card that has the keys, once it shows. */
+async function typeHalfSecret(app: App) {
+  await app.until((f) => f.includes("Paste the deploy token"))
+  await Bun.sleep(100)
+  app.input.typeText("hunt")
+  await app.until((f) => f.includes("••••"))
+}
+
+test("the chat's own card holds the prompt's place; a Codex session's card that opens meanwhile waits as a line, then takes the keys", async () => {
   const office = createFakeOffice()
   const chat = office.state.sessions[0]!
   const child = codex(office, chat.id, "busy")
   const { app } = await boot(office, 120, chat.id)
   try {
     await app.until((f) => f.includes("↓ 1 Codex session"))
+    const own = deployApproval(office, chat.id)
+    await app.until((f) => f.includes("make deploy") && f.includes("enter confirm"))
     const card = office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
-    await app.until((f) => f.includes("$ touch a"))
-    const own = office.addApproval(chat.id, {
-      kind: "command",
-      tool: "terminal_run",
-      action: "make deploy",
-      args: { shell: "shell 1", command: "make deploy" },
-      reason: "Ask mode",
-      rules: [],
-    })
-    const f = await app.until(
-      (f) => f.includes("make deploy") && f.includes("Codex asks: Codex wants to run a command (waiting)"),
-    )
+    const f = await app.until((f) => f.includes("Codex asks: Codex wants to run a command (waiting)"))
+    expect(f).toContain("enter confirm")
     expect(f).not.toContain("$ touch a")
     office.expire(own.id)
     await app.until((f) => f.includes("$ touch a") && !f.includes("make deploy"))
+    app.input.pressKey("1")
+    await until(() => office.state.questions[card.id]!.status !== "open")
+    expect(sent(office, `/questions/${card.id}/answer`)).toEqual([{ answer: "Approve", answer_kind: "option" }])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("an approval the chat opens while a Codex secret card has the keys waits as a line; the secret's rest goes to the secret", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    const secret = office.addQuestion(secretCard(child.id, "1"))
+    await typeHalfSecret(app)
+    const own = deployApproval(office, chat.id)
+    await app.until((f) => f.includes("@minh wants to run a command (waiting)") && f.includes("Paste the deploy token"))
+    app.input.typeText("er1")
+    await app.until((f) => f.includes("•••••••") && !f.includes("er1"))
+    app.input.pressEnter()
+    await until(() => office.state.questions[secret.id]!.status !== "open")
+    expect(sent(office, `/questions/${secret.id}/answer`)).toEqual([{ answer: { Token: "hunter1" }, answer_kind: "text" }])
+    expect(sent(office, `/questions/${own.id}/answer`)).toEqual([])
+    // Then the chat's card takes the prompt's place, as it would have.
+    await app.until((f) => f.includes("make deploy") && f.includes("enter confirm"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a question the chat opens while a Codex secret card has the keys waits as a line; the secret's rest never reaches it", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    const secret = office.addQuestion(secretCard(child.id, "1"))
+    await typeHalfSecret(app)
+    const own = office.addQuestion({ session_id: chat.id, question: "Which branch?" })
+    await app.until((f) => f.includes("@minh asks: Which branch? (waiting)"))
+    app.input.typeText("er2")
+    await app.until((f) => f.includes("•••••••"))
+    expect(app.frame()).not.toContain("er2")
+    app.input.pressEnter()
+    await until(() => office.state.questions[secret.id]!.status !== "open")
+    expect(sent(office, `/questions/${secret.id}/answer`)).toEqual([{ answer: { Token: "hunter2" }, answer_kind: "text" }])
+    expect(sent(office, `/questions/${own.id}/answer`)).toEqual([])
+    await app.until((f) => f.includes("Which branch?") && !f.includes("(waiting)"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a card from an older Codex session waits behind a younger one's that has the keys, then takes them", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const older = codex(office, chat.id, "busy", "codex 1")
+  const younger = codex(office, chat.id, "busy", "codex 2")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 2 Codex sessions"))
+    const secret = office.addQuestion(secretCard(younger.id, "1"))
+    await typeHalfSecret(app)
+    const card = office.addQuestion(harnessCard(older.id, "2", ["Approve", "Deny"]))
+    await app.until((f) => f.includes("Codex asks: Codex wants to run a command (waiting)"))
+    app.input.typeText("er1")
+    await app.until((f) => f.includes("•••••••"))
+    app.input.pressEnter()
+    await until(() => office.state.questions[secret.id]!.status !== "open")
+    expect(sent(office, `/questions/${secret.id}/answer`)).toEqual([{ answer: { Token: "hunter1" }, answer_kind: "text" }])
+    expect(sent(office, `/questions/${card.id}/answer`)).toEqual([])
+    await app.until((f) => f.includes("$ touch a"))
     app.input.pressKey("1")
     await until(() => office.state.questions[card.id]!.status !== "open")
     expect(sent(office, `/questions/${card.id}/answer`)).toEqual([{ answer: "Approve", answer_kind: "option" }])
