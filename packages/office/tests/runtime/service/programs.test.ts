@@ -164,6 +164,26 @@ test("a compiled binary installs as its package and its shim package", () => {
   expect(installPaths([fakeTool(path.join(x, "opencorp"))])).toEqual([fs.realpathSync(x)])
 })
 
+test("a binary built in a checkout installs as that checkout, which holds what it serves", () => {
+  const checkout = path.join(tempDir(), "opencorp")
+  const binary = fakeTool(path.join(checkout, "packages/cli/dist/npm/opencorp-linux-x64/bin/opencorp"))
+  expect(installPaths([binary])).toEqual([fs.realpathSync(checkout)])
+  // The wrapper install.sh writes on PATH, and the docs' link, reach it through links.
+  const link = path.join(tempDir(), "bin", "opencorp")
+  fs.mkdirSync(path.dirname(link))
+  fs.symlinkSync(binary, link)
+  expect(installPaths([link])).toEqual([fs.realpathSync(checkout)])
+  // A workspace may hold neither the checkout nor anything in it, such as HQ's built app. The binary is the last of
+  // the guards' programs, which doctor judges the daemon's code by.
+  const git = fakeTool(path.join(tempDir(), "bin", "git"))
+  const guards = workspaceGuards({ git }, { PATH: "" }, [binary], [])
+  expect(guards.tools?.at(-1)).toBe(fs.realpathSync(binary))
+  for (const cwd of [checkout, path.dirname(checkout), path.join(checkout, "packages/app/dist")]) {
+    fs.mkdirSync(cwd, { recursive: true })
+    expect(() => checkWorkspace(cwd, guards), cwd).toThrow(UnsafeWorkspace)
+  }
+})
+
 test("the workspace guards refuse a tool folder a path entry and the install", () => {
   const root = tempDir()
   const t = path.join(root, "t")

@@ -8,6 +8,9 @@ import type { CommandRun } from "../main"
 import { localIdentity, officeDown, officeNotRunning } from "../office"
 import { terminal } from "../setup"
 
+/** `true` in the compiled binary, where `script/build.ts` defines it; undefined from source. */
+declare const OPENCORP_COMPILED: true | undefined
+
 /** What `opencorp tui --help` prints; `opencorp --help` repeats the option lines. */
 export const TUI_USAGE = [
   "usage: opencorp [tui] [-s ID] [-c] [--person HANDLE] [--prompt TEXT]",
@@ -113,10 +116,11 @@ export async function tui(argv: string[], env: Env, deps: TuiDeps = realTuiDeps)
       return 1
     }
   }
-  // The TUI is Solid JSX: the transform must be registered before its modules load, and a
-  // bunfig preload would only apply when `opencorp` runs from this package's folder.
-  const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin")
-  ensureSolidTransformPlugin()
+  // The TUI is Solid JSX: from source the transform must be registered before its modules load, and a bunfig preload
+  // would only apply when `opencorp` runs from this package's folder. The binary's was compiled when it was built,
+  // which drops this branch, and Babel with it.
+  if (typeof OPENCORP_COMPILED === "undefined")
+    (await import("@opentui/solid/bun-plugin")).ensureSolidTransformPlugin()
   const [{ Effect }, { Global, run: runTui }] = await Promise.all([
     import("effect"),
     import("@opencorp/tui"),

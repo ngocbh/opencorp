@@ -5,7 +5,7 @@
  * of its own, so `/dev/tty` can't open; a run on a terminal gets a tmux window.
  *
  * With OPENCORP_TEST_INSTALL=1, one more test installs a clone of this checkout with the real Bun, offline from Bun's
- * real package cache.
+ * real package cache, and so builds the real binary.
  */
 import { afterAll, beforeAll, describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { execFileSync, spawn, spawnSync } from "node:child_process"
@@ -35,6 +35,11 @@ let source = ""
 let bunDir = ""
 /** A folder holding the stub `curl`, whose Bun installer copies the stub `bun`. */
 let stubs = ""
+/** The platform the stub `bun` says it runs on, which names the folder of the binary the stub build writes: this
+ *  machine's, as uninstall.sh names it from `uname`. */
+const HOST = `${process.platform}-${process.arch}`
+/** The binary install.sh builds in the checkout `co`. */
+const built = (co: string) => path.join(co, "packages/cli/dist/npm", `opencorp-${HOST}`, "bin/opencorp")
 
 /** `s` as one sh word. */
 const sq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`
@@ -107,6 +112,30 @@ beforeAll(() => {
   fs.writeFileSync(path.join(source, ".gitignore"), fs.readFileSync(path.join(CHECKOUT, ".gitignore"), "utf8"))
   const wrapper = fs.readFileSync(path.join(CHECKOUT, "packages/cli/bin/opencorp"), "utf8")
   writeScript(path.join(source, "packages/cli/bin/opencorp"), wrapper)
+  // The CLI's build, run as `bun run build` in packages/cli: a stub binary where the real build puts the binary, which
+  // logs its calls and answers as the stub bun answers for `opencorp`.
+  const cli = { name: "opencorp", private: true, scripts: { build: "sh script/build.sh" } }
+  fs.writeFileSync(path.join(source, "packages/cli/package.json"), JSON.stringify(cli, null, 2) + "\n")
+  writeScript(
+    path.join(source, "packages/cli/script/build.sh"),
+    `[ -z "\${STUB_BUILD_FAILS:-}" ] || { echo "the build failed" >&2; exit 1; }
+mkdir -p dist/npm/opencorp-${HOST}/bin
+cat >dist/npm/opencorp-${HOST}/bin/opencorp <<'EOF'
+#!/bin/sh
+if [ -t 0 ]; then tty=tty; else tty=no-tty; fi
+printf '%s %s | %s | %s\\n' "$0" "$*" "$PWD" "$tty" >>"$STUB_LOG/calls"
+case $* in
+  --version) [ -z "\${STUB_BINARY_BROKEN:-}" ] || exit 1; echo 0.0.1 ;;
+  --help) [ -z "\${STUB_HELP_FAILS:-}" ] || exit 3 ;;
+  stop) [ -z "\${STUB_STOP_FAILS:-}" ] || exit 1 ;;
+  offboard)
+    [ -z "\${STUB_OFFBOARD_FAILS:-}" ] || exit 1
+    [ -n "\${STUB_OFFBOARD_KEEPS:-}" ] || rm -rf "$HOME/.opencorp/office" "$HOME/.opencorp/identity.json" ;;
+esac
+EOF
+chmod 755 dist/npm/opencorp-${HOST}/bin/opencorp
+`,
+  )
   for (const script of ["install.sh", "uninstall.sh"]) {
     writeScript(path.join(source, script), fs.readFileSync(path.join(CHECKOUT, script), "utf8"))
   }
@@ -118,8 +147,8 @@ beforeAll(() => {
   git(source, "checkout", "-q", "main")
 
   // The stub bun logs its calls (and whether stdin is a terminal), answers `--version` for itself and for
-  // `opencorp --version`, runs package.json's build script for `run build` as Bun does, and stands in for
-  // `opencorp offboard` by removing the office's state.
+  // `opencorp --version`, says its platform for `--print`, runs package.json's build script for `run build` as Bun
+  // does, and stands in for `opencorp offboard` by removing the office's state.
   bunDir = path.join(root, "bun-bin")
   writeScript(
     path.join(bunDir, "bun"),
@@ -127,6 +156,7 @@ beforeAll(() => {
 if [ -t 0 ]; then tty=tty; else tty=no-tty; fi
 printf '%s %s | %s | %s\\n' "$0" "$*" "$PWD" "$tty" >>"$STUB_LOG/calls"
 case $* in
+  *"--print "*) echo "\${STUB_HOST:-${HOST}}" ;;
   --version) echo "\${STUB_BUN_VERSION:-1.4.2}" ;;
   "run build") sh -c "$(sed -n 's/^ *"build": *"\\(.*\\)"$/\\1/p' package.json)" ;;
   *" --version") echo 0.0.1 ;;
@@ -354,7 +384,7 @@ function runWrapper(h: Home, args: string[], extra: Record<string, string> = {})
 }
 
 describe("install.sh", () => {
-  test("run from a checkout, it installs and builds that checkout and writes a marked wrapper that runs it with the Bun it found", async () => {
+  test("run from a checkout, it installs and builds that checkout and its binary, and writes a marked wrapper that runs the binary", async () => {
     const h = makeHome()
     const co = checkout(h)
     for (let i = 0; i < 2; i++) {
@@ -362,6 +392,7 @@ describe("install.sh", () => {
       expect(r.err).not.toContain("✗")
       expect(r.code).toBe(0)
       expect(r.out).toContain(`✓ Installing the checkout at ${co}`)
+      expect(r.out).toContain(`✓ Built ${built(co)}`)
       expect(r.out).toContain(`✓ Installed OpenCorp 0.0.1 from ${co}`)
       expect(r.out).toContain("→ Next: in a project folder, run opencorp init.")
       expect(r.out).toContain(`→ To use opencorp in this shell, run: . ${h.home}/.bashrc`)
@@ -371,20 +402,59 @@ describe("install.sh", () => {
     const bun = path.join(bunDir, "bun")
     expect(calls(h).filter((c) => c.startsWith(`${bun} install --frozen-lockfile | ${co} |`))).toHaveLength(2)
     expect(calls(h).filter((c) => c.startsWith(`${bun} run build | ${co} |`))).toHaveLength(2)
+    expect(calls(h).filter((c) => c.startsWith(`${bun} run build | ${co}/packages/cli |`))).toHaveLength(2)
     expect(calls(h).filter((c) => c.includes(" init "))).toEqual([])
     expect(fs.readFileSync(h.wrapper, "utf8")).toContain(MARK)
     expect(fs.existsSync(h.clone)).toBe(false)
     expect(pathLines(path.join(h.home, ".bashrc"))).toBe(1)
     expect(pathLines(path.join(h.home, ".profile"))).toBe(1)
 
-    // The wrapper runs the checkout's own wrapper with that Bun, with no Bun on PATH; a Bun in OPENCORP_BUN wins.
+    // The wrapper runs the binary, whatever OPENCORP_BUN says.
+    const other = path.join(h.dir, "other-bun")
+    writeScript(other, "#!/bin/sh\necho other bun\n")
+    expect(runWrapper(h, ["--version"], { OPENCORP_BUN: other }).out.trim()).toBe("0.0.1")
+    expect(calls(h).at(-1)).toStartWith(`${built(co)} --version |`)
+
+    // While the binary is missing, it runs the checkout's own wrapper with that Bun, with no Bun on PATH; a Bun in
+    // OPENCORP_BUN wins.
+    fs.rmSync(path.join(co, "packages/cli/dist"), { recursive: true })
     expect(runWrapper(h, ["--version"]).out.trim()).toBe("0.0.1")
     expect(calls(h).at(-1)).toStartWith(
       `${bun} --no-install --no-env-file --config=/dev/null ${co}/packages/cli/src/main.ts --version |`,
     )
-    const other = path.join(h.dir, "other-bun")
-    writeScript(other, "#!/bin/sh\necho other bun\n")
     expect(runWrapper(h, ["--version"], { OPENCORP_BUN: other }).out.trim()).toBe("other bun")
+  })
+
+  test("when the binary won't build, it warns, and the wrapper runs the checkout with the Bun it found", async () => {
+    const h = makeHome()
+    const co = checkout(h)
+    expect((await run(h, "install.sh", { from: co })).code).toBe(0)
+    const r = await run(h, "install.sh", { from: co, extra: { STUB_BUILD_FAILS: "1" } })
+    expect(r.code).toBe(0)
+    expect(r.err).toContain("the build failed")
+    expect(r.err).toContain(
+      "⚠ Couldn't build the opencorp binary, so opencorp runs from the source, which takes about a second longer to " +
+        `start. To see why, run bun run build in ${co}/packages/cli; then run this again.`,
+    )
+    expect(r.out).toContain(`✓ Installed OpenCorp 0.0.1 from ${co}`)
+    // The last build stays, for an office its service starts, but opencorp no longer runs it.
+    expect(fs.existsSync(built(co))).toBe(true)
+    expect(fs.readFileSync(h.wrapper, "utf8")).not.toContain(built(co))
+    expect(runWrapper(h, ["--version"]).out.trim()).toBe("0.0.1")
+    expect(calls(h).at(-1)).toStartWith(
+      `${path.join(bunDir, "bun")} --no-install --no-env-file --config=/dev/null ${co}/packages/cli/src/main.ts --version |`,
+    )
+
+    // A build that writes no binary for the platform Bun says it runs on is a failed one too, and so is one whose
+    // binary won't start.
+    const extras: Record<string, string>[] = [{ STUB_HOST: "other-arm64" }, { STUB_BINARY_BROKEN: "1" }]
+    for (const extra of extras) {
+      const other = makeHome()
+      const failed = await run(other, "install.sh", { from: checkout(other), extra })
+      expect(failed.code).toBe(0)
+      expect(failed.err).toContain("⚠ Couldn't build the opencorp binary")
+      expect(fs.readFileSync(other.wrapper, "utf8")).not.toContain("# compiled, as")
+    }
   })
 
   test("leaves the rc files alone when the bin folder is on PATH already, or with --no-modify-path", async () => {
@@ -492,7 +562,7 @@ describe("install.sh", () => {
     const seen = calls(h)
     const stop = seen.findIndex((c) => c.includes(`${old}/packages/cli/src/main.ts stop |`))
     expect(stop).toBeGreaterThan(seen.findIndex((c) => c.includes(" run build | ")))
-    expect(stop).toBeLessThan(seen.findIndex((c) => c.includes(`${h.clone}/packages/cli/src/main.ts --help |`)))
+    expect(stop).toBeLessThan(seen.findIndex((c) => c.startsWith(`${built(h.clone)} --help |`)))
     expect(fs.readFileSync(h.wrapper, "utf8")).toContain(sq(path.join(h.clone, "packages/cli/bin/opencorp")))
     expect(r.out).toContain(`→ Next: run opencorp onboard, which sets the office's service up to run ${h.clone}`)
     expect(r.out).not.toContain("opencorp restart")
@@ -784,6 +854,10 @@ describe("install.sh", () => {
     expect(r.out).toContain(`→ Updating ${h.clone} (main)`)
     expect(r.out).toContain(`✓ Updated ${h.clone} to ${git(remote, "rev-parse", "--short", "HEAD")}`)
     expect(git(h.clone, "rev-parse", "HEAD")).toBe(git(remote, "rev-parse", "HEAD"))
+    // The binary is built again from the new code.
+    const builds = calls(h).filter((c) => c.startsWith(`${path.join(bunDir, "bun")} run build | ${h.clone}/packages/cli |`))
+    expect(builds).toHaveLength(2)
+    expect(r.out).toContain(`✓ Built ${built(h.clone)}`)
   })
 
   test("piped again, it refuses a clone with uncommitted changes or a detached HEAD and leaves it as it was", async () => {
@@ -980,9 +1054,7 @@ describe("install.sh", () => {
       expect(await t.exit()).toBe(0)
       const project = path.join(h.home, "work/acme")
       expect(fs.statSync(project).isDirectory()).toBe(true)
-      expect(calls(h).filter((c) => c.includes("main.ts init |"))).toEqual([
-        `${path.join(bunDir, "bun")} --no-install --no-env-file --config=/dev/null ${h.clone}/packages/cli/src/main.ts init | ${project} | tty`,
-      ])
+      expect(calls(h).filter((c) => c.includes(" init |"))).toEqual([`${built(h.clone)} init | ${project} | tty`])
     })
 
     test("the project folder defaults to ~/projects/opencorp, and a no runs nothing", async () => {
@@ -993,7 +1065,7 @@ describe("install.sh", () => {
       await t.see("Project folder for it")
       t.type("")
       expect(await t.exit()).toBe(0)
-      expect(calls(h).filter((c) => c.includes("main.ts init |")).at(0)).toContain(`| ${h.home}/projects/opencorp | tty`)
+      expect(calls(h).filter((c) => c.includes(" init |")).at(0)).toContain(`| ${h.home}/projects/opencorp | tty`)
 
       const declined = makeHome()
       const t2 = onTerminal(declined, "install.sh")
@@ -1001,7 +1073,7 @@ describe("install.sh", () => {
       t2.type("n")
       expect(await t2.exit()).toBe(0)
       expect(t2.screen()).toContain("→ Next: in a project folder, run opencorp init.")
-      expect(calls(declined).filter((c) => c.includes("main.ts init |"))).toEqual([])
+      expect(calls(declined).filter((c) => c.includes(" init |"))).toEqual([])
     })
 
     test("the folder question asks again for the home, a folder that holds it, ~user, a relative path, the checkout or a file", async () => {
@@ -1025,8 +1097,8 @@ describe("install.sh", () => {
       }
       t.type("~/acme/")
       expect(await t.exit()).toBe(0)
-      expect(calls(h).filter((c) => c.includes("main.ts init |"))).toHaveLength(1)
-      expect(calls(h).filter((c) => c.includes("main.ts init |")).at(0)).toContain(`| ${h.home}/acme | tty`)
+      expect(calls(h).filter((c) => c.includes(" init |"))).toHaveLength(1)
+      expect(calls(h).filter((c) => c.includes(" init |")).at(0)).toContain(`| ${h.home}/acme | tty`)
       expect(fs.existsSync(path.join(h.home, "~nobody"))).toBe(false)
       expect(fs.existsSync(path.join(h.home, "acme"))).toBe(true)
     })
@@ -1048,7 +1120,7 @@ describe("install.sh", () => {
       expect(await t2.exit()).toBe(0)
       expect(t2.screen()).toContain("→ Next: in a project folder, run opencorp init.")
       for (const home of [h, later]) {
-        expect(calls(home).filter((c) => c.includes("main.ts init |"))).toEqual([])
+        expect(calls(home).filter((c) => c.includes(" init |"))).toEqual([])
         expect(fs.existsSync(path.join(home.home, "projects"))).toBe(false)
       }
     })
@@ -1076,6 +1148,7 @@ describe("uninstall.sh", () => {
     expect(r.err).not.toContain("✗")
     expect(r.code).toBe(0)
     expect(r.out).toContain(`✓ Removed ${h.wrapper}`)
+    expect(r.out).toContain(`✓ Removed ${path.dirname(path.dirname(built(h.clone)))}`)
     expect(r.out).toContain(`✓ Removed ${h.clone}`)
     expect(r.out).toContain(`✓ Left Bun and the office home (${h.office}) in place.`)
     expect(fs.existsSync(h.wrapper)).toBe(false)
@@ -1253,12 +1326,14 @@ describe("uninstall.sh", () => {
     }
   })
 
-  test("removes a clone whose only ignored files are what install makes, the root's and packages' node_modules and HQ's build, or .DS_Store", async () => {
+  test("removes a clone whose only ignored files are what install makes, the root's and packages' node_modules, HQ's build and the CLI's, or .DS_Store", async () => {
     const h = makeHome()
     expect((await run(h, "install.sh")).code).toBe(0)
     fs.writeFileSync(path.join(h.clone, ".DS_Store"), "")
     fs.writeFileSync(path.join(h.clone, "packages/cli/.DS_Store"), "")
-    for (const dir of ["node_modules/.bin", "packages/cli/node_modules/x", "packages/app/dist/assets", "packages/yian/node_modules/y"]) {
+    const dirs = ["node_modules/.bin", "packages/cli/node_modules/x", "packages/app/dist/assets", "packages/yian/node_modules/y"]
+    // The npm shim package the CLI's build writes beside the binary.
+    for (const dir of [...dirs, "packages/cli/dist/npm/opencorp/bin"]) {
       fs.mkdirSync(path.join(h.clone, dir), { recursive: true })
       fs.writeFileSync(path.join(h.clone, dir, "f"), "built\n")
     }
@@ -1266,6 +1341,68 @@ describe("uninstall.sh", () => {
     expect(r.err).not.toContain("Left")
     expect(r.code).toBe(0)
     expect(fs.existsSync(h.clone)).toBe(false)
+  })
+
+  test("in a checkout it keeps, removes the build install.sh made, staged or replaced, and one a failed rebuild left, but no other", async () => {
+    const h = makeHome()
+    const mine = checkout(h, "mine")
+    expect((await run(h, "install.sh", { from: mine })).code).toBe(0)
+    // A rebuild that failed: the wrapper runs the source, and the last build stays where it was.
+    expect((await run(h, "install.sh", { from: mine, extra: { STUB_BUILD_FAILS: "1" } })).code).toBe(0)
+    expect(fs.readFileSync(h.wrapper, "utf8")).not.toContain("# compiled, as")
+    const npm = path.join(mine, "packages/cli/dist/npm")
+    // The npm shim the build writes beside the binary, and a build's staging and replaced folders.
+    const made = [`opencorp-${HOST}`, "opencorp", `opencorp-${HOST}.new`, `opencorp-${HOST}.old`]
+    for (const name of made.slice(1)) writeScript(path.join(npm, name, "bin/opencorp"), "#!/bin/sh\n")
+    // A cross build of the user's own.
+    const theirs = path.join(npm, "opencorp-other-arm64/bin/opencorp")
+    writeScript(theirs, "#!/bin/sh\n")
+    const r = await run(h, "uninstall.sh")
+    expect(r.err).not.toContain("✗")
+    expect(r.code).toBe(0)
+    for (const name of made) {
+      expect(r.out).toContain(`✓ Removed ${path.join(npm, name)}`)
+      expect(fs.existsSync(path.join(npm, name)), name).toBe(false)
+    }
+    expect(fs.existsSync(theirs)).toBe(true)
+    expect(r.out).toContain(`✓ Left ${mine} in place: install.sh did not clone it.`)
+
+    // With nothing else there, the folders the build made go too.
+    const alone = makeHome()
+    const co = checkout(alone)
+    expect((await run(alone, "install.sh", { from: co })).code).toBe(0)
+    expect((await run(alone, "uninstall.sh")).code).toBe(0)
+    expect(fs.existsSync(path.join(co, "packages/cli/dist"))).toBe(false)
+  })
+
+  test("removes no build in a folder that isn't an OpenCorp checkout, or through a link, whatever the wrapper names", async () => {
+    const h = makeHome()
+    const co = checkout(h)
+    expect((await run(h, "install.sh", { from: co })).code).toBe(0)
+    const wrapper = fs.readFileSync(h.wrapper, "utf8")
+    // A folder shaped like a checkout's build, with no checkout around it.
+    const victim = path.join(h.dir, "victim")
+    writeScript(path.join(victim, "packages/cli/bin/opencorp"), "#!/bin/sh\n")
+    writeScript(path.join(victim, "packages/cli/dist/npm", `opencorp-${HOST}`, "bin/opencorp"), "#!/bin/sh\n")
+    fs.writeFileSync(h.wrapper, wrapper.replaceAll(co, victim), { mode: 0o755 })
+    const u = await run(h, "uninstall.sh", { args: ["--dir", co] })
+    expect(u.code).toBe(0)
+    expect(u.out).toContain(`✓ Removed ${h.wrapper}`)
+    expect(fs.existsSync(path.join(victim, "packages/cli/dist/npm", `opencorp-${HOST}`, "bin/opencorp"))).toBe(true)
+
+    // A checkout whose packages/cli, dist or dist/npm is a link to another folder: nothing in that folder goes.
+    for (const link of ["packages/cli", "packages/cli/dist", "packages/cli/dist/npm"]) {
+      const linked = makeHome()
+      const mine = checkout(linked)
+      expect((await run(linked, "install.sh", { from: mine })).code).toBe(0)
+      const elsewhere = path.join(linked.dir, "elsewhere")
+      fs.renameSync(path.join(mine, link), elsewhere)
+      fs.symlinkSync(elsewhere, path.join(mine, link))
+      const r = await run(linked, "uninstall.sh")
+      expect(r.code, link).toBe(0)
+      expect(r.err, link).toContain(`⚠ Left the builds in ${path.join(mine, "packages/cli/dist/npm")} in place:`)
+      expect(fs.existsSync(built(mine)), link).toBe(true)
+    }
   })
 
   test("keeps a checkout install.sh didn't clone, at --dir or the default", async () => {
@@ -1371,9 +1508,7 @@ describe("uninstall.sh", () => {
       expect(await t.exit()).toBe(0)
       expect(t.screen()).toContain(`→ An office is set up at ${h.office}; running opencorp offboard first`)
       expect(t.screen()).toContain("whatever it says about the opencorp command and the checkout, uninstall.sh sees to those next")
-      expect(calls(h).filter((c) => c.includes("main.ts offboard |"))).toEqual([
-        `${path.join(bunDir, "bun")} --no-install --no-env-file --config=/dev/null ${h.clone}/packages/cli/src/main.ts offboard | ${h.home} | tty`,
-      ])
+      expect(calls(h).filter((c) => c.includes(" offboard |"))).toEqual([`${built(h.clone)} offboard | ${h.home} | tty`])
       expect(fs.existsSync(h.wrapper)).toBe(false)
       expect(fs.existsSync(h.clone)).toBe(false)
     })
@@ -1489,6 +1624,10 @@ describe("both scripts", () => {
       expect(out).not.toContain("✗")
       expect(code).toBe(0)
       expect(calls(h)).toEqual([])
+      // The wrapper runs the binary the install built.
+      const binary = path.join(h.clone, "packages/cli/dist/npm", `opencorp-${process.platform}-${process.arch}`, "bin/opencorp")
+      expect(out).toContain(`✓ Built ${binary}`)
+      expect(fs.readFileSync(h.wrapper, "utf8")).toContain(`# compiled, as ${binary}, which uninstall.sh also removes;`)
       const help = spawnSync(h.wrapper, ["--help"], { env: { PATH: SYSTEM, HOME: h.home }, encoding: "utf8", timeout: 60_000 })
       expect(help.stderr).toBe("")
       expect(help.status).toBe(0)

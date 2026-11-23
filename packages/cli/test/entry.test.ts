@@ -2,11 +2,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, te
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
-import type net from "node:net"
+import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import type { Readable } from "node:stream"
 import { fileURLToPath } from "node:url"
+import { startOffice } from "@opencorp/office/testing/office"
 import { noticeFiles } from "../script/notices"
 
 setDefaultTimeout(30_000)
@@ -842,6 +843,26 @@ describe("the built binary", () => {
     await expectSeesNeither(bin)
   }, 150_000)
 
+  test("the binary run in the home reads no .env there, nor a global .bunfig.toml (a guard: Bun preloads none for a run)", async () => {
+    // A home a model could have written to: a .env pointing at the planted identity, and a ~/.bunfig.toml and an
+    // $XDG_CONFIG_HOME/.bunfig.toml that preload the marker. Run from the home, its .env is the cwd's, which the
+    // binary's dotenv autoload being off keeps out; plain Bun loads it. No Bun preloads a global bunfig.toml for a run,
+    // even plain Bun, so that half only guards against Bun starting to: no protection of ours can fail it.
+    const planted = fs.realpathSync(fs.mkdtempSync(path.join(built, "planted-")))
+    fs.writeFileSync(path.join(planted, ".env"), `PLANTED=1\nOPENCORP_HOME=${path.join(proj, "ph")}\n`)
+    for (const dir of [planted, path.join(planted, ".config")]) {
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, ".bunfig.toml"), `preload = [${JSON.stringify(path.join(proj, "evil.ts"))}]\n`)
+    }
+    const env = { HOME: planted, XDG_CONFIG_HOME: path.join(planted, ".config") }
+    const plain = await runBuilt([process.execPath, ENTRY, "whoami"], { cwd: planted, env })
+    expect(plain.stdout, plain.stderr).toContain("as @planted")
+    expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
+    const whoami = await runBuilt([bin, "whoami"], { cwd: planted, env })
+    expect(whoami.stdout, whoami.stderr).toContain("This device has no identity")
+    expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
+  }, 150_000)
+
   test("opencorp through the npm shim from a folder holding .env and a bunfig.toml preload sees neither", async () => {
     // Hard links: the same file as the warmed-up binary, so no second first-run scan.
     const root = fs.mkdtempSync(path.join(built, "npm-"))
@@ -860,20 +881,24 @@ describe("the built binary", () => {
     expect(helper.code).toBe(0)
   }, 150_000)
 
-  test("the built binary worker runs a company CODE node that imports a sibling file", async () => {
+  /** A company flow whose CODE node `triple` runs `./helpers.ts:triple` (`helpers` is that file) on twice its input. */
+  const codeFlow = (helpers: string) => ({
+    "flows/flow.yaml":
+      "id: compiled\nname: compiled\ninput:\n  n: !int\nnodes:\n  double:\n    kind: code\n" +
+      '    input: {n: "${input.n}"}\n    output: !int\n    code: |\n      const two: number = 2\n' +
+      "      return inputs.n * two\n  triple:\n    kind: code\n" +
+      '    input: {n: "${double.output}"}\n    output: !int\n    code: ./helpers.ts:triple\n' +
+      "output: ${triple.output}\n",
+    "flows/helpers.ts": helpers,
+  })
+
+  /**
+   * Runs `flows/flow.yaml` of a company pin made of `files`, with input `n` 2, in the binary's `__worker` as the
+   * office starts one, `env` added to its own; resolves to the worker's last `result` or `error` frame, its stderr
+   * and its exit code, once it exits after the office's end of the socket closes.
+   */
+  async function runFlow(files: Record<string, string>, env: Record<string, string> = {}) {
     const pin = fs.mkdtempSync(path.join(built, "pin-"))
-    const files = {
-      "flows/flow.yaml":
-        "id: compiled\nname: compiled\ninput:\n  n: !int\nnodes:\n  double:\n    kind: code\n" +
-        '    input: {n: "${input.n}"}\n    output: !int\n    code: |\n      const two: number = 2\n' +
-        "      return inputs.n * two\n  triple:\n    kind: code\n" +
-        '    input: {n: "${double.output}"}\n    output: !int\n    code: ./helpers.ts:triple\n' +
-        "output: ${triple.output}\n",
-      "flows/helpers.ts":
-        'import { three } from "./lib.ts"\n' +
-        "export function triple(inputs: { n: number }): number {\n  return inputs.n * three\n}\n",
-      "flows/lib.ts": "export const three: number = 3\n",
-    }
     for (const [rel, text] of Object.entries(files)) {
       fs.mkdirSync(path.dirname(path.join(pin, rel)), { recursive: true })
       fs.writeFileSync(path.join(pin, rel), text)
@@ -882,7 +907,7 @@ describe("the built binary", () => {
     const tmpdir = freshTmp()
     const child = spawn(bin, ["__worker"], {
       cwd: fs.mkdtempSync(path.join(built, "cwd-")),
-      env: { HOME: home, PATH: "/usr/bin:/bin", TMPDIR: tmpdir, BUN_TMPDIR: tmpdir },
+      env: { HOME: home, PATH: "/usr/bin:/bin", TMPDIR: tmpdir, BUN_TMPDIR: tmpdir, ...env },
       detached: true,
       stdio: ["ignore", "pipe", "pipe", "pipe"],
     })
@@ -942,13 +967,62 @@ describe("the built binary", () => {
     }
     office.write(frame({ type: "start", job }))
     const result = await last
+    office.end()
+    const code = await exited
+    return { result, stderr, code }
+  }
+
+  test("the built binary worker runs a company CODE node that imports a sibling file", async () => {
+    const { result, stderr, code } = await runFlow({
+      ...codeFlow(
+        'import { three } from "./lib.ts"\n' +
+          "export function triple(inputs: { n: number }): number {\n  return inputs.n * three\n}\n",
+      ),
+      "flows/lib.ts": "export const three: number = 3\n",
+    })
     expect(result.type, `${result.message}\n${stderr}`).toBe("result")
     expect(result.status, stderr).toBe("succeeded")
     // The worker's codec writes a bigint as a tag.
     expect(result.output).toEqual(typeof result.output === "number" ? 12 : { $v: "bigint", s: "12" })
-    office.end()
-    expect(await exited, stderr).toBe(0)
+    expect(code, stderr).toBe(0)
     expect(stderr).not.toContain("Cannot find module")
+  }, 120_000)
+
+  test("the binary installs no package a company's code imports (a guard: a compiled binary never auto-installs)", async () => {
+    // Bun's compiled binaries don't auto-install, with or without the `--no-install` the build gives this one, so
+    // taking that flag out fails nothing here: no protection of ours guards this path. Plain Bun without it does ask.
+    // A registry and proxy that count who reaches them: Bun's auto-install would ask them for the package.
+    let reached = 0
+    const registry = net.createServer((socket) => {
+      reached++
+      socket.destroy()
+    })
+    await new Promise<void>((resolve) => registry.listen(0, "127.0.0.1", resolve))
+    cleanups.push(() => new Promise<void>((resolve) => registry.close(() => resolve())))
+    const url = `http://127.0.0.1:${(registry.address() as net.AddressInfo).port}`
+    const network = {
+      BUN_CONFIG_REGISTRY: `${url}/`,
+      ...Object.fromEntries(["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].map((name) => [name, url])),
+    }
+    const helpers =
+      'import pad from "opencorp-test-missing-package"\n' +
+      "export function triple(inputs: { n: number }): number {\n  return pad(inputs.n) * 3\n}\n"
+    // Plain Bun, without --no-install, in a folder with no node_modules above it, asks.
+    const probe = fs.mkdtempSync(path.join(built, "probe-"))
+    fs.writeFileSync(path.join(probe, "helpers.ts"), helpers)
+    fs.writeFileSync(path.join(probe, "importer.ts"), 'try { await import("./helpers.ts") } catch {}\n')
+    const plain = await runBuilt([process.execPath, "--no-env-file", "--config=/dev/null", "importer.ts"], {
+      cwd: probe,
+      env: { ...network, BUN_INSTALL_CACHE_DIR: path.join(probe, "cache") },
+    })
+    expect(plain.code, plain.stderr).toBe(0)
+    expect(reached).toBeGreaterThan(0)
+
+    reached = 0
+    const { result, stderr } = await runFlow(codeFlow(helpers), network)
+    expect(result.type === "error" || result.status === "failed", JSON.stringify(result)).toBe(true)
+    expect(`${JSON.stringify(result)}\n${stderr}`).toContain("opencorp-test-missing-package")
+    expect(reached).toBe(0)
   }, 120_000)
 
   test("the binary starts the run index thread at the daemon start", async () => {
@@ -1051,6 +1125,115 @@ describe("the built binary", () => {
     // Once the leader is reaped the cleanup can't match its start, so anything left in its group goes now.
     killGroup(pid)
   }, 150_000)
+
+  test("the binary holds no Babel: its TUI's JSX was compiled when it was built", () => {
+    const bytes = fs.readFileSync(bin)
+    for (const marker of ["@babel/core", "transformSolidSource", "ensureSolidTransformPlugin"])
+      expect(bytes.includes(marker), marker).toBe(false)
+  })
+
+  test("the binary's TUI draws its first frame quickly", async () => {
+    // From the start to the alternate screen: about 40 ms here, where the source takes about a second, most of it
+    // Babel compiling the TUI's JSX. The bound is generous, for a loaded machine, and the best of five runs counts.
+    const env = await tuiEnv()
+    const times: number[] = []
+    for (let i = 0; i < 5; i++) {
+      const started = performance.now()
+      let at = Number.POSITIVE_INFINITY
+      const result = await runPty([bin, "tui"], {
+        env,
+        until: (out) => {
+          if (!out.includes("\x1b[?1049h")) return false
+          at = performance.now() - started
+          return true
+        },
+      })
+      expect(result.reached, `exited ${result.code} first:\n${result.out}`).toBe(true)
+      times.push(at)
+    }
+    expect(Math.min(...times), times.map(Math.round).join(", ")).toBeLessThan(500)
+  }, 150_000)
+
+  test("a binary built in a checkout runs the office from there: init, HQ's app, doctor's version line and restart", async () => {
+    // A checkout as install.sh leaves it: the binary at packages/cli/dist/npm/<platform>/bin/opencorp beside its
+    // assets, HQ's app built in packages/app/dist, and the office's source, last changed before the office starts.
+    const checkout = fs.realpathSync(fs.mkdtempSync(path.join(built, "checkout-")))
+    const pkgDir = path.join(checkout, "packages/cli/dist/npm", PLATFORM)
+    const binary = path.join(pkgDir, "bin/opencorp")
+    fs.mkdirSync(path.dirname(binary), { recursive: true })
+    fs.linkSync(bin, binary)
+    fs.symlinkSync(path.join(npmOut, PLATFORM, "assets"), path.join(pkgDir, "assets"))
+    const app = path.join(checkout, "packages/app/dist")
+    fs.mkdirSync(app, { recursive: true })
+    fs.writeFileSync(path.join(app, "index.html"), "<!doctype html><title>the checkout's HQ</title>\n")
+    const source = path.join(checkout, "packages/office/src/main.ts")
+    fs.mkdirSync(path.dirname(source), { recursive: true })
+    fs.writeFileSync(source, "")
+    const past = Date.now() / 1000 - 3600
+    fs.utimesSync(source, past, past)
+
+    // init starts the office in the background, and its init run in a worker.
+    const office = await startOffice({ opencorp: binary })
+    cleanups.push(() => office.stop())
+    const pidfile = path.join(office.home, "office/office.pid")
+    /** The running daemon's pid and command line. */
+    const daemon = () => {
+      const pid = Number.parseInt(fs.readFileSync(pidfile, "utf8"), 10)
+      const ps = spawnSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], {
+        env: { PATH: "/usr/bin:/bin" },
+        encoding: "utf8",
+        timeout: 5000,
+      })
+      return { pid, args: ps.stdout.trim() }
+    }
+    const first = daemon()
+    // The binary runs the daemon, and nothing secret is in its arguments.
+    expect(first.args).toBe(`${binary} daemon --home ${office.home} --reexeced`)
+
+    /** The body of HQ's `GET <at>` over its socket, as `opencorp hq` forwards a visit to it. */
+    const hq = (at: string) =>
+      new Promise<string>((resolve, reject) => {
+        const options = { socketPath: office.hqSocket, path: at, headers: { host: "127.0.0.1:49380" }, timeout: 10_000 }
+        const req = http.get(options, (res) => {
+          let body = ""
+          res.setEncoding("utf8").on("data", (chunk: string) => (body += chunk))
+          res.on("end", () => resolve(body))
+        })
+        req.on("timeout", () => req.destroy(new Error(`GET ${at} timed out`)))
+        req.on("error", reject)
+      })
+    expect(await hq("/")).toContain("the checkout's HQ")
+
+    const version = async () => {
+      const doctor = await office.opencorp(["doctor"])
+      const line = doctor.stdout.split("\n").find((text) => / version /.test(text))
+      return line ?? `no version line:\n${doctor.stdout}${doctor.stderr}`
+    }
+    expect(await version()).toMatch(new RegExp(`^✓ version +pid ${first.pid} runs the current code$`))
+    /** Restarts the office through the binary; the new daemon's pid. */
+    const restart = async () => {
+      const restarted = await office.opencorp(["restart"])
+      expect(restarted.code, `${restarted.stdout}${restarted.stderr}`).toBe(0)
+      const now = daemon()
+      expect(now.args).toBe(`${binary} daemon --home ${office.home} --reexeced`)
+      return now.pid
+    }
+    // The checkout's source changes, as when someone edits a checkout ./install.sh installed, or a rebuild fails: the
+    // binary is older than it, and a restart only starts that binary again.
+    fs.utimesSync(source, new Date(), new Date())
+    const stale = new RegExp(
+      `^⚠ version +the office runs ${binary}, built before the source in ${checkout} last changed; run install.sh again`,
+    )
+    expect(await version()).toMatch(stale)
+    const second = await restart()
+    expect(second).not.toBe(first.pid)
+    expect(await version()).toMatch(stale)
+    // A build of that source (here, the binary's new date), as install.sh's next run makes: a restart starts it.
+    fs.utimesSync(binary, new Date(), new Date())
+    expect(await version()).toMatch(/^⚠ version +the office started before its code last changed; restart it/)
+    const third = await restart()
+    expect(await version()).toMatch(new RegExp(`^✓ version +pid ${third} runs the current code$`))
+  }, 300_000)
 
   test("the binary loads the TUI assets from beside it and extracts nothing to TMPDIR", async () => {
     const result = await runTui(bin)

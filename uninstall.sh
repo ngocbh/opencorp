@@ -1,9 +1,10 @@
 #!/bin/sh
 # Takes out what `install.sh` put in. While an office is set up, it first runs `opencorp offboard`
 # on the terminal, which asks before it removes anything and keeps company work that isn't pushed;
-# if that doesn't finish, nothing else changes. Then it removes the `opencorp` wrapper, the PATH
-# lines in the shell rc files, and the clone, if install.sh made it and it holds no work that isn't
-# pushed. It leaves Bun and the office home (~/.opencorp) in place.
+# if that doesn't finish, nothing else changes. Then it removes the `opencorp` wrapper and the build
+# of the binary install.sh made in the checkout it runs, the PATH lines in the shell rc files, and the
+# clone, if install.sh made it and it holds no work that isn't pushed. It leaves Bun and the office home
+# (~/.opencorp) in place.
 #
 #   curl -fsSL https://raw.githubusercontent.com/ngocbh/opencorp/main/uninstall.sh | bash
 #   ./uninstall.sh [--dir DIR]
@@ -109,6 +110,40 @@ wrapper_checkout() {
   printf '%s\n' "${wc_to%/packages/cli/bin/opencorp}"
 }
 
+# Whether $1 is an OpenCorp checkout.
+is_checkout() {
+  [ -f "$1/packages/cli/bin/opencorp" ] && grep -q '"name": *"opencorp-workspace"' "$1/package.json" 2>/dev/null
+}
+
+# The folder name of this machine's build, `opencorp-<os>-<cpu>`, as packages/cli's build and its npm shim name it.
+host_package() {
+  case $(uname -s) in Darwin) hp_os=darwin ;; Linux) hp_os=linux ;; *) return 1 ;; esac
+  case $(uname -m) in arm64 | aarch64) hp_cpu=arm64 ;; x86_64 | amd64) hp_cpu=x64 ;; *) return 1 ;; esac
+  printf 'opencorp-%s-%s\n' "$hp_os" "$hp_cpu"
+}
+
+# Removes the build install.sh made in the checkout $1, which may stay: in packages/cli/dist/npm, this machine's
+# package (the binary, or the last build a failed one left behind), its `.new` and `.old` folders, and the npm shim
+# package the build writes beside it; then those two folders once that empties them. A cross build stays. Nothing goes
+# unless dist/npm is that folder inside the checkout, reached through no link.
+remove_builds() {
+  rb_npm=$1/packages/cli/dist/npm
+  [ -d "$rb_npm" ] || return 0
+  rb_want=$(cd -P "$1" 2>/dev/null && pwd -P) && rb_real=$(cd -P "$rb_npm" 2>/dev/null && pwd -P) || rb_real=
+  if [ -z "$rb_real" ] || [ "$rb_real" != "$rb_want/packages/cli/dist/npm" ]; then
+    warn "Left the builds in $rb_npm in place: that folder is ${rb_real:-unreadable}, not the checkout's own, through a link."
+    return 0
+  fi
+  # On a machine the build has no package for, only the shim.
+  rb_host=$(host_package) || rb_host=opencorp
+  for rb_f in "$rb_npm/$rb_host" "$rb_npm/$rb_host.new" "$rb_npm/$rb_host.old" "$rb_npm/opencorp"; do
+    if [ -e "$rb_f" ] || [ -L "$rb_f" ]; then
+      if rm -rf "$rb_f"; then ok "Removed $rb_f"; else fail "Couldn't remove all of $rb_f."; fi
+    fi
+  done
+  rmdir "$rb_npm" "$1/packages/cli/dist" 2>/dev/null || true
+}
+
 # Whether $1 and $2 are the same folder, both there.
 same_dir() {
   sd_a=$(cd -P "$1" 2>/dev/null && pwd -P) && sd_b=$(cd -P "$2" 2>/dev/null && pwd -P) &&
@@ -189,8 +224,8 @@ repo_work() {
 
 # Why the clone at $1 holds work found nowhere else, in it or any of its submodules; nothing when it holds none.
 local_work() {
-  # The node_modules folders of the root and of each workspace package, and HQ's build.
-  lw_why=$(repo_work "$1" 'node_modules/|packages/[^/"]+/node_modules/|packages/app/dist/')
+  # The node_modules folders of the root and of each workspace package, HQ's build and the CLI's.
+  lw_why=$(repo_work "$1" 'node_modules/|packages/[^/"]+/node_modules/|packages/app/dist/|packages/cli/dist/')
   [ -z "$lw_why" ] || { echo "$lw_why"; return; }
   W_DIR=$1
   # shellcheck disable=SC2016
@@ -288,11 +323,16 @@ main() {
     if [ -z "$CLONE" ]; then CLONE=$OTHER OTHER=; elif same_dir "$CLONE" "$OTHER"; then OTHER=; fi
   fi
 
+  BUILT_IN=
   if is_wrapper "$TARGET"; then
+    BUILT_IN=$(wrapper_checkout "$TARGET") || BUILT_IN=
     if rm -f "$TARGET"; then ok "Removed $TARGET"; else fail "Couldn't remove $TARGET."; fi
   elif [ -e "$TARGET" ]; then
     ok "Left $TARGET in place: install.sh did not write it."
   fi
+
+  # The build install.sh made in the checkout the wrapper ran, which may stay.
+  if [ -n "$BUILT_IN" ] && is_checkout "$BUILT_IN"; then remove_builds "$BUILT_IN"; fi
 
   path_lines
   for rc in "$HOME/.bashrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" \

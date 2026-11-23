@@ -21,7 +21,8 @@ if set. Don't put project folders on `PATH` (for example direnv's `PATH_add node
 a model-written project could then shadow `bun` or `opencorp` itself.
 
 `(cd packages/cli && bun run build)` writes the compiled binary and the npm packages to
-`packages/cli/dist/npm/`, for the current platform. Name targets (for example
+`packages/cli/dist/npm/`, for the current platform. `install.sh` builds it so, and the `opencorp` it
+installs runs that binary; the checkout's wrapper always runs the source. Name targets (for example
 `bun run build linux-x64`) to cross-build; each needs OpenTUI's native package for that target
 (`bun install --os='*' --cpu='*'`).
 
@@ -31,6 +32,9 @@ a model-written project could then shadow `bun` or `opencorp` itself.
   run each package's own `test` and `typecheck` scripts, except yian's (`@ngocbh/yian` in
   `packages/yian`), which the yian repo tests.
 - CI runs a package's `bun test` only once it has a `*.test.ts(x)` file.
+- The CLI's `test/entry.test.ts` builds the binary (a few seconds) and checks it: that it reads no `.env` or
+  `bunfig.toml` and installs nothing, runs the office from a checkout, and draws the TUI's first frame quickly.
+  `OPENCORP_TEST_INSTALL=1` adds a real install of a clone of the checkout to `test/install_sh.test.ts`.
 - A test gives each child it starts an explicit environment on a temp home, never changes its own, and never names
   the real home. An office and the CLI take `ownerEnv` (`packages/office/src/testing/office.ts`): a temp `HOME` with
   its config, cache and Codex folders, and only `PATH` and the locale of the test's own environment.

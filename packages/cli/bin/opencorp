@@ -2,7 +2,8 @@
 # `opencorp` from a checkout. Bun never reads the caller's folder (its .env, its bunfig.toml and
 # that file's preloads), since a project folder can be model-written. OPENCORP_BUN picks the Bun
 # (for example when `bun` isn't on PATH). Your own env (BUN_OPTIONS, NODE_PATH, a PATH holding
-# project folders) is yours and isn't guarded.
+# project folders) is yours and isn't guarded; nor, for the binary install.sh builds, is BUN_BE_BUN=1,
+# which makes it the `bun` command, reading the current folder's .env and bunfig.toml.
 self=$0
 while [ -L "$self" ]; do
   link=$(readlink -- "$self")

@@ -3,8 +3,12 @@
 //   opencorp-<os>-<cpu>/  the compiled binary, with OpenTUI's native library and assets beside it
 //
 // From packages/cli: `bun run build [--outdir DIR] [target...]`. With no target it builds one
-// package, for this machine, with the running Bun.
-import solidPlugin from "@opentui/solid/bun-plugin"
+// package, for this machine, with the running Bun. `install.sh` runs it with no arguments, and the `opencorp` it puts
+// on PATH runs `dist/npm/opencorp-<os>-<cpu>/bin/opencorp`.
+//
+// The compile follows upstream's (its `packages/cli/script/build.ts`): the Solid transform runs here, and the bundle is
+// minified, split and compiled to bytecode, so it holds no Babel and a start doesn't parse the bundle.
+import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -119,9 +123,22 @@ function writePackage(dir: string, data: object) {
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(data, null, 2) + "\n")
 }
 
+/** Puts the folder `built` in place of `dir`, so a binary that runs from `dir` (an office's daemon) is missing only
+ *  between two renames, and a failed build leaves the last one whole. */
+function replace(built: string, dir: string) {
+  const old = `${dir}.old`
+  fs.rmSync(old, { recursive: true, force: true })
+  if (fs.existsSync(dir)) fs.renameSync(dir, old)
+  fs.renameSync(built, dir)
+  fs.rmSync(old, { recursive: true, force: true })
+}
+
+const solidPlugin = createSolidTransformPlugin()
 for (const { name, os, cpu, target } of builds) {
   const dir = path.join(outdir, `opencorp-${name}`)
-  fs.rmSync(dir, { recursive: true, force: true })
+  // Built beside `dir`, on the same file system, and renamed into place once whole.
+  const staging = `${dir}.new`
+  fs.rmSync(staging, { recursive: true, force: true })
   const result = await Bun.build({
     // The CODE worker and the run index thread start from their own files beside the main bundle.
     entrypoints: [
@@ -130,26 +147,39 @@ for (const { name, os, cpu, target } of builds) {
       path.join(CLI, "src/runs_indexer.ts"),
     ],
     plugins: [solidPlugin],
+    format: "esm",
+    // Upstream's minify, but keeping names: the office's logs and messages name an error by its class, and Bun's
+    // `keepNames` doesn't reach a compiled bundle. Mangling them saves about a millisecond of start.
+    minify: { whitespace: true, syntax: true, identifiers: false },
+    bytecode: true,
+    splitting: true,
+    // Read by the TUI's commands, which then leave out the runtime Solid transform, and Babel with it.
+    define: { OPENCORP_COMPILED: "true" },
     compile: {
       ...(target ? { target } : {}),
-      outfile: path.join(dir, "bin/opencorp"),
-      // The binary never reads the caller's folder: a project's .env or bunfig.toml (and its preloads) can be
-      // model-written.
+      outfile: path.join(staging, "bin/opencorp"),
+      // The binary never reads the caller's folder: a project's .env, bunfig.toml (and its preloads), tsconfig.json
+      // or package.json can be model-written. `--no-install`, as the checkout's wrapper passes: no module a company's
+      // code imports is ever fetched. `--smol`, as upstream's binary runs: a smaller heap.
       autoloadDotenv: false,
       autoloadBunfig: false,
+      autoloadTsconfig: false,
+      autoloadPackageJson: false,
+      execArgv: ["--smol", "--no-install"],
     },
   })
   if (!result.success) {
+    fs.rmSync(staging, { recursive: true, force: true })
     for (const log of result.logs) console.error(log)
     process.exit(1)
   }
   // The binary sets OTUI_ASSET_ROOT to `../assets`, so OpenTUI loads these instead of extracting copies to $TMPDIR.
   const { assets, licenses } = assetsOf.get(name)!
-  for (const { key, source } of assets) copy(source, path.join(dir, "assets", key))
+  for (const { key, source } of assets) copy(source, path.join(staging, "assets", key))
   for (const [owner, files] of licenses)
-    for (const file of files) copy(file, path.join(dir, "assets", owner, path.basename(file)))
-  fs.copyFileSync(LICENSE, path.join(dir, "LICENSE"))
-  writePackage(dir, {
+    for (const file of files) copy(file, path.join(staging, "assets", owner, path.basename(file)))
+  fs.copyFileSync(LICENSE, path.join(staging, "LICENSE"))
+  writePackage(staging, {
     name: `opencorp-${name}`,
     version,
     description,
@@ -158,6 +188,7 @@ for (const { name, os, cpu, target } of builds) {
     cpu: [cpu],
     files: ["bin", "assets", "LICENSE"],
   })
+  replace(staging, dir)
   console.log(`built ${dir}`)
 }
 
