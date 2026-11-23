@@ -143,10 +143,10 @@ test("each answer is one reply frame: run, its note, refuse or hold", async () =
   ])
 })
 
-test("the base handlers run every call", async () => {
+test("the base handlers refuse every call: a host that doesn't gate its calls fails closed", async () => {
   const handlers = new BaseHandlers()
   const reply = await answerRequest({ type: "gate_call", id: 1, call: wire(CALLS[3]!) }, handlers, workerFor(handlers))
-  expect(reply).toEqual({ type: "gate_decision", id: 1, run: true })
+  expect(reply).toEqual({ type: "gate_decision", id: 1, refuse: "Not run: nothing here decides this session's calls." })
 })
 
 test("an office gate that throws or answers no decision is a failed reply of fixed text, so the hook throws", async () => {

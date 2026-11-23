@@ -4,7 +4,7 @@ import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
 import { FileMemory } from "@ngocbh/yian"
-import { pending } from "@ngocbh/yian/tools"
+import { type GatedCall, pending } from "@ngocbh/yian/tools"
 import { onTestFinished, spyOn } from "bun:test"
 import { killGroup, sameProcess, startTime } from "../../../src/util/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../../src/platform.ts"
@@ -388,8 +388,13 @@ export async function startWorker({
   return { office, done, out }
 }
 
-/** Handlers that record every frame and answer questions from a list. */
+/** Handlers that record every frame, answer questions from a list, and, as a test's office, let every call run. */
 export class Recorder extends BaseHandlers {
+  override gateCall(_worker: unknown, _call: GatedCall): unknown {
+    return { run: true }
+  }
+
+
   /** Each `event` frame, in order. */
   readonly frames: Frame[] = []
   /** The live frame of each `stream` frame, in order. */
