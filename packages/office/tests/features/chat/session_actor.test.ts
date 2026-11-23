@@ -30,7 +30,7 @@ import {
 import { type QuestionRecord, StoreUnwritable } from "../../../src/runtime/store/store.ts"
 import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
-import { type Delivery, STOP_REASON } from "../../../src/runtime/worker/job.ts"
+import { type Delivery, MESSAGE_MOVED, STOP_REASON } from "../../../src/runtime/worker/job.ts"
 import { type Worker, WorkerExists } from "../../../src/runtime/worker/spawn.ts"
 import type { Frame } from "../../../src/runtime/worker/channel.ts"
 import type { OfficeTool, WorkerHandlers } from "../../../src/runtime/worker/rpc.ts"
@@ -451,6 +451,25 @@ test("a message sent while the reply runs is published unread, and again, read, 
     [false, false],
     [true, false],
   ])
+})
+
+test("a moved message drops its old copy only when the run it names is the session's", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const { worker, handlers } = workers[0]!
+  const removed = () => o.lives.filter((event) => event.type === "message.removed").map((event) => event.data.id)
+  const moved = (run: string, from: number) => {
+    handlers.event(worker, { type: "event", name: MESSAGE_MOVED, data: { run_id: run, from, seq: null } })
+  }
+  // A run that isn't the session's, then the session's: the actor handles them in order.
+  moved("01JZZZZZZZZZZZZZZZZZZZZZZZ", 3)
+  moved(runId, 4)
+  await waitFor(() => removed().length > 0, { what: "the old copy dropped" })
+  expect(removed()).toEqual([`${runId}:${String(4).padStart(12, "0")}`])
 })
 
 test("live calls is empty while a worker runs the run and null otherwise", async () => {

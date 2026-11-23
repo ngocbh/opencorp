@@ -2780,11 +2780,13 @@ export class SessionActor implements LiveCalls {
   /**
    * The fresh run `runId` took over send `from` of the run it replaced, `run_id`, as its send `seq` (null when it
    * couldn't), as a `message_moved` event's `data` says: clients drop the old copy and get the fresh run's, as its log
-   * shows it, unread until the run reads it, when the live relay publishes it again.
+   * shows it, unread until the run reads it, when the live relay publishes it again. A `run_id` that isn't one of the
+   * session's runs is ignored, so a worker can't hide another run's message.
    */
   #moved(runId: string, data: Record<string, unknown>): void {
     const { run_id: replaced, from, seq } = data
     if (typeof replaced !== "string" || !Number.isSafeInteger(from)) return
+    if (!this.#session().run_ids.includes(replaced)) return
     this.#publishRemoved(messageId(replaced, from as number))
     if (!Number.isSafeInteger(seq)) return
     try {
