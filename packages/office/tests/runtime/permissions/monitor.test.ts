@@ -416,3 +416,10 @@ test("a hole in a result array is null", async () => {
   expect(await monitor.call("minh", "r1", "vault__holes", {})).toStrictEqual([1, null, 3])
   expect(store.listAudit().map((r) => r.outcome)).toEqual(["ok"])
 })
+
+test("the secret values no model may read are every asset's secrets that are set", async () => {
+  const other = { ...cluster([], { id: "cluster-b", secrets: ["vault_token", "pin_code"] }) }
+  const { monitor } = await makeMonitor({ "assets/cluster-a.yaml": cluster([]), "assets/cluster-b.yaml": other })
+  // pin_code isn't set: it has no value to redact.
+  expect(await monitor.secretValues()).toEqual([TOKEN])
+})

@@ -90,11 +90,12 @@ export type Decision =
   | { readonly verdict: "check"; readonly rules: readonly string[] }
 
 /** What Auto's check is told: the command or typed line, the shell's profile, its folder ("" when unknown), and the
- *  ssh host it runs on ("" for this machine). Never the agent's own reason. */
+ *  ssh host it runs on ("" for this machine); or, for a tool call (`kind: "tool"`, `profile: "none"`, no folder or
+ *  host), its words and its arguments as JSON. Never the agent's own reason. */
 export interface CheckInput {
-  readonly kind: Action["kind"]
+  readonly kind: Action["kind"] | "tool"
   readonly command: string
-  readonly profile: Where["profile"]
+  readonly profile: Where["profile"] | "none"
   readonly cwd: string
   readonly host: string
 }
@@ -304,7 +305,8 @@ export async function gate(
   let asked: { reason: string; rules: readonly string[] } =
     decision.verdict === "ask" ? decision : { reason: "", rules: decision.rules }
   if (decision.verdict === "check") {
-    const verdict = await judged(perms, checkInput(action, where), call.signal)
+    const check = perms.check && ((input: CheckInput, signal: AbortSignal) => perms.check!(input, signal))
+    const verdict = await judged(check, checkInput(action, where), call.signal)
     if (call.signal.aborted) return { run: false, result: "Not run: stopped before Auto's check finished." }
     if (verdict.verdict === "run" && !verdict.failed) return { run: true, by: `Auto's check: ${verdict.reason}` }
     const reason = verdict.failed
@@ -393,13 +395,17 @@ function checkInput(action: Action, where: Where): CheckInput {
   }
 }
 
-/** The gate's half of the fail-safe: Auto's check's answer, or an `ask` saying why it couldn't judge. Never
- *  rejects. */
-async function judged(perms: Permissions, input: CheckInput, signal: AbortSignal): Promise<Verdict> {
-  if (!perms.check) return { verdict: "ask", reason: "no check is bound here", failed: true }
+/** The gate's half of the fail-safe: Auto's check's answer on `input`, or an `ask` saying why it couldn't judge (no
+ *  `check`, one that throws, or an answer out of shape), its reason one line. Never rejects. */
+export async function judged(
+  check: ((input: CheckInput, signal: AbortSignal) => Promise<Verdict>) | undefined,
+  input: CheckInput,
+  signal: AbortSignal,
+): Promise<Verdict> {
+  if (!check) return { verdict: "ask", reason: "no check is bound here", failed: true }
   let answer: unknown
   try {
-    answer = await perms.check(input, signal)
+    answer = await check(input, signal)
   } catch {
     return { verdict: "ask", reason: "it failed", failed: true }
   }

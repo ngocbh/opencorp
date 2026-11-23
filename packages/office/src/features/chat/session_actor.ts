@@ -3,8 +3,10 @@
 import fs from "node:fs"
 import path from "node:path"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
+import type { GatedCall } from "@ngocbh/yian/tools"
 import {
   inspectRun,
+  iterRunRecords,
   type LiveViewCall,
   pendingCalls,
   type RunInspection,
@@ -22,7 +24,8 @@ import type { Bus } from "../../runtime/bus.ts"
 import type { LiveRelay } from "./live.ts"
 import { redact } from "../../util/redact.ts"
 import { type Answers, isAskManagerCall, makeAskUser, type OnQuestion } from "../../runtime/questions/ask.ts"
-import { approvalResult } from "../../runtime/questions/approval.ts"
+import { approvalResult, readAnswer } from "../../runtime/questions/approval.ts"
+import type { CheckRunner } from "../../runtime/permissions/classifier.ts"
 import { formatAnswer, MAX_ANSWER_BYTES } from "../../runtime/questions/format.ts"
 import type { RunIndexer } from "../../runtime/runs/indexer.ts"
 import { endedScopes, growsFlowCall, inScopes, OpenNodes } from "../../runtime/runs/nodes.ts"
@@ -110,6 +113,10 @@ export interface ActorContext {
   }
   /** How long, in ms, Auto's check may take before it asks (default `CHECK_TIMEOUT_MS`). */
   readonly checkTimeoutMs?: number
+  /** Runs Auto's check in place of a `classify` worker job: for tests. */
+  readonly runCheck?: CheckRunner
+  /** The company's asset secret values, which no model may read (the monitor's); none when absent. */
+  readonly secretValues?: () => Promise<string[]>
   /** How long, in ms, a worker stays parked after a run call that left its run waiting; 0 keeps none (default
    *  `KEEP_MS`). */
   readonly keepMs?: number
@@ -560,8 +567,26 @@ export class SessionActor implements LiveCalls {
         post: (label, job) => this.#post(label, job),
         settle: (when) => this.#trySettle(when),
         runner: async () => (await this.#specOf(this.#session())).runApproved,
+        release: (callId, note, card) => {
+          const delivery: Delivery = {
+            id: newId(), op: "release", call_id: callId, ...(note === null ? {} : { note }),
+          }
+          return this.#deliver(new Pending(delivery, undefined, card === null ? {} : { questionId: card.id }))
+        },
+        completeCall: (callId, output) =>
+          this.#deliver(new Pending({ id: newId(), op: "complete", call_id: callId, result: { output } })),
+        onQuestion: this.#onQuestion,
+        released: (runId, callId) => releasedIn(this.#logOf(runId), callId),
+        // By the run that made the call: the actor's current run is cleared once its job ends, as a held call's does.
+        secretValues: async (runId) => {
+          const live = this.#run?.runId === runId ? this.#run.provider : null
+          const provider = live ?? (await this.#ranProvider(runId))
+          if (provider === null) throw new Error("the run's connection can't be resolved")
+          return [...runSecrets(provider), ...((await this.#ctx.secretValues?.()) ?? [])]
+        },
       },
       ...(ctx.checkTimeoutMs === undefined ? {} : { checkTimeoutMs: ctx.checkTimeoutMs }),
+      ...(ctx.runCheck === undefined ? {} : { runCheck: ctx.runCheck }),
     })
   }
 
@@ -767,6 +792,13 @@ export class SessionActor implements LiveCalls {
   /** The `complete` of the answered `question`'s call, answering its caller with `acked`; a message's falls back on
    *  the `send` `fallback`. */
   #complete(question: QuestionRecord, acked: unknown, fallback: Delivery | null = null): Pending {
+    const read = question.source === "approval" ? readAnswer(question).answer : null
+    if (question.approval?.kind === "tool" && (read === "yes" || read === "session" || read === "always")) {
+      // A tool card's Yes runs the call where yian holds it.
+      const note = question.answered_by ? `approved by @${question.answered_by}` : "approved"
+      const delivery: Delivery = { id: newId(), op: "release", call_id: question.call_id!, note }
+      return new Pending(delivery, acked, { questionId: question.id, fallback })
+    }
     // An approval card's call gets its action's own output only from its approvals: anything else is what it says.
     const carried = () => this.#ctx.answers.carried(question)
     const output = question.source === "approval" ? approvalResult(question) : formatAnswer(question, carried())
@@ -1400,10 +1432,13 @@ export class SessionActor implements LiveCalls {
       const permissions = await this.#approvals.permissions(runId, this.#onQuestion)
       const tools = spec.groups({ session, runId, onQuestion: this.#onQuestion, permissions })
       const manager = tools.company?.ask_manager
-      await this.#ctx.answers.reconcile(runId, pendingCalls(this.#logOf(runId), { maxLineBytes: LINE_CAP }), {
+      const calls = pendingCalls(this.#logOf(runId), { maxLineBytes: LINE_CAP })
+      await this.#ctx.answers.reconcile(runId, calls, {
         askUser: this.#askUser(session, runId, spec),
         askManager: manager && ((args, callId) => manager.call(args, { callId })),
       })
+      // The calls the gate held, which yian keeps holding: each is decided again, as the rules read now.
+      this.#approvals.settleHolds(runId, calls)
     } catch (error) {
       this.#log(`session ${this.sessionId}: its run's questions can't be reconciled (${errorName(error)})`)
     }
@@ -1534,7 +1569,7 @@ export class SessionActor implements LiveCalls {
         this.#starting !== null ||
         this.#readvance ||
         this.#approvals.busy ||
-        this.#next.some((p) => p.delivery.op === "send" || p.delivery.op === "complete")
+        this.#next.some(wakes)
       const running = spawning || (run !== null && run.outcome === null && !this.#runAtTurn(run))
       const fromStarting = this.#replying() ? (["idle", "busy", "waiting"] as const) : undefined
       writeState(store, this.sessionId, runState({ waiting: asks.length > 0 || held, running }), who, {
@@ -1900,6 +1935,8 @@ export class SessionActor implements LiveCalls {
       }
       this.#run = run
       this.#starting = null
+      // The rules files were read again for this worker: its run's held calls are decided again by them.
+      this.#post("the held calls", () => this.#approvals.recheckHolds(runId))
       // The worker's result arms it again.
       this.#disarm()
       void this.#ctx.hooks.notify("runStarted", session, runId)
@@ -2170,7 +2207,7 @@ export class SessionActor implements LiveCalls {
     const carry: Pending[] = []
     for (const p of pendings) {
       const op = p.delivery.op
-      if (lose && op === "complete" && p.questionId !== null) this.#loseAnswer(p.questionId)
+      if (lose && (op === "complete" || op === "release") && p.questionId !== null) this.#loseAnswer(p.questionId)
       if (op === "send" || op === "close") {
         carry.push(p)
       } else if (op === "complete" && p.fallback !== null) {
@@ -2241,7 +2278,9 @@ export class SessionActor implements LiveCalls {
    *  that marks it consumed, and one a settled call refuses goes stale (`#lostAnswer`), so none stays answered. An
    *  approved card whose action runs now isn't one: its own output completes its call. */
   #unreadAnswers(next: readonly Pending[]): QuestionRecord[] {
-    const delivered = new Set(next.flatMap((p) => (p.delivery.op === "complete" ? [p.delivery.call_id] : [])))
+    const delivered = new Set(
+      next.flatMap((p) => (p.delivery.op === "complete" || p.delivery.op === "release" ? [p.delivery.call_id] : [])),
+    )
     return this.#ctx.store
       .listQuestions({ runId: this.#runId!, status: "answered" })
       .filter((q) => q.call_id !== null && !delivered.has(q.call_id) && !this.#approvals.running(q.id))
@@ -2381,6 +2420,11 @@ export class SessionActor implements LiveCalls {
         // the harness did so far, which an early answer would lose.
         return SELF_STOPPING.has(group) ? call() : actor.#cancellable(call)
       }
+
+      override gateCall(_worker: unknown, call: GatedCall): unknown {
+        if (actor.#closed) throw new Error("the office is stopping")
+        return actor.#approvals.gate(run.runId, call)
+      }
     })({ tools, memories })
   }
 
@@ -2412,8 +2456,13 @@ export class SessionActor implements LiveCalls {
       case "CallClosed":
         if (typeof data.call_id === "string" && typeof data.reason === "string") {
           this.#closedCall(run.runId, data.call_id, data.reason)
+          this.#approvals.closed(data.call_id)
         }
         this.#trySettle("after a closed call")
+        return
+      case "CallHeld":
+        // Only now: an agent interrupted while the gate decided writes no hold, and its call gets no card.
+        if (typeof data.call_id === "string") this.#approvals.held(run.runId, data.call_id)
         return
       case "NodeStarted":
       case "NodeWoken":
@@ -2632,8 +2681,12 @@ export class SessionActor implements LiveCalls {
     if (p.done && !(p.early && Object.hasOwn(reply, "seq") && !this.#finished)) return
     if (Object.hasOwn(reply, "seq")) {
       const closed = Array.isArray(reply.closed) ? reply.closed.map(String) : []
-      for (const callId of closed) this.#closedCall(run.runId, callId, op === "cancel" ? "cancelled" : "interrupted")
-      if (p.late && (op === "send" || op === "complete" || op === "close" || closed.length > 0)) this.#readvance = true
+      for (const callId of closed) {
+        this.#closedCall(run.runId, callId, op === "cancel" ? "cancelled" : "interrupted")
+        this.#approvals.closed(callId)
+      }
+      const wakesRun = op === "send" || op === "complete" || op === "release" || op === "close"
+      if (p.late && (wakesRun || closed.length > 0)) this.#readvance = true
       // A job that only delivers leaves the message for the next advance's take too.
       if (op === "send" && (p.late || run.worker?.job.advance === false)) this.#lateSend = true
       if (p.questionId !== null) this.#consume(p.questionId)
@@ -2671,8 +2724,9 @@ export class SessionActor implements LiveCalls {
   #lostAnswer(p: Pending, reason: string): void {
     const delivery = p.delivery
     const unusable = reason === "invalid_value" || reason === "too_large"
-    const lost = unusable || reason === "call_settled" || reason === "ended" || (reason === "unknown_call" && !p.live)
-    if (!lost || delivery.op !== "complete") return
+    const settled = reason === "call_settled" || reason === "ended" || reason === "not_held"
+    const lost = unusable || settled || (reason === "unknown_call" && !p.live)
+    if (!lost || (delivery.op !== "complete" && delivery.op !== "release")) return
     const questionId = p.questionId!
     this.#resent.delete(questionId)
     try {
@@ -2685,7 +2739,7 @@ export class SessionActor implements LiveCalls {
       return
     }
     this.#trySettle("after a lost answer")
-    if (!unusable) return
+    if (!unusable || delivery.op !== "complete") return
     // The reason only, never the answer: the model reads this.
     const result = { error: `the answer couldn't be delivered (${reason})` }
     const settle = new Pending({ id: newId(), op: "complete", call_id: delivery.call_id, result })
@@ -2741,6 +2795,7 @@ export class SessionActor implements LiveCalls {
    *  without waiting for it, so the run's tokens catch up, and sends run.updated once it lands. */
   async #result(run: WorkerRun, frame: Frame): Promise<void> {
     if (run !== this.#run || this.#finished) return
+    this.#approvals.jobEnded(run.runId)
     const { runIndex } = this.#ctx
     const changed = (ok: boolean) => {
       if (ok) this.#ctx.runChanged?.(run.runId)
@@ -3383,7 +3438,8 @@ export class SessionActor implements LiveCalls {
       const reply = p.reply
       const op = p.delivery.op
       if (reply === null) {
-        if (op === "interrupt" || op === "cancel" || (op === "complete" && p.fallback === null)) p.resolve(undefined)
+        const answers = (op === "complete" || op === "release") && p.fallback === null
+        if (op === "interrupt" || op === "cancel" || answers) p.resolve(undefined)
         else p.reject(fallback)
       } else if (Object.hasOwn(reply, "seq")) {
         p.resolve(p.acked)
@@ -3659,9 +3715,24 @@ function costFigure(usd: number): string {
   return figure.toFixed(4)
 }
 
-/** Whether `p` wakes the agent: a message (`send`) or a call's answer (`complete`). */
+/** Whether the run log `log` records that call `callId` was released (a `released` step); false when it doesn't, or
+ *  can't be read. */
+function releasedIn(log: string, callId: string): boolean {
+  try {
+    for (const entry of iterRunRecords(log, { kinds: ["node_step"], maxLineBytes: LINE_CAP })) {
+      const step = (entry.envelope?.record as { step?: Record<string, unknown> } | undefined)?.step
+      if (step?.kind === "released" && step.call_id === callId) return true
+    }
+  } catch {
+    // Unreadable: not known to be released, so the call isn't let run.
+  }
+  return false
+}
+
+/** Whether `p` wakes the agent: a message (`send`), a call's answer (`complete`) or a held call let run
+ *  (`release`). */
 function wakes(p: Pending): boolean {
-  return p.delivery.op === "send" || p.delivery.op === "complete"
+  return p.delivery.op === "send" || p.delivery.op === "complete" || p.delivery.op === "release"
 }
 
 /** The error type an `error` frame names (its message reads `<type>: <message>`), never its message. */

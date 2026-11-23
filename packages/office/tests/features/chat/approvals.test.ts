@@ -295,6 +295,11 @@ test("a session's hold refuses rather than hold a card once the session doesn't 
       notice: never,
       settle: never,
       runner: never,
+      release: never,
+      completeCall: never,
+      onQuestion: never,
+      released: never,
+      secretValues: never,
     },
   })
   const asked: unknown[] = []
@@ -793,7 +798,8 @@ test("a session's rules files are read again only once HEAD moves", async () => 
     log: never,
     host: {
       liveRun: never, completeWithAnswer: never, completeWithOutput: never, loseAnswer: never, post: never,
-      notice: never, settle: never, runner: never,
+      notice: never, settle: never, runner: never, release: never, completeCall: never, onQuestion: never,
+      released: never, secretValues: never,
     },
   })
   await approvals.reload()

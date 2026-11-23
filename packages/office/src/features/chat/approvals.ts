@@ -1,23 +1,30 @@
-/** A chat session's approvals: what its employee's shell may run without asking, Auto's check on the office's
- *  connection, the cards a held call waits on, what their answers do, and the rules a "don't ask again" or an "always"
- *  adds. */
+/** A chat session's approvals: what its employee's shell may run without asking, what the gate lets each of its other
+ *  tool calls do, Auto's check on the office's connection, the cards a held call waits on, what their answers do, and
+ *  the rules a "don't ask again" or an "always" adds. */
 import path from "node:path"
+import type { PendingCall } from "@ngocbh/yian/run"
+import { type GatedCall, type GateDecision, pending } from "@ngocbh/yian/tools"
 import { OFFICE, type RemoveRuleRequest, type RuleFileError } from "@opencorp/protocol"
 import { CompanyRepoBusy, type CompanyGit } from "../../company/git.ts"
 import { addRules, readRules, removeRule, type Rule as SavedRule, RulesRefused } from "../../company/rules.ts"
 import { type Connections, runsOnSubscription } from "../../models/connections.ts"
 import { callUsd } from "../../models/cost.ts"
 import { type Price, ProviderError } from "../../models/provider.ts"
-import { Check, type CheckRecord, type CheckWorkers, inWorker } from "../../runtime/permissions/classifier.ts"
 import {
-  decide, dontAskRefusal, type Permissions, type Rule, RuleBook, type Where,
+  Check, type CheckRecord, type CheckRunner, type CheckWorkers, inWorker,
+} from "../../runtime/permissions/classifier.ts"
+import {
+  afterCheck, type CallDecision, type CallPolicy, decideCall, resent, type ToolCall, toolCard,
+} from "../../runtime/permissions/gate.ts"
+import {
+  type CheckInput, decide, dontAskRefusal, judged, type Permissions, type Rule, RuleBook, type Where,
 } from "../../runtime/permissions/policy.ts"
 import { holdApproval, readAnswer, YES } from "../../runtime/questions/approval.ts"
 import type { OnQuestion } from "../../runtime/questions/ask.ts"
 import type { AnswerKind } from "../../runtime/sessions/harness.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store } from "../../runtime/store/store.ts"
 import type { OfficePaths } from "../../util/home.ts"
-import { DETAIL_CHARS } from "../../util/redact.ts"
+import { DETAIL_CHARS, redact } from "../../util/redact.ts"
 import { errorName } from "../../runtime/worker/rpc.ts"
 import type { RunSpec } from "./run_spec.ts"
 
@@ -43,6 +50,28 @@ export interface ApprovalHost {
   settle(when: string): void
   /** The session's spec's `runApproved`, if it has one. */
   runner(): Promise<RunSpec["runApproved"]>
+  /** Runs held call `callId` once (`release`), `note` kept in the run log; `card`'s answer is consumed once the run
+   *  takes it. */
+  release(callId: string, note: string | null, card: QuestionRecord | null): Promise<void>
+  /** Completes held call `callId` with `output`, which the model reads; its tool never runs. */
+  completeCall(callId: string, output: string): Promise<void>
+  /** Stores a card of the run's calls (the actor's `onQuestion`). */
+  onQuestion: OnQuestion
+  /** Whether run `runId`'s log records that call `callId` was released. */
+  released(runId: string, callId: string): boolean
+  /** The secret values no model may read: run `runId`'s model key, and the company's asset secrets. Rejects when
+   *  they can't be known. */
+  secretValues(runId: string): Promise<string[]>
+}
+
+/** A call the gate held, by its call id: its run, the call as the gate decided it, whether yian holds it yet
+ *  (`CallHeld`), and Auto's check on it while that runs. */
+interface Hold {
+  readonly runId: string
+  readonly callId: string
+  readonly call: ToolCall
+  held: boolean
+  check: AbortController | null
 }
 
 /**
@@ -66,6 +95,15 @@ export interface ApprovalHost {
  * call. A No completes it with the approver's words, and answers the run's other open cards the same way, as one No
  * settles the reply's held calls. A "don't ask again" or an "always" re-checks the run's other open cards and runs
  * those the session's mode and rules now allow. An "always" commits its rules to the agent's file, as its approver's.
+ *
+ * Every other tool call goes through the gate (`gate`, yian's `beforeToolCall`, `decideCall`): it runs, is refused,
+ * or is held. A held call's card is made only once yian says it holds the call (`held`), since an agent interrupted
+ * while the gate decided writes no hold; in `auto` a call of a tool no reader can judge goes to Auto's check then,
+ * whose run releases it and whose ask makes its card. A Yes on a tool card releases the call (`release`), noting who
+ * approved it; a No completes it with the approver's words. Each held call is decided again (`#recheckHolds`) after
+ * a rule is added, when a worker starts on the run (the rules files read again first), and at a restart, from the
+ * holds yian recorded (`settleHolds`): one with no card is decided anew, and one whose card the session's mode and
+ * rules now let run is answered Yes and released.
  */
 export class ChatApprovals {
   /** The session's own rules: what "don't ask again" added, and an "always" its agent's file couldn't take. */
@@ -93,6 +131,10 @@ export class ChatApprovals {
   #pricing: { prices: Readonly<Record<string, Price>>; subscription: boolean } = { prices: {}, subscription: false }
   /** The approved actions the office runs now, by card id, each stopped by its controller. */
   readonly #running = new Map<string, AbortController>()
+  /** The calls the gate held, by call id, until each is answered, released, completed or closed. */
+  readonly #holds = new Map<string, Hold>()
+  /** The calls this office released, by call id: a call yian sends again after a stop or crash runs only if it was. */
+  readonly #released = new Set<string>()
 
   constructor(o: {
     store: Store
@@ -117,6 +159,8 @@ export class ChatApprovals {
     log(line: string): void
     /** How long, in ms, a check may take before it asks (default `CHECK_TIMEOUT_MS`). */
     checkTimeoutMs?: number
+    /** Runs Auto's check in place of a `classify` worker job: for tests. */
+    runCheck?: CheckRunner
   }) {
     this.#store = o.store
     this.#session = o.session
@@ -137,7 +181,7 @@ export class ChatApprovals {
     }
     const logDir = path.join(o.paths.sessionDir(o.session().id), "checks")
     this.#check = new Check({
-      run: inWorker(o.workers, model, { logDir }),
+      run: o.runCheck ?? inWorker(o.workers, model, { logDir }),
       record: async (entry) => this.#record(entry),
       ...(o.checkTimeoutMs === undefined ? {} : { timeoutMs: o.checkTimeoutMs }),
     })
@@ -194,10 +238,16 @@ export class ChatApprovals {
   async remove(rule: RemoveRuleRequest, by: string): Promise<boolean> {
     if (rule.source === "session") {
       this.#unsaved.delete(ruleKey(rule))
-      return this.book.remove(rule)
+      const removed = this.book.remove(rule)
+      const runId = this.#host.liveRun()
+      if (removed && runId !== null) await this.#recheckHolds(runId, by)
+      return removed
     }
     const removed = await removeRule(this.#git, this.#handle, { ...rule, source: rule.source }, by)
     if (removed) await this.reload()
+    // A deny or an ask rule gone may let a held call run.
+    const runId = this.#host.liveRun()
+    if (removed && runId !== null) await this.#recheckHolds(runId, by)
     return removed
   }
 
@@ -219,15 +269,177 @@ export class ChatApprovals {
     return this.#running.has(cardId)
   }
 
-  /** Whether an approved action runs now: the session reads busy. */
+  /** Whether an approved action, or a check on a held call, runs now: the session reads busy. */
   get busy(): boolean {
-    return this.#running.size > 0
+    return this.#running.size > 0 || [...this.#holds.values()].some((hold) => hold.check !== null)
   }
 
-  /** Stops the approved actions running now, whose commands then stop: Esc, End and the office stop end them, as they
-   *  cut off the terminal's own calls. */
+  /** Stops the approved actions running now, whose commands then stop, and the checks on held calls: Esc, End and the
+   *  office stop end them, as they cut off the terminal's own calls. */
   stop(): void {
     for (const controller of this.#running.values()) controller.abort()
+    for (const hold of this.#holds.values()) hold.check?.abort()
+  }
+
+  /** The gate's decision on tool call `call` of run `runId` (`decideCall` by the session's mode and rules now), as
+   *  yian takes it: a run, with its note; a refusal; or `pending()`, holding the call until it is decided again once
+   *  yian holds it (`held`). */
+  gate(runId: string, call: GatedCall): GateDecision {
+    let decision = decideCall(call, this.#policy())
+    // Sent again after a stop or crash, which may have cut it off as the gate decided: yian can't hold it.
+    if (call.attempt > 1) {
+      const released = this.#released.has(call.callId) || this.#host.released(runId, call.callId)
+      decision = resent(decision, released)
+    }
+    if (decision.verdict === "run") return decision.note === null ? undefined : { run: true, note: decision.note }
+    if (decision.verdict === "refuse") return { refuse: decision.reason }
+    const { tool, source, arguments: args, attempt } = call
+    const held = { tool, source, arguments: args, attempt }
+    this.#holds.set(call.callId, { runId, callId: call.callId, call: held, held: false, check: null })
+    return pending()
+  }
+
+  /** Yian holds call `callId` of run `runId` (`CallHeld`): marked held at once, so the end of the job that held it
+   *  doesn't forget it (`jobEnded`), then decided again and acted on, after the actor's current step. */
+  held(runId: string, callId: string): void {
+    const hold = this.#holds.get(callId)
+    if (hold === undefined || hold.runId !== runId) {
+      this.#log(`session ${this.#session().id}: yian holds a call the gate didn't hold`)
+      return
+    }
+    hold.held = true
+    this.#host.post("a held call", async () => {
+      if (this.#holds.get(callId) !== hold) return
+      await this.#settle(hold, null)
+      this.#host.settle("after a held call")
+    })
+  }
+
+  /** Call `callId` closed (Esc, End, a cancel): its hold is gone, and a check on it stops. */
+  closed(callId: string): void {
+    this.#holds.get(callId)?.check?.abort()
+    this.#holds.delete(callId)
+  }
+
+  /** Run `runId`'s job ended: a call the gate held that yian never held (its agent was interrupted as the gate
+   *  decided) has no hold to answer. */
+  jobEnded(runId: string): void {
+    for (const [callId, hold] of this.#holds) if (hold.runId === runId && !hold.held) this.#holds.delete(callId)
+  }
+
+  /** The holds yian recorded for run `runId` (`pendingCalls`), as at a restart: each is known again and decided again
+   *  (`#recheckHolds`) once the actor's current step ends. */
+  settleHolds(runId: string, calls: readonly PendingCall[]): void {
+    for (const call of calls) {
+      if (!call.held || call.source === null || !call.callId.startsWith(`${runId}/`)) continue
+      if (this.#holds.has(call.callId)) continue
+      // Arguments it didn't record are none the gate can judge: it asks.
+      const known = { tool: call.tool, source: call.source, arguments: call.arguments, attempt: 1 }
+      this.#holds.set(call.callId, { runId, callId: call.callId, call: known, held: true, check: null })
+    }
+    // After the restart's own step: what it releases or completes goes to the run as any later delivery does.
+    this.#host.post("the held calls", () => this.#recheckHolds(runId, null))
+  }
+
+  /** Each held call of run `runId` decided again, by the rules as read now: a worker started on the run. */
+  recheckHolds(runId: string): Promise<void> {
+    return this.#recheckHolds(runId, null)
+  }
+
+  /** What the gate decides by now: the session's mode, its rules and why every call asks, if one does. */
+  #policy(): CallPolicy {
+    return { mode: this.#session().mode, rules: this.#rules(), blocked: this.#blocked() }
+  }
+
+  /** Each held call of run `runId` that yian holds and no check is judging, decided again (`#settle`): after a rule
+   *  was added (as `by`), when a worker starts on the run, at a restart. */
+  async #recheckHolds(runId: string, by: string | null): Promise<void> {
+    for (const hold of [...this.#holds.values()]) {
+      if (hold.runId === runId && hold.held && hold.check === null) await this.#settle(hold, by)
+    }
+  }
+
+  /**
+   * Decides `hold` again and acts on it. A hold of a run that is no longer live, or whose card was answered or
+   * closed, is forgotten: its answer, or the run's end, settles it. One whose card is open is changed only when the
+   * session's mode and rules now let it run: its card is answered Yes as `by` and the call released, noting why. One
+   * with no card runs (released), is refused (completed with why), gets its card, or goes to Auto's check.
+   */
+  async #settle(hold: Hold, by: string | null): Promise<void> {
+    // A check on it decides it when it ends.
+    if (hold.check !== null) return
+    const card = this.#store.getQuestionByCall(hold.callId)
+    if (this.#host.liveRun() !== hold.runId || (card !== undefined && card.status !== "open")) {
+      this.#holds.delete(hold.callId)
+      return
+    }
+    const decision = decideCall(hold.call, this.#policy())
+    if (card === undefined) return this.#act(hold, decision)
+    if (decision.verdict !== "run") return
+    const answered = this.#answer(card, YES, "option", by)
+    if (answered === null) return
+    this.#holds.delete(hold.callId)
+    await this.#release(hold.callId, decision.note, answered)
+  }
+
+  /** Releases call `callId` (`ApprovalHost.release`), remembering that it did. */
+  #release(callId: string, note: string | null, card: QuestionRecord | null): Promise<void> {
+    this.#released.add(callId)
+    return this.#host.release(callId, note, card)
+  }
+
+  /** Acts on `decision` for held call `hold`, which has no card: releases it, completes it with its refusal, makes its
+   *  card (`dontAsk` by then refuses it), or starts Auto's check on it. */
+  async #act(hold: Hold, decision: CallDecision): Promise<void> {
+    switch (decision.verdict) {
+      case "run":
+        this.#holds.delete(hold.callId)
+        return this.#release(hold.callId, decision.note, null)
+      case "refuse":
+        this.#holds.delete(hold.callId)
+        return this.#host.completeCall(hold.callId, decision.reason)
+      case "check":
+        this.#judge(hold, decision.input, decision.rules)
+        return
+      case "ask": {
+        const session = this.#session()
+        try {
+          const card = toolCard(hold.call, decision)
+          holdApproval(session, hold.runId, this.#host.onQuestion, { always: true })(card, hold.callId)
+        } catch (error) {
+          // A card that can't be stored would leave the call waiting for nobody.
+          this.#log(`session ${session.id}: a held call's card can't be made (${errorName(error)})`)
+          this.#holds.delete(hold.callId)
+          await this.#host.completeCall(hold.callId, "Not run: its approval card couldn't be made.")
+        }
+      }
+    }
+  }
+
+  /**
+   * Runs Auto's check on held call `hold` (`input`, its card offering `rules`) in the background, the secret values no
+   * model may read redacted from what it reads. Once it ends, on the actor's queue, the call is decided again: a
+   * mode switch, a rule or a rules file that changed meanwhile wins, and the check's verdict decides only a call still
+   * for Auto's check. Nothing happens once the check was stopped, the call closed, or the run is no longer live.
+   */
+  #judge(hold: Hold, input: CheckInput, rules: readonly string[]): void {
+    const stop = new AbortController()
+    hold.check = stop
+    void (async () => {
+      const secrets = await this.#host.secretValues(hold.runId).catch(() => null)
+      // Unable to know the secrets, nothing goes to a model: the call asks.
+      const verdict = secrets === null
+        ? { verdict: "ask" as const, reason: "its secrets couldn't be read", failed: true }
+        : await judged((checked, signal) => this.#check.judge(checked, signal), redacted(input, secrets), stop.signal)
+      hold.check = null
+      if (stop.signal.aborted || this.#holds.get(hold.callId) !== hold) return
+      this.#host.post("a check's verdict", async () => {
+        if (this.#holds.get(hold.callId) !== hold || this.#host.liveRun() !== hold.runId) return
+        const now = decideCall(hold.call, this.#policy())
+        await this.#act(hold, now.verdict === "check" ? afterCheck(verdict, rules, this.#session().mode) : now)
+        this.#host.settle("after a check")
+      })
+    })()
   }
 
   /**
@@ -238,8 +450,18 @@ export class ChatApprovals {
    */
   async answered(card: QuestionRecord): Promise<void> {
     const read = readAnswer(card)
-    if (read.answer === "yes" || read.answer === "session" || read.answer === "always") {
-      await this.#approve(card, card.answered_by ? `approved by @${card.answered_by}` : "approved")
+    const yes = read.answer === "yes" || read.answer === "session" || read.answer === "always"
+    const credit = card.answered_by ? `approved by @${card.answered_by}` : "approved"
+    if (yes && card.approval?.kind === "tool") {
+      // A tool card's call runs where yian holds it: released, its rules added first.
+      this.#holds.delete(card.call_id!)
+      const added = await this.remember(card)
+      await this.#release(card.call_id!, credit, card)
+      if (added) await this.#recheck(card.answered_by)
+      return
+    }
+    if (yes) {
+      await this.#approve(card, credit)
       return
     }
     await this.#host.completeWithAnswer(card)
@@ -292,7 +514,8 @@ export class ChatApprovals {
   }
 
   /** After a "don't ask again" added rules: each open card of the run that the session's mode and rules now allow is
-   *  answered Yes as `by` and its action run, its audit row crediting what allows it; the others stay open. */
+   *  answered Yes as `by` and its action run, its audit row crediting what allows it, and each held call decided
+   *  again (`#recheckHolds`); the others stay open. */
   async #recheck(by: string | null): Promise<void> {
     const runId = this.#host.liveRun()
     if (runId === null) return
@@ -302,6 +525,7 @@ export class ChatApprovals {
       const answered = this.#answer(open, YES, "option", by)
       if (answered !== null) await this.#approve(answered, `by ${allowed}`)
     }
+    await this.#recheckHolds(runId, by)
   }
 
   /** Answers every open card of the run with `value(card)` (of `kind`) as `by`, and completes each call with what it
@@ -392,6 +616,11 @@ export class ChatApprovals {
     const { prices, subscription } = this.#pricing
     this.#charge(entry.runId, entry.model, callUsd(prices, entry.model, entry.usage), subscription)
   }
+}
+
+/** `input` with each of `secrets` redacted from its command, which a model reads. */
+function redacted(input: CheckInput, secrets: readonly string[]): CheckInput {
+  return secrets.length === 0 ? input : { ...input, command: redact(input.command, [], secrets) }
 }
 
 /** What tells a rule from another: its effect, kind and pattern. */
