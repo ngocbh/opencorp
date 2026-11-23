@@ -356,7 +356,7 @@ const SSH_G1 = `(version 1)
 (allow file-read* file-write* file-ioctl (literal "/dev/tty") (literal (param "TTY")))
 ;; Ancestors of allowed paths: metadata only, so lookups and realpath work.
 (allow file-read-metadata (literal "/etc") (literal "/tmp") (literal "/var") (literal "/Users/me") (literal "/Users") (literal "/") (literal "/Users/me/keys") (literal "/Users/me/.opencorp/hq") (literal "/Users/me/.opencorp") (literal "/Users/me/.ssh") (literal "/Users/me/.opencorp/hq/ssh") (literal "/private/tmp") (literal "/private") (literal "/private/tmp/com.apple.launchd.abc") (literal "/Library/Developer") (literal "/Library"))
-;; ~/.ssh, the files ssh -G names, hq/ssh and any extra paths, read-only.
+;; ~/.ssh, the files ssh -G names, the destination's hq/<name>/ssh and any extra paths, read-only.
 (allow file-read* (subpath "/Users/me/.ssh") (subpath "/Users/me/keys/id") (subpath "/Users/me/.opencorp/hq/ssh"))
 ;; known_hosts, this call's status file and a ticket file: their data only, so none is removed, renamed or replaced.
 (allow file-read* file-write-data (literal "/Users/me/.ssh/known_hosts") (literal "/Users/me/.opencorp/hq/ssh/status.4242") (literal "/private/tmp/krb5cc_501"))

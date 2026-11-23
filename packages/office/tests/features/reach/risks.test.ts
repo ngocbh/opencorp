@@ -23,14 +23,14 @@ function expectRisks(lines: readonly string[], phrases: string[][]): void {
 }
 
 test("the fixed risks are the design's, and the provider file is named", () => {
-  expectRisks(beforeLearning(new ReachPaths("/h")), [
+  expectRisks(beforeLearning("/h/hq"), [
     ["a chat with OpenCorp", "model", "each command", "the screen shows", "hostnames", "username", "job lists", "never what you type at a password prompt"],
     ["starts in auto", "read-only commands", "short answers to a prompt run", "Auto's check, a model call on your connection", "asks you"],
     ["Shift+Tab", "default or ask", "careful relearn"],
     ["sandboxed to your SSH files", "/h/hq", "the model's key or its ChatGPT sign-in", "out of its reach", "asked first whether to run it with none"],
     ["a connection open to the cluster", "the agent's ssh uses it", "no password prompt", "could end it", "each ssh may ask you to log in"],
   ])
-  const saving = beforeSaving(new ReachPaths("/h"))
+  const saving = beforeSaving(new ReachPaths("/h", "misha"))
   expectRisks(saving, [
     ["The script", "`opencorp hq --check` on HQ's machine", "now and on every visit"],
     [
@@ -63,11 +63,11 @@ test("the fixed risks are the design's, and the provider file is named", () => {
 
 /** The texts as risks.md holds them. */
 const HELD = {
-  beforeLearning: (paths: ReachPaths): string[] => [
+  beforeLearning: (root: string): string[] => [
     "Learning is a chat with OpenCorp, whose agent uses a model: it sees each command its shell runs and what the screen shows, hostnames, your username, paths and job lists, but never what you type at a password prompt.",
     "The chat starts in auto: read-only commands and short answers to a prompt run at once (a host key's yes, Duo's 1); the rest goes to Auto's check, a model call on your connection, or asks you.",
     "Press Shift+Tab to switch to default or ask for a careful relearn.",
-    `The agent's shell is sandboxed to your SSH files: ${paths.dir}, which holds the model's key or its ChatGPT sign-in, is out of its reach. Where this machine can't sandbox it, you're asked first whether to run it with none.`,
+    `The agent's shell is sandboxed to your SSH files: ${root}, which holds the model's key or its ChatGPT sign-in, is out of its reach. Where this machine can't sandbox it, you're asked first whether to run it with none.`,
     "If you have a connection open to the cluster, the agent's ssh uses it, with no password prompt, and could end it; otherwise each ssh may ask you to log in.",
   ],
   beforeSaving: (paths: ReachPaths): string[] => [
@@ -86,8 +86,8 @@ const HELD = {
 
 test("risks.md holds the texts, byte for byte, whatever the hq folder's path holds", () => {
   for (const home of ["/h", "/h/we$&ird$`{auth}"]) {
-    const paths = new ReachPaths(home)
-    expect(beforeLearning(paths)).toEqual(HELD.beforeLearning(paths))
+    const paths = new ReachPaths(home, "misha")
+    expect(beforeLearning(paths.root)).toEqual(HELD.beforeLearning(paths.root))
     expect(beforeSaving(paths)).toEqual(HELD.beforeSaving(paths))
   }
   expect([LEARN, LEARN_QUESTION, RELEARN_QUESTION]).toEqual([HELD.LEARN, HELD.LEARN_QUESTION, HELD.RELEARN_QUESTION])
@@ -95,7 +95,7 @@ test("risks.md holds the texts, byte for byte, whatever the hq folder's path hol
 
 test("risks.md has noSandbox", () => {
   const why = 'no sandbox for platform "plan9" {dir}'
-  expectRisks(noSandbox(new ReachPaths("/h"), why), [
+  expectRisks(noSandbox(new ReachPaths("/h", "misha"), why), [
     ["OpenCorp can't sandbox the agent's shells here", why],
     ["Without a sandbox", "each command the agent runs", "read and change everything you can", "SSH keys", "/h/hq"],
     ["the session's mode is all that stands", "ask mode", "approve each command"],

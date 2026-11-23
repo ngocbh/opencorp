@@ -76,8 +76,8 @@ export function command(policy: SandboxPolicy, argv: readonly string[], { tty = 
  * policy's copies of the system's ssh config over the originals, then the policy's read-only paths, its writable
  * files over them (so `~/.ssh/known_hosts` takes writes inside the read-only `~/.ssh`), a test's own folder
  * read-write, its sockets read-only, and its temp folder, where it starts; then, with a wrapper, the real ssh at
- * `REAL_SSH` and the wrapper over every other ssh (`SshPolicy.sshOver`). Nothing else of the home or of hq is mounted,
- * hq/cm included.
+ * `REAL_SSH` and the wrapper over every other ssh (`SshPolicy.sshOver`). Nothing else of the home or of hq is mounted:
+ * not the model's sign-in, another destination's folder or a control-socket folder (`hq/cm-*`).
  *
  * Each writable file is a mount point in a read-only folder, so the call can write its data but can't remove,
  * rename or link it. A socket takes connections on a read-only mount, and nothing else.

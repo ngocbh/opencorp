@@ -14,7 +14,7 @@ import { Learning } from "../../../src/features/reach/learning.ts"
 import { type SaveAccessHost, saveAccess } from "../../../src/features/reach/tools/save_access.ts"
 import { dontAskRefusal } from "../../../src/runtime/permissions/policy.ts"
 import type { CardAnswer, QuestionCard } from "../../../src/runtime/sessions/builtin.ts"
-import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
+import { claimCm, makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import type { Spec } from "../../../src/features/reach/spec.ts"
 import { exitAll, type ReachContext, writeSshFiles } from "../../../src/features/reach/ssh.ts"
 import { DEFAULT_PORT, sha256, writeAccess } from "../../../src/features/reach/state.ts"
@@ -42,14 +42,18 @@ export function fakeHome(behavior?: FakeSshBehavior): { dir: string; fake: FakeS
   return { dir, fake }
 }
 
-/** A context whose home is `dir` and whose ssh is `fake`, with the hq folders made and the ssh files written with
- *  `includes` (none unless given); children get only a system PATH and `dir` as HOME. */
+/** A context whose home is `dir` and whose ssh is `fake`, for destination `name` ("misha" unless given), with its
+ *  folders made, a control-socket folder claimed and recorded in its `cm.id`, as a visit finds it, and the ssh files
+ *  written with `includes` (none unless given); children get only a system PATH and `dir` as HOME. */
 export async function reachCtx(
   dir: string,
   fake: FakeSsh,
-  { includes = [], ...more }: Partial<ReachContext> & { includes?: readonly string[] } = {},
+  { includes = [], name = "misha", ...more }: Partial<ReachContext> & { includes?: readonly string[]; name?: string } = {},
 ): Promise<ReachContext> {
-  const paths = new ReachPaths(dir)
+  const found = new ReachPaths(dir, name)
+  makeDirs(found)
+  const paths = found.withCm(claimCm(found.root, new Set()))
+  await writePrivate(paths.cmRecord, `${paths.cmId}\n`)
   makeDirs(paths)
   await writeSshFiles(paths, fake.ssh, includes)
   return {
@@ -269,18 +273,25 @@ export function visitDeps(
   return { deps, prompter, stdin, printed, errors, echoed, opened, sigint: () => handler?.() }
 }
 
-/** A learning run over a fake ssh: its context, its state with the session's folder in hq/sessions, and the cards
- *  its `save_access` held, each answered by the next of `answers` at once ("dontAsk": refused, as a host in that
- *  mode refuses it). OpenCorp's connection shell is made on first use; the test's end ends the masters and closes
- *  it. */
+/** A learning run over a fake ssh: its context, in folder `name` of hq ("misha" unless given; a temporary folder's
+ *  name for a first learn), its state with the session's folder in hq/sessions and `wanted` as the destination's
+ *  name (null unless given), and the cards its `save_access` held, each answered by the next of `answers` at once
+ *  ("dontAsk": refused, as a host in that mode refuses it). OpenCorp's connection shell is made on first use; the
+ *  test's end ends the masters and closes it. */
 export async function learning(
   answers: (CardAnswer | "dontAsk")[],
-  { behavior, secrets = [], port = 49381, ...more }: { behavior?: FakeSshBehavior; secrets?: string[]; port?: number } & Partial<ReachContext> = {},
+  {
+    behavior,
+    secrets = [],
+    port = 49381,
+    wanted = null,
+    ...more
+  }: { behavior?: FakeSshBehavior; secrets?: string[]; port?: number; wanted?: string | null; name?: string } & Partial<ReachContext> = {},
 ) {
   const { dir, fake } = fakeHome(behavior)
   const ctx = await reachCtx(dir, fake, more)
   const folder = path.join(ctx.paths.sessions, "01JDLEARNSESSION0000000000")
-  const state = new Learning(ctx, secrets, port, folder)
+  const state = new Learning(ctx, secrets, port, folder, () => new Date(), wanted)
   const cards: QuestionCard[] = []
   const listed: string[] = []
   const host: SaveAccessHost = {
@@ -331,10 +342,15 @@ export const KEY = "sk-ant-test-0123456789abcdef"
 /** notes.md as the agent would write it. */
 export const NOTES = "Log in to login1, then find the job's node with squeue.\n"
 
-/** A learning run whose owner answers `answers`, HQ's machine reached as node1 through login1, and a free port. */
-export async function chain(answers: (CardAnswer | "dontAsk")[], behavior: FakeSshBehavior = {}) {
+/** A learning run whose owner answers `answers`, HQ's machine reached as node1 through login1, and a free port; in
+ *  folder `name` with `wanted` as the destination's name, as `learning` takes them. */
+export async function chain(
+  answers: (CardAnswer | "dontAsk")[],
+  behavior: FakeSshBehavior = {},
+  where: { name?: string; wanted?: string | null } = {},
+) {
   const port = await freePort()
-  const run = await learning(answers, { behavior, port })
+  const run = await learning(answers, { behavior, port, ...where })
   const remote = await fakeRemote(run.dir)
   const spec: Spec = { host: "node1", jump: ["login1"], opencorp: remote.opencorp }
   return { ...run, remote, spec, port }
@@ -387,5 +403,6 @@ export async function approved(paths: ReachPaths, body: string): Promise<void> {
     learned_at: "2026-11-11T10:00:00.000Z",
     last_used_at: null,
     signed_in_at: null,
+    cm: paths.cmId!,
   })
 }

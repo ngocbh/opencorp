@@ -53,7 +53,7 @@ async function learning(o: {
   for (const dir of [home, ssh, path.join(ssh, "tmp")]) fs.mkdirSync(dir, { mode: 0o700 })
   fs.writeFileSync(path.join(ssh, "config"), `${userConfig(ssh).join("\n")}\n`, { mode: 0o600 })
   fs.writeFileSync(path.join(home, "secret.txt"), "decoy-secret\n")
-  const paths = new ReachPaths(o.office === undefined ? path.join(home, ".opencorp") : path.join(root, o.office))
+  const paths = new ReachPaths(o.office === undefined ? path.join(home, ".opencorp") : path.join(root, o.office), "misha", "0a1b2c")
   makeDirs(paths)
   fs.writeFileSync(paths.provider, '{"key":"decoy-provider"}\n', { mode: 0o600 })
   fs.writeFileSync(paths.auth, '{"token":"decoy-auth"}\n', { mode: 0o600 })
@@ -351,7 +351,7 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
     expect(t.fake.tty()).toEqual(["1"])
   })
 
-  test("hq/provider.json, hq/auth.json, hq/cm and the rest of the home can't be read from learning's shell", async () => {
+  test("hq/provider.json, hq/auth.json, hq/cm-<id> and the rest of the home can't be read from learning's shell", async () => {
     const { perms, held } = permissions({ check: RUNS })
     const t = await learning({ perms })
     const { provider, auth, dir: hq, cm } = t.paths
@@ -370,7 +370,7 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
     expect(output).toContain("[cat 1]")
     expect(output).toMatch(/\[cm [12]\]/)
     if (process.platform === "linux") {
-      // bubblewrap makes the mount points of what the profile binds, ~/.ssh and hq/ssh, and nothing else of the home.
+      // bubblewrap makes the mount points of what the profile binds, ~/.ssh and hq/<name>/ssh, and nothing else of the home.
       const after = (marker: string) => output.slice(output.indexOf(`${marker}\n`) + marker.length + 1).split("\n")
       expect(after("-- home").slice(0, 2)).toEqual([".opencorp", ".ssh"])
       expect(after("-- hq")[0]).toBe("ssh")
@@ -485,7 +485,7 @@ test("a session id that isn't one plain name is refused before anything is built
   let built = 0
   const asked: ConsentAsk[] = []
   const made = learningTerminal({
-    paths: new ReachPaths("/nonexistent/oc"),
+    paths: new ReachPaths("/nonexistent/oc", "misha", "0a1b2c"),
     session: "../elsewhere",
     home: "/nonexistent/home",
     ssh: "/usr/bin/ssh",

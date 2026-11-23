@@ -256,6 +256,6 @@ export async function chainTest(
   } catch (error) {
     ctx.signal?.throwIfAborted()
     if (!(error instanceof ReachFailure)) return `reach.sh ran, then ${(error as Error).message}`
-    return `reach.sh ran, then ${describe(error, port).line.replace(/^opencorp hq: /, "")}`
+    return `reach.sh ran, then ${describe(error, port, ctx.paths.command).line.replace(/^opencorp hq: /, "")}`
   }
 }

@@ -1,41 +1,44 @@
 ---
 title: "HQ"
-description: "Open HQ, the office's web view, here or from a machine without the office."
+description: "Open HQ, the office's web view, here or on other machines over SSH."
 ---
 
 HQ is the office's web view. `opencorp hq` opens HQ in your browser, signed in by a one-time link.
 On Linux HQ's web port is off by default, so it prints how to reach HQ instead. Over SSH it prints
-the forwarding commands.
+the forwarding commands. `opencorp hq NAME` opens the HQ of an office on another machine, which you
+save as a destination (see [Several offices](#several-offices)).
 
 ## HQ from another machine
 
-On a machine without the office, `opencorp hq` runs `~/.opencorp/hq/reach.sh` (under `$OPENCORP_HOME`
-when set), logs in to HQ's machine over SSH, forwards HQ's socket to `http://127.0.0.1:49381/` and opens
-it. It holds the connection until Ctrl-C; after a drop it tries once quietly, then reconnects each time you
-press Enter (SSH may ask for Duo again). The first visit and `--sign-in` sign the browser in, for 30 days;
-`--port N` picks another local port, which means signing in again. `--no-open` prints the link instead.
-Run it on your own machine, not on one others share such as a cluster login node: anything there that can
-reach the local port reaches HQ's sign-in page.
+`opencorp hq NAME` runs destination NAME's `~/.opencorp/hq/NAME/reach.sh` (under `$OPENCORP_HOME` when
+set), logs in to HQ's machine over SSH, forwards HQ's socket to a local port (`http://127.0.0.1:49381/` for
+your first destination) and opens it. It holds the connection until Ctrl-C; after a drop it tries once
+quietly, then reconnects each time you press Enter (SSH may ask for Duo again). The first visit and
+`--sign-in` sign the browser in, for 30 days; `--port N` picks another local port, which means signing in
+again. `--no-open` prints the link instead. Run it on your own machine, not on one others share such as a
+cluster login node: anything there that can reach the local port reaches HQ's sign-in page.
 
 A visit's SSH reads your own SSH config (`~/.ssh/config`, then the system's) before OpenCorp's, so your
 settings win wherever you set them. If you share connections there (`ControlMaster`, `ControlPath` and
 `ControlPersist`), a visit rides a connection your terminal has open and asks for nothing, or leaves one your
-terminals reuse for as long as your `ControlPersist` says. Where you set none, OpenCorp shares its own in
-`~/.opencorp/hq/cm`: you log in once per visit, and those connections close when it ends. OpenCorp closes only
-the connections it keeps there.
+terminals reuse for as long as your `ControlPersist` says. Where you set none, OpenCorp shares its own in a
+folder per destination, `~/.opencorp/hq/cm-<id>`: you log in once per visit, and those connections close when it
+ends. OpenCorp closes only the connections it keeps there.
 
-With no `reach.sh` yet, `opencorp hq` in a terminal offers to learn the way there in a chat with OpenCorp,
-which opens in the TUI. It needs a terminal the TUI can draw on; elsewhere, `TERM=dumb` included, it says so
-and asks nothing. Before the chat it says what the model will see: what the agent's shell shows (hostnames,
-your username, paths, job lists).
+When NAME isn't saved yet, `opencorp hq NAME` in a terminal offers to learn the way there in a chat with
+OpenCorp, which opens in the TUI; so does plain `opencorp hq` on a machine with no office and no destination,
+and names the path after the first host it reaches. It needs a terminal the TUI can draw on; elsewhere,
+`TERM=dumb` included, it says so and asks nothing. Before the chat it says what the model will see: what the
+agent's shell shows (hostnames, your username, paths, job lists).
 
 - **The mode.** The chat starts in `auto`: read-only commands and short answers to a prompt (a host key's
   `yes`, Duo's `1`) run at once, and the rest goes to Auto's check, a model call on your connection, or asks
   you. Press Shift+Tab for `default` or `ask` to approve more of it yourself, as for a careful relearn. While a
   command waits for your answer, the agent's next commands wait behind it; a No also refuses those that would ask.
 - **The agent's shell** runs in a sandbox that reaches your SSH files (`~/.ssh`, your SSH config, your agent)
-  and nothing else of your home or of `~/.opencorp`. Where this machine can't sandbox it (no bubblewrap, say),
-  `opencorp hq` says why and asks first whether to run it with none; the default is to stop.
+  and nothing else of your home or of `~/.opencorp`: not the model's key, nor another destination's files.
+  Where this machine can't sandbox it (no bubblewrap, say), `opencorp hq` says why and asks first whether to
+  run it with none; the default is to stop.
 - **Passwords.** When ssh asks for a password or a code, the shell opens itself in the chat and you type it
   there. The agent sees the prompt as the screen shows it, never what you type at it.
 - **One login.** The agent's ssh uses a connection you have open to the cluster, with no password prompt.
@@ -63,15 +66,15 @@ your username, paths, job lists).
   visit holds that connection. Type what should change instead, and the agent tries again.
 
 The first learning run asks for a model with `opencorp init`'s picker, before the chat, and keeps it in
-`~/.opencorp/hq/provider.json`. For OpenAI you can sign in to your ChatGPT subscription instead of giving
-an API key: it shows a link and a code to enter in a browser on any device, and keeps the sign-in in
-`~/.opencorp/hq/auth.json`. To forget the model, delete `provider.json` and `auth.json`. Later visits replay
-`reach.sh` and use no model. `opencorp hq --relearn` learns again, starting from the old notes and script, and
-a saved path that breaks offers to; the old path stays until a new one works. Press Ctrl-C twice in the chat
-to stop learning: the visit lists the commands the agent ran.
+`~/.opencorp/hq/provider.json`, which every destination's learning uses. For OpenAI you can sign in to your
+ChatGPT subscription instead of giving an API key: it shows a link and a code to enter in a browser on any
+device, and keeps the sign-in in `~/.opencorp/hq/auth.json`. To forget the model, delete `provider.json` and
+`auth.json`. Later visits replay `reach.sh` and use no model. `opencorp hq NAME --relearn` learns NAME again,
+starting from its old notes and script, and a saved path that breaks offers to; the old path stays until a new
+one works. Press Ctrl-C twice in the chat to stop learning: the visit lists the commands the agent ran.
 
-You can also write `reach.sh` yourself: a `sh` script that finds HQ's machine (a Slurm job's node, say) and
-prints, as its last line of output, how to reach it:
+You can also write `~/.opencorp/hq/NAME/reach.sh` yourself, then run `opencorp hq NAME`: a `sh` script that
+finds HQ's machine (a Slurm job's node, say) and prints, as its last line of output, how to reach it:
 
 ```sh frame="code"
 set -eu
@@ -96,6 +99,33 @@ count: `ssh -O check login || ssh -fN login` works. A `reach.sh` you wrote or ch
 diff, and runs only once you approve it. `opencorp hq` exits 3 when no office answers there.
 
 Each visit runs `opencorp hq --check` on HQ's machine, so that checkout needs this version of OpenCorp.
+
+## Several offices
+
+Each office you reach from this machine is a destination with a name you choose. `opencorp hq misha` learns
+the way to it the first time, then reaches it, even while an office runs on this machine. Each destination
+keeps its own path, local port and browser sign-in, so several can be open at once.
+
+| Command | What it does |
+|---|---|
+| `opencorp hq` | This machine's office, when one answers. Otherwise your one destination, or a question listing them, the last used first; without a terminal it prints their names and exits 2. |
+| `opencorp hq NAME` | Destination NAME. When it isn't saved, it offers to learn it under that name; without a terminal it lists the saved ones and exits 2. |
+| `opencorp hq NAME --relearn` | Learns NAME's path again; the old one stays until the new one works. |
+| `opencorp hq --list` | Each destination's name, host, local port and last use. |
+| `opencorp hq --rename OLD NEW` | Renames a destination. |
+| `opencorp hq --forget NAME` | Deletes a destination's folder, after asking; it needs a terminal to ask on. |
+
+- **Names** are 1 to 32 lowercase letters, digits and dashes, starting with a letter or a digit. A few words
+  `opencorp hq` uses itself, such as `list` and `ssh`, aren't names. A path learned with plain `opencorp hq`
+  is named after the first host it reaches, such as `login1`, or `login1-2` when that name is taken.
+- **Ports.** Your first destination gets 49381, and each later one the next port no other destination uses.
+  `--port N` moves a destination to N, unless another destination has it.
+- **Flags.** `--port`, `--sign-in`, `--no-open` and `--relearn` apply to the destination named. `--handle` and
+  `--json` are for this machine's office.
+- **Open destinations.** `--rename` and `--forget` refuse a destination another `opencorp hq` has open, and
+  `--rename` refuses a name that is taken.
+- **Files.** Each destination's files are in `~/.opencorp/hq/NAME/`. A destination whose `access.json` is
+  broken names the file and says to relearn it; the others still work.
 
 ## Troubleshooting
 

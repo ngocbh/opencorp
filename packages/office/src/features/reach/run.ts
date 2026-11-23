@@ -4,6 +4,7 @@
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
+import path from "node:path"
 import type { Readable } from "node:stream"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createTwoFilesPatch } from "diff"
@@ -32,8 +33,19 @@ import {
   withProblems,
 } from "./connect.ts"
 import { ConnectionShell } from "./connection.ts"
+import {
+  portShared,
+  present,
+  removeCm,
+  reservePort,
+  type Saved,
+  savedDestinations,
+  socketId,
+  sweepTemps,
+  unknown,
+} from "./destinations.ts"
 import { Learning } from "./learning.ts"
-import { makeDirs, pathProblem, ReachPaths } from "./paths.ts"
+import { isTemp, makeDirs, nameProblem, pathProblem, ReachPaths, tempName } from "./paths.ts"
 import { learnProvider } from "./provider.ts"
 import {
   cleanOutput,
@@ -63,6 +75,7 @@ import {
   AccessError,
   cleanUp,
   DEFAULT_PORT,
+  nextPort,
   readAccess,
   removeAtExpiry,
   sha256,
@@ -78,8 +91,12 @@ import reachYaml from "./flows/reach_hq.yaml" with { type: "file" }
 
 export { DEFAULT_PORT, describe, learnYaml, reachYaml }
 
-/** How a visit was asked for: `--sign-in`, `--port N`, whether it may open a browser, and `--relearn`. */
+/** How a visit was asked for: the destination named, `--sign-in`, `--port N`, whether it may open a browser, and
+ *  `--relearn`. */
 export interface VisitOptions {
+  /** The destination named on the command line. Without one, the visit goes to the one saved, asks which of several,
+   *  or learns a first, named after the host it reaches. */
+  name?: string
   signIn: boolean
   port?: number
   open: boolean
@@ -103,7 +120,7 @@ export interface VisitDeps {
   onSigint(fn: () => void): () => void
   exit(code: number): never
   limits?: ReachContext["limits"]
-  /** The `Include`s of `hq/ssh/config`: `defaultIncludes` of `sshHome` for real; tests pass their own. */
+  /** The `Include`s of `hq/<name>/ssh/config`: `defaultIncludes` of `sshHome` for real; tests pass their own. */
   sshIncludes: readonly string[]
   /** ssh's home, where the agent's ssh reads `~/.ssh`: the passwd entry's (`sandbox.ts`'s `sshHome`). */
   sshHome: string
@@ -129,15 +146,27 @@ export const useChanged = (lines: number) => `Use the changed ${lines}-line reac
 export const NO_OFFICE_HERE =
   "opencorp hq: no office answers here. If HQ runs on this machine, start it with `opencorp start` (`opencorp doctor` " +
   "says why it's down)."
-/** No office answers here, there's no saved path and no terminal to learn one on. */
-export const NO_PATH = (paths: ReachPaths) =>
+/** No office answers here, there's no saved destination and no terminal to learn one on; `root` is the hq folder. */
+export const NO_PATH = (root: string) =>
   `${NO_OFFICE_HERE}\nTo reach HQ on another machine, run \`opencorp hq\` in a terminal to learn the way there with an ` +
-  `agent, or write ${paths.script}, a sh script whose last line of output is the connection spec ` +
-  "(see https://opencorp.readthedocs.io/hq/#hq-from-another-machine), then run `opencorp hq` again."
+  `agent, or write ${path.join(root, "NAME", "reach.sh")}, a sh script whose last line of output is the connection ` +
+  "spec (see https://opencorp.readthedocs.io/hq/#hq-from-another-machine), then run `opencorp hq NAME`."
+/** No office answers here, several destinations are saved, and there's no terminal to ask which. */
+export const SEVERAL = (saved: readonly Saved[]) =>
+  `opencorp hq: no office answers here, and several destinations are saved: ${saved.map((s) => s.paths.name).join(", ")}. ` +
+  "Run `opencorp hq NAME` for one."
+/** Asked when no office answers here and several destinations are saved. */
+export const WHICH = "Which HQ do you want to open?"
+/** Said for `dir`, a folder in hq under a destination's name that holds no reach.sh. */
+export const NOT_A_DESTINATION = (dir: string) =>
+  `opencorp hq: ${dir} holds no reach.sh, so it isn't a destination and no path can be saved under its name; move it ` +
+  "aside, or write its reach.sh."
+/** Said before offering to learn the path to `name`, which isn't saved. */
+export const NOT_SAVED_YET = (name: string) => `opencorp hq: there's no saved path to ${name} yet.`
 export const NOT_LEARNED = "opencorp hq: stopped; nothing was learned."
 export const LEARN_NEEDS_TERMINAL = "opencorp hq: learning needs a terminal the TUI can draw on"
-export const RELEARN_BUSY =
-  "opencorp hq: another `opencorp hq` here holds the connection to HQ; end it with Ctrl-C there, then run `opencorp hq --relearn`."
+export const RELEARN_BUSY = (paths: ReachPaths) =>
+  `opencorp hq: another \`opencorp hq\` here holds the connection to HQ; end it with Ctrl-C there, then run \`${paths.command} --relearn\`.`
 export const NOT_SAVED = "opencorp hq: learning ended, and nothing was saved."
 /** Learning's session failed: why, as its run said it. */
 export const LEARNING_FAILED = (why: string) => `opencorp hq: learning failed: ${why}`
@@ -146,15 +175,15 @@ export const ASKED_FOR = "The commands the agent ran:"
 export const LEARN_FIRST = "Learn how this machine reaches HQ"
 /** Signed in longer than this, a visit hints at `--sign-in`: HQ's browser session lasts 30 days. */
 export const SIGN_IN_HINT_DAYS = 30
-export const SIGN_IN_HINT =
-  "Your browser's HQ sign-in lasts 30 days and is older; if HQ asks you to sign in, run `opencorp hq --sign-in`."
+export const SIGN_IN_HINT = (paths: ReachPaths) =>
+  `Your browser's HQ sign-in lasts 30 days and is older; if HQ asks you to sign in, run \`${paths.command} --sign-in\`.`
 /** The terminal's Ctrl-C reaches the master too (one foreground group): let a concurrent SIGINT land first. */
 export const DROP_SETTLE_MS = 100
 export const LOST = "Connection lost; press Enter to reconnect (SSH may ask for Duo)"
 export const RUNNING = "opencorp hq: another `opencorp hq` here holds the connection to HQ."
 export const BUSY = "opencorp hq: another `opencorp hq` here is still approving or learning a path."
-export const NOT_YET =
-  "opencorp hq: the `opencorp hq` running here isn't connected yet; run `opencorp hq --sign-in` again in a moment."
+export const NOT_YET = (paths: ReachPaths) =>
+  `opencorp hq: the \`opencorp hq\` running here isn't connected yet; run \`${paths.command} --sign-in\` again in a moment.`
 
 /** What stays open until Ctrl-C, said once connected. */
 export function visitLine(conn: Connection): string {
@@ -205,19 +234,47 @@ function numbers(value: unknown): unknown {
   return value
 }
 
-/** A visit from a machine where no office answers; resolves to its exit code: 0 for a normal end (Ctrl-C while
- *  connected), 3 for no office there (or here, with no saved path), 130 for Ctrl-C before connecting, 1 for the
- *  rest. With no saved path it offers to learn one with the agent, and goes on with the connection that saved it. */
+/** A visit to a destination's HQ over SSH; resolves to its exit code: 0 for a normal end (Ctrl-C while connected), 3
+ *  for no office there (or here, with nothing saved), 2 for a name that isn't one or isn't saved where there's no
+ *  terminal to learn it, 130 for Ctrl-C before connecting, 1 for the rest. The destination is the one named, else the
+ *  one saved, else one asked for among several; with none, or a name that isn't saved, it offers to learn the path,
+ *  and goes on with the connection that saved it. */
 export async function visit(options: VisitOptions, deps: VisitDeps): Promise<number> {
-  const paths = new ReachPaths(deps.home)
-  // Before anything is made under hq/: with no saved path this is as likely HQ's own machine, its office stopped.
-  const learnFirst = !present(paths.script)
-  if (learnFirst) {
-    if (!deps.prompter.interactive) {
-      deps.error(NO_PATH(paths))
-      return 3
+  let saved: Saved[]
+  try {
+    saved = await savedDestinations(deps.home)
+  } catch (error) {
+    deps.error(`opencorp hq: ${messageOf(error)}`)
+    return 1
+  }
+  let name = options.name
+  if (name !== undefined) {
+    const problem = nameProblem(name)
+    if (problem !== null) {
+      deps.error(`opencorp hq: ${problem}`)
+      return 2
     }
-    deps.error(NO_OFFICE_HERE)
+  } else if (saved.length === 1) name = saved[0]!.paths.name
+  else if (saved.length > 1) {
+    const picked = await pickDestination(saved, deps)
+    if (typeof picked === "number") return picked
+    name = picked
+  }
+  const found = saved.find((s) => s.paths.name === name)
+  // Before anything is made under hq/: with nothing saved this is as likely HQ's own machine, its office stopped.
+  const learnFirst = found === undefined
+  if (learnFirst) {
+    // A folder there by that name would take the path's place when it's saved.
+    const taken = name === undefined ? null : path.join(deps.home, "hq", name)
+    if (taken !== null && present(taken)) {
+      deps.error(NOT_A_DESTINATION(taken))
+      return 1
+    }
+    if (!deps.prompter.interactive) {
+      deps.error(name === undefined ? NO_PATH(path.join(deps.home, "hq")) : unknown(name, saved))
+      return name === undefined ? 3 : 2
+    }
+    deps.error(name === undefined ? NO_OFFICE_HERE : NOT_SAVED_YET(name))
     // Before asking: there's nowhere to learn without the TUI.
     if (deps.learnChat === undefined) {
       deps.error(LEARN_NEEDS_TERMINAL)
@@ -233,6 +290,9 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
     deps.error(LEARN_NEEDS_TERMINAL)
     return 1
   }
+  // A first path is learned in a folder of its own, renamed to its name when it's saved.
+  let paths = found?.paths ?? new ReachPaths(deps.home, tempName())
+  while (learnFirst && present(paths.dir)) paths = new ReachPaths(deps.home, tempName())
   const problem = pathProblem(paths)
   if (problem !== null) {
     deps.error(problem)
@@ -256,37 +316,79 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
   const lock = takeLock(paths)
   if (lock === null) return alreadyRunning(options, deps, paths, ssh)
   using _lock = lock
-  const { ctx, off } = start(paths, ssh, deps)
+  let access: Access | null = null
+  if (!learnFirst) {
+    try {
+      access = await readAccess(paths)
+    } catch (error) {
+      if (!(error instanceof AccessError)) {
+        deps.error(`opencorp hq: ${messageOf(error)}`)
+        return 1
+      }
+      // A relearn writes a new one, as save_access does. Other destinations are unaffected.
+      if (!options.relearn) {
+        deps.error(`opencorp hq: ${error.message}; run \`${paths.command} --relearn\` to learn the path again.`)
+        return 1
+      }
+      deps.error(`opencorp hq: ${error.message}; relearning as if there were none.`)
+    }
+  }
+  paths = paths.withCm(await socketId(paths, access))
+  if (access !== null && access.cm !== paths.cmId) {
+    // Another folder records the same one (a copy of this one): this one moves to its own.
+    access = { ...access, cm: paths.cmId! }
+    await writeAccess(paths, access)
+  }
+  const others = saved.filter((s) => s.paths.name !== paths.name)
+  const holder = others.find((s) => s.access !== null && s.access.port === options.port)
+  if (holder !== undefined) {
+    deps.error(`opencorp hq: port ${options.port} is ${holder.paths.name}'s; pick another with --port N`)
+    return 1
+  }
+  let port: number
+  if (learnFirst) {
+    // Held for this run until it saves, so learning runs that overlap get ports of their own.
+    const reserved = await reservePort(paths, options.port)
+    if (typeof reserved === "string") {
+      deps.error(`opencorp hq: ${reserved}`)
+      await removeCm(paths)
+      fs.rmSync(paths.dir, { recursive: true, force: true })
+      return 1
+    }
+    port = reserved
+  } else {
+    port = options.port ?? access?.port ?? nextPort(others.flatMap((s) => (s.access === null ? [] : [s.access.port])))
+    const shared = options.port === undefined && access !== null ? portShared(saved, paths.name, access.port) : null
+    if (shared !== null) deps.error(shared)
+  }
+  const { ctx: started, off } = start(paths, ssh, deps)
+  // The path a first learn saves is renamed: what follows uses the new folder.
+  let ctx = started
+  const moved = (to: ReachPaths) => void (ctx = { ...ctx, paths: to })
   let watcher: Watcher | undefined
-  let port = options.port ?? DEFAULT_PORT
   try {
+    makeDirs(paths)
     await writeSshFiles(paths, ssh, deps.sshIncludes)
     await cleanUp(ctx, deps.now().getTime())
+    await sweepTemps(ctx, deps.now().getTime())
     watcher = startWatcher(ctx)
-    if (learnFirst) return await learnAndHold(ctx, deps, { notes: "", script: "", failure: "" }, port, options)
-    let saved: Access | null
-    try {
-      saved = await readAccess(paths)
-    } catch (error) {
-      // A relearn writes a new one, as save_access does.
-      if (!options.relearn || !(error instanceof AccessError)) throw error
-      deps.error(`opencorp hq: ${error.message}; relearning as if there were none.`)
-      saved = null
+    if (learnFirst) {
+      const inputs = { name: name ?? null, notes: "", script: "", failure: "" }
+      return await learnAndHold(ctx, deps, inputs, port, options, moved)
     }
     if (options.relearn) {
-      port = options.port ?? saved?.port ?? DEFAULT_PORT
       if (!(await inVisit(ctx, deps.stdin, () => askToLearn(deps, RELEARN_QUESTION, LEARN)))) {
         deps.error(NOT_LEARNED)
         return 1
       }
-      return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: "" }, port, options)
+      return await learnAndHold(ctx, deps, { name: paths.name, ...lastPath(paths), failure: "" }, port, options, moved)
     }
-    const approved = await approve(ctx, deps, saved, options.port)
+    const approved = await approve(ctx, deps, access, port)
     if (typeof approved === "number") return approved
-    let access = approved
-    if (options.port !== undefined && options.port !== access.port)
-      access = { ...access, port: options.port, signed_in_at: null }
-    port = access.port
+    let record = approved
+    if (options.port !== undefined && options.port !== record.port)
+      record = { ...record, port: options.port, signed_in_at: null }
+    port = record.port
     let conn: Connection
     try {
       conn = await reach(ctx, port)
@@ -294,20 +396,39 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
       // Only the first reach offers to relearn, defaulting to Stop: a drop's reconnect never does.
       const canLearn = deps.prompter.interactive && deps.learnChat !== undefined
       if (!(error instanceof ReachFailure) || error.kind !== "broken" || ctx.signal?.aborted || !canLearn) throw error
-      const { line, code } = describe(error, port)
+      const { line, code } = describe(error, port, paths.command)
       deps.error(line)
       if (!(await inVisit(ctx, deps.stdin, () => askToLearn(deps, RELEARN_QUESTION, STOP)))) return code
-      return await learnAndHold(ctx, deps, { ...lastPath(paths), failure: line }, port, options)
+      return await learnAndHold(ctx, deps, { name: paths.name, ...lastPath(paths), failure: line }, port, options, moved)
     }
-    return await hold(ctx, conn, access, options, deps)
+    return await hold(ctx, conn, record, options, deps)
   } catch (error) {
     return failed(error, ctx, port, deps)
   } finally {
     off()
     await exitAll(ctx)
     await watcher?.release()
-    fs.rmSync(paths.status(process.pid), { force: true })
+    fs.rmSync(ctx.paths.status(process.pid), { force: true })
+    // A first learn that saved nothing leaves nothing behind.
+    if (isTemp(ctx.paths.name)) {
+      await removeCm(ctx.paths)
+      fs.rmSync(ctx.paths.dir, { recursive: true, force: true })
+    }
   }
+}
+
+/** Asks which of the `saved` destinations to open, the last used first; without a terminal, says which there are.
+ *  Resolves to its name, or the exit code: 2 without a terminal, 130 on Ctrl-C. */
+async function pickDestination(saved: readonly Saved[], deps: VisitDeps): Promise<string | number> {
+  if (!deps.prompter.interactive) {
+    deps.error(SEVERAL(saved))
+    return 2
+  }
+  const used = (s: Saved) => s.access?.last_used_at ?? ""
+  const names = [...saved].sort((a, b) => used(b).localeCompare(used(a))).map((s) => s.paths.name)
+  const picked = await askBeforeAnything(deps, () => deps.prompter.choose(WHICH, names, names[0]))
+  quietStdin(deps.stdin)
+  return picked ?? 130
 }
 
 /** Once connected: sign the browser in or open HQ, record the visit, say what stays open, then wait until Ctrl-C. */
@@ -323,19 +444,33 @@ async function hold(ctx: ReachContext, conn: Connection, access: Access, options
   return waitLoop(ctx, conn, deps)
 }
 
-/** Learns a path, then holds the connection that saved it; the exit code when nothing was saved. OpenCorp's
- *  connection shell, which holds the tunnel, closes at the end. */
+/** What a learning run starts from: the destination's name (null for a first one named after its host), and the
+ *  old path's notes, script and why it failed. */
+export interface LearnInputs {
+  name: string | null
+  notes: string
+  script: string
+  failure: string
+}
+
+/** Learns a path, then holds the connection that saved it, in the folder it was saved in, which `moved` hears of;
+ *  the exit code when nothing was saved. OpenCorp's connection shell, which holds the tunnel, closes at the end. */
 async function learnAndHold(
   ctx: ReachContext,
   deps: VisitDeps,
-  inputs: { notes: string; script: string; failure: string },
+  inputs: LearnInputs,
   port: number,
   options: VisitOptions,
+  moved: (paths: ReachPaths) => void,
 ): Promise<number> {
   const learned = await learnPath(ctx, deps, inputs, port)
   if (typeof learned === "number") return learned
+  moved(learned.paths)
+  // Checked again as saved: another destination may have taken the port while this one learned.
+  const shared = portShared(await savedDestinations(deps.home), learned.paths.name, learned.access.port)
+  if (shared !== null) deps.error(shared)
   try {
-    return await hold(ctx, learned.conn, learned.access, options, deps)
+    return await hold({ ...ctx, paths: learned.paths }, learned.conn, learned.access, options, deps)
   } finally {
     await learned.shell.close()
   }
@@ -374,7 +509,7 @@ function inVisit<T>(ctx: ReachContext, stdin: Readable, ask: () => Promise<T>): 
 /** Shows what learning risks, then asks `question` with `fallback` as the default; resolves whether the owner chose
  *  to learn. */
 async function askToLearn(deps: VisitDeps, question: string, fallback: string): Promise<boolean> {
-  for (const line of beforeLearning(new ReachPaths(deps.home))) deps.prompter.say(clean(line))
+  for (const line of beforeLearning(path.join(deps.home, "hq"))) deps.prompter.say(clean(line))
   const answer = await deps.prompter.choose(question, [LEARN, STOP], fallback)
   quietStdin(deps.stdin)
   return answer === LEARN
@@ -404,9 +539,9 @@ async function askBeforeAnything<T>(deps: VisitDeps, ask: () => Promise<T>): Pro
 async function learnPath(
   ctx: ReachContext,
   deps: VisitDeps,
-  inputs: { notes: string; script: string; failure: string },
+  inputs: LearnInputs,
   port: number,
-): Promise<{ access: Access; conn: Connection; shell: ConnectionShell } | number> {
+): Promise<{ access: Access; conn: Connection; shell: ConnectionShell; paths: ReachPaths } | number> {
   const signal = ctx.signal!
   // The first Ctrl-C stops a model check that may take a minute, its request included.
   const checkModel: ModelCheck = async (provider) => {
@@ -422,7 +557,7 @@ async function learnPath(
   // Read again at each use: the run's first model call may refresh a subscription's tokens.
   const secrets = () => providerSecrets(provider, workerEnv(ctx.env))
   const id = newId()
-  const state = new Learning(ctx, secrets, port, ctx.paths.session(id), deps.now)
+  const state = new Learning(ctx, secrets, port, ctx.paths.session(id), deps.now, inputs.name)
   let end: ChatEnd
   try {
     end = await deps.learnChat!(learningSession(ctx, deps, provider, inputs, id, state))
@@ -432,9 +567,10 @@ async function learnPath(
   }
   // Saved and connected, whatever the agent did after.
   if (state.connection !== null && state.shell !== null) {
-    const access = await readAccess(ctx.paths)
-    if (access === null) throw new Error(`${ctx.paths.access} went missing after it was saved`)
-    return { access, conn: state.connection, shell: state.shell }
+    const paths = state.saved ?? ctx.paths
+    const access = await readAccess(paths)
+    if (access === null) throw new Error(`${paths.access} went missing after it was saved`)
+    return { access, conn: state.connection, shell: state.shell, paths }
   }
   await state.shell?.close()
   if (end.status === "failed") {
@@ -476,14 +612,19 @@ function learningSession(
   ctx: ReachContext,
   deps: VisitDeps,
   provider: Provider,
-  inputs: { notes: string; script: string; failure: string },
+  inputs: LearnInputs,
   id: string,
   state: Learning,
 ): BuiltinSession<Terminal> {
   return {
     agent: { handle: "opencorp", name: "OpenCorp" },
     flow: { name: "learn_hq", text: embedded(learnYaml).toString("utf8") },
-    inputs: { notes: wellFormed(inputs.notes), script: wellFormed(inputs.script), failure: wellFormed(inputs.failure) },
+    inputs: {
+      name: inputs.name ?? "",
+      notes: wellFormed(inputs.notes),
+      script: wellFormed(inputs.script),
+      failure: wellFormed(inputs.failure),
+    },
     first: LEARN_FIRST,
     model: { llm_config: { ...(provider.llm_config ?? {}) }, env: { ...provider.env } },
     folder: state.folder,
@@ -542,7 +683,7 @@ function start(paths: ReachPaths, ssh: string, deps: VisitDeps): { ctx: ReachCon
 function failed(error: unknown, ctx: ReachContext, port: number, deps: VisitDeps): number {
   if (ctx.signal?.aborted || error instanceof KeyboardInterrupt) return 130
   if (error instanceof ReachFailure) {
-    const { line, code } = describe(error, port)
+    const { line, code } = describe(error, port, ctx.paths.command)
     deps.error(line)
     return code
   }
@@ -556,7 +697,7 @@ async function approve(
   ctx: ReachContext,
   deps: VisitDeps,
   access: Access | null,
-  port: number | undefined,
+  port: number,
 ): Promise<Access | number> {
   const { paths } = ctx
   let now: Buffer | null
@@ -568,7 +709,7 @@ async function approve(
     return 1
   }
   if (now === null) {
-    deps.error(NO_PATH(paths))
+    deps.error(NO_PATH(paths.root))
     return 3
   }
   const digest = sha256(now)
@@ -606,11 +747,12 @@ async function approve(
   }
   await writePrivate(paths.approved, now)
   const record: Access = {
-    port: access?.port ?? port ?? DEFAULT_PORT,
+    port: access?.port ?? port,
     sha256: digest,
     learned_at: deps.now().toISOString(),
     last_used_at: access?.last_used_at ?? null,
     signed_in_at: access?.signed_in_at ?? null,
+    cm: paths.cmId!,
   }
   await writeAccess(paths, record)
   return record
@@ -643,7 +785,7 @@ async function signInOrOpen(
   }
   openOrPrint(`http://127.0.0.1:${conn.port}/`, options.open, deps)
   const since = deps.now().getTime() - Date.parse(access.signed_in_at)
-  if (since > SIGN_IN_HINT_DAYS * 24 * 60 * 60_000) deps.print(SIGN_IN_HINT)
+  if (since > SIGN_IN_HINT_DAYS * 24 * 60 * 60_000) deps.print(SIGN_IN_HINT(ctx.paths))
   return access
 }
 
@@ -690,11 +832,12 @@ function openOrPrint(url: string, open: boolean, deps: VisitDeps): void {
 /** Another `opencorp hq` holds the lock: open HQ's URL. With `--sign-in` and its master up, replay reach.sh for the
  *  spec (it rides the login master, so no Duo), check HQ over that master and through the recorded port, and only
  *  then mint over the master. No ssh files, clean-up or watcher: they're the running visit's. */
-async function alreadyRunning(options: VisitOptions, deps: VisitDeps, paths: ReachPaths, ssh: string): Promise<number> {
+async function alreadyRunning(options: VisitOptions, deps: VisitDeps, found: ReachPaths, ssh: string): Promise<number> {
   if (options.relearn) {
-    deps.error(RELEARN_BUSY)
+    deps.error(RELEARN_BUSY(found))
     return 1
   }
+  let paths = found
   let access: Access | null
   try {
     access = await readAccess(paths)
@@ -711,10 +854,11 @@ async function alreadyRunning(options: VisitOptions, deps: VisitDeps, paths: Rea
     openOrPrint(`http://127.0.0.1:${access.port}/`, options.open, deps)
     return 0
   }
+  paths = paths.withCm(access.cm)
   const { ctx, off } = start(paths, ssh, deps)
   try {
     if (!isSocket(paths.node) || (await control(ctx, paths.node, "check")).code !== 0) {
-      deps.error(NOT_YET)
+      deps.error(NOT_YET(paths))
       return 1
     }
     const spec = await replayed(ctx)
@@ -725,7 +869,7 @@ async function alreadyRunning(options: VisitOptions, deps: VisitDeps, paths: Rea
       await sameHealth(access.port, status, ctx.limits.stepMs)
     } catch (error) {
       if (!(error instanceof ReachFailure) || ctx.signal?.aborted) throw error
-      deps.error(NOT_YET)
+      deps.error(NOT_YET(paths))
       return 1
     }
     // The running visit's sweep deletes the file once it expires: this process ends first.
@@ -786,7 +930,7 @@ async function reconnect(ctx: ReachContext, port: number, deps: VisitDeps): Prom
       return await reach(ctx, port)
     } catch (error) {
       if (signal.aborted) return null
-      deps.error(error instanceof ReachFailure ? describe(error, port).line : `opencorp hq: ${messageOf(error)}`)
+      deps.error(error instanceof ReachFailure ? describe(error, port, ctx.paths.command).line : `opencorp hq: ${messageOf(error)}`)
     }
   }
 }
@@ -811,16 +955,6 @@ async function lineOrStop(stdin: Readable, signal: AbortSignal): Promise<string 
   const line = await Promise.race([readLine(stdin).catch(() => undefined), aborted(signal).then(() => undefined)])
   if (signal.aborted) stdin.pause()
   return line
-}
-
-/** Whether anything, a dangling link included, is at `file`. */
-function present(file: string): boolean {
-  try {
-    return fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined
-  } catch {
-    // A file where a folder on its path should be.
-    return false
-  }
 }
 
 /** Resolves "stop" once `signal` aborts. */

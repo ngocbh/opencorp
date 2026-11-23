@@ -206,7 +206,9 @@ function logout(req: Request): Response {
   return json({ ok: true }, 200, { "set-cookie": `opencorp_hq_${port}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` })
 }
 
-const SIGN_IN = "Sign in with your handle and password, or run `opencorp hq --sign-in` and open the link it prints."
+const SIGN_IN =
+  "Sign in with your handle and password, or run `opencorp hq --sign-in` on HQ's machine " +
+  "(`opencorp hq NAME --sign-in` from another, NAME its destination) and open the link it prints."
 const EXPIRED = "This link has expired or was already used. Run `opencorp hq --sign-in` again."
 
 /** HQ's /api, as the office answers it, from `state`. */

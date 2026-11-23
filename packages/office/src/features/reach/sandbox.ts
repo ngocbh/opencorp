@@ -1,6 +1,7 @@
-/** The agent's SSH-only sandbox while learning: the owner's ssh config and `~/.ssh` read-only, `hq/ssh` read-only for
- *  the wrapper and the agent's config, and nothing else of hq, `hq/cm` included. On Linux the agent's wrapper is
- *  mounted over the system's ssh too, so every way of running ssh reaches it. */
+/** The agent's SSH-only sandbox while learning: the owner's ssh config and `~/.ssh` read-only, the destination's
+ *  `hq/<name>/ssh` read-only for the wrapper and the agent's config, and nothing else of hq: not the model's sign-in
+ *  in `hq/provider.json` and `hq/auth.json`, not another destination's folder, not a control-socket folder. On Linux
+ *  the agent's wrapper is mounted over the system's ssh too, so every way of running ssh reaches it. */
 import fs from "node:fs"
 import os from "node:os"
 import { realPath, UnsafeProfile, within } from "../../runtime/sandbox/policy.ts"
@@ -47,8 +48,8 @@ export interface AgentPolicyInit {
   readonly run?: typeof run
 }
 
-/** The SSH-only policy for learning's shells. Its temp folder and the agent's own status file in `hq/ssh` are
- *  checked as `SshPolicy` checks them; a probe call must run in it; then `ssh -G` with `hq/ssh/agent.config` names the
+/** The SSH-only policy for learning's shells. Its temp folder and the agent's own status file in `hq/<name>/ssh` are
+ *  checked as `SshPolicy` checks them; a probe call must run in it; then `ssh -G` with `hq/<name>/ssh/agent.config` names the
  *  files and ControlPath folder it binds. With `TEST_SSH_DIR` in the env, that folder is bound read-write once
  *  `testFolder` passes it. Throws `UnsafeProfile` for a bind that would expose hq, the home or a credential, and
  *  `SandboxUnavailable` where this platform has no sandbox or the probe can't run in it. */
@@ -57,7 +58,8 @@ export async function agentPolicy(paths: ReachPaths, o: AgentPolicyInit): Promis
   const homes = [o.home, o.env.HOME ?? o.home, paths.home, o.passwd ?? os.userInfo().homedir]
   const init = {
     home: o.home,
-    hq: paths.dir,
+    hq: paths.root,
+    hqSsh: paths.ssh,
     tmpdir: o.tmpdir,
     statusFile: paths.agentStatus(process.pid),
     agentSocket: o.env.SSH_AUTH_SOCK ?? null,

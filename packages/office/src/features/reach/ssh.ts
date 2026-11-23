@@ -11,7 +11,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { sameProcess, startTime } from "../../util/proc.ts"
 import { replaceFile, writePrivate } from "../../util/private_files.ts"
 import { REAL_SSH } from "../../runtime/sandbox/ssh_policy.ts"
-import type { ReachPaths } from "./paths.ts"
+import { isOwnCm, type ReachPaths } from "./paths.ts"
 import { remoteCommand, type Spec, safePath, word } from "./spec.ts"
 
 /** The owner's config, then the system's, which `-F` skips. `home` is the passwd entry's (`os.userInfo().homedir`),
@@ -25,7 +25,7 @@ export const defaultIncludes = (home: string) => [
 /** How long a login master of ours stays after its last session (ControlPersist), in seconds. */
 export const PERSIST_S = 60
 
-/** `hq/ssh/config` (`config.batch` with `batch`): the owner's config and the system's first, then ours. ssh keeps the
+/** `hq/<name>/ssh/config` (`config.batch` with `batch`): the owner's config and the system's first, then ours. ssh keeps the
  *  first value it reads, so the owner's settings win wherever they set one, and ours are defaults: sharing in `cm`
  *  (so a socket there is one an ssh of ours bound, the owner having set no ControlPath), keep-alives, and, with
  *  `sessionOptions` (an ssh that knows them, OpenSSH 8.7 on), the session options a visit needs. After an Include ssh
@@ -55,7 +55,7 @@ export function configText(
   ].join("\n")
 }
 
-/** `hq/ssh/agent.config`, which the agent's ssh reads while learning: `ControlMaster no`, then the visit config's
+/** `hq/<name>/ssh/agent.config`, which the agent's ssh reads while learning: `ControlMaster no`, then the visit config's
  *  includes, and nothing else. It rides a connection the user has open, at their ControlPath, or logs in directly, and
  *  never keeps one: in the SSH-only sandbox `~/.ssh` is read-only, and under `ControlMaster auto` with no master to
  *  ride ssh would log in, fail to bind its socket there and exit 255. */
@@ -179,12 +179,12 @@ export async function configProblems(ctx: ReachContext, hosts: readonly SshHost[
 const listed = (items: readonly string[]) =>
   items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`
 
-/** `hq/ssh/bin/ssh`, first on PATH for reach.sh, the shell tool and the agent's shells: the real ssh by absolute path
+/** `hq/<name>/ssh/bin/ssh`, first on PATH for reach.sh, the shell tool and the agent's shells: the real ssh by absolute path
  *  (so ProxyJump's hop, built from the program name ssh was run as and `-F`, shares the config) with the config
  *  `$OPENCORP_SSH_CONFIG` names; each exit status but a
  *  control command's (`-O`) is appended to $OPENCORP_SSH_STATUS, so a 255 counts where a pipeline or `|| true` hides
  *  it. When the host it named is a plain `[user@]host`, the host follows, then its jump hosts from `-J` or
- *  `-o ProxyJump`: a failed visit checks the owner's config for them. The `agent`'s (`hq/ssh/agent-ssh`, which the
+ *  `-o ProxyJump`: a failed visit checks the owner's config for them. The `agent`'s (`hq/<name>/ssh/agent-ssh`, which the
  *  agent's sandbox puts in place of the system's ssh on Linux) passes `-o ControlMaster=no` before the caller's options,
  *  so no option of theirs makes it keep a connection. */
 export function wrapperText(realSsh: string, { agent = false }: { agent?: boolean } = {}): string {
@@ -700,9 +700,11 @@ export function control(ctx: ReachContext, socket: string, op: "check" | "exit")
 
 /** Ends every master whose control socket is in `cm` with `-O exit`, the node's first (so its hop goes before the login
  *  master), then removes each file there, except a socket whose `-O exit` failed while something still listens on it:
- *  the watcher, or the next visit, tries that one again. Never signals a pid. Runs on stop, so it ignores the stop
- *  signal. */
+ *  the watcher, or the next visit, tries that one again. Does nothing unless `cm` is OpenCorp's own (`isOwnCm`).
+ *  Never signals a pid. Runs on stop, so it ignores the stop signal. */
 export async function exitAll(ctx: ReachContext): Promise<void> {
+  // A link there, or a folder that isn't OpenCorp's, would lead the deletes below elsewhere.
+  if (!isOwnCm(ctx.paths)) return
   const names = readdirOrEmpty(ctx.paths.cm).sort((a, b) => (a === "node" ? -1 : b === "node" ? 1 : a.localeCompare(b)))
   for (const name of names) {
     const file = path.join(ctx.paths.cm, name)

@@ -97,7 +97,7 @@ function processesWith(text: string): number[] {
  *  `cm` is ended, then the folder removed. */
 async function realCtx(): Promise<ReachContext> {
   const dir = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
-  const paths = new ReachPaths(dir)
+  const paths = new ReachPaths(dir, "misha", "0a1b2c")
   makeDirs(paths)
   await writeSshFiles(paths, SSH, [sshd.clientConfig])
   const ctx: ReachContext = { paths, ssh: SSH, env: { PATH: "/usr/bin:/bin", HOME: dir }, batch: false, echo: () => {}, limits: LIMITS }
@@ -332,7 +332,7 @@ describe.skipIf(!REAL)("a real sshd", () => {
     const office = await startOffice({ hq: { tcp: false, app_dir: app } })
     onTestFinished(() => office.stop())
     const dir = shortDir()
-    const paths = new ReachPaths(dir)
+    const paths = new ReachPaths(dir, "misha", "0a1b2c")
     makeDirs(paths)
     const spec = {
       host: "127.0.0.1",
@@ -350,6 +350,7 @@ describe.skipIf(!REAL)("a real sshd", () => {
       learned_at: new Date().toISOString(),
       last_used_at: null,
       signed_in_at: null,
+      cm: paths.cmId!,
     })
     const v = visitDeps(dir, null, {
       env: { PATH: "/usr/bin:/bin", HOME: dir },
@@ -407,7 +408,7 @@ describe.skipIf(!REAL)("a real sshd", () => {
       for (const pid of processesWith(mine)) process.kill(pid, "SIGKILL")
       fs.rmSync(dir, { recursive: true, force: true })
     })
-    const paths = new ReachPaths(dir)
+    const paths = new ReachPaths(dir, "misha", "0a1b2c")
     makeDirs(paths)
     const remote = await fakeRemote(dir)
     const spec = { host: "127.0.0.1", jump: ["localhost"], opencorp: remote.opencorp }
@@ -421,6 +422,7 @@ describe.skipIf(!REAL)("a real sshd", () => {
       learned_at: new Date().toISOString(),
       last_used_at: null,
       signed_in_at: null,
+      cm: paths.cmId!,
     })
     const ownConfig = path.join(dir, "own_config")
     fs.writeFileSync(ownConfig, own.map((line) => line.replaceAll("{mine}", mine)).join("\n") + "\n")
@@ -444,9 +446,9 @@ describe.skipIf(!REAL)("a real sshd", () => {
   /** The client's own connection sharing for the login node, as the owner keeps it in `~/.ssh/config`. */
   const SHARING = ["Host localhost", "  ControlMaster auto", "  ControlPath {mine}/%C", "  ControlPersist 30"]
 
-  test("with ControlMaster, ControlPath and ControlPersist in the client's config, the visit's login master is in the client's folder and outlives the visit, while the node master in hq/cm ends with it", async () => {
+  test("with ControlMaster, ControlPath and ControlPersist in the client's config, the visit's login master is in the client's folder and outlives the visit, while the node master in hq/cm-<id> ends with it", async () => {
     const { v, done, paths, mine } = await realVisit(SHARING)
-    // The node's hop rode the login master in the client's folder: hq/cm holds the node master alone.
+    // The node's hop rode the login master in the client's folder: hq/cm-<id> holds the node master alone.
     expect(fs.readdirSync(paths.cm)).toEqual(["node"])
     const logins = fs.readdirSync(mine)
     expect(logins).toHaveLength(1)
@@ -458,7 +460,7 @@ describe.skipIf(!REAL)("a real sshd", () => {
     expect((await runChild(controlArgv(SSH, path.join(mine, logins[0]!), "check"), RUN)).code).toBe(0)
   })
 
-  test("with none set, the visit's masters are in hq/cm, one login serves the visit, and they end with it", async () => {
+  test("with none set, the visit's masters are in hq/cm-<id>, one login serves the visit, and they end with it", async () => {
     const { v, done, paths, mine } = await realVisit(["# The client shares nothing."])
     const names = fs.readdirSync(paths.cm).sort()
     // reach.sh's login to localhost left the one master the node's hop rode, beside the node master.
@@ -515,7 +517,7 @@ describe.skipIf(!REAL)("a real sshd", () => {
       "  ControlPersist 30",
     ]
     fs.writeFileSync(config, `${lines.join("\n")}\n`, { mode: 0o600 })
-    const paths = new ReachPaths(path.join(home, ".opencorp"))
+    const paths = new ReachPaths(path.join(home, ".opencorp"), "misha", "0a1b2c")
     makeDirs(paths)
     await writeSshFiles(paths, SSH, [config])
     const tmpdir = path.join(root, "tmp")

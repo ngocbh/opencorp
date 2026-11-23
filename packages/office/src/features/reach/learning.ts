@@ -1,7 +1,7 @@
 /** One learning run's state, which `learn_hq`'s `save_access` and the visit share: the visit's context, where the
- *  model's key or sign-in comes from, the session's folder, the commands the agent's shells ran, OpenCorp's
- *  connection shell and the connection `save_access` left open; and the warning when reach.sh names hq's credential
- *  files. */
+ *  model's key or sign-in comes from, the session's folder, the destination's name, the commands the agent's shells
+ *  ran, OpenCorp's connection shell, the connection `save_access` left open and the folder it saved in; and the
+ *  warning when reach.sh names hq's credential files. */
 import fs from "node:fs"
 import path from "node:path"
 import { readRecord, type RecordedCommand } from "../../tools/terminal/record.ts"
@@ -17,11 +17,13 @@ export interface Tried {
 }
 
 /** One learning run: the reach context, where the model's key or sign-in tokens come from (never saved), the port,
- *  the session's folder, the clock, OpenCorp's connection shell once the chain test made it, and the connection
- *  `save_access` left open. */
+ *  the session's folder, the clock, the destination's name, OpenCorp's connection shell once the chain test made it,
+ *  and the connection `save_access` left open and the folder it saved in. */
 export class Learning {
   /** The open connection `save_access` saved, which the visit then holds. */
   connection: Connection | null = null
+  /** The destination's folder once `save_access` saved: a first path's, renamed to its name, else the context's. */
+  saved: ReachPaths | null = null
   /** OpenCorp's connection shell, made for the first chain test; the visit closes it at its end. */
   shell: ConnectionShell | null = null
   readonly #source: () => readonly string[]
@@ -35,6 +37,8 @@ export class Learning {
     readonly port: number,
     readonly folder: string,
     readonly now: () => Date = () => new Date(),
+    /** The destination's name; null for a first path learned with none given, which is named after its host. */
+    readonly name: string | null = null,
   ) {
     this.#source = typeof secrets === "function" ? secrets : () => secrets
     // Before the run, which may replace them.
@@ -70,17 +74,17 @@ export class Learning {
   }
 }
 
-/** Whether `text` names the hq folder or one of its files that hold the model's key or sign-in: reach.sh runs in
- *  the folder, so a bare name counts. A hint for the owner, not a guard. */
+/** Whether `text` names the hq folder or one of its files that hold the model's key or sign-in. A hint for the
+ *  owner, not a guard. */
 export function namesCredentials(text: string, paths: ReachPaths): boolean {
   const folder = `${path.basename(paths.home)}/hq`
-  return /\b(?:auth|provider)\.json\b/.test(text) || text.includes(paths.dir) || text.includes(folder)
+  return /\b(?:auth|provider)\.json\b/.test(text) || text.includes(paths.root) || text.includes(folder)
 }
 
 /** Said above the question when reach.sh `namesCredentials`. */
 export function credentialWarning(paths: ReachPaths): string {
   return (
-    `Careful: this names ${paths.dir}, provider.json or auth.json, which hold the model's key or its ChatGPT sign-in;` +
+    `Careful: this names ${paths.root}, provider.json or auth.json, which hold the model's key or its ChatGPT sign-in;` +
     " what reads them reaches the model."
   )
 }

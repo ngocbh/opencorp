@@ -15,6 +15,7 @@ import {
   cleanUp,
   codeFrom,
   DEFAULT_PORT,
+  nextPort,
   readAccess,
   removeAtExpiry,
   STATUS_STALE_MS,
@@ -34,9 +35,9 @@ setDefaultTimeout(30_000)
 
 const STATE = fileURLToPath(new URL("../../../src/features/reach/state.ts", import.meta.url))
 
-/** A fresh home with the hq folders made. */
-function reachPaths(): ReachPaths {
-  const paths = new ReachPaths(path.join(shortDir(), "h"))
+/** A fresh home with destination `name`'s folders made. */
+function reachPaths(name = "misha", home = path.join(shortDir(), "h")): ReachPaths {
+  const paths = new ReachPaths(home, name, "0a1b2c")
   makeDirs(paths)
   return paths
 }
@@ -47,6 +48,7 @@ const ACCESS: Access = {
   learned_at: "2026-11-11T10:00:00.000Z",
   last_used_at: null,
   signed_in_at: null,
+  cm: "0a1b2c",
 }
 
 test("a second takeLock gets null while the first holds it", () => {
@@ -61,13 +63,35 @@ test("a second takeLock gets null while the first holds it", () => {
   again!.release()
 })
 
+test("each destination has its own lock: two can be open at once, and the same one twice is refused", () => {
+  const misha = reachPaths("misha")
+  const login1 = reachPaths("login1", misha.home)
+  expect(misha.lock).not.toBe(login1.lock)
+  const one = takeLock(misha)
+  const two = takeLock(login1)
+  expect([one, two].map((lock) => lock !== null)).toEqual([true, true])
+  expect(takeLock(misha)).toBeNull()
+  expect(takeLock(login1)).toBeNull()
+  one!.release()
+  two!.release()
+})
+
+test("a new destination's port is the first from 49381 that no saved one uses", () => {
+  expect(nextPort([])).toBe(49381)
+  expect(nextPort([49381])).toBe(49382)
+  expect(nextPort([49382])).toBe(49381)
+  expect(nextPort([49381, 49382, 49384])).toBe(49383)
+  // A port below the first, or one another way chose, doesn't hold a new one back.
+  expect(nextPort([49380, 50000, 49381])).toBe(49382)
+})
+
 test("the lock is free once its holder dies, even by SIGKILL, and a child it started never holds it", async () => {
   const paths = reachPaths()
   const script = [
     `import { spawn } from "node:child_process"`,
     `import { ReachPaths } from ${JSON.stringify(path.join(path.dirname(STATE), "paths.ts"))}`,
     `import { takeLock } from ${JSON.stringify(STATE)}`,
-    `const lock = takeLock(new ReachPaths(${JSON.stringify(paths.home)}))`,
+    `const lock = takeLock(new ReachPaths(${JSON.stringify(paths.home)}, "misha"))`,
     `if (lock === null) process.exit(3)`,
     `const sleep = spawn("/bin/sleep", ["30"], { stdio: "ignore" })`,
     `console.log("held " + sleep.pid)`,
@@ -107,7 +131,9 @@ test("access.json round-trips at 0600, reads null when missing, and is an Access
   await writeAccess(paths, signedIn)
   expect(await readAccess(paths)).toEqual(signedIn)
   await expect(writeAccess(paths, { ...ACCESS, port: 80 })).rejects.toThrow()
-  for (const bad of ["not json", JSON.stringify({ ...ACCESS, port: 80 }), JSON.stringify({ ...ACCESS, extra: 1 })]) {
+  await expect(writeAccess(paths, { ...ACCESS, cm: "../x" })).rejects.toThrow()
+  const { cm: _, ...noCm } = ACCESS
+  for (const bad of ["not json", JSON.stringify({ ...ACCESS, port: 80 }), JSON.stringify({ ...ACCESS, extra: 1 }), JSON.stringify(noCm), JSON.stringify({ ...ACCESS, cm: "0A1B2C" })]) {
     fs.writeFileSync(paths.access, bad, { mode: 0o600 })
     await expect(readAccess(paths)).rejects.toBeInstanceOf(AccessError)
   }

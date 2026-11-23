@@ -36,9 +36,10 @@ export class ReachFailure extends Error {
   }
 }
 
-/** What to say for `failure`, its row of the failure table and then its problems, one per line, and the exit code. */
-export function describe(failure: ReachFailure, port: number): { line: string; code: number } {
-  const { line, code } = row(failure, port)
+/** What to say for `failure`, its row of the failure table and then its problems, one per line, and the exit code;
+ *  `command` is how the owner runs `opencorp hq` for this destination, which its hints name. */
+export function describe(failure: ReachFailure, port: number, command = "opencorp hq"): { line: string; code: number } {
+  const { line, code } = row(failure, port, command)
   return { line: [line, ...failure.problems].join("\n"), code }
 }
 
@@ -56,8 +57,9 @@ export function specHosts(spec: Spec): SshHost[] {
   return [...jumps, spec.port === undefined ? { host: spec.host } : { host: spec.host, port: spec.port }]
 }
 
-/** The failure table: what to say for `failure`, and the exit code. */
-function row(failure: ReachFailure, port: number): { line: string; code: number } {
+/** The failure table: what to say for `failure`, and the exit code; `command` is how the owner runs `opencorp hq`
+ *  for this destination. */
+function row(failure: ReachFailure, port: number, command: string): { line: string; code: number } {
   // Where a sentence follows it, the message's own closing period goes.
   const said = failure.message.replace(/\.+$/, "")
   switch (failure.kind) {
@@ -65,7 +67,7 @@ function row(failure: ReachFailure, port: number): { line: string; code: number 
       return { line: `opencorp hq: couldn't connect: ${failure.message}`, code: 1 }
     case "no_office":
       return {
-        line: `opencorp hq: no office answers there: ${said}. Start the job or the office there, or run \`opencorp hq --relearn\` if HQ moved for good.`,
+        line: `opencorp hq: no office answers there: ${said}. Start the job or the office there, or run \`${command} --relearn\` if HQ moved for good.`,
         code: 3,
       }
     case "not_ready":
@@ -77,7 +79,7 @@ function row(failure: ReachFailure, port: number): { line: string; code: number 
       return { line: `opencorp hq: the saved way to reach HQ is broken: ${failure.message}`, code: 1 }
     case "port_taken":
       return {
-        line: `opencorp hq: port ${port} on 127.0.0.1 is taken by another program; pick a free one with \`opencorp hq --port N\` (you'll sign in again).`,
+        line: `opencorp hq: port ${port} on 127.0.0.1 is taken by another program; pick a free one with \`${command} --port N\` (you'll sign in again).`,
         code: 1,
       }
     case "no_forward":

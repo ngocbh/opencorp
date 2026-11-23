@@ -60,8 +60,8 @@ async function learning(
   onTestFinished(() => llm.close())
   const c = await client(office ?? null, { behavior, compiled: true })
   onTestFinished(() => removeClient(c))
-  // A path to learn, never one to approve.
-  for (const file of ["reach.sh", "reach.approved.sh", "access.json"]) fs.rmSync(path.join(c.hq, file), { force: true })
+  // A path to learn, never one to approve: nothing saved.
+  fs.rmSync(c.dest, { recursive: true, force: true })
   before?.(c)
   fs.writeFileSync(path.join(c.hq, "provider.json"), JSON.stringify({ llm_config: LLM_CONFIG, env: llm.env() }), {
     mode: 0o600,
@@ -346,7 +346,8 @@ describe.skipIf(!TMUX)("learning, a chat with OpenCorp on a real terminal", () =
     expect(t.screen()).not.toContain("@opencorp")
     // One login: the node's hop rode the login node's master the replay left.
     expect(c.fake.tty()).toEqual([PASSWORD])
-    expect(fs.readFileSync(path.join(c.hq, "reach.sh"), "utf8")).toBe(reachScript(remote))
+    // Saved under the host it reaches first.
+    expect(fs.readFileSync(path.join(c.dest, "reach.sh"), "utf8")).toBe(reachScript(remote))
     t.keys("C-c")
     expect(await t.exit()).toBe("exit=0")
     expect(holding(c.root, PASSWORD)).toEqual([])

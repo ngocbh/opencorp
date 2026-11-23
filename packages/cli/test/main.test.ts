@@ -72,7 +72,11 @@ const USAGES: Record<string, string> = {
   logout: "usage: opencorp logout",
   devices: "usage: opencorp devices list [HANDLE] [--hashes]",
   whoami: "usage: opencorp whoami",
-  hq: "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--relearn] [--json] [--check --json]",
+  hq:
+    "usage: opencorp hq [--handle HANDLE] [--no-open] [--json] [--check --json]\n" +
+    "       opencorp hq [NAME] [--no-open] [--sign-in] [--port N] [--relearn]\n" +
+    "       opencorp hq --list | --rename OLD NEW | --forget NAME\n" +
+    "NAME is a saved destination, another machine's HQ: a name is 1 to 32 lowercase letters, digits and dashes, starting with a letter or a digit.",
 }
 
 test("each client command prints its usage on --help or -h, without the office", async () => {
