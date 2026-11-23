@@ -1641,6 +1641,16 @@ test("a chat read that shows a message unread tells the live relay, so its read 
   const unread = read.filter((message) => message.unread).map((message) => message.id)
   expect(unread).toHaveLength(1)
   expect(told.mock.calls).toEqual([[h.store.getSession(id)!.run_ids.at(-1)!, unread[0]!]])
+  // An ended session's runs are forgotten: a read of it holds nothing for the relay.
+  const stored = h.store.getSession.bind(h.store)
+  const ended = spyOn(h.store, "getSession").mockImplementation((sid) => {
+    const found = stored(sid)
+    return found && { ...found, status: "ended" }
+  })
+  told.mockClear()
+  expect((await h.harness.messages(id)).filter((message) => message.unread)).toHaveLength(1)
+  ended.mockRestore()
+  expect(told.mock.calls).toEqual([])
   fake.release()
   await waitFor(() => same(texts(h, id).slice(-1), ["Rome."]) && status(h, id) === "idle", { what: "the reply" })
 })

@@ -626,7 +626,7 @@ export class ChatHarness implements SessionHarness {
   }
 
   /** The session's messages: a yian chat's from its runs' logs, with its live actor's calls in flight, the live relay
-   *  told which show unread. The logs are read on first in slices that yield to the event loop (`Transcript.refresh`),
+   *  told which show unread while the session is live. The logs are read on first in slices that yield to the event loop (`Transcript.refresh`),
    *  so a long log doesn't hold it; 404 `not_found` without the session. */
   async messages(sessionId: string): Promise<Message[]> {
     const claude = this.#claudeFor(sessionId)
@@ -643,9 +643,10 @@ export class ChatHarness implements SessionHarness {
     if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
     const messages = this.transcript.messages(sessionId, session.run_ids, this.#actors.get(sessionId))
     // The client now holds them unread: the relay publishes each again once the run reads it, even when the run reads
-    // it before the relay next renders the run.
+    // it before the relay next renders the run. An ended session's runs are forgotten, and nothing reads them again.
     const last = session.run_ids.at(-1)
-    for (const message of messages) if (message.unread && last !== undefined) this.#ctx.live.unreadShown(last, message.id)
+    if (last === undefined || !LIVE.includes(session.status)) return messages
+    for (const message of messages) if (message.unread) this.#ctx.live.unreadShown(last, message.id)
     return messages
   }
 
