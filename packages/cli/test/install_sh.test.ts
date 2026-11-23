@@ -446,7 +446,8 @@ describe("install.sh", () => {
 
     // A build that writes no binary for the platform Bun says it runs on is a failed one too, and so is one whose
     // binary won't start.
-    for (const extra of [{ STUB_HOST: "other-arm64" }, { STUB_BINARY_BROKEN: "1" }]) {
+    const extras: Record<string, string>[] = [{ STUB_HOST: "other-arm64" }, { STUB_BINARY_BROKEN: "1" }]
+    for (const extra of extras) {
       const other = makeHome()
       const failed = await run(other, "install.sh", { from: checkout(other), extra })
       expect(failed.code).toBe(0)
