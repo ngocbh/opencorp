@@ -15,7 +15,7 @@ import type { CheckInput, Mode } from "../../../src/runtime/permissions/policy.t
 import { sessionOption, YES } from "../../../src/runtime/questions/approval.ts"
 import type { Delivery } from "../../../src/runtime/worker/job.ts"
 import type { OfficeTool } from "../../../src/runtime/worker/rpc.ts"
-import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
+import { LLM_CONFIG, type ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { git } from "../../company/helpers.ts"
 import { CEO } from "../../server/helpers.ts"
 import { waitFor } from "../../helpers.ts"
@@ -70,13 +70,21 @@ async function gated(
     agent = [],
     runCheck,
     secrets,
-  }: { rules?: [string, string][]; agent?: [string, string][]; runCheck?: CheckRunner; secrets?: string[] } = {},
+    apiKey,
+  }: {
+    rules?: [string, string][]
+    agent?: [string, string][]
+    runCheck?: CheckRunner
+    secrets?: string[]
+    apiKey?: string
+  } = {},
 ) {
   const fake = await fakeLlm()
   const yaml = (list: [string, string][]) =>
     stringify({ rules: list.map(([effect, pattern]) => ({ effect, kind: "tool", pattern })) })
   const files = { "rules.yaml": yaml(rules), "people/minh/rules.yaml": yaml(agent) }
-  const o = await chatOffice(fake, { files })
+  const llm = apiKey === undefined ? {} : { llmConfig: { ...LLM_CONFIG, api_key: apiKey } }
+  const o = await chatOffice(fake, { files, ...llm })
   const workers = scriptedWorker(o)
   const sid = await newSession(o, { openedBy: CEO })
   o.office.store.updateSession(sid, { mode })
@@ -100,10 +108,12 @@ async function gated(
       name: "CallHeld",
       data: { node_id: "chat#0/reply", call_id: callId(n), tool: `tool_${n}` },
     })
-  const delivered = async (op: Delivery["op"], n = 0): Promise<Delivery> =>
-    await waitFor(() => deliveries.find((d) => d.op === op && "call_id" in d && d.call_id === callId(n)), {
-      what: `a ${op} of call ${n}`,
-    })
+  // Sent to the run's worker, or in a later job's deliveries once it parked.
+  const delivered = async (op: Delivery["op"], n = 0): Promise<Delivery> => {
+    const given = () => workers.flatMap((w) => w.given())
+    const found = () => given().find((d) => d.op === op && "call_id" in d && d.call_id === callId(n))
+    return await waitFor(found, { what: `a ${op} of call ${n}` })
+  }
   const cards = () => o.office.store.listQuestions({ sessionId: sid, source: "approval" })
   const card = (n = 0) => o.office.store.getQuestionByCall(callId(n))
   return { o, sid, actor, runId, worker, handlers, deliveries, callId, gate, held, delivered, cards, card }
@@ -226,6 +236,22 @@ test("Auto's check never reads a secret value: the company's are redacted from a
   // Its audit row holds what the check read.
   const [row] = g.o.office.store.listAudit({ sessionId: g.sid }).filter((r) => r.kind === "check")
   expect(JSON.stringify(row!.args)).not.toContain("sk-SECRET-4f2a91")
+})
+
+test("Auto's check never reads the model key of the run that made the call, though that run's job has ended", async () => {
+  const check = fakeCheck()
+  const g = await gated("auto", { runCheck: check.runCheck, apiKey: "sk-RUNKEY-7c1e55" })
+  expect(isPending(await g.gate(MCP, 0, { title: "Fix", note: "sk-RUNKEY-7c1e55" }))).toBe(true)
+  // The run waits on the hold, and its worker parks, before the actor acts on the hold.
+  g.held()
+  const call = { node: "chat#0/reply", call_id: g.callId(0), tool: "tool_0" }
+  const wait = { ...call, inbox: null, deadline: null, settled: false }
+  const result = { type: "result", status: "waiting", run_id: g.runId, output: null, failure: null, waits: [wait] }
+  g.handlers.result(g.worker, { ...result, kept: true })
+  g.handlers.parked(g.worker)
+  await g.delivered("release")
+  expect(check.judged).toHaveLength(1)
+  expect(check.judged[0]!.command).not.toContain("sk-RUNKEY-7c1e55")
 })
 
 test("a session that doesn't ask refuses what would ask, with no card", async () => {

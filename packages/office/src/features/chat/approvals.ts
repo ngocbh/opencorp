@@ -59,8 +59,9 @@ export interface ApprovalHost {
   onQuestion: OnQuestion
   /** Whether run `runId`'s log records that call `callId` was released. */
   released(runId: string, callId: string): boolean
-  /** The secret values no model may read: the run's model key, and the company's asset secrets. */
-  secretValues(): Promise<string[]>
+  /** The secret values no model may read: run `runId`'s model key, and the company's asset secrets. Rejects when
+   *  they can't be known. */
+  secretValues(runId: string): Promise<string[]>
 }
 
 /** A call the gate held, by its call id: its run, the call as the gate decided it, whether yian holds it yet
@@ -425,7 +426,7 @@ export class ChatApprovals {
     const stop = new AbortController()
     hold.check = stop
     void (async () => {
-      const secrets = await this.#host.secretValues().catch(() => null)
+      const secrets = await this.#host.secretValues(hold.runId).catch(() => null)
       // Unable to know the secrets, nothing goes to a model: the call asks.
       const verdict = secrets === null
         ? { verdict: "ask" as const, reason: "its secrets couldn't be read", failed: true }

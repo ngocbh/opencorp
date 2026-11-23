@@ -577,10 +577,13 @@ export class SessionActor implements LiveCalls {
           this.#deliver(new Pending({ id: newId(), op: "complete", call_id: callId, result: { output } })),
         onQuestion: this.#onQuestion,
         released: (runId, callId) => releasedIn(this.#logOf(runId), callId),
-        secretValues: async () => [
-          ...(this.#run?.provider ? runSecrets(this.#run.provider) : []),
-          ...((await this.#ctx.secretValues?.()) ?? []),
-        ],
+        // By the run that made the call: the actor's current run is cleared once its job ends, as a held call's does.
+        secretValues: async (runId) => {
+          const live = this.#run?.runId === runId ? this.#run.provider : null
+          const provider = live ?? (await this.#ranProvider(runId))
+          if (provider === null) throw new Error("the run's connection can't be resolved")
+          return [...runSecrets(provider), ...((await this.#ctx.secretValues?.()) ?? [])]
+        },
       },
       ...(ctx.checkTimeoutMs === undefined ? {} : { checkTimeoutMs: ctx.checkTimeoutMs }),
       ...(ctx.runCheck === undefined ? {} : { runCheck: ctx.runCheck }),
