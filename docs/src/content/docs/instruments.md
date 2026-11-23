@@ -101,6 +101,9 @@ it lists claude.
   of its own. Only the chat's opener (its company's CEO for a chat nobody opened) writes there besides your employee.
   A chat has at most four live sessions of each harness.
 - **Drafts.** Each chat and session keeps its own unsent text, so what you type in one never shows in another.
+- **Codex's cards.** What Codex asks you shows as a card in its session and in your employee's chat, above the prompt
+  and after the chat's own cards. The card or the prompt has your keys, and ctrl+t moves them; Esc on the card stops
+  the session's turn.
 - **Two speakers.** The session shows who sent each message, its border in the sender's colour, and the pane's header
   says `you are driving` while a turn you started runs. The harness reads each message with its author and is
   told your word wins: your employee reads what you told it with its next answer, and can't interrupt or stop a turn
