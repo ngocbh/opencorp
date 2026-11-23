@@ -2,8 +2,9 @@ import { RGBA } from "@opentui/core"
 import { useTheme } from "../context/theme"
 import { Spinner } from "./spinner"
 
-/** A full-screen overlay saying the office's connection was lost and is being retried. */
-export function Reconnecting() {
+/** A full-screen overlay saying the office's connection was lost and is being retried, with why the office's state
+ *  can't be read when `error` says. */
+export function Reconnecting(props: { error?: string }) {
   const { theme } = useTheme()
 
   return (
@@ -30,7 +31,11 @@ export function Reconnecting() {
         gap={1}
       >
         <Spinner color={theme.text}>Connection lost…</Spinner>
-        <text fg={theme.textMuted}>Reconnecting to the office automatically.</text>
+        <text fg={theme.textMuted}>
+          {props.error !== undefined
+            ? `The office's state can't be read: ${props.error}. Retrying…`
+            : "Reconnecting to the office automatically."}
+        </text>
       </box>
     </box>
   )

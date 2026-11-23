@@ -712,9 +712,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     bindings: leaveBindings(tuiConfig.keybinds.gather("app_exit", ["app.exit"])),
   }))
 
-  // Only a drop shows the full-screen overlay: before the first connection, home says why the TUI waits. The grace
-  // hides a stream that reconnects at once.
+  // Suppress the full-screen overlay for transient startup and event-stream retry states: the first connection gets
+  // a longer grace, and home none, since its own notes say why the TUI waits; a drop surfaces more quickly.
   const [showReconnecting, setShowReconnecting] = createSignal(false)
+  const onHome = createMemo(() => route.data.type === "home")
   let wasOnline = false
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined
   createEffect(() => {
@@ -728,11 +729,17 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       setShowReconnecting(false)
       return
     }
-    if (!wasOnline) return
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = undefined
-      setShowReconnecting(true)
-    }, 1000).unref()
+    if (!wasOnline && onHome()) {
+      setShowReconnecting(false)
+      return
+    }
+    reconnectTimer = setTimeout(
+      () => {
+        reconnectTimer = undefined
+        setShowReconnecting(true)
+      },
+      wasOnline ? 1000 : 5000,
+    ).unref()
   })
   onCleanup(() => {
     if (reconnectTimer) clearTimeout(reconnectTimer)
@@ -779,7 +786,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         </Switch>
       </box>
       <Show when={showReconnecting()}>
-        <Reconnecting />
+        <Reconnecting error={office.status() === "error" ? office.error() : undefined} />
       </Show>
     </box>
   )
