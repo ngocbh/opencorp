@@ -113,10 +113,10 @@ export async function tui(argv: string[], env: Env, deps: TuiDeps = realTuiDeps)
       return 1
     }
   }
-  // The TUI is Solid JSX: the transform must be registered before its modules load, and a
-  // bunfig preload would only apply when `opencorp` runs from this package's folder.
-  const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin")
-  ensureSolidTransformPlugin()
+  // The TUI is Solid JSX: from source the transform must be registered before its modules load, and a bunfig preload
+  // would only apply when `opencorp` runs from this package's folder. The compiled binary's bundle (its URL has no
+  // `.ts`) was transformed when it was built.
+  if (import.meta.url.endsWith(".ts")) (await import("@opentui/solid/bun-plugin")).ensureSolidTransformPlugin()
   const [{ Effect }, { Global, run: runTui }] = await Promise.all([
     import("effect"),
     import("@opencorp/tui"),

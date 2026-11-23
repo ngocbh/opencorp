@@ -21,6 +21,12 @@ license, the upstream paths and commit, and our paths.
   "always" page's lines, from `permissionPresentation` and `permissionAlwaysLines` in upstream
   `packages/tui/src/util/permission.ts`, read at commit `df46f69` (2026-11-16), cut to the office's tools.
 - **License:** MIT, "Copyright (c) 2025 opencode". The full notice is in `packages/tui/LICENSE`.
+- **What:** the compiled `opencorp`'s build, from its CLI's build script: `Bun.build` with `compile`, `bytecode`,
+  `splitting` and `minify` (whitespace and syntax only here), with bunfig and dotenv autoload off, the Solid transform
+  run at build time (`createSolidTransformPlugin()`), and `--smol` in the binary's `execArgv`; and, as a design, a TUI
+  that registers the Solid transform only when it runs from source.
+- **Upstream:** `packages/cli/script/build.ts`, read at commit `4332e24` (2026-11-22).
+- **Ours:** `packages/cli/script/build.ts`, `packages/cli/src/commands/tui.ts`, `packages/cli/src/chat.ts`.
 - **What:** the bash command lines that the shell scanner's tests read (here-documents, `$'…'`, parameter and
   arithmetic expansions, compound commands, functions), copied as test fixtures for the permission reader. The
   reader itself is our own.

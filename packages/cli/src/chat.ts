@@ -59,9 +59,8 @@ export async function localChat(session: LocalSession, home?: string): Promise<C
       over = true
       return undefined
     })
-    // The TUI is Solid JSX, loaded as `opencorp` loads it.
-    const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin")
-    ensureSolidTransformPlugin()
+    // The TUI is Solid JSX, loaded as `opencorp` loads it: the compiled binary's was transformed when it was built.
+    if (import.meta.url.endsWith(".ts")) (await import("@opentui/solid/bun-plugin")).ensureSolidTransformPlugin()
     const [{ Effect }, { Global, run: runTui }] = await Promise.all([import("effect"), import("@opencorp/tui")])
     const local = { sessionID: host.id, until }
     const input = { socket: served.socket, token: served.token, person: OWNER, cwd: process.cwd(), args: {}, local }
