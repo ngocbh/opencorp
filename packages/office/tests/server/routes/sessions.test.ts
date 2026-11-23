@@ -254,6 +254,8 @@ const BAD_CURSORS: [string, (sid: string) => string][] = [
   ["an empty id", (sid) => encoded({ session: sid, id: "" })],
   ["a message the transcript lacks", (sid) => encoded({ session: sid, id: "sk-planted" })],
   ["too long", (sid) => encoded({ session: sid, id: "x".repeat(2000) })],
+  ["a key no cursor has", (sid) => encoded({ session: sid, id: `${ULID}:000000000001`, more: 1 })],
+  ["a session that isn't an id", () => encoded({ session: "sk-planted", id: `${ULID}:000000000001` })],
 ]
 
 test.each(BAD_CURSORS)("a bad cursor is a 400 that echoes nothing [%s]", async (_case, cursor) => {

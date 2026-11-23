@@ -10,6 +10,7 @@ import {
   Session,
   SetModeRequest,
   SetModelRequest,
+  Ulid,
 } from "@opencorp/protocol"
 import { z } from "zod"
 import { HarnessError } from "../../runtime/sessions/state.ts"
@@ -98,7 +99,10 @@ export async function listMessages(ctx: RequestContext, params: Params) {
 /** The longest cursor a page gives: a message id is far shorter. */
 const MAX_CURSOR = 1024
 
-/** A page's cursor: the session and the id of the message the next, older page ends before, as base64url JSON. */
+/** What a page's cursor holds: the session and the id of the message the next, older page ends before. */
+const Cursor = z.strictObject({ session: Ulid, id: Message.shape.id })
+
+/** A page's cursor: `Cursor` as base64url JSON. */
 function cursor(sessionId: string, messageId: string): string {
   return Buffer.from(JSON.stringify({ session: sessionId, id: messageId })).toString("base64url")
 }
@@ -114,10 +118,12 @@ function cursorId(raw: string, sessionId: string): string {
   } catch {
     throw bad()
   }
-  const { session, id } = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>
-  if (typeof session !== "string" || typeof id !== "string" || id === "") throw bad()
-  if (session !== sessionId) throw new HttpError(400, "bad_cursor", "before is a cursor of another session's messages")
-  return id
+  const parsed = Cursor.safeParse(value)
+  if (!parsed.success) throw bad()
+  if (parsed.data.session !== sessionId) {
+    throw new HttpError(400, "bad_cursor", "before is a cursor of another session's messages")
+  }
+  return parsed.data.id
 }
 
 /**
