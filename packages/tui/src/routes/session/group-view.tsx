@@ -2,6 +2,7 @@ import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
 import { useRenderer, type JSX } from "@opentui/solid"
 import { useTheme } from "../../context/theme"
 import { summarizeActivity, type ActivityItem } from "./activity-summary"
+import { GroupAnchor } from "./anchor-view"
 import {
   groupID,
   visitEntries,
@@ -77,7 +78,7 @@ function GroupContent(props: GroupProps) {
   const children = () => <Children {...props} nodes={props.node.children} />
 
   return (
-    <>
+    <GroupAnchor groupID={disclosure.id()} active={grouped() && tools().length > 0}>
       <Show when={grouped()} fallback={children()}>
         <Show when={tools().length > 0}>
           <InlineToolRow
@@ -96,7 +97,7 @@ function GroupContent(props: GroupProps) {
         <Show when={disclosure.expanded() && tools().length > 0}>{children()}</Show>
       </Show>
       <PendingEntries {...props} entries={entries()} />
-    </>
+    </GroupAnchor>
   )
 }
 
@@ -111,7 +112,7 @@ function ActivityGroup(props: GroupProps) {
   const entries = createMemo(() => descendants(props.node))
   const summary = createMemo(() => summarizeActivity(props.node, props.item, props.pending))
   return (
-    <>
+    <GroupAnchor groupID={disclosure.id()} active={summary().label !== ""}>
       <Show when={summary().label}>
         <InlineToolRow
           icon={disclosure.expanded() ? "−" : "+"}
@@ -130,7 +131,7 @@ function ActivityGroup(props: GroupProps) {
         </Show>
       </Show>
       <PendingEntries {...props} entries={entries()} />
-    </>
+    </GroupAnchor>
   )
 }
 

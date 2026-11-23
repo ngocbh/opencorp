@@ -1,8 +1,11 @@
 import type { Message } from "@opencorp/protocol"
+import type { BoxRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { createMemo, createSignal, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { display } from "../../util/printable"
+import { useAnchor } from "./anchor-view"
+import { messageRef } from "./anchors"
 
 /**
  * An instrument's note to the employee about their own work, such as a command of theirs that ended: one line in
@@ -20,11 +23,14 @@ export function NoteLine(props: { message: Message; index: number }) {
       .split("\n"),
   )
   const rest = createMemo(() => lines().slice(1).join("\n").trimEnd())
+  const [node, setNode] = createSignal<BoxRenderable>()
+  useAnchor({ target: () => ({ type: "part", ref: messageRef(props.message.id) }), node })
   return (
     <Show when={lines()[0]}>
       {(heading) => (
         <box
           id={props.message.id}
+          ref={setNode}
           marginTop={props.index === 0 ? 0 : 1}
           paddingLeft={3}
           flexShrink={0}

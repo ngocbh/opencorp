@@ -2,7 +2,12 @@
 // body reference), and exploration is the kind that can render ungrouped.
 import { expect, test } from "bun:test"
 import { messageRef } from "../../../src/routes/session/anchors"
-import { groupID, type GroupKind, type SessionEntry, type SessionRow } from "../../../src/routes/session/grouping/session"
+import {
+  groupID,
+  type GroupKind,
+  type SessionEntry,
+  type SessionRow,
+} from "../../../src/routes/session/grouping/session"
 import { groupEntries } from "../../../src/routes/session/grouping/tree"
 import { rowsAfter, rowsBefore, rowWeight } from "../../../src/routes/session/mount-budget"
 

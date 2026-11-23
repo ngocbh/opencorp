@@ -25,6 +25,11 @@ export function messageRef(messageID: string): PartRef {
   return { messageID, partID: "message" }
 }
 
+/** Whether `ref` is a whole message's body rather than a part of a reply. */
+export function isMessageRef(ref: PartRef) {
+  return ref.partID === "message"
+}
+
 /** An entry's reference, copied. */
 export function entryRef(entry: SessionEntry): PartRef {
   // Saved identities must not follow an in-place Solid store reconciliation.

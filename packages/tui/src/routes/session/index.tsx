@@ -1,4 +1,5 @@
 import {
+  batch,
   createComputed,
   createEffect,
   createMemo,
@@ -89,6 +90,16 @@ import {
   type Verbosity,
 } from "./grouping/session"
 import { blankText, reduceMessageRows } from "./rows"
+import { EntryAnchor, useAnchor } from "./anchor-view"
+import {
+  containsAnchor,
+  createTimelineAnchors,
+  isMessageRef,
+  messageRef,
+  scrollMemory,
+  type ScrollAnchor,
+} from "./anchors"
+import { rowsAfter, rowsBefore, rowWeight } from "./mount-budget"
 
 export { alwaysSeparate, InlineToolRow } from "./message-parts"
 
@@ -121,6 +132,11 @@ const sessionGlobalBindingCommands = [
 ] as const
 
 const sessionGlobalUnfocusedBindingCommands = ["session.first", "session.last"] as const
+
+// Budgets count rendered entries (see mount-budget.ts); a collapsed group costs one.
+// The tail comfortably overfills a tall viewport; older rows mount as the reader approaches them.
+const TRANSCRIPT_TAIL_ROWS = 40
+const TRANSCRIPT_BACKFILL_CHUNK = 60
 
 /** Whether a message has a text part with more than whitespace: the view draws nothing for a blank one. */
 function hasText(message: Message) {
@@ -369,6 +385,7 @@ export function Session(props: SessionProps) {
   // High opens the reads' and searches' groups by default; everything else starts collapsed.
   const groupExpanded = (groupID: string, kind: GroupKind) =>
     groups.groupExpanded(props.sessionID, groupID) ?? (verbosity() === "high" && kind === "exploration")
+  const groupedKind = (kind: GroupKind) => (kind === "exploration" ? groupExploration() : true)
 
   const instruments = () => props.shells ?? []
   // In a child session (a Codex or Claude Code session an employee's chat drives), the chat that drives it.
@@ -464,7 +481,11 @@ export function Session(props: SessionProps) {
           .syncSession(sessionID)
           .then(() => {
             if (props.sessionID !== sessionID) return
-            toBottom()
+            if (!restored && scroll && !scroll.isDestroyed) {
+              restored = true
+              // Initial synchronization can finish after the reader has already navigated.
+              if (!isAwayFromBottom()) restoreScrollPosition()
+            }
             // A turn may have started before this view opened (the first message is sent from home): it
             // began at the last user message, or begins after what is here now.
             if (turnStart() || viewID() !== sessionID) return
@@ -489,6 +510,7 @@ export function Session(props: SessionProps) {
   )
 
   let seeded = false
+  let restored = false
   let scroll: ScrollBoxRenderable
   // Each side has its own prompt ref: the pane's session sits in a provider of its own.
   const bind = (r: PromptRef | undefined) => {
@@ -499,8 +521,216 @@ export function Session(props: SessionProps) {
   }
   const dialog = useDialog()
   const renderer = useRenderer()
+  const anchors = createTimelineAnchors()
+  const memory = scrollMemory(renderer)
 
-  onCleanup(() => props.scrollRef?.(undefined))
+  let awayTimer: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => {
+    if (awayTimer) clearTimeout(awayTimer)
+    props.scrollRef?.(undefined)
+    if (!scroll || scroll.isDestroyed) return
+    scroll.verticalScrollBar.off("change", updateAwayFromBottom)
+    saveScrollAnchor(true)
+  })
+
+  /** Runs after the next frame's layout and before it paints, unless the transcript was torn down. */
+  const afterLayout = (continuation: () => void) => {
+    if (!scroll || scroll.isDestroyed) return
+    scroll.afterLayout(() => {
+      if (!scroll.isDestroyed) continuation()
+    })
+  }
+
+  // Pin an existing row before publication. Total height also counts streamed output below the
+  // reader, which must not move their viewport when it arrives alongside the older rows.
+  const pinAbove = () => {
+    if (!scroll || scroll.isDestroyed) return
+    if (scroll.stickyScroll && scroll.scrollTop >= scroll.scrollHeight - scroll.viewport.height) return
+    const node = scroll.getChildren().find((node) => node.height > 0 && node.y + node.height > scroll.viewport.y)
+    if (node) afterLayout(scroll.anchor(node))
+  }
+
+  // A mounted entry is a message, as upstream's is a row. Its rows, as the budget and the scroll anchor read them: a
+  // reply's as it folds them, or a user message or a note whole, as one entry.
+  const messageRows = mapArray(shown, (message) =>
+    createMemo(
+      (): SessionRow[] =>
+        message.role === "assistant"
+          ? reduceMessageRows(message, verbosity(), toolName, new Set())
+          : [{ type: "part", ref: messageRef(message.id) }],
+    ),
+  )
+  // Tail-first transcript mounting: only the newest messages mount when the session opens. Older ones mount on demand
+  // near the top. While the reader stays at the bottom the hidden span follows appends; leaving the bottom pins it to
+  // preserve the viewport.
+  const [hiddenRows, setHiddenRows] = createSignal<number>()
+  const [visibleRowsEnd, setVisibleRowsEnd] = createSignal<number>()
+  // A message costs what it renders: a reply the weight of its rows, where a folded group costs one.
+  const weights = createMemo(() =>
+    messageRows().map((rows) =>
+      rows().reduce((total, row) => total + rowWeight(row, { expanded: groupExpanded, grouped: groupedKind }), 0),
+    ),
+  )
+  const hidden = createMemo(() =>
+    Math.min(hiddenRows() ?? Infinity, rowsBefore(weights(), shown().length, TRANSCRIPT_TAIL_ROWS)),
+  )
+  const visibleEnd = createMemo(() => Math.max(hidden(), Math.min(visibleRowsEnd() ?? shown().length, shown().length)))
+  const visibleRows = createMemo(() => shown().slice(hidden(), visibleEnd()))
+  // Another transcript takes the view (the side chat's, or the chat's again): it opens on its tail.
+  createEffect(
+    on(
+      viewID,
+      () =>
+        batch(() => {
+          setHiddenRows(undefined)
+          setVisibleRowsEnd(undefined)
+        }),
+      { defer: true },
+    ),
+  )
+  let revealingOlderRows = false
+  const revealOlderRows = (scrollBy = 0) => {
+    const current = hidden()
+    if (revealingOlderRows || !scroll || scroll.isDestroyed || scroll.scrollTop > scroll.viewport.height) return false
+    // The office sends the whole transcript at once: above its first message there is nothing more to load.
+    if (current === 0) return false
+    revealingOlderRows = true
+    scroll.stickyScroll = false
+    pinAbove()
+    setHiddenRows(rowsBefore(weights(), current, TRANSCRIPT_BACKFILL_CHUNK))
+    afterLayout(() => {
+      scroll.scrollBy(scrollBy)
+      scroll.stickyScroll = true
+      revealingOlderRows = false
+    })
+    return true
+  }
+  let revealingNewerRows = false
+  const revealNewerRows = (scrollBy = 0) => {
+    const current = visibleEnd()
+    if (
+      revealingNewerRows ||
+      current === shown().length ||
+      !scroll ||
+      scroll.isDestroyed ||
+      scroll.scrollTop + scroll.viewport.height < scroll.scrollHeight - scroll.viewport.height
+    )
+      return false
+    revealingNewerRows = true
+    const next = rowsAfter(weights(), current, TRANSCRIPT_BACKFILL_CHUNK)
+    setVisibleRowsEnd(next === shown().length ? undefined : next)
+    afterLayout(() => {
+      revealingNewerRows = false
+      scroll.scrollBy(scrollBy)
+      updateAwayFromBottom()
+    })
+    return true
+  }
+  let ensureAllRowsPending: (() => void)[] | undefined
+  /** Message navigation needs the full transcript mounted before walking or jumping. */
+  const ensureAllRows = (continuation: () => void) => {
+    if (!ensureAllRowsPending && hidden() === 0 && visibleEnd() === shown().length) return continuation()
+    if (ensureAllRowsPending) {
+      ensureAllRowsPending.push(continuation)
+      return
+    }
+    const pending = [continuation]
+    ensureAllRowsPending = pending
+    // Ours walks from what the reader sees, which the older messages must not move as they mount.
+    pinAbove()
+    batch(() => {
+      setHiddenRows(0)
+      setVisibleRowsEnd(undefined)
+    })
+    afterLayout(() => {
+      if (ensureAllRowsPending === pending) ensureAllRowsPending = undefined
+      pending.forEach((continuation) => continuation())
+      updateAwayFromBottom()
+    })
+  }
+
+  function isAwayFromBottom() {
+    if (revealingOlderRows || revealingNewerRows || ensureAllRowsPending) return true
+    if (visibleEnd() < shown().length) return true
+    return scroll.scrollTop < Math.max(0, scroll.scrollHeight - scroll.viewport.height)
+  }
+  function updateAwayFromBottom() {
+    const preserveWindow = revealingOlderRows || revealingNewerRows || !!ensureAllRowsPending
+    if (isAwayFromBottom()) setHiddenRows((current) => current ?? hidden())
+    if (awayTimer) clearTimeout(awayTimer)
+    awayTimer = setTimeout(() => {
+      awayTimer = undefined
+      if (!scroll || scroll.isDestroyed) return
+      const away = preserveWindow || isAwayFromBottom()
+      if (!away) {
+        if (!renderer.getSelection()) setHiddenRows(undefined)
+        scroll.stickyScroll = true
+      }
+      saveScrollAnchor()
+    })
+  }
+  function saveScrollAnchor(unmounting = false) {
+    // Initial layout must not overwrite the saved position before synchronization restores it. The side chat's
+    // transcript is not the session's.
+    if (!restored || viewID() !== props.sessionID) return
+    const mounted = anchors.list()
+    // Solid disposes child registrations before the route's cleanup. Keep the
+    // last scroll-event anchor once those children have gone away.
+    if (unmounting && !mounted.length) return
+    if (!isAwayFromBottom()) {
+      memory.setScrollAnchor(props.sessionID, undefined)
+      return
+    }
+    let first: ScrollAnchor | undefined
+    let anchor: ScrollAnchor | undefined
+    for (const child of mounted) {
+      const item = {
+        target: child.target,
+        screenY: child.node.y - scroll.viewport.y,
+      }
+      first ??= item
+      const inset = item.target.type === "group" || !isMessageRef(item.target.ref) ? 1 : 0
+      if (item.screenY <= inset && (!anchor || item.screenY > anchor.screenY)) anchor = item
+    }
+    anchor ??= first
+    memory.setScrollAnchor(props.sessionID, anchor)
+  }
+  function restoreScrollPosition() {
+    const anchor = memory.scrollAnchor(props.sessionID)
+    const index = anchor
+      ? messageRows().findIndex((rows) => rows().some((row) => containsAnchor(row, anchor.target)))
+      : -1
+    if (!anchor || index === -1) {
+      scroll.scrollTo(scroll.scrollHeight)
+      return
+    }
+    setHiddenRows(rowsBefore(weights(), index, TRANSCRIPT_BACKFILL_CHUNK))
+    const end = rowsAfter(weights(), index, TRANSCRIPT_BACKFILL_CHUNK)
+    setVisibleRowsEnd(end === shown().length ? undefined : end)
+    scroll.stickyScroll = false
+    const restore = () =>
+      afterLayout(() => {
+        const boundary = anchors.get(anchor.target)
+        if (!boundary) {
+          memory.setScrollAnchor(props.sessionID, undefined)
+          scroll.stickyScroll = true
+          scroll.scrollTo(scroll.scrollHeight)
+          return
+        }
+        const contentY = scroll.scrollTop + boundary.node.y - scroll.viewport.y
+        const target = contentY - anchor.screenY
+        const maximum = Math.max(0, scroll.scrollHeight - scroll.viewport.height)
+        if (target > maximum && visibleEnd() < shown().length) {
+          const next = rowsAfter(weights(), visibleEnd(), TRANSCRIPT_BACKFILL_CHUNK)
+          setVisibleRowsEnd(next === shown().length ? undefined : next)
+          restore()
+          return
+        }
+        scroll.scrollTo(target)
+        updateAwayFromBottom()
+      })
+    restore()
+  }
 
   /** The id of the next or previous message with text, relative to the scroll position. */
   const findNextVisibleMessage = (direction: "next" | "prev"): string | null => {
@@ -518,19 +748,52 @@ export function Session(props: SessionProps) {
   }
 
   // Scrolls to the next message in `direction`, or by a page when there is none.
-  const scrollToMessage = (direction: "next" | "prev") => {
-    const targetID = findNextVisibleMessage(direction)
-    const child = targetID && scroll.getChildren().find((c) => c.id === targetID)
-    if (child) scroll.scrollBy(child.y - scroll.y - 1)
-    else scroll.scrollBy(direction === "next" ? scroll.height : -scroll.height)
-    dialog.clear()
-  }
+  const scrollToMessage = (direction: "next" | "prev") =>
+    ensureAllRows(() => {
+      const targetID = findNextVisibleMessage(direction)
+      const child = targetID && scroll.getChildren().find((c) => c.id === targetID)
+      if (child) scroll.scrollBy(child.y - scroll.y - 1)
+      else scroll.scrollBy(direction === "next" ? scroll.height : -scroll.height)
+      updateAwayFromBottom()
+      dialog.clear()
+    })
 
   function toBottom() {
+    ensureAllRowsPending = undefined
+    if (awayTimer) clearTimeout(awayTimer)
+    awayTimer = undefined
+    memory.setScrollAnchor(props.sessionID, undefined)
+    batch(() => {
+      setHiddenRows(undefined)
+      setVisibleRowsEnd(undefined)
+    })
     setTimeout(() => {
       if (!scroll || scroll.isDestroyed) return
+      scroll.stickyScroll = true
       scroll.scrollTo(scroll.scrollHeight)
     }, 50)
+  }
+
+  /** The first message: the head mounts in the tail's place, and the view goes to the top. */
+  function toTop() {
+    scroll.stickyScroll = false
+    batch(() => {
+      setHiddenRows(0)
+      const end = rowsAfter(weights(), 0, TRANSCRIPT_BACKFILL_CHUNK)
+      setVisibleRowsEnd(end === shown().length ? undefined : end)
+    })
+    scroll.scrollTo(0)
+    afterLayout(() => {
+      scroll.scrollTo(0)
+      updateAwayFromBottom()
+    })
+  }
+
+  function moveTranscript(delta: number) {
+    if (delta < 0 && revealOlderRows(delta)) return
+    if (delta > 0 && revealNewerRows(delta)) return
+    scroll.scrollBy(delta)
+    updateAwayFromBottom()
   }
 
   function transcript(toolDetails: boolean) {
@@ -664,14 +927,14 @@ export function Session(props: SessionProps) {
     },
     ...(
       [
-        ["Page up", "session.page.up", () => scroll.scrollBy(-scroll.height / 2)],
-        ["Page down", "session.page.down", () => scroll.scrollBy(scroll.height / 2)],
-        ["Line up", "session.line.up", () => scroll.scrollBy(-1)],
-        ["Line down", "session.line.down", () => scroll.scrollBy(1)],
-        ["Half page up", "session.half.page.up", () => scroll.scrollBy(-scroll.height / 4)],
-        ["Half page down", "session.half.page.down", () => scroll.scrollBy(scroll.height / 4)],
-        ["First message", "session.first", () => scroll.scrollTo(0)],
-        ["Last message", "session.last", () => scroll.scrollTo(scroll.scrollHeight)],
+        ["Page up", "session.page.up", () => moveTranscript(-scroll.height / 2)],
+        ["Page down", "session.page.down", () => moveTranscript(scroll.height / 2)],
+        ["Line up", "session.line.up", () => moveTranscript(-1)],
+        ["Line down", "session.line.down", () => moveTranscript(1)],
+        ["Half page up", "session.half.page.up", () => moveTranscript(-scroll.height / 4)],
+        ["Half page down", "session.half.page.down", () => moveTranscript(scroll.height / 4)],
+        ["First message", "session.first", toTop],
+        ["Last message", "session.last", toBottom],
       ] as const
     ).map(([title, value, move]) => ({
       title,
@@ -688,11 +951,13 @@ export function Session(props: SessionProps) {
       value: "session.messages_last_user",
       category: "Session",
       hidden: true,
-      run: () => {
-        const message = messages().findLast((m) => m.role === "user" && !isInstrumentNote(m) && hasText(m))
-        const child = message && scroll.getChildren().find((child) => child.id === message.id)
-        if (child) scroll.scrollBy(child.y - scroll.y - 1)
-      },
+      run: () =>
+        ensureAllRows(() => {
+          const message = messages().findLast((m) => m.role === "user" && !isInstrumentNote(m) && hasText(m))
+          const child = message && scroll.getChildren().find((child) => child.id === message.id)
+          if (child) scroll.scrollBy(child.y - scroll.y - 1)
+          updateAwayFromBottom()
+        }),
     },
     {
       title: "Next message",
@@ -849,6 +1114,7 @@ export function Session(props: SessionProps) {
   return (
     <context.Provider
       value={{
+        anchors,
         get width() {
           return contentWidth()
         },
@@ -861,7 +1127,10 @@ export function Session(props: SessionProps) {
         verbosity,
         groupExploration,
         groupExpanded,
-        setGroupExpanded: (groupID, expanded) => groups.setGroupExpanded(props.sessionID, groupID, expanded),
+        setGroupExpanded: (groupID, expanded) => {
+          groups.setGroupExpanded(props.sessionID, groupID, expanded)
+          afterLayout(saveScrollAnchor)
+        },
         tui: tuiConfig,
         get onOpen() {
           return props.onOpen
@@ -923,6 +1192,7 @@ export function Session(props: SessionProps) {
                 ref={(r) => {
                   scroll = r
                   props.scrollRef?.(r)
+                  scroll.verticalScrollBar.on("change", updateAwayFromBottom)
                 }}
                 viewportOptions={{
                   paddingRight: showScrollbar() ? 1 : 0,
@@ -942,16 +1212,22 @@ export function Session(props: SessionProps) {
                 flexBasis={card() ? 0 : "auto"}
                 minHeight={card() ? 3 : 0}
                 scrollAcceleration={scrollAcceleration()}
+                onMouseScroll={(event) => {
+                  if (event.scroll?.direction === "up" && revealOlderRows()) return
+                  if (event.scroll?.direction === "down" && revealNewerRows()) return
+                  updateAwayFromBottom()
+                }}
               >
-                <For each={shown()}>
+                {/* Its index in the whole transcript, so a message keeps its spacing as older ones mount above it. */}
+                <For each={visibleRows()}>
                   {(message, index) => (
                     <Switch>
                       <Match when={isInstrumentNote(message)}>
-                        <NoteLine message={message} index={index()} />
+                        <NoteLine message={message} index={index() + hidden()} />
                       </Match>
                       <Match when={message.role === "user"}>
                         <UserMessage
-                          index={index()}
+                          index={index() + hidden()}
                           speaker={speaker(message)}
                           speakerColor={speakerColor(message)}
                           unreadHint={unreadHint()}
@@ -1139,12 +1415,17 @@ function UserMessage(props: {
   const files = createMemo(() => props.message.parts.flatMap((x) => (x.type === "file" ? [x] : [])))
   const { theme } = useTheme()
   const [hover, setHover] = createSignal(false)
+  const [node, setNode] = createSignal<BoxRenderable>()
+  useAnchor({ target: () => ({ type: "part", ref: messageRef(props.message.id) }), node })
 
   return (
     <Show when={text() || files().length}>
       <box
         id={props.message.id}
-        ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
+        ref={(el: BoxRenderable) => {
+          alwaysSeparate.add(el)
+          setNode(el)
+        }}
         border={["left"]}
         // An unread message, which the run's inbox still holds, is grey, as upstream's pending delivery.
         borderColor={props.message.unread ? theme.border : (props.speakerColor ?? theme.secondary)}
@@ -1226,9 +1507,11 @@ function AssistantMessage(props: { message: Message; last: boolean }) {
   }
   // Keyed by the part, which the office replaces whole when it changes.
   const entry = (entry: SessionEntry) => (
-    <Show when={part(entry.ref.partID)} keyed>
-      {(found) => <PartView part={found} last={props.last && props.message.parts.at(-1)?.id === found.id} />}
-    </Show>
+    <EntryAnchor entry={entry}>
+      <Show when={part(entry.ref.partID)} keyed>
+        {(found) => <PartView part={found} last={props.last && props.message.parts.at(-1)?.id === found.id} />}
+      </Show>
+    </EntryAnchor>
   )
   return (
     <For each={rows}>

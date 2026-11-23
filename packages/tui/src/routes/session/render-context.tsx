@@ -1,9 +1,12 @@
 import { createContext, useContext } from "solid-js"
 import type { useTuiConfig } from "../../config"
+import type { createTimelineAnchors } from "./anchors"
 import type { GroupKind, Verbosity } from "./grouping/session"
 
 /** What a session's transcript renders with. */
 export const context = createContext<{
+  /** The mounted parts, group headers and whole messages, by where they are. */
+  anchors: ReturnType<typeof createTimelineAnchors>
   width: number
   sessionID: string
   conceal: () => boolean
