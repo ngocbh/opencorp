@@ -714,6 +714,51 @@ test("Esc on a Codex session's card in the chat interrupts that session, not the
   }
 })
 
+test("a shell that waits for a password while a Codex session's card is open in the chat opens beside it, the card keeping the keys", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    const ssh = shell(office, chat.id, { name: "shell 2", profile: "ssh", command: "ssh h" })
+    await app.until((f) => f.includes("1 shell") && f.includes("1 Codex session"))
+    const card = office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
+    await app.until((f) => f.includes("$ touch a"))
+    office.addInstrument(chat.id, { ...ssh, status: "waiting", waiting: "secret", updated_at: new Date().toISOString() })
+    const f = await app.until((f) => corner(f) !== undefined && f.includes("ctrl+x → focus pane"))
+    expect(corner(f)).toEqual({ x: 60, y: 0 })
+    // A digit meant for the card answers it, and none reaches the password prompt.
+    app.input.pressKey("1")
+    await until(() => office.state.questions[card.id]!.status !== "open")
+    expect(typed(office, ssh.id)).toBe("")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("ctrl+x ↓ opens no picker behind a Codex session's card in the chat, nor once the card closes", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    const card = office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
+    await app.until((f) => f.includes("$ touch a"))
+    await leader(app, "down")
+    await Bun.sleep(100)
+    app.input.pressKey("1")
+    await until(() => office.state.questions[card.id]!.status !== "open")
+    await app.until((f) => !f.includes("$ touch a"))
+    await Bun.sleep(100)
+    expect(await app.until(() => true)).not.toContain("Sessions")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("below 108 columns a pane that opens itself over a draft or a card waits, a line says so, and ctrl+x → shows it", async () => {
   const office = createFakeOffice()
   const { sid, app } = await boot(office, 100)
