@@ -61,7 +61,7 @@ import { OPENCORP_BASE_MODE, useBindings, useCommandShortcut } from "../../keyma
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { usePermission } from "../../context/permission"
-import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented, statusLabel } from "@opencorp/client"
+import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented, statusLabel, type OfficeState } from "@opencorp/client"
 import { answerShown } from "../chat/answer"
 import { QuestionCard } from "../chat/card"
 import { HarnessCard } from "../chat/harness-card"
@@ -1195,6 +1195,7 @@ function UserMessage(props: {
  */
 function AssistantMessage(props: { message: Message; last: boolean }) {
   const ctx = use()
+  const office = useOffice()
   const permission = usePermission()
   const [rows, setRows] = createStore<(SessionRow & { key: string })[]>([])
   createComputed(() => {
@@ -1209,9 +1210,15 @@ function AssistantMessage(props: { message: Message; last: boolean }) {
     setRows(reconcile(next.map((row) => ({ ...row, key: rowKey(row) })), { key: "key" }))
   })
   const part = (id: string) => props.message.parts.find((p) => p.id === id)
+  // A harness call runs while its session does, as upstream's subagent call runs while its subagent works.
   const item = (ref: PartRef) => {
     const found = part(ref.partID)
-    return found?.type === "tool" ? { name: toolName(found), state: found.state } : undefined
+    if (found?.type !== "tool") return undefined
+    const harness = HARNESS_CALL.test(found.tool)
+      ? toolView(found.tool, found.input ?? {}, outputText(found.output)).input
+      : undefined
+    const busy = harness !== undefined && childRunning(office.state, harnessChild(office.state, ctx.sessionID, harness))
+    return { name: toolName(found), state: busy ? ("running" as const) : found.state }
   }
   // Keyed by the part, which the office replaces whole when it changes.
   const entry = (entry: SessionEntry) => (
@@ -2103,6 +2110,18 @@ function Question(props: ToolProps) {
   )
 }
 
+/** The chat's session that a harness call's view names, if the chat lists it. */
+function harnessChild(state: OfficeState, sessionID: string, input: Record<string, unknown>) {
+  const named = stringValue(input.session)
+  if (named === undefined) return undefined
+  return state.instruments[sessionID]?.find((i) => i.kind === input.harness && i.name === named)
+}
+
+/** Whether a listed Codex or Claude Code session runs a turn. */
+function childRunning(state: OfficeState, listed: Instrument | undefined) {
+  return !!listed && childState(state.sessions.find((s) => s.id === listed.id), listed) === "running"
+}
+
 /**
  * An employee's call to a Codex or Claude Code session, as upstream's subagent row: the session by the picker's name
  * (`Codex: codex 1`) and the message, or the call (`interrupt`), then why it was refused or the session failed, as a
@@ -2117,17 +2136,9 @@ function HarnessCall(props: ToolProps) {
   const call = () => stringValue(props.input.call)
   const name = () => stringValue(props.input.session)
   const message = createMemo(() => display(stringValue(props.input.message)?.replace(/\s+/g, " ").trim() ?? ""))
-  const child = createMemo(() => {
-    const named = name()
-    if (named === undefined) return undefined
-    return office.state.instruments[ctx.sessionID]?.find((i) => i.kind === harness() && i.name === named)
-  })
+  const child = createMemo(() => harnessChild(office.state, ctx.sessionID, props.input))
   const continuation = () => call() !== "start"
-  const isRunning = createMemo(() => {
-    const listed = child()
-    if (running(props.part)) return true
-    return !!listed && childState(office.state.sessions.find((s) => s.id === listed.id), listed) === "running"
-  })
+  const isRunning = createMemo(() => running(props.part) || childRunning(office.state, child()))
   const what = () => (call() === "start" || call() === "send" ? message() : call())
   const label = () => {
     const named = name()

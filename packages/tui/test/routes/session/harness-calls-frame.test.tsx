@@ -264,7 +264,7 @@ test("at Low, the calls fold into their run's line as upstream's subagent calls 
       call("codex_start", { message: "Write the docs" }, "{}", { state: "running" }),
     ],
     (office, chat) => {
-      child(office, chat, "codex", "codex 1", "busy")
+      child(office, chat, "codex", "codex 1", "idle")
     },
   )
   try {
@@ -276,6 +276,27 @@ test("at Low, the calls fold into their run's line as upstream's subagent calls 
     await click(app, "1 tool")
     f = await app.until((f) => f.includes("− 1 tool") && f.includes("Codex: codex 1 — Use the other API"))
     expect(f).toContain("Codex — Write the docs")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("at Low, a finished start spins its run's line while its session runs, as upstream's subagent call does", async () => {
+  writeKV({ session_verbosity: "low" })
+  let codex!: Session
+  const { office, app } = await boot(
+    [call("codex_start", { message: "Fix the parser" }, reply("codex", "codex 1", "running"))],
+    (office, chat) => {
+      codex = child(office, chat, "codex", "codex 1", "busy")
+    },
+  )
+  try {
+    let f = await app.until((f) => f.includes("Running Codex…"))
+    expect(spins(f, "Running Codex…")).toBe(true)
+    office.setStatus(codex.id, "idle")
+    f = await app.until((f) => f.includes("+ 1 tool"))
+    expect(f).not.toContain("Running Codex…")
   } finally {
     await app.stop()
     office.stop()
