@@ -735,7 +735,7 @@ test("in nano the leader twice reaches it as ^X", async () => {
     app.input.pressKey("x", { ctrl: true })
     await until(() => typed(office, shell.id).length === 1)
     expect(typed(office, shell.id)).toEqual(["\x18"])
-    // The view stays as it was.
+    // The pane stays as it was.
     expect(corner(await app.until(() => true))).toEqual({ x: 60, y: 0, right: 119 })
   } finally {
     await app.stop()
@@ -820,13 +820,13 @@ test("the rest of a password typed after its wait ends goes to the shell, never 
     office.instrumentOutput(sid, ssh.id, "****")
     update(office, sid, ssh.id, { status: "running", waiting: null })
     const frames: string[] = []
-    // The view stays, with the keys, until the line is done.
+    // The pane stays, with the keys, until the line is done.
     frames.push(await app.until((f) => title(f).startsWith("shell 2 · running")))
     await app.input.typeText("er2-zz")
     frames.push(await app.until(() => true))
     app.input.pressEnter()
     await until(() => typed(office, ssh.id).join("") === "hunter2-zz\r")
-    // Then it goes back to the list, and the prompt is as it was: empty.
+    // Then the pane closes, and the prompt is as it was: empty.
     frames.push(await app.until((f) => !f.includes("┌")))
     expect(frames.some((f) => f.includes("er2-zz") || f.includes("hunt"))).toBe(false)
     expect(leaked(office, "er2-zz")).toBe(false)
