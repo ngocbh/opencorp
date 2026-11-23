@@ -25,7 +25,10 @@ default). Options go after `bash -s --`: `--dir`, `--branch`, `--repo`, `--skip-
 The binary is the checkout compiled into one program
 (`packages/cli/dist/npm/opencorp-<os>-<cpu>/bin/opencorp`), which starts in a tenth of the time the
 source takes. If it won't build, the installer warns and `opencorp` runs the checkout's source with
-Bun, as it also does while the binary is missing.
+Bun, as it also does while the binary is missing. Bun's own variables in your environment reach it:
+`BUN_OPTIONS` adds Bun flags, and `BUN_BE_BUN=1` turns `opencorp` into the `bun` command, which reads
+the current folder's `.env` and `bunfig.toml`. Don't set them for `opencorp`; the office leaves them out
+of everything it starts.
 
 If an office is set up and `opencorp` runs another checkout (for example one linked by hand, as
 below), the installer stops and changes nothing, since the office's service keeps running that

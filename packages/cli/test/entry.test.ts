@@ -843,9 +843,11 @@ describe("the built binary", () => {
     await expectSeesNeither(bin)
   }, 150_000)
 
-  test("the binary reads no .env or bunfig.toml from the home or its config folder either", async () => {
+  test("the binary run in the home reads no .env there, nor a global .bunfig.toml (a guard: Bun preloads none for a run)", async () => {
     // A home a model could have written to: a .env pointing at the planted identity, and a ~/.bunfig.toml and an
-    // $XDG_CONFIG_HOME/.bunfig.toml that preload the marker. Run from the home, its .env is also the cwd's.
+    // $XDG_CONFIG_HOME/.bunfig.toml that preload the marker. Run from the home, its .env is the cwd's, which the
+    // binary's dotenv autoload being off keeps out; plain Bun loads it. No Bun preloads a global bunfig.toml for a run,
+    // even plain Bun, so that half only guards against Bun starting to: no protection of ours can fail it.
     const planted = fs.realpathSync(fs.mkdtempSync(path.join(built, "planted-")))
     fs.writeFileSync(path.join(planted, ".env"), `PLANTED=1\nOPENCORP_HOME=${path.join(proj, "ph")}\n`)
     for (const dir of [planted, path.join(planted, ".config")]) {
@@ -855,6 +857,7 @@ describe("the built binary", () => {
     const env = { HOME: planted, XDG_CONFIG_HOME: path.join(planted, ".config") }
     const plain = await runBuilt([process.execPath, ENTRY, "whoami"], { cwd: planted, env })
     expect(plain.stdout, plain.stderr).toContain("as @planted")
+    expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
     const whoami = await runBuilt([bin, "whoami"], { cwd: planted, env })
     expect(whoami.stdout, whoami.stderr).toContain("This device has no identity")
     expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
@@ -985,7 +988,9 @@ describe("the built binary", () => {
     expect(stderr).not.toContain("Cannot find module")
   }, 120_000)
 
-  test("the binary installs no package a company's code imports and nothing has", async () => {
+  test("the binary installs no package a company's code imports (a guard: a compiled binary never auto-installs)", async () => {
+    // Bun's compiled binaries don't auto-install, with or without the `--no-install` the build gives this one, so
+    // taking that flag out fails nothing here: no protection of ours guards this path. Plain Bun without it does ask.
     // A registry and proxy that count who reaches them: Bun's auto-install would ask them for the package.
     let reached = 0
     const registry = net.createServer((socket) => {
