@@ -11,8 +11,9 @@ export function binaryCheckout(binary: string): string | null {
   return BUILT.exec(binary)?.[1] ?? null
 }
 
-/** The checkout this code runs from: four folders up from this file's (`packages/office/src/util`). The compiled
- *  binary's files sit at `/$bunfs/root`, so its checkout is the one it was built in, or `/` for one built elsewhere. */
-export const CHECKOUT = import.meta.dirname.startsWith("/$bunfs")
-  ? (binaryCheckout(selfBinary() ?? "") ?? "/")
-  : path.resolve(import.meta.dirname, "../../../..")
+const binary = selfBinary()
+
+/** The checkout this code runs from: four folders up from this file's (`packages/office/src/util`); for the compiled
+ *  binary, whose files aren't on disk, the one it was built in, or `/` for one built elsewhere. */
+export const CHECKOUT =
+  binary === null ? path.resolve(import.meta.dirname, "../../../..") : (binaryCheckout(binary) ?? "/")

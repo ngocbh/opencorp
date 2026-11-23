@@ -26,14 +26,14 @@ export function selfCommand(): [string, ...string[]] {
   return [process.execPath, ...CHECKOUT_FLAGS, fileURLToPath(new URL("../../cli/src/main.ts", import.meta.url))]
 }
 
-/** The realpath of the compiled binary this code runs as; null in a checkout, where Bun runs the source, and when the
- *  binary can't be found (removed since it started). */
+/** The realpath of the compiled binary this code runs as (its path as started once it is gone); null in a checkout,
+ *  where Bun runs the source. */
 export function selfBinary(): string | null {
   if (!Bun.isStandaloneExecutable) return null
   try {
     return fs.realpathSync(process.execPath)
   } catch {
-    return null
+    return process.execPath
   }
 }
 
