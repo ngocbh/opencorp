@@ -2371,24 +2371,79 @@ test("the newest source covers the office protocol cli and yian", () => {
     [path.join(checkout, "packages/protocol/src/y.ts"), 300],
     [path.join(checkout, "packages/yian/src/deep/er/z.ts"), 400],
     [path.join(checkout, "packages/app/src/later.ts"), 900], // not code the office runs
+    [path.join(checkout, "packages/cli/dist/npm/opencorp-linux-x64/bin/opencorp"), 950], // a build, not source
   ]
   for (const [file, when] of files) {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, "")
     fs.utimesSync(file, when, when)
   }
-  expect(doctor.newestSource(["/usr/local/bin/bun", "--smol", entry])).toBe(400_000)
+  expect(doctor.newestSource(checkout)).toBe(400_000)
   fs.utimesSync(entry, 500, 500)
-  expect(doctor.newestSource(["/usr/local/bin/bun", entry])).toBe(500_000)
-  expect(doctor.newestSource(COMMAND)).toBe(0) // a compiled binary
+  expect(doctor.newestSource(checkout)).toBe(500_000)
+  expect(doctor.newestSource(path.join(tempDir(), "no-checkout"))).toBe(0)
+})
 
-  // A binary built in the checkout runs that checkout's code: its build's own date says nothing, since every
-  // install.sh run builds it again.
+test("the daemon's code is the binary it runs when that was built in a checkout, dated by its own file, else the source here", () => {
+  const checkout = fs.realpathSync(tempDir())
+  const source = path.join(checkout, "packages/office/src/x.ts")
   const binary = path.join(checkout, "packages/cli/dist/npm/opencorp-linux-x64/bin/opencorp")
-  fs.mkdirSync(path.dirname(binary), { recursive: true })
-  fs.writeFileSync(binary, "")
-  fs.utimesSync(binary, 800, 800)
-  expect(doctor.newestSource([binary])).toBe(500_000)
+  for (const [file, when] of [[source, 500], [binary, 800]] as const) {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, "")
+    fs.utimesSync(file, when, when)
+  }
+  // The daemon's own program is the last of the programs it pinned.
+  const running = (program: string) => info("/h", { guards: { install: [checkout], tools: ["/usr/bin/git", program], path: [] } })
+  expect(doctor.daemonCode(running(binary), checkout)).toEqual({
+    newest: 800_000,
+    built: { binary, checkout, gone: false, source: 500_000 },
+  })
+  // Bun on the checkout's source.
+  expect(doctor.daemonCode(running("/usr/local/bin/bun"), checkout)).toEqual({ newest: 500_000 })
+  expect(doctor.daemonCode(info("/h"), checkout)).toEqual({ newest: 500_000 })
+  // An npm binary's install holds no source; its files are all dated 1985.
+  const npm = "/usr/lib/node_modules/opencorp-linux-x64/bin/opencorp"
+  expect(doctor.daemonCode(running(npm), "/usr/lib/node_modules/opencorp-linux-x64")).toEqual({ newest: 0 })
+  fs.rmSync(binary)
+  expect(doctor.daemonCode(running(binary), checkout)).toEqual({
+    newest: 0,
+    built: { binary, checkout, gone: true, source: 500_000 },
+  })
+})
+
+test("an office running a binary older than its checkout's source is told to build it again, and one whose binary is gone fails", () => {
+  const dir = tempDir()
+  const run = launchFor(dir, new OfficePaths(path.join(dir, "home")))
+  const office = info(run.home)
+  const started = Date.parse(office.started_at)
+  const here = installPaths(COMMAND)[0]!
+  const binary = "/co/packages/cli/dist/npm/opencorp-linux-x64/bin/opencorp"
+  const built = (source: number, gone = false) => ({ binary, checkout: "/co", gone, source })
+  // Restarting can't help: it starts the same binary again.
+  const stale = doctor.versionCheck(run, office, started - 60_000, here, "systemd", built(started - 30_000))
+  expect(stale).toEqual({
+    name: "version",
+    status: "warn",
+    detail:
+      `the office runs ${binary}, built before the source in /co last changed; run install.sh again (or ` +
+      "`bun run build` in /co/packages/cli), then `opencorp restart`",
+  })
+  const gone = doctor.versionCheck(run, office, 0, here, "systemd", built(0, true))
+  expect(gone).toEqual({
+    name: "version",
+    status: "fail",
+    detail: `the office runs ${binary}, which is gone, so sessions can't start; run install.sh again, then \`opencorp restart\``,
+  })
+  // A binary built since the office started: a restart runs it.
+  expect(doctor.versionCheck(run, office, started + 60_000, here, "systemd", built(started)).detail).toBe(
+    "the office started before its code last changed; restart it to run the new code",
+  )
+  expect(doctor.versionCheck(run, office, started - 60_000, here, "systemd", built(started - 60_000))).toEqual({
+    name: "version",
+    status: "ok",
+    detail: "pid 42 runs the current code",
+  })
 })
 
 test("every source root the doctor watches exists in this checkout", () => {

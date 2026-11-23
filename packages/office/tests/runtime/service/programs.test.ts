@@ -173,8 +173,11 @@ test("a binary built in a checkout installs as that checkout, which holds what i
   fs.mkdirSync(path.dirname(link))
   fs.symlinkSync(binary, link)
   expect(installPaths([link])).toEqual([fs.realpathSync(checkout)])
-  // A workspace may hold neither the checkout nor anything in it, such as HQ's built app.
-  const guards = workspaceGuards({}, { PATH: "" }, [binary], [])
+  // A workspace may hold neither the checkout nor anything in it, such as HQ's built app. The binary is the last of
+  // the guards' programs, which doctor judges the daemon's code by.
+  const git = fakeTool(path.join(tempDir(), "bin", "git"))
+  const guards = workspaceGuards({ git }, { PATH: "" }, [binary], [])
+  expect(guards.tools?.at(-1)).toBe(fs.realpathSync(binary))
   for (const cwd of [checkout, path.dirname(checkout), path.join(checkout, "packages/app/dist")]) {
     fs.mkdirSync(cwd, { recursive: true })
     expect(() => checkWorkspace(cwd, guards), cwd).toThrow(UnsafeWorkspace)

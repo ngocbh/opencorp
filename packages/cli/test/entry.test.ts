@@ -1199,16 +1199,29 @@ describe("the built binary", () => {
       return line ?? `no version line:\n${doctor.stdout}${doctor.stderr}`
     }
     expect(await version()).toMatch(new RegExp(`^✓ version +pid ${first.pid} runs the current code$`))
-    // The checkout's source changed after the office started: it runs older code.
+    /** Restarts the office through the binary; the new daemon's pid. */
+    const restart = async () => {
+      const restarted = await office.opencorp(["restart"])
+      expect(restarted.code, `${restarted.stdout}${restarted.stderr}`).toBe(0)
+      const now = daemon()
+      expect(now.args).toBe(`${binary} daemon --home ${office.home} --reexeced`)
+      return now.pid
+    }
+    // The checkout's source changes, as when someone edits a checkout ./install.sh installed, or a rebuild fails: the
+    // binary is older than it, and a restart only starts that binary again.
     fs.utimesSync(source, new Date(), new Date())
+    const stale = new RegExp(
+      `^⚠ version +the office runs ${binary}, built before the source in ${checkout} last changed; run install.sh again`,
+    )
+    expect(await version()).toMatch(stale)
+    const second = await restart()
+    expect(second).not.toBe(first.pid)
+    expect(await version()).toMatch(stale)
+    // A build of that source (here, the binary's new date), as install.sh's next run makes: a restart starts it.
+    fs.utimesSync(binary, new Date(), new Date())
     expect(await version()).toMatch(/^⚠ version +the office started before its code last changed; restart it/)
-
-    const restarted = await office.opencorp(["restart"])
-    expect(restarted.code, `${restarted.stdout}${restarted.stderr}`).toBe(0)
-    const second = daemon()
-    expect(second.pid).not.toBe(first.pid)
-    expect(second.args).toBe(`${binary} daemon --home ${office.home} --reexeced`)
-    expect(await version()).toMatch(new RegExp(`^✓ version +pid ${second.pid} runs the current code$`))
+    const third = await restart()
+    expect(await version()).toMatch(new RegExp(`^✓ version +pid ${third} runs the current code$`))
   }, 300_000)
 
   test("the binary loads the TUI assets from beside it and extracts nothing to TMPDIR", async () => {

@@ -97,8 +97,9 @@ export function toolRoot(real: string, keep: readonly string[] = [os.homedir()])
 
 /**
  * What every workspace must stay clear of: the install plus each tool's install folder (`toolRoot`, kept clear of
- * `keep`), each tool's found path and its realpath plus the program running the office (`command[0]`: the binary, or
- * a checkout's Bun), and the absolute entries of `env.PATH`. The policy also refuses every folder or link a tool or
+ * `keep`), each tool's found path and its realpath, then, last, the program running the office (`command[0]`'s
+ * realpath: the binary, or a checkout's Bun, which doctor judges the daemon's code by), and the absolute entries of
+ * `env.PATH`. The policy also refuses every folder or link a tool or
  * `PATH` entry's path walks through; a relative `PATH` entry is already gone (`daemonEnv`), and would refuse every
  * workspace if kept.
  */
