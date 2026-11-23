@@ -293,6 +293,7 @@ test("a waiting run ends normally with its status", async () => {
       inbox: null,
       deadline: expect.any(String),
       settled: false,
+      held: false,
     },
   ])
   expect(rec.returncode).toBe(EXIT_OK)
