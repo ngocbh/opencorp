@@ -16,13 +16,15 @@ them.
 
 | Key | What it does |
 |---|---|
-| ctrl+x ← and ctrl+x →, or a click | Move your keys between the chat and the pane |
+| ctrl+x ← and ctrl+x →, or a click | Move your keys between the chat and the pane, or show a pane that waits |
 | ctrl+x ↑ | Close the pane; Esc does too when it takes no typing |
 | ctrl+x ↓ | Open the picker again |
 | ctrl+x o | Show the pane full screen, or beside the chat again; the next pane opens the same way. On a card for a command in a shell, with no pane open, open that shell beside the card |
 
 Drag the line between the chat and the pane to resize it, or double-click it to go back to half. One width, kept,
-serves every pane. Under 108 columns the pane is always full screen.
+serves every pane. Under 108 columns the pane is full screen while it has your keys; without them it waits rather
+than cover what you type, and a line in the chat says so (`shell 2 is open in the pane: ctrl+x → shows it`). A pane
+never takes your keys while you type in the prompt or a card.
 
 ## The shell
 
@@ -48,7 +50,8 @@ while a command runs), and a missing `.mcp.json` can still be created.
   end of the prompt, or click the count, to open the picker in the prompt's place: its Shell tab lists the chat's
   shells, Enter opens one in [the pane](#the-pane), and ctrl+d sends it Ctrl-C. There the shell takes your keys,
   Esc and Ctrl-C included, so Ctrl-C stops its command; one that takes no typing shows your employee's commands as
-  `$` lines in their colour. A shell waiting for your password opens itself. Esc in the chat stops your employee and
+  `$` lines in their colour. A shell waiting for your password opens itself, with your keys unless you are typing a
+  draft or a card is open; then press ctrl+x → to type the password there. Esc in the chat stops your employee and
   the command they were waiting on. A command they were told is still running goes on.
 - **The picker.** ← and → switch its tabs (Sessions, Shell), ↑ and ↓ move, Enter opens in the pane, and Esc or ↑ on
   the first row closes it. It opens on the first tab with something running and lists what runs; ctrl+a shows the

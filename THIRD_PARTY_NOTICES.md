@@ -121,7 +121,7 @@ license, the upstream paths and commit, and our paths.
   - the panel host: its interactivity scope, a click focusing it, the raised background docked and the base one full
     screen; and the diff viewer's chrome, a header row and a footer whose hint is the focus key docked and the close
     key full screen, and a full-screen toggle that is remembered only when it took effect;
-  - the pane resize and its handle, whole, with `clampSessionPaneWidth` and the resize's tests;
+  - the pane resize and its handle, whole, with `clampSessionPaneWidth` and their tests;
   - the terminal pane around OpenTUI's `EmbeddedTerminalRenderable`: its queue that writes bytes only once the
     terminal is at the size they were meant for, its throttled intermediate renders and its column of margin. Its
     WebSocket gives way to the office's screen read, `instrument.output` events and size route, and its palette is cut
@@ -139,8 +139,9 @@ license, the upstream paths and commit, and our paths.
   Our own: a Codex or Claude Code session as a panel, the session route given its id; the box around the pane in its
   driver's colour, bright with the keys and dim without, and the header saying who drives it; a pipes shell's `$`
   lines in the employee's colour; `<leader>o` for full screen, which the diff's `f` can't be in a pane that takes
-  typing; the leader twice sending the leader key; the keys gathered a frame at a time for the office's keys route;
-  a waiting shell opening itself, and the keys dropped until Enter when a pane closes mid-line.
+  typing; under 108 columns, a pane without the keys waiting behind a line in the chat rather than covering a draft
+  or a card; the leader twice sending the leader key; the keys gathered a frame at a time for the office's keys
+  route; a waiting shell opening itself, and the keys dropped until Enter when a pane closes mid-line.
 - **Upstream:** `packages/tui/src/component/session-frame.tsx`, `packages/tui/src/context/panel.tsx`,
   `packages/tui/src/component/panel-host.tsx`, `packages/tui/src/feature-plugins/system/diff-viewer.tsx` (its header
   and footer, `diff.toggle_fullscreen`), `packages/tui/src/component/terminal-pane.tsx`,
@@ -149,8 +150,8 @@ license, the upstream paths and commit, and our paths.
   `packages/tui/src/ui/pane-resize.ts`, `packages/tui/src/ui/pane-resize-handle.tsx`, `packages/tui/src/ui/layout.ts`
   (`SESSION_PANEL_SPLIT_MIN_WIDTH`, `clampSessionPaneWidth`), `packages/tui/src/routes/session/index.tsx`
   (`UserMessage`), `packages/tui/src/component/dialog-shell-output.tsx`, `packages/util/src/text-boundary.ts`,
-  `packages/util/src/text-boundary.test.ts`, `packages/tui/test/panel.test.ts` and
-  `packages/tui/test/ui/pane-resize.test.ts`, read at commit `df46f69` (2026-11-16), unchanged at `4332e24f`
+  `packages/util/src/text-boundary.test.ts`, `packages/tui/test/panel.test.ts`,
+  `packages/tui/test/ui/pane-resize.test.ts` and `packages/tui/test/ui/pane-resize-handle.test.tsx`, read at commit `df46f69` (2026-11-16), unchanged at `4332e24f`
   (2026-11-21).
 - **Ours:** `packages/tui/src/component/session-frame.tsx`, `packages/tui/src/component/panel-host.tsx`,
   `packages/tui/src/context/panel.tsx`, `packages/tui/src/ui/layout.ts`, `packages/tui/src/ui/pane-resize.ts`,
@@ -159,7 +160,8 @@ license, the upstream paths and commit, and our paths.
   `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/config/keybind.ts`,
   `packages/tui/src/context/interactivity.tsx`, `packages/tui/src/keymap.tsx` (`useBindings`),
   `packages/tui/src/util/text-boundary.ts`, `packages/tui/test/util/text-boundary.test.ts`,
-  `packages/tui/test/context/panel.test.ts`, `packages/tui/test/ui/pane-resize.test.ts`.
+  `packages/tui/test/context/panel.test.ts`, `packages/tui/test/ui/pane-resize.test.ts`,
+  `packages/tui/test/ui/pane-resize-handle.test.tsx`.
 - **What:** an agent's terminal commands in the transcript take the fork's shell view (`$ <command>`, its output
   folded to 10 lines that a click expands, a spinner while it runs). From current upstream's shell view: the
   command takes the warning colour while the call waits on the owner, spins only while its shell still runs it, and
