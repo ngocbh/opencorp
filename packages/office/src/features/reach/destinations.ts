@@ -31,7 +31,7 @@ export async function savedDestinations(home: string): Promise<Saved[]> {
   }
   const saved: Saved[] = []
   for (const name of names) {
-    if (nameProblem(name) !== null || !fs.lstatSync(path.join(root, name)).isDirectory()) continue
+    if (nameProblem(name) !== null || !isFolder(path.join(root, name))) continue
     const paths = new ReachPaths(home, name)
     if (fs.lstatSync(paths.script, { throwIfNoEntry: false }) === undefined) continue
     try {
@@ -58,6 +58,10 @@ function readRecord(file: string, pattern: RegExp): string | null {
   }
 }
 
+/** Whether `p` is a folder, not a link; false once it's gone, as when a concurrent save renames it or a clean-up
+ *  removes it. */
+const isFolder = (p: string) => fs.lstatSync(p, { throwIfNoEntry: false })?.isDirectory() ?? false
+
 /** The folders in hq: each destination's and each learning run's, links and other names left out. */
 function folders(home: string): ReachPaths[] {
   const root = path.join(home, "hq")
@@ -69,7 +73,7 @@ function folders(home: string): ReachPaths[] {
     throw error
   }
   return names
-    .filter((name) => (nameProblem(name) === null || isTemp(name)) && fs.lstatSync(path.join(root, name)).isDirectory())
+    .filter((name) => (nameProblem(name) === null || isTemp(name)) && isFolder(path.join(root, name)))
     .map((name) => new ReachPaths(home, name))
 }
 
@@ -110,11 +114,30 @@ export async function removeCm(paths: ReachPaths): Promise<void> {
 /** Removes each learning run's temporary folder in hq other than this visit's that was last changed before
  *  `STATUS_STALE_MS` and whose lock is free, so no run is learning there: its masters ended and its control-socket
  *  folder deleted first, only when that folder is its own (`isOwnCm`) and no other folder records it, then the folder.
- *  A run that saved renamed its folder, so what's left was abandoned. */
+ *  A run that saved renamed its folder, so what's left was abandoned. Then each empty `cm-*` folder that no folder
+ *  records and that is as stale, which a run that stopped between claiming it and recording it left. */
 export async function sweepTemps(ctx: ReachContext, now: number): Promise<void> {
+  await sweepRuns(ctx, now)
+  const recorded = await recordedIds(ctx.paths.home)
+  for (const name of fs.readdirSync(ctx.paths.root)) {
+    const id = /^cm-([0-9a-f]{6})$/.exec(name)?.[1]
+    if (id === undefined || recorded.has(id)) continue
+    const orphan = ctx.paths.withCm(id)
+    const st = fs.lstatSync(orphan.cm, { throwIfNoEntry: false })
+    if (st === undefined || st.mtimeMs >= now - STATUS_STALE_MS || !isOwnCm(orphan)) continue
+    // Only when empty: nothing binds a socket in a folder no one recorded, so one that isn't stays.
+    try {
+      fs.rmdirSync(orphan.cm)
+    } catch {}
+  }
+}
+
+/** `sweepTemps`' learning runs. */
+async function sweepRuns(ctx: ReachContext, now: number): Promise<void> {
   for (const found of folders(ctx.paths.home)) {
     if (!isTemp(found.name) || found.name === ctx.paths.name) continue
-    if (fs.lstatSync(found.dir).mtimeMs >= now - STATUS_STALE_MS) continue
+    const st = fs.lstatSync(found.dir, { throwIfNoEntry: false })
+    if (st === undefined || st.mtimeMs >= now - STATUS_STALE_MS) continue
     let lock: FileLock | null
     try {
       lock = takeLock(found)

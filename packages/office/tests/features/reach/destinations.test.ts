@@ -2,7 +2,7 @@
  *  `--rename` and `--forget`. */
 import fs from "node:fs"
 import path from "node:path"
-import { expect, onTestFinished, test } from "bun:test"
+import { expect, onTestFinished, spyOn, test } from "bun:test"
 import {
   FORGET,
   KEEP,
@@ -11,6 +11,7 @@ import {
   nameAfter,
   portShared,
   readCmId,
+  recordedIds,
   reservePort,
   savedDestinations,
   socketId,
@@ -303,4 +304,39 @@ test("manage checks the names it's given itself", async () => {
     expect(run.prompter.seen).toEqual([])
   }
   expect(fs.existsSync(path.join(home, "hq", "misha"))).toBe(true)
+})
+
+test("an entry in hq that vanishes while it's read (a concurrent save or clean-up) counts as not there", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  await writePrivate(ctx.paths.script, "exit 3\n")
+  const real = fs.readdirSync
+  // hq lists a destination and a learning run's folder that are gone by the time they're looked at.
+  const spy = spyOn(fs, "readdirSync").mockImplementation(((dir: string, ...rest: unknown[]) => {
+    const names = (real as (...a: unknown[]) => string[])(dir, ...rest)
+    return String(dir) === ctx.paths.root ? [...names, "gone", ".new-0f0f0f"] : names
+  }) as never)
+  onTestFinished(() => spy.mockRestore())
+  expect((await savedDestinations(dir)).map((s) => s.paths.name)).toEqual(["misha"])
+  expect(await recordedIds(dir)).toEqual(new Set([ctx.paths.cmId!]))
+  await sweepTemps(ctx, Date.now() + 2 * STATUS_STALE_MS)
+  const run = new ReachPaths(dir, tempName())
+  makeDirs(run)
+  expect(await reservePort(run)).toBe(49381)
+})
+
+test("the sweep removes an empty socket folder that no folder records once stale, as a crash before cm.id leaves one", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  const [orphan, fresh] = ["0f0f0f", "1e1e1e"].map((id) => path.join(ctx.paths.root, `cm-${id}`))
+  for (const folder of [orphan!, fresh!]) fs.mkdirSync(folder, { mode: 0o700 })
+  const old = new Date(Date.now() - STATUS_STALE_MS - 1000)
+  for (const folder of [orphan!, ctx.paths.cm]) fs.utimesSync(folder, old, old)
+  // A link named as one is never followed or removed.
+  const outside = shortDir()
+  const link = path.join(ctx.paths.root, "cm-2d2d2d")
+  fs.symlinkSync(outside, link)
+  await sweepTemps(ctx, Date.now())
+  expect([fs.existsSync(orphan!), fs.existsSync(fresh!), fs.existsSync(ctx.paths.cm)]).toEqual([false, true, true])
+  expect([fs.lstatSync(link).isSymbolicLink(), fs.existsSync(outside)]).toEqual([true, true])
 })
