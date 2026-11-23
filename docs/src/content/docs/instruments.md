@@ -6,6 +6,26 @@ description: "The shell, Codex and Claude Code your employees work with: how you
 Your employees work with three instruments: a shell, Codex and Claude Code. This page says how you watch and steer
 each one, what an employee's permission lets it touch, and what that permission doesn't cover.
 
+## The pane
+
+What you open from the picker (↓ at the end of the prompt) shows in one pane to the right of the chat: a shell, or
+a Codex or Claude Code session. It sits in a box in the colour of whoever is at the controls, your employee's while
+they work and yours while you type, and its header says so: `@thanh is driving`, with a spinner while the shell or
+the harness works, or `you are driving`. The box is bright while the pane has your keys and dim while the chat has
+them.
+
+| Key | What it does |
+|---|---|
+| ctrl+x ← and ctrl+x →, or a click | Move your keys between the chat and the pane, or show a pane that waits |
+| ctrl+x ↑ | Close the pane; Esc does too when it takes no typing |
+| ctrl+x ↓ | Open the picker again |
+| ctrl+x o | Show the pane full screen, or beside the chat again; the next pane opens the same way. On a card for a command in a shell, with no pane open, open that shell beside the card |
+
+Drag the line between the chat and the pane to resize it, or double-click it to go back to half. One width, kept,
+serves every pane. Under 108 columns the pane is full screen while it has your keys; without them it waits rather
+than cover what you type, and a line in the chat says so (`shell 2 is open in the pane: ctrl+x → shows it`). A pane
+never takes your keys while you type in the prompt or a card.
+
 ## The shell
 
 Your employee runs their commands in a shell sandboxed to the project folder: a command reaches that folder and a
@@ -28,12 +48,14 @@ while a command runs), and a missing `.mcp.json` can still be created.
   A literal string, as in `sh -c 'git status'`, is judged as the commands in it.
 - **Watching.** The line under the prompt counts your employee's shells that run a command, after ↓. Press ↓ at the
   end of the prompt, or click the count, to open the picker in the prompt's place: its Shell tab lists the chat's
-  shells, Enter opens one to watch, and ctrl+d sends it Ctrl-C. Or press ctrl+x o to open one and switch how it
-  shows; Ctrl-C there stops its command. Esc stops your employee and the command they were waiting on. A command
-  they were told is still running goes on.
-- **The picker.** ← and → switch its tabs (Sessions, Shell), ↑ and ↓ move, Enter opens, and Esc or ↑ on the first
-  row closes it. It opens on the first tab with something running and lists what runs; ctrl+a shows the rest (idle
-  and ended), and stays as you set it until you quit.
+  shells, Enter opens one in [the pane](#the-pane), and ctrl+d sends it Ctrl-C. There the shell takes your keys,
+  Esc and Ctrl-C included, so Ctrl-C stops its command; one that takes no typing shows your employee's commands as
+  `$` lines in their colour. A shell waiting for your password opens itself, with your keys unless you are typing a
+  draft or a card is open; then press ctrl+x → to type the password there. Esc in the chat stops your employee and
+  the command they were waiting on. A command they were told is still running goes on.
+- **The picker.** ← and → switch its tabs (Sessions, Shell), ↑ and ↓ move, Enter opens in the pane, and Esc or ↑ on
+  the first row closes it. It opens on the first tab with something running and lists what runs; ctrl+a shows the
+  rest (idle and ended), and stays as you set it until you quit.
 - **When a command ends.** Your employee is told when a command they were told is still running ends, in a note from
   its shell (signed `shell 1`, never by a person): the command, its exit code and its last lines. While they work, they read it before their next step; while they rest,
   it starts a new turn, as a message does. The chat shows it as one line, ``↳ shell 1: `make test` ended, exit 2``;
@@ -50,13 +72,15 @@ it lists claude.
 
 - **Sessions.** The line under the prompt counts their Codex and Claude Code sessions that run a turn. The picker's
   Sessions tab (↓, or "Open an instrument…" in the command list, ctrl+p) lists them, each marked Running, Idle or
-  Ended; Enter opens one as a chat of its own, where you watch the harness work and write to it too, and ctrl+d
-  interrupts its turn. ↑ past the oldest entry of the prompt's history, or "Go back to the chat" in the command
-  list, goes back. An ended session opens read-only: the picker takes its prompt's place, and Esc goes back. Only
-  the chat's opener (its company's CEO for a chat nobody opened) writes there besides your employee. A chat has at
-  most four live sessions of each harness.
+  Ended; Enter opens one in [the pane](#the-pane), where you watch the harness work and write to it too, and ctrl+d
+  interrupts its turn. ↑ past the oldest entry of the session's prompt history, or "Go back to the chat" in the
+  command list, gives the chat the keys. An ended session opens read-only: the picker takes its prompt's place, and
+  Esc closes it. The session list still opens a session as a chat of its own. Only the chat's opener (its company's
+  CEO for a chat nobody opened) writes there besides your employee. A chat has at most four live sessions of each
+  harness.
 - **Drafts.** Each chat and session keeps its own unsent text, so what you type in one never shows in another.
-- **Two speakers.** The session shows who sent each message, and the harness reads each one with its author and is
+- **Two speakers.** The session shows who sent each message, its border in the sender's colour, and the pane's header
+  says `you are driving` while a turn you started runs. The harness reads each message with its author and is
   told your word wins: your employee reads what you told it with its next answer, and can't interrupt or stop a turn
   you started. A message you or your employee send while Claude Code works joins its turn once its running tool calls
   finish.

@@ -1,31 +1,21 @@
-import type { Instrument } from "@opencorp/protocol"
-import { createMemo, createSignal, onCleanup, Show } from "solid-js"
+import type { Instrument, Message } from "@opencorp/protocol"
+import { TextAttributes, type RGBA } from "@opentui/core"
+import type { JSX } from "@opentui/solid"
+import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
+import { Spinner } from "../../component/spinner"
 import { useOffice } from "../../context/office"
+import { usePanel } from "../../context/panel"
 import { useTheme } from "../../context/theme"
 import { useCommandShortcut, useOpenCorpKeymap } from "../../keymap"
 import { useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
 import { display } from "../../util/printable"
+import { working } from "../../util/status"
 import { lineTail } from "../../util/text-boundary"
+import { childState } from "./composer/tabs"
 import { followOutput, LIVE, TerminalPane } from "./terminal-pane"
 
-/** How an open instrument shows: floating over the chat, in a split beside it, or full screen in its place. */
-export type InstrumentPlacement = "floating" | "split" | "full"
-export const PLACEMENTS: readonly InstrumentPlacement[] = ["floating", "split", "full"]
-
-/** The view <leader>o moves an open instrument to; after full screen it goes back to the list. */
-export function nextPlacement(view: InstrumentPlacement): InstrumentPlacement | undefined {
-  return PLACEMENTS[PLACEMENTS.indexOf(view) + 1]
-}
-
-/** What the title calls each view <leader>o moves to. */
-const PLACEMENT_LABEL: Record<InstrumentPlacement, string> = {
-  floating: "floating",
-  split: "split",
-  full: "full screen",
-}
-
-/** What the title says of each status. */
+/** What the header says of a shell's status. */
 const STATUS_LABEL: Record<Instrument["status"], string> = {
   starting: "starting",
   idle: "idle",
@@ -35,71 +25,150 @@ const STATUS_LABEL: Record<Instrument["status"], string> = {
   failed: "failed",
 }
 
-/** What the title says of a shell waiting on a password, which only the owner may type. */
-const SECRET_LABEL = "waiting for you: type your password here"
+/** What the header says of a shell waiting on a password, which only the owner may type: short, so a half-screen
+ *  pane shows it whole beside who drives it. */
+const SECRET_LABEL = "type your password here"
 
 /** The most of a pipes shell's output a view keeps, its newest part. */
 const OUTPUT_CHARS = 64 * 1024
 
+/** Who has the controls of an open instrument: the owner, while they type into it, or else its driver, the employee;
+ *  `color` is that person's. */
+export type Driver = { you: boolean; handle: string | undefined; color: RGBA }
+
 /**
- * An open instrument: a frame whose title names it, says how it is doing and what it runs, and gives the keys that
- * move it on and put it back; inside, a PTY shell's screen, or a pipes shell's output lines. A click in it gives it
- * the keys. While `focused`, a live PTY shell takes every key but the leader, so the leader's keys put it back and
- * move the keys to the chat; any other view takes Ctrl-C, a pipes shell's interrupt, and Esc puts it back. A shell
- * waiting on a password asks the session's approver, and only them, to type it.
+ * An open instrument in the right pane, in the upstream TUI's diff-viewer chrome: a header row, the body, and a footer
+ * with the pane's keys. The header says who is at the controls, "@minh is driving" in the employee's colour (with a
+ * spinner while the shell or the harness works) or "you are driving" in the owner's, then what it is, its status in
+ * the warning colour while it waits on the owner, and the command it runs.
  */
-export function InstrumentView(props: {
-  sessionID: string
+export function InstrumentPanel(props: {
   instrument: Instrument
-  view: InstrumentPlacement
+  driver: Driver
   focused: boolean
   /** Whether the viewer is the session's approver, the one person whose keys its shells take. */
   approver: boolean
-  onFocus: () => void
-  onFocusRequest?: (focus: (() => void) | undefined) => void
-  onLine?: (typing: boolean) => void
+  /** Whether Esc closes it: it takes no typing. */
+  dismissable: boolean
+  children: JSX.Element
 }) {
   const { theme } = useTheme()
   const office = useOffice()
+  const panels = usePanel()
+  const leftKey = useCommandShortcut("pane.focus.left")
+  const rightKey = useCommandShortcut("pane.focus.right")
+  const closeKey = useCommandShortcut("pane.close")
+  const escKey = useCommandShortcut("pane.dismiss")
+  const fullKey = useCommandShortcut("pane.fullscreen")
+  const docked = () => panels.presentation() === "panel"
+  // A Codex or Claude Code instrument is its own session, whose status says how its harness is doing.
+  const child = createMemo(() =>
+    props.instrument.kind === "terminal" ? undefined : office.state.sessions.find((s) => s.id === props.instrument.id),
+  )
+  const busy = () => {
+    const session = child()
+    if (session) return working(session.status)
+    return props.instrument.status === "starting" || props.instrument.status === "running"
+  }
+  const waiting = () => (child()?.status ?? props.instrument.status) === "waiting"
+  const status = () => {
+    if (props.instrument.kind !== "terminal") return childState(child(), props.instrument)
+    // Only while the view has the keys: with them in the chat, a password typed would go there.
+    const secret = props.instrument.status === "waiting" && props.instrument.waiting === "secret"
+    if (props.approver && props.focused && secret) return SECRET_LABEL
+    return STATUS_LABEL[props.instrument.status]
+  }
+  const command = createMemo(() => display(props.instrument.command ?? "").replace(/\s+/g, " ").trim())
+  const close = () => (props.dismissable ? escKey() : closeKey()).replace(/\bescape\b/, "esc")
+  // Docked, the keys move between the chat and the pane; full screen leaves no chat, so closing is the way back.
+  const hint = () => {
+    if (!docked()) return { key: close(), label: "close" }
+    return props.focused ? { key: leftKey(), label: "focus chat" } : { key: rightKey(), label: "focus pane" }
+  }
+
+  return (
+    <box flexGrow={1} minWidth={0} minHeight={0}>
+      {/* One row, so the screen's room never changes with the header: when it is too narrow the command gives way
+          first, then who drives it and the name; the status, which may ask for the owner's password, stays whole. */}
+      <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1} gap={1} overflow="hidden">
+        <Show when={busy()}>
+          <box flexShrink={0}>
+            <Spinner color={props.driver.color} />
+          </box>
+        </Show>
+        <text fg={theme.text} wrapMode="none" flexShrink={1} minWidth={0}>
+          <span style={{ fg: props.driver.color }}>
+            <b>{props.driver.you ? "you" : `@${display(props.driver.handle ?? props.instrument.driver)}`}</b>
+          </span>
+          {props.driver.you ? " are driving" : " is driving"}
+        </text>
+        <text fg={theme.textMuted} wrapMode="none" flexShrink={1} minWidth={0}>
+          · <span style={{ fg: theme.text }}>{display(props.instrument.name)}</span>
+        </text>
+        <text fg={waiting() ? theme.warning : theme.textMuted} wrapMode="none" flexShrink={0}>
+          · {status()}
+        </text>
+        <Show when={command()}>
+          <text fg={theme.textMuted} wrapMode="none" flexShrink={1000} minWidth={0}>
+            · {command()}
+          </text>
+        </Show>
+      </box>
+      {props.children}
+      <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1} gap={1} overflow="hidden">
+        <text
+          fg={props.focused ? theme.primary : theme.textMuted}
+          attributes={props.focused ? 0 : TextAttributes.DIM}
+          wrapMode="none"
+          flexGrow={1}
+          minWidth={0}
+        >
+          {hint().key}
+          <span style={{ fg: theme.textMuted }}> {hint().label}</span>
+        </text>
+        <Show when={docked()}>
+          <text fg={theme.text} wrapMode="none" flexShrink={0}>
+            {close()}
+            <span style={{ fg: theme.textMuted }}> close</span>
+          </text>
+        </Show>
+        <Show when={panels.canSplit() && fullKey()}>
+          <text fg={theme.text} wrapMode="none" flexShrink={0}>
+            {fullKey()}
+            <span style={{ fg: theme.textMuted }}>{docked() ? " full screen" : " split"}</span>
+          </text>
+        </Show>
+      </box>
+    </box>
+  )
+}
+
+/**
+ * A shell's body in the pane: a PTY shell's screen, which takes every key but the leader while `focused`, or a pipes
+ * shell's output, which takes only Ctrl-C, its interrupt. `color` is the driver's, which the employee's `$` command
+ * lines in a pipes shell's output take.
+ */
+export function InstrumentScreen(props: {
+  sessionID: string
+  instrument: Instrument
+  focused: boolean
+  color: RGBA
+  onFocusRequest?: (focus: (() => void) | undefined) => void
+  onLine?: (typing: boolean) => void
+}) {
+  const office = useOffice()
   const keymap = useOpenCorpKeymap()
   const toast = useToast()
-  const cycleKey = useCommandShortcut("session.instrument.cycle")
-  const closeKey = useCommandShortcut("session.instrument.close")
-  const chatKey = useCommandShortcut("session.instrument.focus.chat")
-  const shellKey = useCommandShortcut("session.instrument.focus")
-  const command = createMemo(() => display(props.instrument.command ?? "").replace(/\s+/g, " ").trim())
   const live = () => LIVE.includes(props.instrument.status)
-  // A live terminal takes Esc itself.
-  const takesEsc = () => props.instrument.interactive && live()
-  // Only while the view has the keys: with them in the chat, a password typed would go there.
-  const status = () =>
-    props.approver && props.focused && props.instrument.status === "waiting" && props.instrument.waiting === "secret"
-      ? SECRET_LABEL
-      : STATUS_LABEL[props.instrument.status]
-  const hints = createMemo(() => {
-    const next = nextPlacement(props.view)
-    const cycle = cycleKey()
-    if (takesEsc()) {
-      const go = cycle && `${cycle}: ${next ? PLACEMENT_LABEL[next] : "back to the list"}`
-      // Without the keys, how to give them to the shell comes first, so a narrow title keeps it. Full screen leaves no
-      // chat to move them to.
-      if (!props.focused) return [shellKey() && `${shellKey()}: shell`, go].filter(Boolean).join(" · ")
-      return [go, props.view !== "full" && chatKey() && `${chatKey()}: chat`].filter(Boolean).join(" · ")
-    }
-    const close = closeKey().replace(/\bescape\b/, "esc")
-    if (!cycle) return `${close}: back to the list`
-    if (!next) return `${cycle}, ${close}: back to the list`
-    return `${cycle}: ${PLACEMENT_LABEL[next]} · ${close}: back to the list`
-  })
 
   // Ctrl-C interrupts a live pipes shell's command; in a view that doesn't take keys it does nothing, rather than
-  // what it does in the chat.
+  // what it does in the chat. A live terminal takes it itself.
   const isCtrlC = keymap.createKeyMatcher("ctrl+c")
   onCleanup(
     keymap.intercept(
       "key",
       ({ event, consume }) => {
-        if (!props.focused || takesEsc() || !isCtrlC(event)) return
+        if (!props.focused || (props.instrument.interactive && live()) || !isCtrlC(event)) return
         consume()
         if (props.instrument.interactive || !live()) return
         office.client.sessions
@@ -110,61 +179,94 @@ export function InstrumentView(props: {
     ),
   )
 
+  // The employee's commands in it, as the chat's record of their terminal calls has them, and the one it runs now.
+  const commands = createMemo(() => {
+    const ran = employeeCommands(office.state.messages[props.sessionID] ?? [], props.instrument.name)
+    if (props.instrument.command) ran.add(props.instrument.command)
+    return ran
+  })
+
   return (
-    <box
-      flexGrow={1}
-      minWidth={0}
-      minHeight={0}
-      border
-      borderStyle="rounded"
-      borderColor={props.focused ? theme.borderActive : theme.border}
-      backgroundColor={theme.backgroundPanel}
-      onMouseDown={() => props.onFocus()}
-    >
-      {/* One row, so the screen's room never changes with the title: when it is too narrow the command gives way
-          first, then the keys. */}
-      <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1} overflow="hidden">
-        <text fg={theme.text} wrapMode="none" flexShrink={0}>
-          <b>{display(props.instrument.name)}</b> · {status()}
-        </text>
-        <Show when={command()}>
-          <text fg={theme.text} wrapMode="none" flexShrink={1000} minWidth={0}>
-            {" · "}
-            {command()}
-          </text>
-        </Show>
-        <text fg={theme.textMuted} wrapMode="none" flexShrink={1} minWidth={0}>
-          {" · "}
-          {hints()}
-        </text>
-      </box>
-      <Show
-        when={props.instrument.interactive}
-        fallback={<ShellOutput sessionID={props.sessionID} instrument={props.instrument} />}
-      >
-        <TerminalPane
+    <Show
+      when={props.instrument.interactive}
+      fallback={
+        <ShellOutput
           sessionID={props.sessionID}
           instrument={props.instrument}
-          focused={props.focused}
-          onFocusRequest={props.onFocusRequest}
-          onLine={props.onLine}
+          color={props.color}
+          commands={commands()}
         />
-      </Show>
-    </box>
+      }
+    >
+      <TerminalPane
+        sessionID={props.sessionID}
+        instrument={props.instrument}
+        focused={props.focused}
+        onFocusRequest={props.onFocusRequest}
+        onLine={props.onLine}
+      />
+    </Show>
   )
+}
+
+/** The commands the chat's terminal calls ran in shell `name`: each `terminal_run` the shell's reply, or its input,
+ *  names. */
+function employeeCommands(messages: readonly Message[], name: string) {
+  const ran = new Set<string>()
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (part.type !== "tool" || part.tool !== "terminal_run" || typeof part.input?.command !== "string") continue
+      let shell = typeof part.input.shell === "string" ? part.input.shell : undefined
+      try {
+        const reply: unknown = JSON.parse(typeof part.output === "string" ? part.output : "")
+        if (reply && typeof reply === "object" && "shell" in reply && typeof reply.shell === "string") shell = reply.shell
+      } catch {}
+      if (shell === name) ran.add(part.input.command)
+    }
+  }
+  return ran
+}
+
+/** `text`'s lines as runs, each one span: the `$ <command>` lines the office wrote for one of `commands`, and the
+ *  rest. A run after the first starts with its newline. */
+export function commandRuns(text: string, commands: ReadonlySet<string>) {
+  // A command's first line, as the office writes it, and how many lines the command takes.
+  const starts = new Map<string, number>()
+  for (const command of commands) {
+    const lines = command.split("\n").map((line) => display(line))
+    const key = `$ ${lines[0]}`
+    starts.set(key, Math.max(starts.get(key) ?? 0, lines.length))
+  }
+  const runs: { text: string; command: boolean }[] = []
+  let left = 0
+  for (const line of text.split("\n")) {
+    left = Math.max(left - 1, starts.get(line) ?? 0)
+    const command = left > 0
+    const last = runs.at(-1)
+    if (last && last.command === command) last.text += "\n" + line
+    else runs.push({ text: (last ? "\n" : "") + line, command })
+  }
+  return runs
 }
 
 /**
  * A pipes shell's output, as lines with its escapes stripped, in the upstream TUI's shell-output layout: the
- * command, a note when the office no longer holds the start, then the output, following its end.
+ * command, a note when the office no longer holds the start, then the output, following its end. The office writes
+ * each command the employee runs as a `$ <command>` line; those of `commands` take `color`, theirs.
  */
-function ShellOutput(props: { sessionID: string; instrument: Instrument }) {
+function ShellOutput(props: {
+  sessionID: string
+  instrument: Instrument
+  color: RGBA
+  commands: ReadonlySet<string>
+}) {
   const { theme } = useTheme()
   const [output, setOutput] = createSignal<string>()
   const [omitted, setOmitted] = createSignal(false)
   const [error, setError] = createSignal<string>()
   // Escapes go whole, so a colour split across two events leaves nothing behind; a lone CR starts a line.
   const text = createMemo(() => display((output() ?? "").replace(/\r\n?/g, "\n")).replace(/\n+$/, ""))
+  const runs = createMemo(() => commandRuns(text(), props.commands))
   let decoder = new TextDecoder()
 
   /** Shows `next`, its newest part when it is longer than a view keeps. */
@@ -199,9 +301,20 @@ function ShellOutput(props: { sessionID: string; instrument: Instrument }) {
         </text>
       </Show>
       <scrollbox flexGrow={1} minHeight={0} stickyScroll stickyStart="bottom" scrollbarOptions={{ visible: false }}>
-        <text fg={theme.text} wrapMode="word">
-          {text() || (output() === undefined ? "Loading output…" : "No output yet.")}
-        </text>
+        <Show
+          when={text()}
+          fallback={
+            <text fg={theme.text} wrapMode="word">
+              {output() === undefined ? "Loading output…" : "No output yet."}
+            </text>
+          }
+        >
+          <text fg={theme.text} wrapMode="word">
+            <For each={runs()}>
+              {(run) => <span style={{ fg: run.command ? props.color : theme.text }}>{run.text}</span>}
+            </For>
+          </text>
+        </Show>
       </scrollbox>
       <Show when={error()}>
         {(message) => (

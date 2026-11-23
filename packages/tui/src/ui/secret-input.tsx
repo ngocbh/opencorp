@@ -2,6 +2,7 @@ import type { ColorInput } from "@opentui/core"
 import { useKeyboard, usePaste } from "@opentui/solid"
 import { createSignal } from "solid-js"
 import { useTuiConfig } from "../config"
+import { useInteractivity } from "../context/interactivity"
 import { clearFirst, useBindings } from "../keymap"
 
 // Control characters: Tab, Ctrl-J and escape sequences are keys, not part of a secret.
@@ -9,8 +10,9 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g
 
 /**
  * A masked input: a dot for each character typed, or `placeholder` before any; Enter hands the text to `onSubmit`;
- * Ctrl+C or Esc empties it. It reads keys and pastes only while `enabled` (default true), since it listens to the
- * whole app's keyboard rather than to a focused box; `onChange` gets the text after each change.
+ * Ctrl+C or Esc empties it. It reads keys and pastes only while `enabled` (default true) and its side has the keys
+ * (its interactivity provider), since it listens to the whole app's keyboard rather than to a focused box; `onChange`
+ * gets the text after each change.
  */
 export function SecretInput(props: {
   placeholder?: string
@@ -24,7 +26,8 @@ export function SecretInput(props: {
   // drawn box needs only its length.
   let value = ""
   const [length, setLength] = createSignal(0)
-  const enabled = () => props.enabled !== false
+  const interactive = useInteractivity()
+  const enabled = () => props.enabled !== false && interactive()
   const set = (next: string) => {
     value = next
     setLength(next.length)

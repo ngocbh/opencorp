@@ -169,6 +169,31 @@ test("the picker's keys are the upstream TUI's: ↓ toggles it, ↑ goes to the 
   expect(TuiKeybind.unknownKeys({ session_child_cycle: "none", session_child_cycle_reverse: "none" })).toHaveLength(2)
 })
 
+test("the pane's keys are the upstream TUI's: ctrl+x ←/→ move the keys, ctrl+x ↑ closes it and ctrl+x ↓ opens the picker; ctrl+x o shows it split or full", () => {
+  const config = createResolvedKeymapConfig()
+  const keys = (command: string) => config.keybinds.get(command).map((binding) => binding.key)
+  expect(keys("pane.focus.left")).toEqual(["<leader>left"])
+  expect(keys("pane.focus.right")).toEqual(["<leader>right"])
+  expect(keys("pane.close")).toEqual(["<leader>up"])
+  expect(keys("pane.select")).toEqual(["<leader>down"])
+  expect(keys("pane.fullscreen")).toEqual(["<leader>o"])
+  // Esc closes only a pane that takes no typing.
+  expect(keys("pane.dismiss")).toEqual(["escape"])
+  // Split or full is one entry, so its key changes in one place.
+  const moved = createResolvedKeymapConfig({ "pane.fullscreen": "<leader>f" })
+  expect(moved.keybinds.get("pane.fullscreen").map((binding) => binding.key)).toEqual(["<leader>f"])
+  // The old instrument commands are gone, with their config names.
+  expect(keys("session.instrument.cycle")).toEqual([])
+  expect(
+    TuiKeybind.unknownKeys({
+      session_instrument_cycle: "none",
+      session_instrument_close: "none",
+      session_instrument_focus_chat: "none",
+      session_instrument_focus: "none",
+    }),
+  ).toHaveLength(4)
+})
+
 test("arrow keys show as arrows, as the upstream TUI shows them", async () => {
   const shown: Record<string, string> = {}
 
@@ -177,7 +202,7 @@ test("arrow keys show as arrows, as the upstream TUI shows them", async () => {
     const keymap = createDefaultOpenTuiKeymap(renderer)
     const config = createResolvedKeymapConfig()
     const offKeymap = registerOpenCorpKeymap(keymap, renderer, config)
-    const commands = ["session.child.first", "session.parent", "session.instrument.focus.chat"]
+    const commands = ["session.child.first", "session.parent", "pane.focus.left", "pane.close"]
     const offLayer = keymap.registerLayer({
       commands: commands.map((name) => ({ name, run() {} })),
       bindings: config.keybinds.gather("test", commands),
@@ -201,7 +226,8 @@ test("arrow keys show as arrows, as the upstream TUI shows them", async () => {
     expect(shown).toEqual({
       "session.child.first": "↓",
       "session.parent": "↑",
-      "session.instrument.focus.chat": "ctrl+x ←",
+      "pane.focus.left": "ctrl+x ←",
+      "pane.close": "ctrl+x ↑",
     })
   } finally {
     app.renderer.destroy()

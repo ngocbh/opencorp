@@ -94,21 +94,23 @@ describe.skipIf(!TMUX)("the owner and an employee both write to Claude Code, in 
     await t.see("@minh auto")
     t.type("Hand the build to Claude Code.")
     // The line under the prompt counts Claude Code's session while it runs; ↓ opens the picker on it, and Enter opens
-    // it as the chat's child session.
+    // the chat's child session in the pane beside the chat, its prompt, the owner's, with the keys.
     await t.see("1 Claude Code session")
     t.keys("Down")
     await t.see("Claude Code: claude 1")
     t.keys("Enter")
-    await t.see("driven by @minh")
+    await t.see("@minh is driving · claude 1")
+    await t.see("ctrl+x ← focus chat")
     await t.see("Looking at the build.")
     t.type("Use the staging database.")
     await t.see("Fixed it, on the staging database.")
-    // The palette's way back goes to the chat, where minh read both.
+    // The palette's way back gives the chat the keys, the pane staying open; minh read both.
     t.keys("C-p")
     await t.see("Commands")
     t.keys("-l", "Go back to the chat")
     await t.see("Go back to the chat that drives")
     t.keys("Enter")
+    await t.see("ctrl+x → focus pane")
     await t.see("Claude Code fixed the build on staging, as you said.")
 
     // Claude Code read both, each inside its author's label, the owner's sent as next, in the one turn.

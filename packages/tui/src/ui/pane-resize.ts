@@ -1,17 +1,6 @@
 import { MouseButton, type MouseEvent } from "@opentui/core"
 import { createEffect, createSignal } from "solid-js"
 
-/** The fewest columns a pane leaves the chat beside it, when there is room for both. */
-const CONTENT_MIN_WIDTH = 44
-
-/** A side pane's width, `width` asked for, kept within `total`: at least half of it, or 24 columns, and leaving the
- *  chat its minimum when there is room. */
-export function clampPaneWidth(width: number, total: number) {
-  const half = Math.max(1, Math.floor(total / 2))
-  // Preserve the equal split when there is not enough room for both pane minima.
-  return Math.max(Math.min(24, half), Math.min(width, Math.max(half, total - CONTENT_MIN_WIDTH)))
-}
-
 /** A pane's size dragged with a handle: a drag follows the mouse, a release commits, and a double click on the
  *  handle goes back to the default. The parent binds the drag and the release, so a drag goes on outside the
  *  handle. */

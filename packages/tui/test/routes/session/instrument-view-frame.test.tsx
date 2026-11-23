@@ -1,10 +1,9 @@
-// A chat's shell, opened from the list under the prompt: floating over the chat, in a split beside it, or full screen.
-// <leader>o opens one and cycles its views, and a setting in kv.json picks the view it opens in. A terminal's view
-// draws the office's screen, then only the output past it, at the instrument's size; the approver's view sends its own
-// size. While it has the keys, every key but the leader goes to the shell, Esc and Ctrl-C included; <leader>left and
-// <leader>right move the keys between it and the chat. A pipes shell's view takes only Ctrl-C, and Esc puts it away. A
-// shell waiting for a password opens itself. The split's pane, its handle and the muted chat beside it, and the key
-// routing, are the upstream TUI's.
+// A chat's shell, opened from the picker in the right pane beside the chat (pane-frame.test.tsx tests the pane itself).
+// A terminal's view draws the office's screen, then only the output past it, at the instrument's size; the approver's
+// view sends its own size. While it has the keys, every key but the leader goes to the shell, Esc and Ctrl-C included;
+// <leader>left and <leader>right move the keys between it and the chat. A pipes shell's view takes only Ctrl-C, and
+// Esc closes it. A shell waiting for a password opens itself. The pane, its handle, the muted chat beside it and the
+// key routing are the upstream TUI's.
 import type { Instrument, Message } from "@opencorp/protocol"
 import { beforeEach, expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
@@ -24,13 +23,12 @@ const theme = resolveTheme(DEFAULT_THEMES[DEFAULT_THEME]!, "dark")
 const AT = "2026-11-17T10:00:00.000Z"
 const MIDWAY = "2026-11-17T10:02:00.000Z"
 const LATER = "2026-11-17T10:05:00.000Z"
-const KEY = "instrument_view"
 // The app keeps kv.json under the preload's OPENCORP_HOME, which every test file shares.
 const kvFile = () => path.join(Global.Path.state, "kv.json")
 const kv = (): Record<string, unknown> => (existsSync(kvFile()) ? JSON.parse(readFileSync(kvFile(), "utf8")) : {})
-// Each test starts on the default view; later test files expect it too.
+// Each test starts with the pane at half the screen, split; later test files expect it too.
 beforeEach(() => {
-  const { [KEY]: _, ...rest } = kv()
+  const { pane_width: _w, pane_fullscreen: _f, ...rest } = kv()
   mkdirSync(Global.Path.state, { recursive: true })
   writeFileSync(kvFile(), JSON.stringify(rest))
 })
@@ -83,7 +81,7 @@ async function leader(app: App, key: string) {
 }
 
 /** Presses the leader, then the arrow `direction`. */
-async function leaderArrow(app: App, direction: "left" | "right") {
+async function leaderArrow(app: App, direction: "left" | "right" | "up") {
   app.input.pressKey("x", { ctrl: true })
   await app.setup.renderOnce()
   app.input.pressArrow(direction)
@@ -115,39 +113,53 @@ function leaked(office: FakeOffice, text: string) {
   return elsewhere || files(path.dirname(Global.Path.state)).some((file) => readFileSync(file, "utf8").includes(text))
 }
 
-/** Opens the palette and picks the command titled `title`. */
-async function runCommand(app: App, title: string) {
-  app.input.pressKey("p", { ctrl: true })
-  await app.until((f) => f.includes("Commands"))
-  // The search box takes focus a moment after it renders.
-  await Bun.sleep(50)
-  app.input.typeText(title)
-  await app.until((f) => f.split(title).length > 2)
-  app.input.pressEnter()
+/** Presses `key` (an arrow by name), giving the renderer a frame first. */
+async function press(app: App, key: "up" | "down" | "left" | "right") {
+  await app.setup.renderOnce()
+  app.input.pressArrow(key)
 }
 
-/** Picks how instruments open, `view` titling the choice, and waits until kv.json keeps it as `value`. */
-async function setView(app: App, view: string, value: string) {
-  await runCommand(app, "Choose how instruments open")
-  await app.until((f) => f.includes("Open instruments") && f.includes("Full screen"))
-  await Bun.sleep(50)
-  app.input.typeText(view)
-  await app.until((f) => f.split(view).length > 2)
+/** The picker's shell rows, in order: each row's name. */
+const pickerShells = (f: string) =>
+  rows(f).flatMap((r) => {
+    const m = /(shell \d+)( · .*?)?\s+(Running|Idle|Ended|Failed)\s*$/.exec(r)
+    return m ? [m[1]!] : []
+  })
+
+/** Opens the picker with ↓, goes to its Shell tab, shows the shells that don't run if `name` is one, and opens shell
+ *  `name` in the pane with Enter. */
+async function openShell(app: App, name = "shell 1") {
+  await press(app, "down")
+  let f = await app.until((f) => f.includes("tabs ←/→"))
+  if (f.includes("No active sessions") || f.includes("No inactive sessions")) {
+    await press(app, "right")
+    f = await app.until((f) => /No (in)?active shells/.test(f) || pickerShells(f).length > 0)
+  }
+  if (!pickerShells(f).includes(name)) {
+    app.input.pressKey("a", { ctrl: true })
+    f = await app.until((f) => pickerShells(f).includes(name))
+  }
+  for (let i = 0; i < pickerShells(f).indexOf(name); i++) await press(app, "down")
+  await app.setup.renderOnce()
   app.input.pressEnter()
-  await until(() => kv()[KEY] === value)
+  return app.until((f) => corner(f) !== undefined)
 }
 
 const rows = (f: string) => f.split("\n")
-/** The row and column of the open view's top-left corner, or undefined when none is open. */
+/** The row and column of the pane's top-left corner, or undefined when none is open. */
 function corner(f: string) {
-  const y = rows(f).findIndex((r) => r.includes("╭"))
-  return y < 0 ? undefined : { x: rows(f)[y]!.indexOf("╭"), y, right: rows(f)[y]!.lastIndexOf("╮") }
+  const y = rows(f).findIndex((r) => r.includes("┌"))
+  return y < 0 ? undefined : { x: rows(f)[y]!.indexOf("┌"), y, right: rows(f)[y]!.lastIndexOf("┐") }
 }
-/** The view's title row: the row under its top border, inside the border, trimmed. */
+/** The pane's header after who drives it: the row under its top border, inside the border, trimmed, from the shell's
+ *  name on. */
 function title(f: string) {
   const at = corner(f)
-  if (!at) throw new Error("no view open:\n" + f)
-  return rows(f)[at.y + 1]!.slice(at.x + 1, at.right).trim()
+  if (!at) throw new Error("no pane open:\n" + f)
+  return rows(f)[at.y + 1]!
+    .slice(at.x + 1, at.right)
+    .trim()
+    .replace(/^.*? (is|are) driving · /, "")
 }
 /** The line under the prompt: the row below the prompt's bottom edge. */
 function line(f: string) {
@@ -170,7 +182,7 @@ const output = (id: string, offset: number, text: string) => ({
   data: Buffer.from(text).toString("base64"),
 })
 
-test("<leader>o opens the waiting shell floating over the chat, then cycles it to a split, to full screen and back to the list", async () => {
+test("a shell waiting on a card doesn't open itself; the picker opens it beside the chat, saying it waits, and ctrl+x ↑ closes it", async () => {
   const { office, sid, app } = await boot()
   try {
     add(office, sid, { name: "shell 1" })
@@ -184,38 +196,21 @@ test("<leader>o opens the waiting shell floating over the chat, then cycles it t
     })
     office.instrumentOutput(sid, ssh.id, "Are you sure you want to continue connecting (yes/no)? ")
     await app.until((f) => line(f)?.includes("is waiting for you") ?? false)
-    expect(app.frame()).not.toContain("╭")
+    expect(app.frame()).not.toContain("┌")
 
-    // Floating: 80% of the screen, centred, over the chat, whose header still shows above it.
-    await leader(app, "o")
-    let f = await app.until((f) => f.includes("(yes/no)?") && f.includes("ctrl+x o: split"))
-    expect(title(f)).toBe("shell 2 · waiting for you · ssh nhb25@misha · ctrl+x o: split · ctrl+x ←: chat")
-    expect(corner(f)).toEqual({ x: 12, y: 3, right: 107 })
-    expect(rows(f)[1]).toContain("@minh · idle")
-
-    // A split: the right half, beside the chat. Its title has no room for the command.
-    await leader(app, "o")
-    f = await app.until((f) => f.includes("ctrl+x o: full screen"))
+    let f = await openShell(app, "shell 2")
+    f = await app.until((f) => f.includes("(yes/no)?") && f.includes("ctrl+x ← focus chat"))
+    // Half the screen has no room for the whole command.
+    expect(title(f)).toStartWith("shell 2 · waiting for you · ssh nhb25")
     expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
-    expect(title(f)).toStartWith("shell 2 · waiting for you · ctrl+x o: full screen")
-    expect(f).toContain("(yes/no)?")
     expect(rows(f)[1]!.slice(0, 60)).toContain("@minh · idle")
 
-    // Full screen: in place of the messages and the prompt; the line under the prompt stays at the bottom.
-    await leader(app, "o")
-    f = await app.until((f) => f.includes("ctrl+x o: back to the list"))
-    expect(corner(f)).toEqual({ x: 0, y: 0, right: 119 })
-    expect(f).not.toContain("@minh · idle")
-    expect(f).toContain("(yes/no)?")
-    expect(rows(f)[28]).toContain("/tmp/proj · ↓ 2 shells")
-    expect(rows(f)[28]).toContain("is waiting for you")
-
-    // Back to the list.
-    await leader(app, "o")
-    f = await app.until((f) => !f.includes("╭"))
-    expect(f).toContain("@minh · idle")
+    // Closed: the line under the prompt still says it waits.
+    await leaderArrow(app, "up")
+    f = await app.until((f) => !f.includes("┌"))
     expect(f).not.toContain("(yes/no)?")
     expect(line(f)).toContain("/tmp/proj · ↓ 2 shells")
+    expect(line(f)).toContain("is waiting for you")
     // The leader and the keys after it went to none of the shells.
     expect(office.requests.some((r) => r.path.endsWith("/keys"))).toBe(false)
   } finally {
@@ -224,15 +219,15 @@ test("<leader>o opens the waiting shell floating over the chat, then cycles it t
   }
 })
 
-test("a pipes shell's view takes Ctrl-C as an interrupt, and Esc puts it away", async () => {
+test("a pipes shell's view takes Ctrl-C as an interrupt, and Esc closes it", async () => {
   const { office, sid, app } = await boot()
   try {
     const shell = add(office, sid, { interactive: false, size: null, command: "make" })
     office.instrumentOutput(sid, shell.id, "compiling")
     office.updateSession(sid, { status: "busy" })
     await app.until((f) => f.includes("esc interrupt") && f.includes("↓ 1 shell"))
-    await leader(app, "o")
-    const open = await app.until((f) => f.includes("compiling") && f.includes("esc: back to the list"))
+    await openShell(app)
+    const open = await app.until((f) => f.includes("compiling") && f.includes("esc close"))
     // A click in the view keeps the keys there.
     const at = corner(open)!
     await app.setup.mockMouse.click(at.x + 5, at.y + 5)
@@ -245,7 +240,7 @@ test("a pipes shell's view takes Ctrl-C as an interrupt, and Esc puts it away", 
     app.input.typeText("zq")
     await app.setup.renderOnce()
     await escape(app)
-    let f = await app.until((f) => !f.includes("╭"))
+    let f = await app.until((f) => !f.includes("┌"))
     expect(f).not.toContain("compiling")
     // Esc went to the view, not to the agent.
     expect(office.requests.some((r) => r.path.endsWith("/interrupt"))).toBe(false)
@@ -263,58 +258,16 @@ test("a pipes shell's view takes Ctrl-C as an interrupt, and Esc puts it away", 
   }
 })
 
-test("the view setting picks how a shell opens", async () => {
-  const { office, sid, app } = await boot()
-  try {
-    add(office, sid, { name: "shell 1", command: "htop" })
-    add(office, sid, { name: "shell 2", command: "tail -f log", updated_at: LATER })
-    await app.until((f) => line(f)?.includes("2 shells") ?? false)
-
-    await setView(app, "In a split", "split")
-    // The shell that changed last opens, in a split; then the cycle goes on to full screen and back.
-    await leader(app, "o")
-    let f = await app.until((f) => f.includes("ctrl+x o: full screen"))
-    expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
-    expect(title(f)).toStartWith("shell 2 · running ·")
-    await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o: back to the list"))
-    await leader(app, "o")
-    await app.until((f) => !f.includes("╭"))
-
-    await setView(app, "Full screen", "full")
-    // The palette opens the picker on the chat's shells; the one picked opens in the setting's view.
-    await runCommand(app, "Open an instrument")
-    f = await app.until((f) => f.includes("shell 1 · htop") && f.includes("shell 2 · tail -f log"))
-    await app.setup.renderOnce()
-    app.input.pressEnter()
-    f = await app.until((f) => f.includes("ctrl+x o: back to the list"))
-    expect(corner(f)).toEqual({ x: 0, y: 0, right: 119 })
-    expect(title(f)).toStartWith("shell 1 · running · htop")
-    await leader(app, "o")
-    await app.until((f) => !f.includes("╭"))
-
-    await setView(app, "Floating", "floating")
-    await leader(app, "o")
-    f = await app.until((f) => f.includes("ctrl+x o: split"))
-    expect(corner(f)).toEqual({ x: 12, y: 3, right: 107 })
-    // Shell 1 changed last: it took this view's size.
-    expect(title(f)).toStartWith("shell 1 · running · htop")
-  } finally {
-    await app.stop()
-    office.stop()
-  }
-})
-
 test("a shell joined late shows its screen, then only the output past it", async () => {
   const { office, sid, app } = await boot()
   try {
     const shell = add(office, sid)
-    const screen = "row 1\r\nrow 2\r\n" + "z".repeat(74) + "\r\n" + "tail-bytes"
+    const screen = "row 1\r\nrow 2\r\n" + "z".repeat(50) + "\r\n" + "y".repeat(22) + "\r\n" + "tail-bytes"
     expect(Buffer.byteLength(screen)).toBe(100)
     office.instrumentOutput(sid, shell.id, screen)
     await listed(app, 1)
-    await leader(app, "o")
-    await app.until((f) => f.includes("tail-bytes") && f.includes("row 1") && f.includes("z".repeat(74)))
+    await openShell(app)
+    await app.until((f) => f.includes("tail-bytes") && f.includes("row 1") && f.includes("z".repeat(50)))
     // The terminal takes the theme's text and panel colours as its own.
     const span = app.setup
       .captureSpans()
@@ -349,9 +302,9 @@ test("a pipes shell shows its output lines", async () => {
     const shell = add(office, sid, { interactive: false, size: null, command: "make test" })
     office.instrumentOutput(sid, shell.id, "\x1b[32mok\x1b[0m line one\r\nline two\n")
     await listed(app, 1)
-    await leader(app, "o")
+    await openShell(app)
     let f = await app.until((f) => f.includes("ok line one") && f.includes("line two"))
-    expect(title(f)).toBe("shell 1 · running · make test · ctrl+x o: split · esc: back to the list")
+    expect(title(f)).toBe("shell 1 · running · make test")
     expect(f).not.toContain("[32m")
     expect(f).not.toContain("\x1b")
     // Its command shows above the output, and new lines follow it.
@@ -379,16 +332,16 @@ test("an ended shell can still be opened until the agent's turn ends, then leave
     // A failed one leaves with it.
     add(office, sid, { name: "shell 3", command: "ssh h", status: "failed", error: "no sandbox", updated_at: MIDWAY })
     await app.until((f) => f.includes("esc interrupt"))
-    // It changed last, so <leader>o opens it, with its scrollback.
-    await leader(app, "o")
-    let f = await app.until((f) => f.includes("built it"))
+    // It doesn't run, so the picker lists it once ctrl+a shows those; it opens with its scrollback.
+    let f = await openShell(app, "shell 2")
+    f = await app.until((f) => f.includes("built it"))
     expect(title(f)).toStartWith("shell 2 · ended · make")
-    // The turn ends: it leaves the list, and its view closes.
+    // The turn ends: it leaves the list, and the pane closes.
     office.updateSession(sid, { status: "idle" })
-    f = await app.until((f) => !f.includes("╭"))
+    f = await app.until((f) => !f.includes("┌"))
     expect(f).not.toContain("built it")
-    await leader(app, "o")
-    f = await app.until((f) => f.includes("sleep 100") && f.includes("╭"))
+    f = await openShell(app, "shell 1")
+    f = await app.until((f) => f.includes("sleep 100") && f.includes("┌"))
     expect(title(f)).toStartWith("shell 1 · running · sleep 100")
   } finally {
     await app.stop()
@@ -400,11 +353,11 @@ test("output that comes while the screen loads is drawn once, each byte", async 
   const { office, sid, app } = await boot()
   try {
     const shell = add(office, sid)
-    const screen = "row 1\r\nrow 2\r\n" + "z".repeat(74) + "\r\n" + "tail-bytes"
+    const screen = "row 1\r\nrow 2\r\n" + "z".repeat(50) + "\r\n" + "y".repeat(22) + "\r\n" + "tail-bytes"
     office.instrumentOutput(sid, shell.id, screen)
     await listed(app, 1)
     const release = office.hold(SCREEN, "reply")
-    await leader(app, "o")
+    await openShell(app)
     await until(() => screens(office, shell.id) === 1)
     // While the screen is on its way: bytes it holds, bytes that straddle its end, and bytes past it, twice over.
     // Those it holds come in capitals here, so a byte drawn from them instead of from the screen shows.
@@ -422,7 +375,7 @@ test("output that comes while the screen loads is drawn once, each byte", async 
     expect(count(f, "row 1")).toBe(1)
     expect(count(f, "tail-bytes")).toBe(1)
     expect(count(f, " one")).toBe(1)
-    expect(count(f, "z".repeat(74))).toBe(1)
+    expect(count(f, "z".repeat(50))).toBe(1)
   } finally {
     await app.stop()
     office.stop()
@@ -437,7 +390,7 @@ test("a resize that comes while the screen loads draws after the output before i
     const shell = add(office, sid, { size: { cols: 80, rows: 10 } })
     await listed(app, 1)
     const release = office.hold(SCREEN, "reply")
-    await leader(app, "o")
+    await openShell(app)
     await until(() => screens(office, shell.id) === 1)
     // Drawn at 80 columns, "edge" sits at column 75; narrowed to 40 after, the line wraps it whole. Drawn at 40, it
     // would be cut at the edge.
@@ -458,16 +411,16 @@ test("while the screen can't be read the view tries again, slower each time, and
     const shell = add(office, sid, { interactive: false, size: null, command: "make" })
     await listed(app, 1)
     office.broken.add(SCREEN)
-    await leader(app, "o")
-    // The office's error names the route it failed on.
-    await app.until((f) => f.includes(`/instruments/${shell.id}/screen`))
+    await openShell(app)
+    // The office's error names the route it failed on, wrapped in the pane.
+    await app.until((f) => f.includes(`${shell.id}/screen failed`))
     // More output than a view holds back.
     for (let i = 1; i <= 1100; i++) office.instrumentOutput(sid, shell.id, `line ${i}\n`)
     await Bun.sleep(400)
     expect(screens(office, shell.id)).toBeLessThanOrEqual(3)
     office.broken.delete(SCREEN)
     const f = await app.until((f) => f.includes("line 1100"), 8000)
-    expect(f).not.toContain(`/instruments/${shell.id}/screen`)
+    expect(f).not.toContain(`${shell.id}/screen failed`)
     expect(count(f, "line 1100")).toBe(1)
     expect(count(f, "line 1099")).toBe(1)
   } finally {
@@ -482,31 +435,31 @@ test("size requests go one at a time, and the newest size follows the one in fli
     const shell = add(office, sid)
     await listed(app, 1)
     const release = office.hold("POST /sessions/:id/instruments/:iid/size")
-    await leader(app, "o")
+    await openShell(app)
     await until(() => sizes(office, shell.id).length === 1)
-    // The window narrows twice while the office is slow to answer.
+    // The window narrows twice while the office is slow to answer: to a narrower split, then full screen.
     app.setup.resize(110, 30)
-    await app.until((f) => corner(f)?.x === 11)
+    await app.until((f) => corner(f)?.x === 55)
     app.setup.resize(100, 30)
-    await app.until((f) => corner(f)?.x === 10)
+    await app.until((f) => corner(f)?.x === 0)
     await Bun.sleep(200)
-    expect(sizes(office, shell.id)).toEqual([{ cols: 92, rows: 21 }])
+    expect(sizes(office, shell.id)).toEqual([{ cols: 56, rows: 26 }])
     release()
-    // Floating at 100 columns is 80 wide: 76 inside.
+    // Full screen at 100 columns: 96 inside the box and the margins.
     await until(() => sizes(office, shell.id).length === 2)
     await Bun.sleep(200)
     expect(sizes(office, shell.id)).toEqual([
-      { cols: 92, rows: 21 },
-      { cols: 76, rows: 21 },
+      { cols: 56, rows: 26 },
+      { cols: 96, rows: 26 },
     ])
-    expect(office.state.instruments[sid]![0]!.size).toEqual({ cols: 76, rows: 21 })
+    expect(office.state.instruments[sid]![0]!.size).toEqual({ cols: 96, rows: 26 })
   } finally {
     await app.stop()
     office.stop()
   }
 })
 
-test("the chat's own keys do nothing while a shell has the keys, and work again once it is put away", async () => {
+test("the chat's own keys do nothing while a shell has the keys, and work again once it is closed", async () => {
   const office = createFakeOffice()
   const sid = office.state.sessions[0].id
   office.state.messages[sid] = Array.from(
@@ -524,9 +477,8 @@ test("the chat's own keys do nothing while a shell has the keys, and work again 
     await app.until((f) => f.includes("message 30") && f.includes("@minh auto ·"))
     const shell = add(office, sid)
     await listed(app, 1)
-    await setView(app, "In a split", "split")
-    await leader(app, "o")
-    let f = await app.until((f) => f.includes("ctrl+x o: full screen"))
+    let f = await openShell(app)
+    f = await app.until((f) => f.includes("ctrl+x o full screen"))
     const chat = (f: string) => rows(f).map((r) => r.slice(0, 60))
     const before = chat(f)
     // PageUp doesn't scroll the chat, Shift+Tab doesn't switch its mode: both go to the shell.
@@ -536,11 +488,9 @@ test("the chat's own keys do nothing while a shell has the keys, and work again 
     f = await app.until(() => true)
     expect(chat(f)).toEqual(before)
     expect(office.requests.some((r) => r.path.endsWith("/mode"))).toBe(false)
-    // Back in the list, both work.
-    await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o: back to the list"))
-    await leader(app, "o")
-    await app.until((f) => !f.includes("╭"))
+    // With the pane closed, both work.
+    await leaderArrow(app, "up")
+    await app.until((f) => !f.includes("┌"))
     app.input.pressKey("\x1b[5~")
     await app.until((f) => !f.includes("message 30"))
     app.input.pressTab({ shift: true })
@@ -556,19 +506,19 @@ test("the approver's view sends its size on open and on a resize; it draws at th
   try {
     const shell = add(office, sid)
     await listed(app, 1)
-    await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o: split"))
-    // Floating is 96x24: inside its border, a column of margin either side and under its title, 92x21.
+    await openShell(app)
+    // A split is 60 columns: inside its box, a column of margin either side, and under its header and over its
+    // footer, 56x26.
     await until(() => sizes(office, shell.id).length === 1)
-    expect(sizes(office, shell.id)).toEqual([{ cols: 92, rows: 21 }])
-    await leader(app, "o")
-    // A split is 60 columns: 56x27 inside.
-    await until(() => sizes(office, shell.id).length === 2)
-    expect(sizes(office, shell.id)[1]).toEqual({ cols: 56, rows: 27 })
+    expect(sizes(office, shell.id)).toEqual([{ cols: 56, rows: 26 }])
     // A wider screen widens the split; it takes the sidebar's place.
     app.setup.resize(140, 30)
+    await until(() => sizes(office, shell.id).length === 2)
+    expect(sizes(office, shell.id)[1]).toEqual({ cols: 66, rows: 26 })
+    // Full screen is the screen's width.
+    await leader(app, "o")
     await until(() => sizes(office, shell.id).length === 3)
-    expect(sizes(office, shell.id)[2]).toEqual({ cols: 66, rows: 27 })
+    expect(sizes(office, shell.id)[2]).toEqual({ cols: 136, rows: 26 })
 
     // It draws at the instrument's size, whoever set it: 30 columns here.
     add(office, sid, { ...shell, size: { cols: 30, rows: 5 }, updated_at: LATER })
@@ -588,13 +538,12 @@ test("a view that isn't the approver's only follows the instrument's size", asyn
     office.updateSession(sid, { opened_by: "lan" })
     const shell = add(office, sid)
     await listed(app, 1)
-    await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o: split"))
+    await openShell(app)
     await until(() => sizes(office, shell.id).length === 1)
     await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o: full screen"))
+    await app.until((f) => f.includes("ctrl+x o split"))
     await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o: back to the list"))
+    await app.until((f) => f.includes("ctrl+x o full screen"))
     await Bun.sleep(100)
     // The office refused the first; it sent no more.
     expect(sizes(office, shell.id)).toHaveLength(1)
@@ -605,14 +554,12 @@ test("a view that isn't the approver's only follows the instrument's size", asyn
   }
 })
 
-test("the split's width follows its handle", async () => {
+test("the split's width follows its handle, and the shell takes the pane's new size", async () => {
   const { office, sid, app } = await boot()
   try {
     const shell = add(office, sid)
     await listed(app, 1)
-    await setView(app, "In a split", "split")
-    await leader(app, "o")
-    let f = await app.until((f) => f.includes("ctrl+x o: full screen"))
+    let f = await openShell(app)
     expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
     await until(() => sizes(office, shell.id).length === 1)
     // The handle is the two columns at the pane's edge; dragged left, the pane widens to what leaves the chat its
@@ -624,7 +571,7 @@ test("the split's width follows its handle", async () => {
     f = await app.until((f) => corner(f)?.x === 44)
     expect(corner(f)).toEqual({ x: 44, y: 0, right: 119 })
     await until(() => sizes(office, shell.id).some((s: any) => s.cols === 72))
-    // Clicking the chat gives it the keys, and the view stays open.
+    // Clicking the chat gives it the keys, and the pane stays open.
     await mouse.click(10, 10)
     app.input.typeText("hi there")
     f = await app.until((f) => f.includes("hi there"))
@@ -635,20 +582,20 @@ test("the split's width follows its handle", async () => {
   }
 })
 
-test("a shell waiting for a password opens itself, takes the owner's keys, and goes back to the list after", async () => {
+test("a shell waiting for a password opens itself, takes the owner's keys, and closes after", async () => {
   const { office, sid, app } = await boot()
   try {
     const SECRET = "hunter2-xq7"
     const ssh = add(office, sid, { name: "shell 2", profile: "ssh", command: "ssh nhb25@misha" })
     await listed(app, 1)
-    expect(app.frame()).not.toContain("╭")
+    expect(app.frame()).not.toContain("┌")
     office.instrumentOutput(sid, ssh.id, "nhb25@misha's password: ")
     add(office, sid, { ...ssh, status: "waiting", waiting: "secret", updated_at: MIDWAY })
-    // It opens in the default view, floating, with the keys.
-    let f = await app.until((f) => f.includes("password:") && f.includes("╭"))
-    expect(corner(f)).toEqual({ x: 12, y: 3, right: 107 })
-    expect(title(f)).toStartWith("shell 2 · waiting for you: type your password here · ")
-    await app.until((f) => f.includes("ctrl+x ←: chat"))
+    // It opens beside the chat, with the keys.
+    let f = await app.until((f) => f.includes("password:") && f.includes("┌"))
+    expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
+    expect(title(f)).toStartWith("shell 2 · type your password here · ")
+    await app.until((f) => f.includes("ctrl+x ← focus chat"))
     app.input.typeText(SECRET)
     app.input.pressEnter()
     await until(() => typed(office, ssh.id).join("") === SECRET + "\r")
@@ -657,9 +604,9 @@ test("a shell waiting for a password opens itself, takes the owner's keys, and g
     expect(f).not.toContain(SECRET)
     expect(leaked(office, SECRET)).toBe(false)
 
-    // The wait ends: it goes back to the list, and the prompt has the keys.
+    // The wait ends: it closes, and the prompt has the keys.
     update(office, sid, ssh.id, { status: "running", waiting: null })
-    f = await app.until((f) => !f.includes("╭"))
+    f = await app.until((f) => !f.includes("┌"))
     expect(f).not.toContain("password:")
     app.input.typeText("hello")
     await app.until((f) => f.includes("hello"))
@@ -678,18 +625,18 @@ test("a shell the owner opened stays open after its wait ends; a pipes shell's w
     add(office, sid, { ...pipes, status: "waiting", waiting: "secret" })
     await app.until((f) => line(f)?.includes("is waiting for you") ?? false)
     await Bun.sleep(100)
-    expect(app.frame()).not.toContain("╭")
+    expect(app.frame()).not.toContain("┌")
     add(office, sid, { ...pipes, status: "running", waiting: null })
 
     const ssh = add(office, sid, { name: "shell 2", profile: "ssh", command: "ssh h" })
     await listed(app, 2)
-    await leader(app, "o")
+    await openShell(app, "shell 2")
     await app.until((f) => title(f).startsWith("shell 2 · running"))
     update(office, sid, ssh.id, { status: "waiting", waiting: "secret" })
-    await app.until((f) => title(f).startsWith("shell 2 · waiting for you: type your password here"))
+    await app.until((f) => title(f).startsWith("shell 2 · type your password here"))
     update(office, sid, ssh.id, { status: "running", waiting: null })
     const f = await app.until((f) => title(f).startsWith("shell 2 · running"))
-    expect(corner(f)).toEqual({ x: 12, y: 3, right: 107 })
+    expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
   } finally {
     await app.stop()
     office.stop()
@@ -702,8 +649,8 @@ test("Ctrl-C in an open shell goes to its command, not to the chat", async () =>
     const shell = add(office, sid, { command: "sleep 100" })
     office.updateSession(sid, { status: "busy" })
     await app.until((f) => f.includes("esc interrupt") && f.includes("↓ 1 shell"))
-    await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x ←: chat"))
+    await openShell(app)
+    await app.until((f) => f.includes("ctrl+x ← focus chat"))
     app.input.pressKey("c", { ctrl: true })
     await until(() => typed(office, shell.id).length === 1)
     expect(typed(office, shell.id)).toEqual(["\x03"])
@@ -718,30 +665,30 @@ test("Ctrl-C in an open shell goes to its command, not to the chat", async () =>
   }
 })
 
-test("Esc and ctrl+o in a focused shell go to the shell, and <leader>o cycles the view and puts it away", async () => {
+test("Esc and ctrl+o in a focused shell go to the shell; ctrl+x o shows it full screen and back, and ctrl+x ↑ closes it", async () => {
   const { office, sid, app } = await boot()
   try {
     const shell = add(office, sid, { command: "vim notes.txt" })
     office.updateSession(sid, { status: "busy" })
     await app.until((f) => f.includes("esc interrupt") && f.includes("↓ 1 shell"))
-    await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o: split"))
+    await openShell(app)
+    await app.until((f) => f.includes("ctrl+x o full screen"))
     await escape(app)
     app.input.pressKey("o", { ctrl: true })
     await until(() => typed(office, shell.id).join("") === "\x1b\x0f")
     let f = await app.until(() => true)
-    expect(corner(f)).toEqual({ x: 12, y: 3, right: 107 })
+    expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
     expect(office.requests.some((r) => r.path.endsWith("/interrupt"))).toBe(false)
 
     await leader(app, "o")
-    f = await app.until((f) => f.includes("ctrl+x o: full screen"))
-    expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
-    await leader(app, "o")
-    f = await app.until((f) => f.includes("ctrl+x o: back to the list"))
+    f = await app.until((f) => f.includes("ctrl+x o split"))
     expect(corner(f)).toEqual({ x: 0, y: 0, right: 119 })
     await leader(app, "o")
-    await app.until((f) => !f.includes("╭"))
-    // The leader and the o after it went to neither the shell nor the chat.
+    f = await app.until((f) => f.includes("ctrl+x o full screen"))
+    expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
+    await leaderArrow(app, "up")
+    await app.until((f) => !f.includes("┌"))
+    // The leader and the keys after it went to neither the shell nor the chat.
     expect(typed(office, shell.id).join("")).toBe("\x1b\x0f")
     expect(office.requests.some((r) => r.path.endsWith("/interrupt"))).toBe(false)
   } finally {
@@ -755,19 +702,17 @@ test("<leader>left moves focus to the chat with the view still open, and <leader
   try {
     const shell = add(office, sid)
     await listed(app, 1)
-    await setView(app, "In a split", "split")
-    await leader(app, "o")
-    // A split's title has room for the keys' names, not what they do.
-    let f = await app.until((f) => f.includes("ctrl+x ←"))
+    let f = await openShell(app)
+    f = await app.until((f) => f.includes("ctrl+x ← focus chat"))
     await leaderArrow(app, "left")
-    f = await app.until((f) => f.includes("ctrl+x →"))
+    f = await app.until((f) => f.includes("ctrl+x → focus pane"))
     expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
     // The chat's prompt, beside the view, takes what is typed now.
     app.input.typeText("note-to-minh")
     f = await app.until((f) => rows(f).some((r) => r.slice(0, 60).includes("note-to-minh")))
     expect(typed(office, shell.id)).toEqual([])
     await leaderArrow(app, "right")
-    await app.until((f) => f.includes("ctrl+x ←"))
+    await app.until((f) => f.includes("ctrl+x ← focus chat"))
     app.input.typeText("ls")
     await until(() => typed(office, shell.id).join("") === "ls")
     f = await app.until(() => true)
@@ -784,15 +729,14 @@ test("in nano the leader twice reaches it as ^X", async () => {
   try {
     const shell = add(office, sid, { command: "nano notes.txt" })
     await listed(app, 1)
-    await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o: split"))
+    await openShell(app)
     app.input.pressKey("x", { ctrl: true })
     await app.setup.renderOnce()
     app.input.pressKey("x", { ctrl: true })
     await until(() => typed(office, shell.id).length === 1)
     expect(typed(office, shell.id)).toEqual(["\x18"])
-    // The view stays as it was.
-    expect(corner(await app.until(() => true))).toEqual({ x: 12, y: 3, right: 107 })
+    // The pane stays as it was.
+    expect(corner(await app.until(() => true))).toEqual({ x: 60, y: 0, right: 119 })
   } finally {
     await app.stop()
     office.stop()
@@ -804,8 +748,7 @@ test("the owner's keys go out batched, as typed, and the TUI adds none of them t
   try {
     const shell = add(office, sid)
     await listed(app, 1)
-    await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o: split"))
+    await openShell(app)
     const TEXT = "echo batched-keys-q9"
     app.input.typeText(TEXT)
     app.input.pressEnter()
@@ -828,7 +771,7 @@ test("<leader>o on an approval card for a terminal command opens its shell besid
   try {
     const shell = add(office, sid, { name: "shell 1", command: "tail -f build.log" })
     office.instrumentOutput(sid, shell.id, "waiting for input")
-    // Another shell changed later, which <leader>o would open with no card.
+    // Another shell changed later.
     add(office, sid, { name: "shell 2", command: "htop", updated_at: LATER })
     await listed(app, 2)
     const card = office.addApproval(sid, {
@@ -842,10 +785,10 @@ test("<leader>o on an approval card for a terminal command opens its shell besid
     await app.until((f) => f.includes("make deploy") && f.includes("enter confirm"))
     await leader(app, "o")
     // A split beside the card, which keeps the keys.
-    let f = await app.until((f) => f.includes("waiting for input") && f.includes("╭"))
+    let f = await app.until((f) => f.includes("waiting for input") && f.includes("┌"))
     expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
     expect(title(f)).toStartWith("shell 1 · running")
-    f = await app.until((f) => f.includes("ctrl+x →"))
+    f = await app.until((f) => f.includes("ctrl+x → focus pane"))
     expect(rows(f).some((r) => r.slice(0, 60).includes("make deploy"))).toBe(true)
     // The card takes a digit, which selects Yes, and Enter, which sends it; the shell gets neither.
     app.input.pressKey("1")
@@ -870,21 +813,21 @@ test("the rest of a password typed after its wait ends goes to the shell, never 
     await listed(app, 1)
     office.instrumentOutput(sid, ssh.id, "[sudo] password for nhb25: ")
     update(office, sid, ssh.id, { status: "waiting", waiting: "secret" })
-    await app.until((f) => f.includes("╭") && title(f).includes("type your password here") && f.includes("←: chat"))
+    await app.until((f) => f.includes("┌") && title(f).includes("type your password here") && f.includes("← focus chat"))
     await app.input.typeText("hunt")
     await until(() => typed(office, ssh.id).join("") === "hunt")
     // sudo's pwfeedback echoes stars; the office sees the wait end as the program draws them.
     office.instrumentOutput(sid, ssh.id, "****")
     update(office, sid, ssh.id, { status: "running", waiting: null })
     const frames: string[] = []
-    // The view stays, with the keys, until the line is done.
+    // The pane stays, with the keys, until the line is done.
     frames.push(await app.until((f) => title(f).startsWith("shell 2 · running")))
     await app.input.typeText("er2-zz")
     frames.push(await app.until(() => true))
     app.input.pressEnter()
     await until(() => typed(office, ssh.id).join("") === "hunter2-zz\r")
-    // Then it goes back to the list, and the prompt is as it was: empty.
-    frames.push(await app.until((f) => !f.includes("╭")))
+    // Then the pane closes, and the prompt is as it was: empty.
+    frames.push(await app.until((f) => !f.includes("┌")))
     expect(frames.some((f) => f.includes("er2-zz") || f.includes("hunt"))).toBe(false)
     expect(leaked(office, "er2-zz")).toBe(false)
     expect(office.requests.some((r) => r.path.endsWith("/prompt"))).toBe(false)
@@ -908,23 +851,18 @@ test("a shell waiting for a password opens itself only for the session's approve
     update(office, sid, ssh.id, { status: "waiting", waiting: "secret" })
     await app.until((f) => line(f)?.includes("is waiting for you") ?? false)
     await Bun.sleep(200)
-    expect(app.frame()).not.toContain("╭")
+    expect(app.frame()).not.toContain("┌")
     // Opened by hand, it waits for its approver, not for this viewer.
-    await leader(app, "o")
-    let f = await app.until((f) => f.includes("╭"))
+    let f = await openShell(app, "shell 2")
     expect(title(f)).toStartWith("shell 2 · waiting for you · ssh h")
     expect(f).not.toContain("type your password here")
-    await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o: full screen"))
-    await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o: back to the list"))
-    await leader(app, "o")
-    await app.until((f) => !f.includes("╭"))
+    await leaderArrow(app, "up")
+    await app.until((f) => !f.includes("┌"))
 
     // The chat is this viewer's again: the waiting shell opens itself for them.
     office.updateSession(sid, { opened_by: "ngocbh" })
-    f = await app.until((f) => f.includes("╭") && title(f).includes("type your password here"))
-    expect(title(f)).toStartWith("shell 2 · waiting for you: type your password here")
+    f = await app.until((f) => f.includes("┌") && title(f).includes("type your password here"))
+    expect(title(f)).toStartWith("shell 2 · type your password here")
   } finally {
     await app.stop()
     office.stop()
@@ -940,7 +878,7 @@ test("a shell that waits for a password while the owner has a draft opens beside
     await app.until((f) => f.includes("a draft"))
     update(office, sid, ssh.id, { status: "waiting", waiting: "secret" })
     // Its title says how to give it the keys, not to type the password, which would go to the draft.
-    let f = await app.until((f) => f.includes("╭") && f.includes("ctrl+x →: shell"))
+    let f = await app.until((f) => f.includes("┌") && f.includes("ctrl+x → focus pane"))
     expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
     expect(title(f)).toStartWith("shell 2 · waiting for you · ")
     expect(f).not.toContain("type your password here")
@@ -950,7 +888,7 @@ test("a shell that waits for a password while the owner has a draft opens beside
     expect(typed(office, ssh.id)).toEqual([])
     // <leader>right gives the shell the keys.
     await leaderArrow(app, "right")
-    await app.until((f) => f.includes("╭") && title(f).includes("type your password here"))
+    await app.until((f) => f.includes("┌") && title(f).includes("type your password here"))
     await app.input.typeText("pw")
     await until(() => typed(office, ssh.id).join("") === "pw")
     f = await app.until(() => true)
@@ -962,15 +900,15 @@ test("a shell that waits for a password while the owner has a draft opens beside
   }
 })
 
-test("an office's refusal of the keys shows over a floating view", async () => {
+test("an office's refusal of the keys shows over the pane", async () => {
   const { office, sid, app } = await boot()
   try {
     office.updateSession(sid, { opened_by: "lan" })
     const shell = add(office, sid, { command: "vim" })
     office.instrumentOutput(sid, shell.id, "editing")
     await listed(app, 1)
-    await leader(app, "o")
-    await app.until((f) => f.includes("editing") && f.includes("ctrl+x o: split"))
+    await openShell(app)
+    await app.until((f) => f.includes("editing"))
     app.input.typeText("i")
     await app.until((f) => f.includes("only @lan may type"))
     // Refused once, the view sends no more.
@@ -983,19 +921,19 @@ test("an office's refusal of the keys shows over a floating view", async () => {
   }
 })
 
-test("a shell's view sends nothing once it is put away, its terminal's focus report as it goes included", async () => {
+test("a shell's view sends nothing once it is closed, its terminal's focus report as it goes included", async () => {
   const { office, sid, app } = await boot()
   try {
     const shell = add(office, sid, { command: "vim" })
     // The program asks for focus reports, which the terminal sends as it gains and loses focus.
     office.instrumentOutput(sid, shell.id, "\x1b[?1004hediting")
     await listed(app, 1)
-    await setView(app, "Full screen", "full")
+    await openShell(app)
     await leader(app, "o")
-    await app.until((f) => f.includes("editing") && f.includes("ctrl+x o: back to the list"))
+    await app.until((f) => f.includes("editing") && f.includes("ctrl+x o split"))
     app.input.typeText("i")
     await until(() => typed(office, shell.id).join("") === "i")
-    await leader(app, "o")
+    await leaderArrow(app, "up")
     await app.until((f) => !f.includes("editing"))
     await Bun.sleep(100)
     expect(typed(office, shell.id).join("")).toBe("i")
@@ -1015,11 +953,11 @@ async function closedMidPassword(close: (office: FakeOffice, sid: string, id: st
     const ssh = add(office, sid, { name: "shell 2", profile: "ssh", command: "sudo make install" })
     await listed(app, 1)
     update(office, sid, ssh.id, { status: "waiting", waiting: "secret" })
-    await app.until((f) => f.includes("╭") && title(f).includes("type your password here") && f.includes("←: chat"))
+    await app.until((f) => f.includes("┌") && title(f).includes("type your password here") && f.includes("← focus chat"))
     await app.input.typeText("hunt")
     await until(() => typed(office, ssh.id).join("") === "hunt")
     close(office, sid, ssh.id)
-    const frames = [await app.until((f) => !f.includes("╭") && f.includes("keys are dropped until Enter"))]
+    const frames = [await app.until((f) => !f.includes("┌") && f.includes("keys are dropped until Enter"))]
     await app.input.typeText("er2-zz")
     frames.push(await app.until(() => true))
     app.input.pressEnter()
@@ -1061,10 +999,10 @@ test("with no opener and two humans at the top of the org chart, a waiting shell
     update(office, sid, ssh.id, { status: "waiting", waiting: "secret" })
     await app.until((f) => line(f)?.includes("is waiting for you") ?? false)
     await Bun.sleep(200)
-    expect(app.frame()).not.toContain("╭")
+    expect(app.frame()).not.toContain("┌")
     // Once its opener is known to be this viewer, it does.
     office.updateSession(sid, { opened_by: "ngocbh" })
-    await app.until((f) => f.includes("╭") && title(f).includes("type your password here"))
+    await app.until((f) => f.includes("┌") && title(f).includes("type your password here"))
   } finally {
     await app.stop()
     office.stop()
