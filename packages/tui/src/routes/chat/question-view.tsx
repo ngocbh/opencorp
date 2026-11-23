@@ -18,6 +18,7 @@ import { useTuiConfig } from "../../config"
 import { clearFirst, useBindings, useOpenCorpModeStack } from "../../keymap"
 import { SecretInput } from "../../ui/secret-input"
 import { useInteractivity } from "../../context/interactivity"
+import { useDialog } from "../../ui/dialog"
 import { createReadThrough, wrap } from "../../ui/read-through"
 import type { CardPage, PageAnswer } from "./answer"
 import { display } from "../../util/printable"
@@ -228,10 +229,14 @@ export function QuestionView(
     next()
   }
 
-  // Its mode is the keymap's while its side has the keys, as the picker's is: a card that shows in both the chat and
-  // the pane leaves the other side's base keys (a prompt's Esc) alone.
+  // Its mode is the keymap's while its side has the keys, as the picker's is, and while it shows with no dialog over
+  // it: the stack is the whole app's, and a mode pushed later lands on top. So a card shown in both the chat and the
+  // pane leaves the other side's base keys (a prompt's Esc) alone, a side chat's mode stays on top when the keys come
+  // back, and a dialog's mode stays on top while the dialog shows. Not `enabled`: a card's own confirm keys, shown
+  // while it isn't, are in this mode.
+  const dialog = useDialog()
   createEffect(() => {
-    if (!interactive()) return
+    if (!interactive() || props.hidden || dialog.stack.length > 0) return
     const popMode = modeStack.push(QUESTION_MODE)
     onCleanup(popMode)
   })

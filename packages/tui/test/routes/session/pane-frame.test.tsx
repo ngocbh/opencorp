@@ -891,6 +891,85 @@ test("a Codex card in both the chat and the pane leaves the pane's prompt its Es
   }
 })
 
+test("a side chat keeps its keys after they go to the pane and back", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    await openFirst(app)
+    await leader(app, "left")
+    await app.until((f) => f.includes("ctrl+x → focus pane"))
+    office.addQuestion({ session_id: chat.id, question: "Deploy now?", options: ["yes", "no"] })
+    await app.until((f) => f.includes("Deploy now?") && f.includes("Chat about this"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh"))
+    await leader(app, "right")
+    await app.until((f) => f.includes("ctrl+x ← focus chat"))
+    await leader(app, "left")
+    await app.until((f) => f.includes("ctrl+x → focus pane"))
+    // ctrl+b still goes back to the question.
+    app.input.pressKey("b", { ctrl: true })
+    await app.until((f) => !f.includes("Side chat with @minh") && f.includes("Deploy now?"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a card the chat gets the keys back for under an open palette takes none of the palette's keys", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    await openFirst(app)
+    await leader(app, "left")
+    await app.until((f) => f.includes("ctrl+x → focus pane"))
+    const q = office.addQuestion({ session_id: chat.id, question: "Deploy now?", options: ["yes", "no"] })
+    await app.until((f) => f.includes("Deploy now?") && f.includes("Chat about this"))
+    await leader(app, "right")
+    await app.until((f) => f.includes("ctrl+x ← focus chat"))
+    app.input.pressKey("p", { ctrl: true })
+    await app.until((f) => f.includes("Commands"))
+    // The Codex session goes: the pane closes and the chat gets the keys back, the palette still open.
+    office.removeInstrument(chat.id, child.id)
+    await app.until((f) => corner(f) === undefined)
+    await Bun.sleep(100)
+    app.input.typeText("1")
+    await app.until((f) => f.includes("Commands"))
+    await Bun.sleep(200)
+    expect(sent(office, `/questions/${q.id}/answer`)).toEqual([])
+    expect(office.state.questions[q.id]!.status).toBe("open")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("with the chat's own approval card open beside the pane, Esc in the pane's prompt still clears a draft", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    await openFirst(app)
+    await app.until((f) => f.includes("Codex says hello."))
+    deployApproval(office, chat.id)
+    await app.until((f) => f.includes("make deploy"))
+    app.input.typeText("draft")
+    await app.until((f) => f.includes("draft"))
+    await escape(app)
+    await app.until((f) => !f.includes("draft"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("below 108 columns a pane that opens itself over a draft or a card waits, a line says so, and ctrl+x → shows it", async () => {
   const office = createFakeOffice()
   const { sid, app } = await boot(office, 100)

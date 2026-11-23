@@ -684,3 +684,27 @@ test("a resize that makes a read question longer hides its answers until its new
     office.stop()
   }
 })
+
+test("a card that opens under the open palette takes none of its keys, and has them once the palette closes", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh auto ·"))
+    app.input.pressKey("p", { ctrl: true })
+    await app.until((f) => f.includes("Commands"))
+    const q = office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"] })
+    await Bun.sleep(200)
+    app.input.typeText("1")
+    await Bun.sleep(200)
+    expect(office.requests.filter((r) => r.path === `/questions/${q.id}/answer`)).toEqual([])
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Commands") && f.includes("Deploy now?"))
+    await Bun.sleep(100)
+    app.input.pressKey("1")
+    await app.until(() => office.state.questions[q.id].status !== "open")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

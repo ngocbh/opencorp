@@ -8,6 +8,7 @@ import { personLabel } from "../../util/transcript"
 import { useToast } from "../../ui/toast"
 import { useTuiConfig } from "../../config"
 import { useBindings } from "../../keymap"
+import { useDialog } from "../../ui/dialog"
 import { buildAnswer, cardModel } from "./answer"
 import { leaveBindings } from "./leave"
 import { QUESTION_MODE, QuestionView, type QuestionViewHandle } from "./question-view"
@@ -24,6 +25,7 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
   const toast = useToast()
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
+  const dialog = useDialog()
 
   // The card stays mounted while its question is replaced by a newer copy (a reconnect re-reads
   // it); keep the last copy for the moment the question goes before the card does.
@@ -182,7 +184,8 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
       ]}
       hints={stoppable() ? [{ key: "esc", label: `stop ${asker()}` }] : []}
       notice={confirming() ? `Stop ${asker()}? y/N` : undefined}
-      enabled={!confirming()}
+      // A dialog over the card has the keys, as over a Codex card: a digit typed in the palette picks nothing here.
+      enabled={!confirming() && dialog.stack.length === 0}
       hidden={props.hidden}
       ref={(v) => (view = v)}
       onSubmit={(answers) => {
