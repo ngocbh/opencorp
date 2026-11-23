@@ -14,7 +14,7 @@ import { Learning } from "../../../src/features/reach/learning.ts"
 import { type SaveAccessHost, saveAccess } from "../../../src/features/reach/tools/save_access.ts"
 import { dontAskRefusal } from "../../../src/runtime/permissions/policy.ts"
 import type { CardAnswer, QuestionCard } from "../../../src/runtime/sessions/builtin.ts"
-import { cmIdOf, makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
+import { claimCm, makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import type { Spec } from "../../../src/features/reach/spec.ts"
 import { exitAll, type ReachContext, writeSshFiles } from "../../../src/features/reach/ssh.ts"
 import { DEFAULT_PORT, sha256, writeAccess } from "../../../src/features/reach/state.ts"
@@ -43,8 +43,8 @@ export function fakeHome(behavior?: FakeSshBehavior): { dir: string; fake: FakeS
 }
 
 /** A context whose home is `dir` and whose ssh is `fake`, for destination `name` ("misha" unless given), with its
- *  folders made, its control-socket folder's id as a visit finds it, and the ssh files written with `includes` (none
- *  unless given); children get only a system PATH and `dir` as HOME. */
+ *  folders made, a control-socket folder claimed and recorded in its `cm.id`, as a visit finds it, and the ssh files
+ *  written with `includes` (none unless given); children get only a system PATH and `dir` as HOME. */
 export async function reachCtx(
   dir: string,
   fake: FakeSsh,
@@ -52,7 +52,8 @@ export async function reachCtx(
 ): Promise<ReachContext> {
   const found = new ReachPaths(dir, name)
   makeDirs(found)
-  const paths = found.withCm(cmIdOf(found.dir))
+  const paths = found.withCm(claimCm(found.root, new Set()))
+  await writePrivate(paths.cmRecord, `${paths.cmId}\n`)
   makeDirs(paths)
   await writeSshFiles(paths, fake.ssh, includes)
   return {
@@ -402,6 +403,6 @@ export async function approved(paths: ReachPaths, body: string): Promise<void> {
     learned_at: "2026-11-11T10:00:00.000Z",
     last_used_at: null,
     signed_in_at: null,
-    cm: paths.cmId ?? cmIdOf(paths.dir),
+    cm: paths.cmId!,
   })
 }

@@ -48,7 +48,7 @@ test("a file with a secret is refused before any card", async () => {
     expect(told).not.toContain(KEY)
     expect(cards).toEqual([])
     expect(fake.calls()).toEqual([])
-    expect(fs.readdirSync(ctx.paths.dir).sort()).toEqual(["ssh"])
+    expect(fs.readdirSync(ctx.paths.dir).sort()).toEqual([".lock", "cm.id", "ssh"])
   }
   expect(secretIn("ssh login1 true", [""])).toBeNull()
   // So are files over 1 MiB, which a visit never reads.

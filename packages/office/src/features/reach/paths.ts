@@ -1,7 +1,7 @@
 /** The hq folder, `<home>/hq`: a folder per saved destination, `hq/<name>/`, holding its path and its ssh files; the
  *  learning model's sign-in, which every destination shares; each destination's control-socket folder; and the limits
  *  SSH puts on the home's path. */
-import { createHash, randomBytes } from "node:crypto"
+import { randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { checkFolder, makePrivateFolder } from "../../util/private_files.ts"
@@ -34,11 +34,44 @@ export const tempName = () => `.new-${randomBytes(3).toString("hex")}`
 /** Whether `name` is a learning run's temporary folder's. */
 export const isTemp = (name: string) => TEMP.test(name)
 
-/** The id of the folder `dir`'s control sockets, for a destination whose access.json records none yet: 6 hex digits
- *  of its device and inode, which a rename keeps and its name isn't part of. */
-export function cmIdOf(dir: string): string {
-  const st = fs.statSync(dir, { bigint: true })
-  return createHash("sha256").update(`${st.dev}:${st.ino}`).digest("hex").slice(0, 6)
+/** How many ids `claimCm` draws before it gives up. */
+const CLAIM_TRIES = 1000
+
+/** Claims a fresh control-socket folder in `root`, the hq folder: draws a random id that `recorded` (the ids the
+ *  destinations' folders record) doesn't hold, and makes `cm-<id>` (0700) with an exclusive mkdir, so no other
+ *  folder, link or concurrent claim has it; resolves to the id. `random` is the draw: tests pass their own. Throws
+ *  after `CLAIM_TRIES` draws. */
+export function claimCm(
+  root: string,
+  recorded: ReadonlySet<string>,
+  random: () => string = () => randomBytes(3).toString("hex"),
+): string {
+  for (let i = 0; i < CLAIM_TRIES; i++) {
+    const id = random()
+    if (!CM_ID.test(id) || recorded.has(id)) continue
+    const dir = path.join(root, `cm-${id}`)
+    try {
+      fs.mkdirSync(dir, { mode: 0o700 })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue
+      throw error
+    }
+    fs.chmodSync(dir, 0o700) // the umask may have narrowed it
+    return id
+  }
+  throw new Error(`there's no free control-socket folder in ${root}`)
+}
+
+/** Whether `paths`' control-socket folder is one OpenCorp may end masters in and delete from: its id is known, and
+ *  it's a real folder (no link), this user's, 0700, straight in hq. */
+export function isOwnCm(paths: ReachPaths): boolean {
+  if (paths.cmId === null || path.dirname(paths.cm) !== paths.root) return false
+  try {
+    checkFolder(paths.cm, "control-socket folder")
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** The files of destination `name`, `<home>/hq/<name>`, and of what destinations share in `<home>/hq`. `cmId` names
@@ -144,6 +177,15 @@ export class ReachPaths {
   /** The control socket of the master to HQ's machine. */
   get node(): string {
     return path.join(this.cm, "node")
+  }
+  /** The id of its control-socket folder, recorded when the folder is made (`claimCm`); access.json records it too
+   *  once there's one. */
+  get cmRecord(): string {
+    return path.join(this.dir, "cm.id")
+  }
+  /** A learning run's port, held for it while it learns (`reservePort`), before access.json records one. */
+  get portRecord(): string {
+    return path.join(this.dir, "port")
   }
   /** One `opencorp hq` at a time for this destination. */
   get lock(): string {

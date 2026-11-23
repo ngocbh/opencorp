@@ -33,9 +33,19 @@ import {
   withProblems,
 } from "./connect.ts"
 import { ConnectionShell } from "./connection.ts"
-import { present, type Saved, savedDestinations, unknown } from "./destinations.ts"
+import {
+  portShared,
+  present,
+  removeCm,
+  reservePort,
+  type Saved,
+  savedDestinations,
+  socketId,
+  sweepTemps,
+  unknown,
+} from "./destinations.ts"
 import { Learning } from "./learning.ts"
-import { cmIdOf, isTemp, makeDirs, nameProblem, pathProblem, ReachPaths, tempName } from "./paths.ts"
+import { isTemp, makeDirs, nameProblem, pathProblem, ReachPaths, tempName } from "./paths.ts"
 import { learnProvider } from "./provider.ts"
 import {
   cleanOutput,
@@ -110,7 +120,7 @@ export interface VisitDeps {
   onSigint(fn: () => void): () => void
   exit(code: number): never
   limits?: ReachContext["limits"]
-  /** The `Include`s of `hq/ssh/config`: `defaultIncludes` of `sshHome` for real; tests pass their own. */
+  /** The `Include`s of `hq/<name>/ssh/config`: `defaultIncludes` of `sshHome` for real; tests pass their own. */
   sshIncludes: readonly string[]
   /** ssh's home, where the agent's ssh reads `~/.ssh`: the passwd entry's (`sandbox.ts`'s `sshHome`). */
   sshHome: string
@@ -147,6 +157,10 @@ export const SEVERAL = (saved: readonly Saved[]) =>
   "Run `opencorp hq NAME` for one."
 /** Asked when no office answers here and several destinations are saved. */
 export const WHICH = "Which HQ do you want to open?"
+/** Said for `dir`, a folder in hq under a destination's name that holds no reach.sh. */
+export const NOT_A_DESTINATION = (dir: string) =>
+  `opencorp hq: ${dir} holds no reach.sh, so it isn't a destination and no path can be saved under its name; move it ` +
+  "aside, or write its reach.sh."
 /** Said before offering to learn the path to `name`, which isn't saved. */
 export const NOT_SAVED_YET = (name: string) => `opencorp hq: there's no saved path to ${name} yet.`
 export const NOT_LEARNED = "opencorp hq: stopped; nothing was learned."
@@ -250,6 +264,12 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
   // Before anything is made under hq/: with nothing saved this is as likely HQ's own machine, its office stopped.
   const learnFirst = found === undefined
   if (learnFirst) {
+    // A folder there by that name would take the path's place when it's saved.
+    const taken = name === undefined ? null : path.join(deps.home, "hq", name)
+    if (taken !== null && present(taken)) {
+      deps.error(NOT_A_DESTINATION(taken))
+      return 1
+    }
     if (!deps.prompter.interactive) {
       deps.error(name === undefined ? NO_PATH(path.join(deps.home, "hq")) : unknown(name, saved))
       return name === undefined ? 3 : 2
@@ -313,14 +333,34 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
       deps.error(`opencorp hq: ${error.message}; relearning as if there were none.`)
     }
   }
-  paths = paths.withCm(access?.cm ?? cmIdOf(paths.dir))
+  paths = paths.withCm(await socketId(paths, access))
+  if (access !== null && access.cm !== paths.cmId) {
+    // Another folder records the same one (a copy of this one): this one moves to its own.
+    access = { ...access, cm: paths.cmId! }
+    await writeAccess(paths, access)
+  }
   const others = saved.filter((s) => s.paths.name !== paths.name)
   const holder = others.find((s) => s.access !== null && s.access.port === options.port)
   if (holder !== undefined) {
     deps.error(`opencorp hq: port ${options.port} is ${holder.paths.name}'s; pick another with --port N`)
     return 1
   }
-  let port = options.port ?? access?.port ?? nextPort(others.flatMap((s) => (s.access === null ? [] : [s.access.port])))
+  let port: number
+  if (learnFirst) {
+    // Held for this run until it saves, so learning runs that overlap get ports of their own.
+    const reserved = await reservePort(paths, options.port)
+    if (typeof reserved === "string") {
+      deps.error(`opencorp hq: ${reserved}`)
+      await removeCm(paths)
+      fs.rmSync(paths.dir, { recursive: true, force: true })
+      return 1
+    }
+    port = reserved
+  } else {
+    port = options.port ?? access?.port ?? nextPort(others.flatMap((s) => (s.access === null ? [] : [s.access.port])))
+    const shared = options.port === undefined && access !== null ? portShared(saved, paths.name, access.port) : null
+    if (shared !== null) deps.error(shared)
+  }
   const { ctx: started, off } = start(paths, ssh, deps)
   // The path a first learn saves is renamed: what follows uses the new folder.
   let ctx = started
@@ -330,6 +370,7 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
     makeDirs(paths)
     await writeSshFiles(paths, ssh, deps.sshIncludes)
     await cleanUp(ctx, deps.now().getTime())
+    await sweepTemps(ctx, deps.now().getTime())
     watcher = startWatcher(ctx)
     if (learnFirst) {
       const inputs = { name: name ?? null, notes: "", script: "", failure: "" }
@@ -370,7 +411,7 @@ export async function visit(options: VisitOptions, deps: VisitDeps): Promise<num
     fs.rmSync(ctx.paths.status(process.pid), { force: true })
     // A first learn that saved nothing leaves nothing behind.
     if (isTemp(ctx.paths.name)) {
-      fs.rmSync(ctx.paths.cm, { recursive: true, force: true })
+      await removeCm(ctx.paths)
       fs.rmSync(ctx.paths.dir, { recursive: true, force: true })
     }
   }
@@ -425,6 +466,9 @@ async function learnAndHold(
   const learned = await learnPath(ctx, deps, inputs, port)
   if (typeof learned === "number") return learned
   moved(learned.paths)
+  // Checked again as saved: another destination may have taken the port while this one learned.
+  const shared = portShared(await savedDestinations(deps.home), learned.paths.name, learned.access.port)
+  if (shared !== null) deps.error(shared)
   try {
     return await hold({ ...ctx, paths: learned.paths }, learned.conn, learned.access, options, deps)
   } finally {

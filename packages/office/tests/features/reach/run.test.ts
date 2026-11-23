@@ -13,7 +13,7 @@ import { providerSecrets } from "../../../src/models/check.ts"
 import { AUTH_FILE_ENV, ConnectionFile } from "../../../src/models/connections.ts"
 import { Provider } from "../../../src/models/provider.ts"
 import { Learning } from "../../../src/features/reach/learning.ts"
-import { cmIdOf, makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
+import { claimCm, makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import type { Spec } from "../../../src/features/reach/spec.ts"
 import { type Access, DEFAULT_PORT, readAccess, sha256, takeLock, writeAccess } from "../../../src/features/reach/state.ts"
 import {
@@ -28,6 +28,7 @@ import {
   LOST,
   NO_OFFICE_HERE,
   NO_PATH,
+  NOT_A_DESTINATION,
   NOT_SAVED_YET,
   SEVERAL,
   WHICH,
@@ -52,7 +53,7 @@ import { ReachFailure } from "../../../src/features/reach/connect.ts"
 import { PassThrough } from "node:stream"
 import { defaultIncludes } from "../../../src/features/reach/ssh.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName } from "../../../src/testing/fake_ssh.ts"
-import { control, isSocket, type ReachContext } from "../../../src/features/reach/ssh.ts"
+import { control, isSocket, LIMITS, type ReachContext } from "../../../src/features/reach/ssh.ts"
 import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
 import { beforeLearning, LEARN, LEARN_QUESTION, RELEARN_QUESTION } from "../../../src/features/reach/risks.ts"
 import { signInLine, withSignIn } from "../../../src/features/setup/onboard.ts"
@@ -94,12 +95,13 @@ const scriptFor = (spec: Spec) => `set -eu\nssh login1 true\nprintf '%s\\n' '${J
 /** The destination the tests save: named after the login host, as a first path learned with no name is. */
 const NAME = "login1"
 
-/** Destination `name`'s folder in `<dir>/hq`, made, with the id of its control-socket folder as a visit finds it. */
+/** Destination `name`'s folder in `<dir>/hq`, made, with a control-socket folder claimed and recorded in its
+ *  `cm.id`, as a visit finds it. */
 function destination(dir: string, name = NAME): ReachPaths {
   const paths = new ReachPaths(dir, name)
   makeDirs(paths)
-  const withCm = paths.withCm(cmIdOf(paths.dir))
-  makeDirs(withCm)
+  const withCm = paths.withCm(claimCm(paths.root, new Set()))
+  fs.writeFileSync(withCm.cmRecord, `${withCm.cmId}\n`, { mode: 0o600 })
   return withCm
 }
 
@@ -215,6 +217,57 @@ test("a destination whose access.json is broken names the file and offers --rele
   v = visitDeps(dir, fake)
   expect(await visit({ name: "beta", signIn: false, open: false }, v.deps)).toBe(3)
   expect(v.errors).toEqual([noJob("beta")])
+})
+
+test("a folder under the name that holds no reach.sh is said before anything is learned, with or without a terminal", async () => {
+  const { dir, fake } = fakeHome()
+  const folder = path.join(dir, "hq", "misha")
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 })
+  for (const interactive of [true, false]) {
+    const c = chat()
+    const v = visitDeps(dir, fake, { interactive, answers: ["1"], learnChat: c.learnChat })
+    expect(await visit({ name: "misha", signIn: false, open: false }, v.deps)).toBe(1)
+    expect(v.errors).toEqual([NOT_A_DESTINATION(folder)])
+    expect(v.prompter.seen).toEqual([])
+    expect(c.specs).toEqual([])
+  }
+  expect(fs.readdirSync(path.join(dir, "hq"))).toEqual(["misha"])
+})
+
+test("a destination whose port another saved one has too is warned of, and still visited", async () => {
+  const { dir, fake } = fakeHome()
+  await saved(dir, NO_JOB(path.join(dir, "ran")), {}, "alpha")
+  await saved(dir, NO_JOB(path.join(dir, "ran-beta")), {}, "beta")
+  const v = visitDeps(dir, fake)
+  expect(await visit({ name: "beta", signIn: false, open: false }, v.deps)).toBe(3)
+  expect(v.errors).toEqual([
+    "opencorp hq: port 49381 is alpha's too, so the two share a browser sign-in and can't be open at once; move one with `opencorp hq beta --port N`.",
+    noJob("beta"),
+  ])
+})
+
+test("a first learn holds the first port no saved destination or live learning run has, until it ends", async () => {
+  // The fake ssh outside the home, where the agent's sandbox can run it.
+  const { dir, fake } = await unlearnedHome()
+  await saved(dir, NO_JOB(path.join(dir, "ran")), {}, "alpha")
+  // Another learning run, live, holding 49382.
+  const other = new ReachPaths(dir, ".new-0a0a0a")
+  makeDirs(other)
+  fs.writeFileSync(other.portRecord, "49382\n", { mode: 0o600 })
+  const lock = takeLock(other)!
+  onTestFinished(() => lock.release())
+  const held: string[] = []
+  const c = chat(async () => {
+    for (const name of fs.readdirSync(path.join(dir, "hq")).filter((n) => n.startsWith(".new-") && n !== other.name)) {
+      held.push(fs.readFileSync(path.join(dir, "hq", name, "port"), "utf8"))
+    }
+  })
+  const v = visitDeps(dir, fake, { answers: ["1", ...(sandboxAvailable() ? [] : [""])], learnChat: c.learnChat })
+  expect(await visit({ name: "misha", signIn: false, open: false }, v.deps)).toBe(1)
+  expect(v.errors).toEqual([NOT_SAVED_YET("misha"), NOT_SAVED])
+  expect(held).toEqual(["49383\n"])
+  // It saved nothing: its folder and its socket folder are gone; the live run's are as they were.
+  expect(fs.readdirSync(path.join(dir, "hq")).filter((n) => n.startsWith(".new-"))).toEqual([other.name])
 })
 
 test("--port refuses a port another saved destination uses", async () => {
@@ -572,21 +625,22 @@ test("the visit line names what stays open until Ctrl-C", async () => {
   expect(await v.done).toBe(0)
 })
 
-/** Whether the master at `cm/node` answers `-O check`. */
-async function nodeUp(dir: string, fake: FakeSsh): Promise<boolean> {
-  const ctx: ReachContext = await reachCtx(dir, fake, { name: NAME })
+/** Whether the master at destination `paths`' `cm-<id>/node` answers `-O check`. */
+async function nodeUp(dir: string, fake: FakeSsh, paths: ReachPaths): Promise<boolean> {
+  const env = { PATH: "/usr/bin:/bin", HOME: dir }
+  const ctx: ReachContext = { paths, ssh: fake.ssh, env, batch: false, echo: () => {}, limits: LIMITS }
   return (await control(ctx, ctx.paths.node, "check")).code === 0
 }
 
 test("while another opencorp hq holds the lock it only opens HQ's URL, and the running visit's master survives", async () => {
-  const { dir, fake, port } = await approvedHome({}, { signed_in_at: new Date().toISOString() })
+  const { dir, fake, port, paths } = await approvedHome({}, { signed_in_at: new Date().toISOString() })
   const first = await connected(dir, fake, { signIn: false, open: false })
   const second = visitDeps(dir, fake)
   expect(await visit({ signIn: false, open: true }, second.deps)).toBe(0)
   expect(second.opened).toEqual([`http://127.0.0.1:${port}/`])
   expect(second.errors).toEqual([RUNNING])
   expect(second.prompter.seen).toEqual([])
-  expect(await nodeUp(dir, fake)).toBe(true)
+  expect(await nodeUp(dir, fake, paths)).toBe(true)
   first.sigint()
   expect(await first.done).toBe(0)
 })
@@ -606,7 +660,7 @@ test("--sign-in beside a running visit mints over its master and leaves the file
   // It rode the running visit's masters: no new login, and they're still up.
   expect(fake.masters().sort()).toEqual(masters.sort())
   expect(fake.calls().filter((argv) => argv.includes("-M"))).toHaveLength(1)
-  expect(await nodeUp(dir, fake)).toBe(true)
+  expect(await nodeUp(dir, fake, paths)).toBe(true)
   first.sigint()
   expect(await first.done).toBe(0)
 })
@@ -1066,6 +1120,8 @@ test("learning hands learnChat a spec whose terminal runs in the SSH-only shell,
   // Named after the host it reaches first, on the first free port; nothing is left of the folder it was learned in.
   expect(fs.readFileSync(paths.script, "utf8")).toBe(script)
   expect(await readAccess(paths)).toMatchObject({ port, host: "node1" })
+  // The port access.json holds now: the run's own record of it is gone.
+  expect(fs.existsSync(paths.portRecord)).toBe(false)
   expect(fs.readdirSync(paths.root).filter((name) => name.startsWith(".new-"))).toEqual([])
   expect(c.listed).toHaveLength(1)
   expect(v.printed).toContain(`http://127.0.0.1:${port}/pair#${remote.code}`)
@@ -1101,7 +1157,7 @@ test.skipIf(!sandboxAvailable())("learning that ends without a save lists the co
   expect(leftover(fake, paths)).toEqual({ cm: [], masters: [], processes: [] })
   // A first learn that saved nothing leaves no folder.
   // (`.lock` is the folder's own, which writes to provider.json take.)
-  expect(fs.readdirSync(paths.root).filter((name) => name !== ".lock").sort()).toEqual(["provider.json", "sessions"])
+  expect(fs.readdirSync(paths.root).filter((name) => name !== ".lock").sort()).toEqual(["ports.lock", "provider.json", "sessions"])
 })
 
 test.skipIf(!sandboxAvailable())("leaving the chat before it ends lists the commands tried and exits 130", async () => {

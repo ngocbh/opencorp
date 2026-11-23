@@ -8,7 +8,7 @@ import { PAIR_CODE_TTL_MS, Timestamp } from "@opencorp/protocol"
 import { z } from "zod"
 import { readPrivate, writePrivate } from "../../util/private_files.ts"
 import { redirectPage } from "../../util/redirect.ts"
-import { cmIdOf, isTemp, ReachPaths } from "./paths.ts"
+import type { ReachPaths } from "./paths.ts"
 import { exitAll, type ReachContext } from "./ssh.ts"
 
 /** Takes the destination's `lock` for this visit, or null when another `opencorp hq` holds it. It's yian's `lockFile`, a SQLite
@@ -126,7 +126,7 @@ export function sweepRedirects(paths: ReachPaths, now: number): void {
 export const STATUS_STALE_MS = 10 * 60_000
 
 /** The lock holder's start: `exitAll`, `sweepRedirects`, and `ssh/status.*`, `ssh/agent-status.*`, `reach.new.sh` and
- *  the replays' copies of reach.sh (`.reach-*.sh`) older than `STATUS_STALE_MS`; then `sweepTemps`. */
+ *  the replays' copies of reach.sh (`.reach-*.sh`) older than `STATUS_STALE_MS`. */
 export async function cleanUp(ctx: ReachContext, now: number): Promise<void> {
   const { paths } = ctx
   await exitAll(ctx)
@@ -137,44 +137,6 @@ export async function cleanUp(ctx: ReachContext, now: number): Promise<void> {
     (name) => name === path.basename(paths.candidate) || /^\.reach-[0-9]+-[0-9a-f]+\.sh$/.test(name),
     now - STATUS_STALE_MS,
   )
-  await sweepTemps(ctx, now)
-}
-
-/** Removes each learning run's temporary folder in `hq/` other than this visit's that was last changed before
- *  `STATUS_STALE_MS` and whose lock is free, so no run is learning there: its masters ended first, then its
- *  control-socket folder, then the folder. A run that saved renamed its folder, so what's left was abandoned. */
-export async function sweepTemps(ctx: ReachContext, now: number): Promise<void> {
-  for (const name of readdirOrEmpty(ctx.paths.root)) {
-    if (!isTemp(name) || name === ctx.paths.name) continue
-    const found = new ReachPaths(ctx.paths.home, name)
-    const st = fs.lstatSync(found.dir, { throwIfNoEntry: false })
-    if (st === undefined || !st.isDirectory() || st.mtimeMs >= now - STATUS_STALE_MS) continue
-    let lock: FileLock | null
-    try {
-      lock = takeLock(found)
-    } catch {
-      // A lock file that isn't private, say: not ours to judge.
-      continue
-    }
-    if (lock === null) continue
-    try {
-      const temp = found.withCm(cmIdOf(found.dir))
-      await exitAll({ ...ctx, paths: temp })
-      fs.rmSync(temp.cm, { recursive: true, force: true })
-      fs.rmSync(temp.dir, { recursive: true, force: true })
-    } finally {
-      lock.release()
-    }
-  }
-}
-
-function readdirOrEmpty(dir: string): string[] {
-  try {
-    return fs.readdirSync(dir)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
-    throw error
-  }
 }
 
 /** Deletes the files in `dir` whose names `match` and that were last changed before `before` (ms). */

@@ -7,7 +7,7 @@ import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { cmIdOf } from "@opencorp/office/features/reach/paths"
+import { claimCm } from "@opencorp/office/features/reach/paths"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "@opencorp/office/testing/fake_ssh"
 import type { TestOffice } from "@opencorp/office/testing/office"
 
@@ -120,7 +120,9 @@ export async function destination(
 ): Promise<{ dir: string; cm: string }> {
   const dir = path.join(hq, name)
   fs.mkdirSync(dir, { mode: 0o700 })
-  const id = cmIdOf(dir)
+  // Claimed and recorded as a visit does, so the test knows the folder.
+  const id = claimCm(hq, new Set())
+  fs.writeFileSync(path.join(dir, "cm.id"), `${id}\n`, { mode: 0o600 })
   const body = reachScript(office)
   fs.writeFileSync(path.join(dir, "reach.sh"), body, { mode: 0o600 })
   if (approved) {

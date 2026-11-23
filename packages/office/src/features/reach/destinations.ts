@@ -1,11 +1,14 @@
-/** The saved destinations in `<home>/hq`: which there are, the name a first path is saved under, and
- *  `opencorp hq --list`, `--rename` and `--forget`. */
+/** The saved destinations in `<home>/hq`: which there are, the name a first path is saved under, each folder's
+ *  control-socket folder and a learning run's port, and `opencorp hq --list`, `--rename` and `--forget`. */
 import fs from "node:fs"
 import path from "node:path"
+import { type FileLock, waitForLock } from "@ngocbh/yian/platform"
 import type { Spec } from "./spec.ts"
 import { clean, isTTY, type Prompter, TtyPrompter } from "../setup/prompts.ts"
-import { cmIdOf, nameProblem, ReachPaths } from "./paths.ts"
-import { type Access, readAccess, takeLock } from "./state.ts"
+import { writePrivate } from "../../util/private_files.ts"
+import { claimCm, isOwnCm, isTemp, nameProblem, ReachPaths } from "./paths.ts"
+import { exitAll, type ReachContext } from "./ssh.ts"
+import { type Access, nextPort, readAccess, STATUS_STALE_MS, takeLock } from "./state.ts"
 
 /** A saved destination: a folder in `hq/` with a name's name that holds reach.sh. `access` is its access.json, null
  *  when there's none yet (a reach.sh the owner wrote) or it can't be read, and `problem` says why it can't. */
@@ -40,6 +43,155 @@ export async function savedDestinations(home: string): Promise<Saved[]> {
   return saved
 }
 
+/** The id `paths`' folder records for its control sockets, in `cm.id`, or null when it records none. */
+export function readCmId(paths: ReachPaths): string | null {
+  return readRecord(paths.cmRecord, /^[0-9a-f]{6}$/)
+}
+
+/** The first line of the small file `file` when it matches `pattern`, else null. */
+function readRecord(file: string, pattern: RegExp): string | null {
+  try {
+    const first = fs.readFileSync(file, "utf8").split("\n")[0]!
+    return pattern.test(first) ? first : null
+  } catch {
+    return null
+  }
+}
+
+/** The folders in hq: each destination's and each learning run's, links and other names left out. */
+function folders(home: string): ReachPaths[] {
+  const root = path.join(home, "hq")
+  let names: string[]
+  try {
+    names = fs.readdirSync(root)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
+    throw error
+  }
+  return names
+    .filter((name) => (nameProblem(name) === null || isTemp(name)) && fs.lstatSync(path.join(root, name)).isDirectory())
+    .map((name) => new ReachPaths(home, name))
+}
+
+/** The control-socket ids the folders in hq record, in access.json or `cm.id`, but `except`'s. */
+export async function recordedIds(home: string, except?: string): Promise<Set<string>> {
+  const ids = new Set<string>()
+  for (const paths of folders(home)) {
+    if (paths.name === except) continue
+    const id = readCmId(paths)
+    if (id !== null) ids.add(id)
+    try {
+      const access = await readAccess(paths)
+      if (access !== null) ids.add(access.cm)
+    } catch {}
+  }
+  return ids
+}
+
+/** The id of `paths`' control-socket folder: the one `access` or its `cm.id` records, unless another folder in hq
+ *  records it too (one copied from another); else a fresh folder, claimed (`claimCm`) and recorded in `cm.id`.
+ *  `random` is `claimCm`'s draw. */
+export async function socketId(paths: ReachPaths, access: Access | null, random?: () => string): Promise<string> {
+  const others = await recordedIds(paths.home, paths.name)
+  const mine = access?.cm ?? readCmId(paths)
+  if (mine !== null && !others.has(mine)) return mine
+  const id = claimCm(paths.root, others, random)
+  await writePrivate(paths.cmRecord, `${id}\n`)
+  return id
+}
+
+/** Deletes `paths`' control-socket folder once it is OpenCorp's own (`isOwnCm`) and no other folder in hq records
+ *  its id: a link, or a folder another destination uses, stays. */
+export async function removeCm(paths: ReachPaths): Promise<void> {
+  if (!isOwnCm(paths) || (await recordedIds(paths.home, paths.name)).has(paths.cmId!)) return
+  fs.rmSync(paths.cm, { recursive: true, force: true })
+}
+
+/** Removes each learning run's temporary folder in hq other than this visit's that was last changed before
+ *  `STATUS_STALE_MS` and whose lock is free, so no run is learning there: its masters ended and its control-socket
+ *  folder deleted first, only when that folder is its own (`isOwnCm`) and no other folder records it, then the folder.
+ *  A run that saved renamed its folder, so what's left was abandoned. */
+export async function sweepTemps(ctx: ReachContext, now: number): Promise<void> {
+  for (const found of folders(ctx.paths.home)) {
+    if (!isTemp(found.name) || found.name === ctx.paths.name) continue
+    if (fs.lstatSync(found.dir).mtimeMs >= now - STATUS_STALE_MS) continue
+    let lock: FileLock | null
+    try {
+      lock = takeLock(found)
+    } catch {
+      // A lock file that isn't private, say: not ours to judge.
+      continue
+    }
+    if (lock === null) continue
+    try {
+      const id = readCmId(found)
+      const temp = id === null ? null : found.withCm(id)
+      if (temp !== null && isOwnCm(temp) && !(await recordedIds(found.home, found.name)).has(id!)) {
+        await exitAll({ ...ctx, paths: temp })
+        fs.rmSync(temp.cm, { recursive: true, force: true })
+      }
+      fs.rmSync(found.dir, { recursive: true, force: true })
+    } finally {
+      lock.release()
+    }
+  }
+}
+
+/** How long a learning run waits for `hq/ports.lock`. */
+const PORTS_LOCK_MS = 30_000
+
+/** The port for learning run `paths`, a first path's temporary folder, held under `hq/ports.lock` so learning runs
+ *  that overlap don't share one: `wanted` (`--port`), or the first from 49381 that no saved destination and no live
+ *  learning run (its lock held) uses; written to its `port` file, which holds it until the path is saved. Resolves
+ *  to the port, or to why `wanted` can't be had. */
+export async function reservePort(paths: ReachPaths, wanted?: number): Promise<number | string> {
+  let lock: FileLock
+  try {
+    lock = await waitForLock(path.join(paths.root, "ports.lock"), { private: true, timeoutMs: PORTS_LOCK_MS })
+  } catch (error) {
+    return `can't take ${path.join(paths.root, "ports.lock")}: ${(error as Error).message}`
+  }
+  try {
+    const used = new Map<number, string>()
+    for (const saved of await savedDestinations(paths.home)) if (saved.access !== null) used.set(saved.access.port, saved.paths.name)
+    for (const run of folders(paths.home)) {
+      if (!isTemp(run.name) || run.name === paths.name) continue
+      const port = readRecord(run.portRecord, /^[0-9]{4,5}$/)
+      if (port !== null && learning(run)) used.set(Number(port), "another learning run")
+    }
+    if (wanted !== undefined && used.has(wanted)) return `port ${wanted} is ${used.get(wanted)}'s; pick another with --port N`
+    const port = wanted ?? nextPort(used.keys())
+    await writePrivate(paths.portRecord, `${port}\n`)
+    return port
+  } finally {
+    lock.release()
+  }
+}
+
+/** Whether learning run `run` is live: another `opencorp hq` holds its lock. */
+function learning(run: ReachPaths): boolean {
+  let lock: FileLock | null
+  try {
+    lock = takeLock(run)
+  } catch {
+    // A lock file that isn't private: not ours to judge, so its port stays held.
+    return true
+  }
+  lock?.release()
+  return lock === null
+}
+
+/** What's said when `port`, destination `name`'s, is another saved destination's too: they share a sign-in and can't
+ *  be open together. Null when none is. */
+export function portShared(saved: readonly Saved[], name: string, port: number): string | null {
+  const other = saved.find((s) => s.paths.name !== name && s.access?.port === port)
+  if (other === undefined) return null
+  return (
+    `opencorp hq: port ${port} is ${other.paths.name}'s too, so the two share a browser sign-in and can't be open at ` +
+    `once; move one with \`opencorp hq ${name} --port N\`.`
+  )
+}
+
 /** The name a first path learned with none given is saved under: the host its spec reaches first (its first jump
  *  host, else HQ's machine, which on a cluster changes with each job), without its user and port, up to its first dot
  *  (an address keeps its dots, as dashes), lowercased, with anything a name can't hold as a dash; `-2`, `-3`, ... on
@@ -67,7 +219,7 @@ export function present(file: string): boolean {
   }
 }
 
-/** `opencorp hq --list`, `--rename OLD NEW` or `--forget NAME`; the CLI has checked the names. */
+/** `opencorp hq --list`, `--rename OLD NEW` or `--forget NAME`. */
 export type Manage = { list: true } | { rename: [string, string] } | { forget: string }
 
 /** What the commands read from and do to the machine; tests pass their own. */
@@ -82,8 +234,17 @@ export interface ManageDeps {
 export const FORGET = "Forget it"
 export const KEEP = "Keep it"
 
-/** Runs `command`; resolves to its exit code: 0, 1 when it's refused, 2 for a destination that isn't saved. */
+/** Runs `command`; resolves to its exit code: 0, 1 when it's refused, 2 for a name that isn't one or a destination
+ *  that isn't saved. */
 export async function manage(command: Manage, deps: ManageDeps): Promise<number> {
+  const names = "list" in command ? [] : "rename" in command ? command.rename : [command.forget]
+  for (const name of names) {
+    const problem = nameProblem(name)
+    if (problem !== null) {
+      deps.error(`opencorp hq: ${problem}`)
+      return 2
+    }
+  }
   const saved = await savedDestinations(deps.home)
   if ("list" in command) return list(saved, deps)
   const name = "rename" in command ? command.rename[0] : command.forget
@@ -166,8 +327,8 @@ async function forget(found: Saved, deps: ManageDeps): Promise<number> {
       return 1
     }
     // Its own while the lock is held: no visit has masters there.
-    const cm = paths.withCm(found.access?.cm ?? cmIdOf(paths.dir)).cm
-    fs.rmSync(cm, { recursive: true, force: true })
+    const id = found.access?.cm ?? readCmId(paths)
+    if (id !== null) await removeCm(paths.withCm(id))
     fs.rmSync(paths.dir, { recursive: true, force: true })
   } finally {
     lock.release()

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { PAIR_CODE_TTL_MS } from "@opencorp/protocol"
 import { startTime } from "../../../src/util/proc.ts"
-import { cmIdOf, makeDirs, ReachPaths, tempName } from "../../../src/features/reach/paths.ts"
+import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
 import { isSocket, runChild, sshEnv, startMaster, waitForSocket } from "../../../src/features/reach/ssh.ts"
 import {
   type Access,
@@ -238,33 +238,4 @@ test("start-up cleanup ends leftover masters and removes expired files and stale
   fs.writeFileSync(ctx.paths.candidate, "")
   await cleanUp(ctx, Date.now())
   expect(fs.existsSync(ctx.paths.candidate)).toBe(true)
-})
-
-test("a learning run's folder that was abandoned long ago goes, with its socket folder; a fresh or held one stays", async () => {
-  const { dir, fake } = fakeHome()
-  const ctx = await reachCtx(dir, fake)
-  /** A learning run's temporary folder and its socket folder, last changed `ago` ms before now. */
-  const temp = (ago: number) => {
-    const paths = new ReachPaths(dir, tempName())
-    makeDirs(paths)
-    const withCm = paths.withCm(cmIdOf(paths.dir))
-    makeDirs(withCm)
-    const when = new Date(Date.now() - ago)
-    fs.utimesSync(paths.dir, when, when)
-    return withCm
-  }
-  const abandoned = temp(STATUS_STALE_MS + 1000)
-  const fresh = temp(0)
-  const held = temp(STATUS_STALE_MS + 1000)
-  const lock = takeLock(held)
-  expect(lock).not.toBeNull()
-  onTestFinished(() => lock!.release())
-  await cleanUp(ctx, Date.now())
-  expect([abandoned, fresh, held].map((p) => [fs.existsSync(p.dir), fs.existsSync(p.cm)])).toEqual([
-    [false, false],
-    [true, true],
-    [true, true],
-  ])
-  // A saved destination's folder is never a learning run's.
-  expect(fs.existsSync(ctx.paths.dir)).toBe(true)
 })

@@ -48,8 +48,8 @@ export interface AgentPolicyInit {
   readonly run?: typeof run
 }
 
-/** The SSH-only policy for learning's shells. Its temp folder and the agent's own status file in `hq/ssh` are
- *  checked as `SshPolicy` checks them; a probe call must run in it; then `ssh -G` with `hq/ssh/agent.config` names the
+/** The SSH-only policy for learning's shells. Its temp folder and the agent's own status file in `hq/<name>/ssh` are
+ *  checked as `SshPolicy` checks them; a probe call must run in it; then `ssh -G` with `hq/<name>/ssh/agent.config` names the
  *  files and ControlPath folder it binds. With `TEST_SSH_DIR` in the env, that folder is bound read-write once
  *  `testFolder` passes it. Throws `UnsafeProfile` for a bind that would expose hq, the home or a credential, and
  *  `SandboxUnavailable` where this platform has no sandbox or the probe can't run in it. */

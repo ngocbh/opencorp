@@ -4,7 +4,8 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
 import {
-  cmIdOf,
+  claimCm,
+  isOwnCm,
   isTemp,
   MAX_HOME_BYTES,
   makeDirs,
@@ -43,6 +44,8 @@ test("a destination's files are under hq/<name>/, while the model's sign-in stay
     node: paths.node,
     lock: paths.lock,
     sessions: paths.sessions,
+    cmRecord: paths.cmRecord,
+    portRecord: paths.portRecord,
   }).toEqual({
     script: "/h/hq/misha/reach.sh",
     approved: "/h/hq/misha/reach.approved.sh",
@@ -63,6 +66,8 @@ test("a destination's files are under hq/<name>/, while the model's sign-in stay
     node: "/h/hq/cm-0a1b2c/node",
     lock: "/h/hq/misha/lock",
     sessions: "/h/hq/sessions",
+    cmRecord: "/h/hq/misha/cm.id",
+    portRecord: "/h/hq/misha/port",
   })
   // Two destinations share only the sign-in and the sessions' records.
   const other = new ReachPaths("/h", "login1", "ffffff")
@@ -111,16 +116,36 @@ test("a first learn works in a temporary folder, hq/.new-<6 hex>", () => {
   expect(new ReachPaths("/h", name).dir).toBe(`/h/hq/${name}`)
 })
 
-test("a folder's control-socket id is 6 hex digits from its device and inode, so it survives a rename", () => {
-  const root = shortDir()
-  const a = path.join(root, "a")
-  fs.mkdirSync(a)
-  const id = cmIdOf(a)
-  expect(id).toMatch(/^[0-9a-f]{6}$/)
-  fs.renameSync(a, path.join(root, "b"))
-  expect(cmIdOf(path.join(root, "b"))).toBe(id)
-  fs.mkdirSync(path.join(root, "c"))
-  expect(cmIdOf(path.join(root, "c"))).not.toBe(id)
+test("a control-socket folder is claimed with an exclusive mkdir: an id taken or recorded is skipped", () => {
+  const root = path.join(shortDir(), "hq")
+  fs.mkdirSync(root, { mode: 0o700 })
+  const draws = (...ids: string[]) => () => ids.shift() ?? "ffffff"
+  const first = claimCm(root, new Set(), draws("0a1b2c"))
+  expect(first).toBe("0a1b2c")
+  expect(fs.statSync(path.join(root, "cm-0a1b2c")).mode & 0o777).toBe(0o700)
+  // A collision with a folder there, or with an id a destination records whose folder is gone, draws again.
+  expect(claimCm(root, new Set(["111111"]), draws("0a1b2c", "111111", "222222"))).toBe("222222")
+  expect(fs.existsSync(path.join(root, "cm-111111"))).toBe(false)
+  // A link where a folder would be counts as taken, and is left alone.
+  fs.symlinkSync(shortDir(), path.join(root, "cm-333333"))
+  expect(claimCm(root, new Set(), draws("333333", "444444"))).toBe("444444")
+  expect(fs.lstatSync(path.join(root, "cm-333333")).isSymbolicLink()).toBe(true)
+  expect(() => claimCm(root, new Set(), () => "0a1b2c")).toThrow("no free control-socket folder")
+})
+
+test("a destination's socket folder is its own only when it's a real 0700 folder of this user's, straight in hq", () => {
+  const home = path.join(shortDir(), "h")
+  const paths = new ReachPaths(home, "misha", "0a1b2c")
+  makeDirs(paths)
+  expect(isOwnCm(paths)).toBe(true)
+  expect(isOwnCm(new ReachPaths(home, "misha"))).toBe(false)
+  expect(isOwnCm(paths.withCm("ffffff"))).toBe(false)
+  const outside = shortDir()
+  fs.writeFileSync(path.join(outside, "keep"), "")
+  fs.symlinkSync(outside, path.join(paths.root, "cm-dddddd"))
+  expect(isOwnCm(paths.withCm("dddddd"))).toBe(false)
+  fs.chmodSync(paths.cm, 0o755)
+  expect(isOwnCm(paths)).toBe(false)
 })
 
 test("a home of 32 bytes fits the control sockets, whatever the name's length, and one of 33 doesn't", () => {

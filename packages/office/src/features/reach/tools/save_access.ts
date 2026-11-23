@@ -193,7 +193,10 @@ async function save(bytes: Buffer, notes: string, conn: Connection, state: Learn
   })
   if (name === null) return paths
   fs.renameSync(paths.dir, path.join(paths.root, name))
-  return paths.renamed(name)
+  const saved = paths.renamed(name)
+  // access.json holds the port now.
+  fs.rmSync(saved.portRecord, { force: true })
+  return saved
 }
 
 /** `learn_hq`'s `save_access` tool for `host`'s session: a group of one, so the model calls it by its own name. */
