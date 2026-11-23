@@ -277,8 +277,13 @@ nodes:
 output: \${reply.output}
 `
 
-/** The model key the agent runs below send: no view of them may show it. */
+/** The model key the agent runs below send, and a header value sent with it: no view of them may show either. */
 export const RUN_KEY = "sk-run-key-7d1e4c92b5a8"
+export const RUN_HEADER = "hdr-secret-3f9a61c2e0b7"
+/** The header RUN_HEADER is sent as. */
+const HEADER = "x-team-token"
+/** The organization the failed run names: a setting, which a view shows. */
+export const RUN_ORG = "org-acme-research"
 
 /** A host tool `name` taking `{topic}` and answering `<name>:<topic>`. */
 function topicTool(name: string) {
@@ -292,7 +297,7 @@ function topicTool(name: string) {
 
 /**
  * Records run `runId` of TOOLS_FLOW (topic "owls") at `<runsDir>/<runId>/log.jsonl` against `fake`, with RUN_KEY as
- * its host key, and returns the log. Call 1 asks for lookup, save and wipe: the gate runs lookup with the note
+ * its host key and RUN_HEADER as a header sent with it, and returns the log. Call 1 asks for lookup, save and wipe: the gate runs lookup with the note
  * "read-only", holds save, which is then released with "approved by @ngocbh", and refuses wipe. Call 2's first attempt
  * is cut short and retried; the retry replies "Done.".
  */
@@ -314,13 +319,40 @@ export async function gatedRun(fake: FakeLLM, runsDir: string, runId: string): P
   }
   const env = (name: string) => fake.env()[name]
   const log = runLogPath(runsDir, runId)
-  const llmConfig = { ...LLM_CONFIG, api_key: RUN_KEY }
+  const headers = { [HEADER]: RUN_HEADER }
+  const llmConfig = { ...LLM_CONFIG, api_key: RUN_KEY, headers }
   const options = { log, runId, numWorkers: 0, env, tools, beforeToolCall, llmConfig }
   const first = await runFlow(await loadFlow(TOOLS_FLOW), { topic: "owls" }, options)
   if (first.status !== "waiting" || held.length !== 1) throw new Error(`the gated run is ${first.status}, not held`)
   await release(log, held[0]!, { note: "approved by @ngocbh" })
-  const done = await advance({ log, tools, beforeToolCall, env, apiKey: RUN_KEY })
+  const done = await advance({ log, tools, beforeToolCall, env, apiKey: RUN_KEY, headers })
   if (done.status !== "succeeded") throw new Error(`the gated run ended ${done.status}: ${done.failure?.message}`)
+  return log
+}
+
+/**
+ * Records run `runId` of STEERED_FLOW at `<runsDir>/<runId>/log.jsonl` on OpenAI's provider with RUN_ORG as its
+ * organization (only that provider takes one), RUN_KEY and RUN_HEADER, and returns the log. With a key the call goes to
+ * the Responses API, which `fake` doesn't serve, so it fails and the run with it; the call is still recorded.
+ */
+export async function failedRun(fake: FakeLLM, runsDir: string, runId: string): Promise<string> {
+  const log = runLogPath(runsDir, runId)
+  const llmConfig = {
+    provider: "openai",
+    model: "gpt-5",
+    base_url: `${fake.baseUrl}/v1`,
+    organization: RUN_ORG,
+    api_key: RUN_KEY,
+    headers: { [HEADER]: RUN_HEADER },
+  }
+  const result = await runFlow(await loadFlow(STEERED_FLOW), { message: "Hi." }, {
+    log,
+    runId,
+    numWorkers: 0,
+    env: () => undefined,
+    llmConfig,
+  })
+  if (result.status !== "failed") throw new Error(`the run on OpenAI ended ${result.status}`)
   return log
 }
 

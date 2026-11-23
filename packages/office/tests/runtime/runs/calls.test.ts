@@ -8,21 +8,24 @@ import type { AgentCallView } from "@ngocbh/yian/run"
 import { RunCall } from "@opencorp/protocol"
 import { CALL_TEXT_CHARS, callWire, hasCall, nodeCalls, readCall } from "../../../src/runtime/runs/calls.ts"
 import { FakeLLM } from "../../../src/testing/fake_llm.ts"
-import { gatedRun, interruptedRun, RUN_KEY } from "./helpers.ts"
+import { failedRun, gatedRun, interruptedRun, RUN_HEADER, RUN_KEY, RUN_ORG } from "./helpers.ts"
 
 const RECORDED = "01JA1H00000000000000000C01"
 const CUT_OFF = "01JA1H00000000000000000C02"
+const FAILED = "01JA1H00000000000000000C03"
 const FOLD = { env: () => undefined, codeRoot: null }
 
 let dir: string
 let gated: string
 let interrupted: string
+let failed: string
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-calls-"))
   const fake = await FakeLLM.start()
   try {
     gated = await gatedRun(fake, dir, RECORDED)
     interrupted = await interruptedRun(fake, dir, CUT_OFF)
+    failed = await failedRun(fake, dir, FAILED)
   } finally {
     await fake.close()
   }
@@ -63,9 +66,9 @@ test("a rebuilt call holds the request, the reply and each tool call's result wi
     { name: "wipe", output: "Not run: a deny rule: wipe *.", closed: "refused", note: null, held: false, release_note: null },
   ])
   expect(call).toMatchObject({ finish: "tool_calls", interrupted: false, digest_mismatch: false, cut: [] })
-  // As JSON: no provider data, and never the run's key.
+  // As JSON: no provider data, and never the run's key or the header value sent with it.
   const text = JSON.stringify(call)
-  expect([text.includes("provider_payload"), text.includes(RUN_KEY)]).toEqual([false, false])
+  expect([text.includes("provider_payload"), text.includes(RUN_KEY), text.includes(RUN_HEADER)]).toEqual([false, false, false])
 })
 
 test("a retried call shows each attempt, the failed one's error and wait", async () => {
@@ -83,6 +86,15 @@ test("an interrupted call says so, with what arrived before the cut", async () =
   const call = await readCall(interrupted, "reply", 1, FOLD)
   expect(call).toMatchObject({ finish: "interrupted", interrupted: true })
   expect(call.request!.system).toBe("Help.")
+})
+
+test("a failed call shows its endpoint and organization, never the key or the header sent with it", async () => {
+  const call = await readCall(failed, "reply", 1, FOLD)
+  expect(call).toMatchObject({ finish: null, reply: null })
+  expect(call.attempts.map((attempt) => attempt.error !== null)).toEqual([true])
+  expect(call.request!.params).toMatchObject({ provider: "openai", organization: RUN_ORG, base_url: expect.any(String) })
+  const text = JSON.stringify(call)
+  expect([text.includes(RUN_KEY), text.includes(RUN_HEADER), text.includes("x-team-token")]).toEqual([false, false, false])
 })
 
 /** A view with `over`, as yian's `agentCall` returns one. */

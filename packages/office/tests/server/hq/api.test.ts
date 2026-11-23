@@ -31,7 +31,7 @@ import {
   take,
   within,
 } from "../helpers.ts"
-import { chatLog, committed, fifoAt, gatedRun, RUN_KEY, runStarted, started } from "../../runtime/runs/helpers.ts"
+import { chatLog, committed, fifoAt, gatedRun, RUN_HEADER, RUN_KEY, runStarted, started } from "../../runtime/runs/helpers.ts"
 import { question, session, workItem } from "../../runtime/store/helpers.ts"
 import { HOST, ORIGIN, PORT, dist, makeHq, signedIn, web } from "./helpers.ts"
 
@@ -422,7 +422,7 @@ test("a run's model calls are on the allowlist, behind sign-in, for this office'
   const r = await client.get(`/api/runs/${runId}/calls/writer/1`)
   expect(r.status).toBe(200)
   expect(RunCall.parse(r.json()).tool_results.find((t) => t.name === "save")!.release_note).toBe("approved by @ngocbh")
-  expect(r.text.includes(RUN_KEY)).toBe(false)
+  expect([r.text.includes(RUN_KEY), r.text.includes(RUN_HEADER)]).toEqual([false, false])
   // No HEAD: HQ's GET catch-all answers it, as any method HQ doesn't serve.
   expect((await client.request("HEAD", `/api/runs/${runId}/calls/writer/1`)).status).toBe(404)
   for (const target of [`/api/runs/${stray}/calls/writer/1`, `/api/runs/${stray}/calls?node=writer`]) {

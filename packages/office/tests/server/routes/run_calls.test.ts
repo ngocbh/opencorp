@@ -9,19 +9,21 @@ import type { Office } from "../../../src/server/office.ts"
 import { RunLogs } from "../../../src/runtime/runs/service.ts"
 import { newId } from "../../../src/runtime/store/store.ts"
 import { FakeLLM } from "../../../src/testing/fake_llm.ts"
-import { gatedRun, interruptedRun, RUN_KEY } from "../../runtime/runs/helpers.ts"
+import { failedRun, gatedRun, interruptedRun, RUN_HEADER, RUN_KEY, RUN_ORG } from "../../runtime/runs/helpers.ts"
 import { session } from "../../runtime/store/helpers.ts"
 import { CEO, makeOffice, type Reply, request, served } from "../helpers.ts"
 
 let dir: string
 let gated: string
 let interrupted: string
+let failed: string
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-run-calls-"))
   const fake = await FakeLLM.start()
   try {
     gated = await gatedRun(fake, dir, "01JA1H00000000000000000C01")
     interrupted = await interruptedRun(fake, dir, "01JA1H00000000000000000C02")
+    failed = await failedRun(fake, dir, "01JA1H00000000000000000C03")
   } finally {
     await fake.close()
   }
@@ -77,8 +79,9 @@ test("a node's calls, and one call rebuilt with its request, reply, results and 
   // A retried call by its first attempt.
   const retried = RunCall.parse((await get(sock, `/runs/${runId}/calls/writer/7`)).json())
   expect([retried.n, retried.attempts.map((a) => a.error?.kind ?? null)]).toEqual([8, ["incomplete", null]])
-  // The run's key reaches neither reply.
-  expect([list.text.includes(RUN_KEY), r.text.includes(RUN_KEY)]).toEqual([false, false])
+  // The run's key and the header value sent with it reach neither reply.
+  for (const secret of [RUN_KEY, RUN_HEADER])
+    expect([list.text.includes(secret), r.text.includes(secret), retried.n]).toEqual([false, false, 8])
 })
 
 test("an interrupted call says it was interrupted", async () => {
@@ -88,6 +91,15 @@ test("an interrupted call says it was interrupted", async () => {
   expect((body(await get(sock, `/runs/${runId}/calls?node=reply`)).calls as { finish: string }[])[0]!.finish)
     .toBe("interrupted")
   expect(body(await get(sock, `/runs/${runId}/calls/reply/1`))).toMatchObject({ finish: "interrupted", interrupted: true })
+})
+
+test("a call's settings show its endpoint and organization, never its key or the header sent with it", async () => {
+  const office = makeOffice({ log: () => {} })
+  const { sock } = await served(office)
+  const r = await get(sock, `/runs/${place(office, failed)}/calls/reply/1`)
+  expect(r.status).toBe(200)
+  expect(RunCall.parse(r.json()).request!.params).toMatchObject({ organization: RUN_ORG, base_url: expect.any(String) })
+  expect([r.text.includes(RUN_KEY), r.text.includes(RUN_HEADER)]).toEqual([false, false])
 })
 
 test("a bad id, node or n is a 404 or a 422 that doesn't echo it", async () => {
