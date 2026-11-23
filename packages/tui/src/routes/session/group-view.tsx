@@ -1,4 +1,5 @@
 import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
+import type { Renderable } from "@opentui/core"
 import { useRenderer, type JSX } from "@opentui/solid"
 import { useTheme } from "../../context/theme"
 import { summarizeActivity, type ActivityItem } from "./activity-summary"
@@ -89,7 +90,7 @@ function GroupContent(props: GroupProps) {
             spinner={!completed()}
             onMouseOver={() => setHover(true)}
             onMouseOut={() => setHover(false)}
-            onMouseUp={() => disclosure.toggle()}
+            onMouseUp={(event) => disclosure.toggle(event.currentTarget)}
           >
             {label()}
           </InlineToolRow>
@@ -122,7 +123,7 @@ function ActivityGroup(props: GroupProps) {
           spinner={!disclosure.expanded() && summary().active}
           onMouseOver={() => setHover(true)}
           onMouseOut={() => setHover(false)}
-          onMouseUp={() => disclosure.toggle()}
+          onMouseUp={(event) => disclosure.toggle(event.currentTarget)}
         >
           {summary().label}
         </InlineToolRow>
@@ -146,10 +147,10 @@ function useDisclosure(props: GroupProps) {
   return {
     id,
     expanded,
-    toggle() {
+    toggle(anchor?: Renderable | null) {
       if (renderer.getSelection()?.getSelectedText()) return
       const key = id()
-      if (key) ctx.setGroupExpanded(key, !expanded())
+      if (key) ctx.setGroupExpanded(key, !expanded(), anchor)
     },
   }
 }

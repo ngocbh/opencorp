@@ -1164,8 +1164,13 @@ export function Session(props: SessionProps) {
         verbosity,
         groupExploration,
         groupExpanded,
-        setGroupExpanded: (groupID, expanded) => {
-          groups.setGroupExpanded(props.sessionID, groupID, expanded)
+        setGroupExpanded: (id, expanded, anchor) => {
+          // A group that ends the transcript would open off screen while the reader follows the bottom.
+          const last = messageViews().at(-1)?.rows().at(-1)
+          const ending = last?.type === "group" && groupID(last, 0) === id
+          // Keeps the toggled disclosure's header on its viewport row through the next layout.
+          if (anchor && !(ending && !isAwayFromBottom())) afterLayout(scroll.anchor(anchor))
+          groups.setGroupExpanded(props.sessionID, id, expanded)
           afterLayout(saveScrollAnchor)
         },
         tui: tuiConfig,
