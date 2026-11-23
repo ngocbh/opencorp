@@ -5,7 +5,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fakeControlName } from "@opencorp/office/testing/fake_ssh"
 import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
-import { builtApp, type Client, client, pidsNaming, removeClient } from "./remote"
+import { builtApp, type Client, client, destination, freePort, pidsNaming, removeClient } from "./remote"
 import { type Terminal, TMUX, terminal as tmuxTerminal } from "./tmux"
 
 setDefaultTimeout(30_000)
@@ -64,6 +64,35 @@ describe.skipIf(!TMUX)("on a real terminal", () => {
     expect(c.fake.tty()).toEqual(["hunter2", "hunter3"])
     t.keys("C-c")
     expect(await t.exit()).toBe("exit=0")
+    expect(c.fake.masters()).toEqual([])
+    expect(pidsNaming(c.hq)).toEqual([])
+  }, 120_000)
+
+  test("with two destinations saved it asks which HQ to open, the last used first, and opens the one picked", async () => {
+    const c = await client(remote)
+    onTestFinished(() => removeClient(c))
+    const port = await freePort()
+    const lastUsed = "2026-11-22T09:00:00.000Z"
+    const misha = await destination(c.hq, "misha", remote, {
+      port,
+      over: { last_used_at: lastUsed, signed_in_at: new Date().toISOString() },
+    })
+    const login1 = fs.readFileSync(path.join(c.dest, "access.json"), "utf8")
+    const t = terminal(c)
+    await t.see("Which HQ do you want to open?")
+    const options = t.screen().slice(t.screen().indexOf("Which HQ do you want to open?"))
+    expect(options.indexOf("misha")).toBeGreaterThan(0)
+    expect(options.indexOf("misha")).toBeLessThan(options.indexOf("login1"))
+    // Enter takes the last used.
+    t.keys("Enter")
+    await t.see("Connected.")
+    expect(t.screen()).toContain(`HQ at http://127.0.0.1:${port}/.`)
+    t.keys("C-c")
+    expect(await t.exit()).toBe("exit=0")
+    const access = JSON.parse(fs.readFileSync(path.join(misha.dir, "access.json"), "utf8"))
+    expect(access.last_used_at).not.toBe(lastUsed)
+    expect(fs.readFileSync(path.join(c.dest, "access.json"), "utf8")).toBe(login1)
+    expect(fs.readdirSync(misha.cm)).toEqual([])
     expect(c.fake.masters()).toEqual([])
     expect(pidsNaming(c.hq)).toEqual([])
   }, 120_000)

@@ -1,9 +1,13 @@
 // `opencorp hq`: opens HQ in a browser. Where this machine's office answers, a one-time link signs a browser in to
-// its HQ; anywhere else, the office's visit reaches HQ over SSH (`@opencorp/office/features/reach/run`). The code is only
-// ever printed or put in a 0600 file: never in a process's arguments, where other users could read it.
+// its HQ; `opencorp hq NAME`, or plain `opencorp hq` where none answers, reaches a saved destination, another machine's
+// HQ, over SSH (`@opencorp/office/features/reach/run`); `--list`, `--rename` and `--forget` manage the saved ones
+// (`@opencorp/office/features/reach/destinations`). The code is only ever printed or put in a 0600 file: never in a
+// process's arguments, where other users could read it.
 import { isMissingRoute, isNotImplemented, OfficeTimeout, OfficeUnavailable } from "@opencorp/client"
 import { defaultSocket, type Env, opencorpHome } from "@opencorp/client/node"
 import { otherPort, SETTINGS_IGNORED } from "@opencorp/office/server/hq/config"
+import type { Manage } from "@opencorp/office/features/reach/destinations"
+import { NAME_RULE, nameProblem } from "@opencorp/office/features/reach/paths"
 import type { VisitOptions } from "@opencorp/office/features/reach/run"
 import type { LocalSession } from "@opencorp/office/server/local"
 import type { HqStatus, HqTcp, PairCode } from "@opencorp/protocol"
@@ -165,7 +169,12 @@ export function pairOutput(
   return { lines }
 }
 
-const USAGE = "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--relearn] [--json] [--check --json]"
+const USAGE = [
+  "usage: opencorp hq [--handle HANDLE] [--no-open] [--json] [--check --json]",
+  "       opencorp hq [NAME] [--no-open] [--sign-in] [--port N] [--relearn]",
+  "       opencorp hq --list | --rename OLD NEW | --forget NAME",
+  `NAME is a saved destination, another machine's HQ: ${NAME_RULE}.`,
+].join("\n")
 const NO_HQ = "opencorp hq: this office has no HQ yet; update the checkout and run `opencorp restart`"
 
 /** What `hq` reads from and does to the machine; tests pass fakes. */
@@ -178,8 +187,11 @@ export type HqDeps = {
   spawn(argv: string[]): void
   print(line: string): void
   error(line: string): void
-  /** Reaches HQ from this machine over SSH, holding the connection until Ctrl-C; resolves to the exit code. */
+  /** Reaches a destination's HQ from this machine over SSH, holding the connection until Ctrl-C; resolves to the exit
+   *  code. */
   visit(options: VisitOptions): Promise<number>
+  /** Lists, renames or forgets saved destinations; resolves to the exit code. */
+  manage(command: Manage): Promise<number>
 }
 
 /** The real machine, with the environment `env`. */
@@ -198,6 +210,10 @@ export const realHqDeps = (env: Env): HqDeps => ({
     // `env`'s home too.
     const learnChat = (session: LocalSession) => localChat(session, env.OPENCORP_HOME)
     return v.visit(options, terminal() ? { ...deps, learnChat } : deps)
+  },
+  manage: async (command) => {
+    const d = await import("@opencorp/office/features/reach/destinations")
+    return d.manage(command, d.realManageDeps(opencorpHome(env)))
   },
 })
 
@@ -218,6 +234,9 @@ async function checkJson(deps: HqDeps): Promise<number> {
 }
 
 type Values = {
+  list?: boolean
+  rename?: boolean
+  forget?: boolean
   handle?: string
   "no-open"?: boolean
   "sign-in"?: boolean
@@ -229,18 +248,24 @@ type Values = {
 }
 
 /**
- * `opencorp hq [--handle H] [--no-open] [--sign-in] [--port N] [--relearn] [--json]`. Where this machine's office
- * answers: a one-time link that signs a browser in as H (you by default); with `--json` it prints the minted
- * `PairCode` as one line of JSON and opens nothing; `--check --json` prints HQ's status instead and mints nothing.
- * Where none answers, it reaches HQ over SSH (`--port` picks the local port, `--relearn` learns the path again with
- * the agent); `--json` and `--check` never do.
+ * `opencorp hq [--handle H] [--no-open] [--sign-in] [--json]`. Where this machine's office answers: a one-time link
+ * that signs a browser in as H (you by default); with `--json` it prints the minted `PairCode` as one line of JSON and
+ * opens nothing; `--check --json` prints HQ's status instead and mints nothing. `opencorp hq NAME`, and plain
+ * `opencorp hq` where none answers, reach a saved destination over SSH (`--port` picks its local port, `--relearn`
+ * learns its path again with the agent); `--json` and `--check` never do. `--list`, `--rename OLD NEW` and
+ * `--forget NAME` manage the saved destinations.
  */
 export async function hq(argv: string[], deps: HqDeps): Promise<number> {
   let values: Values
+  let positionals: string[]
   try {
-    ;({ values } = parseArgs({
+    ;({ values, positionals } = parseArgs({
       args: argv,
+      allowPositionals: true,
       options: {
+        list: { type: "boolean" },
+        rename: { type: "boolean" },
+        forget: { type: "boolean" },
         handle: { type: "string" },
         "no-open": { type: "boolean" },
         // Read only from another machine: every run on HQ's machine signs a browser in.
@@ -259,17 +284,37 @@ export async function hq(argv: string[], deps: HqDeps): Promise<number> {
     deps.print(USAGE)
     return 0
   }
+  const managing = (["list", "rename", "forget"] as const).filter((k) => values[k])
+  if (managing.length > 0) return manage(managing, values, positionals, deps)
   if (values.check) {
     // It's only what a visit from another machine runs here, so it takes nothing a person would add.
-    if (!values.json || Object.keys(values).some((k) => k !== "check" && k !== "json"))
+    if (!values.json || positionals.length > 0 || Object.keys(values).some((k) => k !== "check" && k !== "json"))
       return usage("--check needs --json and takes no other option", deps)
     return checkJson(deps)
   }
+  if (positionals.length > 1) return usage("hq takes one destination's name", deps)
+  const name = positionals[0]
+  const problem = name === undefined ? null : nameProblem(name)
+  if (problem !== null) return usage(problem, deps)
   let port: number | undefined
   if (values.port !== undefined) {
     port = /^[0-9]{1,5}$/.test(values.port) ? Number(values.port) : 0
     // Unprivileged loopback ports.
     if (port < 1024 || port > 65535) return usage("--port takes a port from 1024 to 65535", deps)
+  }
+  const visit = () =>
+    deps.visit({
+      ...(name === undefined ? {} : { name }),
+      signIn: !!values["sign-in"],
+      port,
+      open: !values["no-open"] && canOpen(deps.env, deps.platform),
+      relearn: !!values.relearn,
+    })
+  if (name !== undefined) {
+    // A destination is reached even while this machine's office runs; these are for that office alone.
+    const localOnly = values.json ? "--json" : values.handle !== undefined ? "--handle" : null
+    if (localOnly !== null) return usage(`${localOnly} is for this machine's office, not a destination`, deps)
+    return visit()
   }
   // Each means something only on the remote path.
   const remoteOnly = port !== undefined ? "--port" : values.relearn ? "--relearn" : null
@@ -279,16 +324,35 @@ export async function hq(argv: string[], deps: HqDeps): Promise<number> {
   // by the local path, as before.
   if ((await officeDown(defaultSocket(deps.env))) instanceof OfficeUnavailable) {
     if (values.handle !== undefined) return usage("--handle works only on HQ's machine", deps)
-    return deps.visit({
-      signIn: !!values["sign-in"],
-      port,
-      open: !values["no-open"] && canOpen(deps.env, deps.platform),
-      relearn: !!values.relearn,
-    })
+    return visit()
   }
   if (remoteOnly !== null)
-    return usage(`${remoteOnly} is for reaching HQ from another machine; HQ's office runs here`, deps)
+    return usage(
+      `${remoteOnly} is for reaching HQ from another machine; HQ's office runs here, so name a destination: ` +
+        `opencorp hq NAME ${remoteOnly}`,
+      deps,
+    )
   return local(values, deps)
+}
+
+/** `--list`, `--rename OLD NEW` or `--forget NAME` (`managing` holds which were given), each alone. */
+function manage(managing: readonly ("list" | "rename" | "forget")[], values: Values, names: string[], deps: HqDeps) {
+  const [what] = managing
+  if (managing.length > 1 || Object.keys(values).some((k) => k !== what))
+    return usage(`--${what} takes no other option`, deps)
+  const want = { list: 0, rename: 2, forget: 1 }[what!]
+  if (names.length !== want)
+    return usage(
+      what === "list" ? "--list takes no name" : what === "rename" ? "--rename takes OLD NEW" : "--forget takes one NAME",
+      deps,
+    )
+  for (const name of names) {
+    const problem = nameProblem(name)
+    if (problem !== null) return usage(problem, deps)
+  }
+  if (what === "list") return deps.manage({ list: true })
+  if (what === "rename") return deps.manage({ rename: [names[0]!, names[1]!] })
+  return deps.manage({ forget: names[0]! })
 }
 
 /** Says what's wrong with the command line, then the usage; returns the usage error's exit code. */

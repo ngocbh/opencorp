@@ -4,9 +4,10 @@ import path from "node:path"
 import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
 import { HqStatus, type HqTcp, PairCode } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "@opencorp/tui/fake-office"
+import type { Manage } from "@opencorp/office/features/reach/destinations"
 import { DEFAULT_PORT, type VisitOptions } from "@opencorp/office/features/reach/run"
 import { canOpen, hq, LOCAL_PORT, pairOutput, type HqDeps, socketPort } from "../src/commands/hq"
-import { builtApp, client, pidsNaming, removeClient, runHq } from "./remote"
+import { builtApp, client, destination, freePort, pidsNaming, removeClient, runHq } from "./remote"
 import { staleSocket } from "./sockets"
 
 /** What a client says when no office answers at `home`. */
@@ -305,6 +306,7 @@ function deps(env: Record<string, string> = {}, platform = "darwin") {
   const printed: string[] = []
   const errors: string[] = []
   const visits: VisitOptions[] = []
+  const managed: Manage[] = []
   const d: HqDeps = {
     env: { HOME: home, OPENCORP_HOME: home, ...env },
     platform,
@@ -316,8 +318,12 @@ function deps(env: Record<string, string> = {}, platform = "darwin") {
       visits.push(options)
       return 0
     },
+    manage: async (command) => {
+      managed.push(command)
+      return 0
+    },
   }
-  return { d, spawned, printed, errors, visits }
+  return { d, spawned, printed, errors, visits, managed }
 }
 
 test("on a Mac it asks for a redirect file and opens it; the opener gets only the file's path", async () => {
@@ -422,9 +428,7 @@ test("--check without --json, or with another flag, is a usage error", async () 
   ]) {
     const { d, printed, errors } = deps()
     expect({ argv, code: await hq(argv, d) }).toEqual({ argv, code: 2 })
-    expect(errors.join("\n")).toContain(
-      "usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--relearn] [--json] [--check --json]",
-    )
+    expect(errors.join("\n")).toContain(USAGE)
     expect(printed).toEqual([])
   }
   expect(office!.requests).toEqual([])
@@ -663,8 +667,14 @@ test("--port and --relearn are refused where the office answers and beside --jso
   await refused(["--check", "--json", "--port", "50001"], "opencorp hq: --check needs --json and takes no other option")
   await refused(["--check", "--json", "--relearn"], "opencorp hq: --check needs --json and takes no other option")
   start({ tcp: true, listening: true })
-  await refused(["--port", "50001"], "opencorp hq: --port is for reaching HQ from another machine; HQ's office runs here")
-  await refused(["--relearn"], "opencorp hq: --relearn is for reaching HQ from another machine; HQ's office runs here")
+  await refused(
+    ["--port", "50001"],
+    "opencorp hq: --port is for reaching HQ from another machine; HQ's office runs here, so name a destination: opencorp hq NAME --port",
+  )
+  await refused(
+    ["--relearn"],
+    "opencorp hq: --relearn is for reaching HQ from another machine; HQ's office runs here, so name a destination: opencorp hq NAME --relearn",
+  )
   expect(office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")).toBe(false)
 })
 
@@ -686,17 +696,79 @@ test("the remote default port is the socket forward's local port", () => {
   expect(DEFAULT_PORT).toBe(LOCAL_PORT)
 })
 
+const USAGE =
+  "usage: opencorp hq [--handle HANDLE] [--no-open] [--json] [--check --json]\n" +
+    "       opencorp hq [NAME] [--no-open] [--sign-in] [--port N] [--relearn]\n" +
+    "       opencorp hq --list | --rename OLD NEW | --forget NAME\n" +
+    "NAME is a saved destination, another machine's HQ: a name is 1 to 32 lowercase letters, digits and dashes, starting with a letter or a digit."
+
 test("an unknown option is a usage error", async () => {
   const { d, errors } = deps()
   expect(await hq(["--nope"], d)).toBe(2)
-  expect(errors.join("\n")).toContain("usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--relearn] [--json] [--check --json]")
+  expect(errors.join("\n")).toContain(USAGE)
 })
 
 test("--help prints the usage and exits 0 without the office", async () => {
   const { d, printed, errors } = deps()
   expect(await hq(["--help"], d)).toBe(0)
-  expect(printed).toEqual(["usage: opencorp hq [--handle HANDLE] [--no-open] [--sign-in] [--port N] [--relearn] [--json] [--check --json]"])
+  expect(printed).toEqual([USAGE])
   expect(errors).toEqual([])
+})
+
+test("hq NAME reaches that destination with its flags, even while this machine's office answers", async () => {
+  for (const answering of [false, true]) {
+    if (answering) start({ tcp: true, listening: true })
+    const { d, visits, errors } = deps()
+    expect(await hq(["misha", "--sign-in", "--port", "50001", "--relearn"], d)).toBe(0)
+    expect(visits).toEqual([{ name: "misha", signIn: true, port: 50001, open: true, relearn: true }])
+    expect(errors).toEqual([])
+  }
+  expect(office!.requests.some((r) => r.method === "POST" && r.path === "/hq/pair")).toBe(false)
+})
+
+test("a name that isn't one, two names, or NAME with --json or --handle is a usage error with the name rule", async () => {
+  const refused = async (argv: string[], message: string) => {
+    const { d, visits, managed, errors } = deps()
+    expect({ argv, code: await hq(argv, d) }).toEqual({ argv, code: 2 })
+    expect(errors.join("\n")).toContain(message)
+    expect(errors.join("\n")).toContain(USAGE)
+    expect([visits, managed]).toEqual([[], []])
+  }
+  await refused(["Misha"], '"Misha" isn\'t a destination\'s name: a name is 1 to 32 lowercase letters')
+  await refused(["a".repeat(33)], "isn't a destination's name")
+  await refused(["list"], '"list" is reserved')
+  await refused(["misha", "login1"], "opencorp hq: hq takes one destination's name")
+  await refused(["misha", "--json"], "opencorp hq: --json is for this machine's office, not a destination")
+  await refused(["misha", "--handle", "ngocbh"], "opencorp hq: --handle is for this machine's office, not a destination")
+  await refused(["misha", "--check", "--json"], "opencorp hq: --check needs --json and takes no other option")
+})
+
+test("--list, --rename OLD NEW and --forget NAME go to the saved destinations, each alone", async () => {
+  const ok = async (argv: string[], command: Manage) => {
+    const { d, managed, visits } = deps()
+    expect(await hq(argv, d)).toBe(0)
+    expect([managed, visits]).toEqual([[command], []])
+  }
+  await ok(["--list"], { list: true })
+  await ok(["--rename", "misha", "cluster"], { rename: ["misha", "cluster"] })
+  await ok(["--forget", "misha"], { forget: "misha" })
+  // While this machine's office runs too: they never reach it.
+  start({ tcp: true, listening: true })
+  await ok(["--list"], { list: true })
+  const refused = async (argv: string[], message: string) => {
+    const { d, managed, errors } = deps()
+    expect({ argv, code: await hq(argv, d) }).toEqual({ argv, code: 2 })
+    expect(errors.join("\n")).toContain(message)
+    expect(managed).toEqual([])
+  }
+  await refused(["--list", "misha"], "opencorp hq: --list takes no name")
+  await refused(["--rename", "misha"], "opencorp hq: --rename takes OLD NEW")
+  await refused(["--forget"], "opencorp hq: --forget takes one NAME")
+  await refused(["--forget", "a", "b"], "opencorp hq: --forget takes one NAME")
+  await refused(["--rename", "misha", "Bad"], '"Bad" isn\'t a destination\'s name')
+  await refused(["--list", "--forget", "misha"], "takes no other option")
+  await refused(["--list", "--no-open"], "opencorp hq: --list takes no other option")
+  await refused(["--forget", "misha", "--port", "50001"], "opencorp hq: --forget takes no other option")
 })
 
 describe("against a real office", () => {
@@ -806,6 +878,29 @@ describe("from another machine", () => {
     first.child.kill("SIGINT")
     expect(await first.exited).toBe(0)
     expect(pidsNaming(c.hq)).toEqual([])
+  }, 120_000)
+
+  test("with two saved and no terminal, plain opencorp hq names them and exits 2, a name not saved too, and --list lists them", async () => {
+    const c = await machine()
+    const port = await freePort()
+    await destination(c.hq, "misha", remote, { port })
+    let run = runHq(c.env, ["--no-open"], c.root)
+    expect(await run.exited).toBe(2)
+    expect(run.stderr()).toBe(
+      "opencorp hq: no office answers here, and several destinations are saved: login1, misha. Run `opencorp hq NAME` for one.\n",
+    )
+    run = runHq(c.env, ["nope", "--no-open"], c.root)
+    expect(await run.exited).toBe(2)
+    expect(run.stderr()).toBe("opencorp hq: no saved destination 'nope'; saved: login1, misha\n")
+    run = runHq(c.env, ["--list"], c.root)
+    expect(await run.exited).toBe(0)
+    expect(run.stdout().split("\n")).toEqual([
+      "NAME    HOST  PORT   LAST USED",
+      `login1  -     ${c.port}  never`,
+      `misha   -     ${port}  never`,
+      "",
+    ])
+    expect(c.fake.calls()).toEqual([])
   }, 120_000)
 
   // Last: it stops the office.
