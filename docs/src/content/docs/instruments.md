@@ -92,11 +92,12 @@ it lists claude.
 - **Sessions.** The line under the prompt counts their Codex and Claude Code sessions that run a turn. The picker's
   Sessions tab (↓, or "Open an instrument…" in the command list, ctrl+p) lists them, each marked Running, Idle or
   Ended; Enter opens one in [the pane](#the-pane), where you watch the harness work and write to it too, and ctrl+d
-  interrupts its turn. ↑ past the oldest entry of the session's prompt history, or "Go back to the chat" in the
-  command list, gives the chat the keys. An ended session opens read-only: the picker takes its prompt's place, and
-  Esc closes it. The session list still opens a session as a chat of its own. Only the chat's opener (its company's
-  CEO for a chat nobody opened) writes there besides your employee. A chat has at most four live sessions of each
-  harness.
+  interrupts its turn. A click on your employee's call to a session in the chat, such as
+  `Codex: codex 1 — Fix the parser`, opens that session in the pane too. ↑ past the oldest entry of the session's
+  prompt history, or "Go back to the chat" in the command list, gives the chat the keys. An ended session opens
+  read-only: the picker takes its prompt's place, and Esc closes it. The session list still opens a session as a chat
+  of its own. Only the chat's opener (its company's CEO for a chat nobody opened) writes there besides your employee.
+  A chat has at most four live sessions of each harness.
 - **Drafts.** Each chat and session keeps its own unsent text, so what you type in one never shows in another.
 - **Two speakers.** The session shows who sent each message, its border in the sender's colour, and the pane's header
   says `you are driving` while a turn you started runs. The harness reads each message with its author and is

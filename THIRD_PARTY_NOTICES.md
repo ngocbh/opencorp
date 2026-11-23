@@ -216,6 +216,16 @@ license, the upstream paths and commit, and our paths.
   `packages/tui/src/routes/session/instrument-line.tsx`, `packages/tui/src/config/keybind.ts`,
   `packages/tui/src/keymap.tsx`, `packages/tui/test/routes/session/composer-tabs.test.tsx`,
   `packages/tui/test/routes/session/composer-frame.test.tsx`, `packages/tui/test/util/session.test.ts`.
+- **What:** the subagent row, ported for an employee's Codex and Claude Code calls: an inline row with `│` while it
+  runs, `↳` for a call to a session already started and `✓` for a start that is done, a spinner while the call or the
+  session runs, its error held back until the session stops, and a click (not one that ends a selection) opening the
+  session. Adapted: the label is the picker's name for the session (`Codex: codex 1`) and the message, or the call
+  (`interrupt`); the session is the chat's instrument the call names, in its input or a start's reply; the click opens
+  it in the right pane rather than navigating to it, and a call to a session the chat doesn't list isn't clickable.
+- **Upstream:** `packages/tui/src/routes/session/index.tsx` (`Subagent`, the `running` prop of `InlineTool`), read at
+  commit `4332e24f` (2026-11-21).
+- **Ours:** `packages/tui/src/routes/session/index.tsx` (`toolView`, `HarnessCall`, `InlineTool`),
+  `packages/tui/test/routes/session/harness-calls-frame.test.tsx`.
 - **What:** the check before a terminal starts that its folder is a directory, since a PTY's library may start the
   shell in the home instead, ported for learning's shells.
 - **Upstream:** `packages/core/src/persistent-pty/index.ts` (`create`), read at commit `df46f69` (2026-11-16).
