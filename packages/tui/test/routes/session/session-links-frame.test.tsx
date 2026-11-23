@@ -196,3 +196,25 @@ test("a session that comes into the list with a delta naming it links in every b
     office.stop()
   }
 })
+
+test("an id a delta brings before its session is listed links once the session joins", async () => {
+  const later = "01JQ8Z3V4XKM5N6P7R8S9T0WXZ"
+  const { office, chat, app } = await boot(() => "Hello.")
+  try {
+    await app.until((f) => f.includes("Hello."))
+    const message = office.state.messages[chat.id]![0]!
+    office.live({
+      type: "part.delta",
+      session_id: chat.id,
+      data: { message_id: message.id, part_id: message.parts[0]!.id, text: `\n\nSee ${later} next.` },
+    })
+    await app.until((f) => f.includes("next."))
+    expect(underlined(app)).toHaveLength(0)
+    office.newSession({ id: later, person: "minh", cwd: "/tmp/proj" })
+    await app.until(() => underlined(app).length === 1)
+    expect(underlined(app).map((s) => s.text.trim())).toEqual([later])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

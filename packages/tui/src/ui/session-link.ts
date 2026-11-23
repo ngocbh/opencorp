@@ -47,10 +47,13 @@ export function useSessionLinks(view: { readonly sessionID: string; readonly onO
         const text = span.text.slice(cuts[index], end)
         const mention = index % 2 ? mentions[(index - 1) / 2]! : undefined
         const link = mention !== undefined && linked(mention.id)
-        // Only the effect below records a change, so that it re-renders every block naming that session, not
-        // just the first to see it.
-        if (mention && !used.has(mention.id)) used.set(mention.id, link)
-        if (mention && used.get(mention.id) !== link) setVersion((value) => value + 1)
+        // A new ID wakes the effect below to watch it. Only the effect records a change, so that it re-renders
+        // every block naming that session, not just the first to see it.
+        if (mention) {
+          const seen = used.has(mention.id)
+          if (!seen) used.set(mention.id, link)
+          if (!seen || used.get(mention.id) !== link) setVersion((value) => value + 1)
+        }
         if (!mention || !link) return text ? [{ ...span, text }] : []
         return [
           {
