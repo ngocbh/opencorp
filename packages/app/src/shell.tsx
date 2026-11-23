@@ -91,7 +91,7 @@ const WORK: Soon[] = [
 const COMPANY: Soon[] = [
   { label: "SOPs", icon: Boxes, about: "The company's Yian flows. Not built yet." },
   { label: "Connections", icon: Unplug, about: "Model providers. Not built yet." },
-  { label: "Activity", icon: RotateCcwClock, about: "The audit feed. Not built yet." },
+  { label: "Activity", icon: RotateCcwClock, about: "What happened in each run, read from its log. Not built yet." },
 ]
 
 // One row shape for every item, so a soon item lines up with the links around it.
