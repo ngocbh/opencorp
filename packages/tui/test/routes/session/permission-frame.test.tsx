@@ -4,9 +4,10 @@
 import { approvalAlwaysOption, approvalSessionOption } from "@opencorp/protocol"
 import type { Approval, Message, Question } from "@opencorp/protocol"
 import type { CapturedLine } from "@opentui/core"
-import { expect, test } from "bun:test"
+import { expect, onTestFinished, test } from "bun:test"
 import { createFakeOffice, createStub, type FakeOffice } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
+import { writeKV } from "../../fixture/kv"
 import { until } from "../../fixture/until"
 
 type App = Awaited<ReturnType<typeof bootFrame>>
@@ -377,6 +378,9 @@ test("a card with no rules to add offers only Yes and No", async () => {
 })
 
 test("the transcript's tool row waiting on an open card is drawn in the warning colour", async () => {
+  // Each call shows on its own row (High); later tests expect the default.
+  writeKV({ session_verbosity: "high" })
+  onTestFinished(() => writeKV({ session_verbosity: undefined }))
   const office = createFakeOffice()
   const s = office.state.sessions[0]
   const q = office.addApproval(s.id, { ...APPROVAL, action: "rm -rf build" })

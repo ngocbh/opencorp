@@ -257,6 +257,34 @@ license, the upstream paths and commit, and our paths.
   its timer), read at commit `4332e24f` (2026-11-21).
 - **Ours:** `packages/tui/src/component/reconnecting.tsx`, `packages/tui/src/app.tsx`,
   `packages/tui/test/component/reconnecting-frame.test.tsx`.
+- **What:** ported from current upstream: transcript verbosity and tool grouping. At Low each run of tool calls folds
+  into one muted line counting its finished work (`+ 3 commands, 1 edit, 4 reads`), spinning with what runs until
+  something finishes, and a click opens it; Medium groups only reads and searches (`Explored: 2 reads, 1 search`);
+  High opens those groups. Questions never fold, a call waiting on an approval stays below its group, and the open
+  groups are kept per session in memory. The group tree is copied as is, its merge and split included, which only its
+  tests use until the transcript pages. Adapted: a run is an assistant message's consecutive tool parts, which a text,
+  file or error part ends (blank text doesn't); the office's tools map to upstream's by their view (a Codex or Claude
+  Code call as its subagent call, running while its session runs); no thoughts, instruction loads or code-mode
+  scripts; the settings live in `kv.json` and the commands in the palette; the expanded calls keep the transcript's
+  own spacing; no scroll anchors or paging.
+- **Upstream:** `packages/tui/src/routes/session/grouping/{tree,session}.ts`,
+  `packages/tui/src/routes/session/activity-summary.ts`, `packages/tui/src/routes/session/group-view.tsx`,
+  `packages/tui/src/routes/session/render-context.tsx`, `packages/tui/src/routes/session/rows.ts`
+  (`reduceSessionRows`, `createSessionRows`'s reconcile by key), `packages/tui/src/routes/session/anchors.ts`
+  (`groupID`), `packages/tui/src/routes/session/anchor-view.tsx` (`visitEntries`),
+  `packages/tui/src/routes/session/message-parts.tsx` (`InlineToolRow`'s home),
+  `packages/tui/src/routes/session/index.tsx` (`verbosity`, `groupExpanded`, `session.verbosity.cycle`,
+  `session.toggle.exploration_grouping`), `packages/tui/src/context/session-tabs.tsx` (`groupExpanded`,
+  `setGroupExpanded`), `packages/tui/src/component/dialog-config.tsx` (the "Tool grouping" and "Verbosity"
+  settings), `packages/tui/src/config/keybind.ts`, `packages/tui/test/cli/tui/grouping-tree.test.ts`,
+  `packages/tui/test/cli/tui/session-verbosity.test.ts` and `packages/tui/test/cli/tui/group-view.test.tsx`, read at
+  commit `4332e24f` (2026-11-21).
+- **Ours:** `packages/tui/src/routes/session/grouping/{tree,session}.ts`,
+  `packages/tui/src/routes/session/{activity-summary,rows,group-memory}.ts`,
+  `packages/tui/src/routes/session/{group-view,render-context,message-parts}.tsx`,
+  `packages/tui/src/routes/session/index.tsx` (`AssistantMessage`, `toolName`), `packages/tui/src/config/keybind.ts`,
+  `packages/tui/test/cli/tui/grouping-tree.test.ts`, `packages/tui/test/cli/tui/session-verbosity.test.ts`,
+  `packages/tui/test/routes/session/fold-tools-frame.test.tsx`.
 - **What:** the check before a terminal starts that its folder is a directory, since a PTY's library may start the
   shell in the home instead, ported for learning's shells.
 - **Upstream:** `packages/core/src/persistent-pty/index.ts` (`create`), read at commit `df46f69` (2026-11-16).

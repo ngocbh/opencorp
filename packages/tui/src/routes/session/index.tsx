@@ -1,18 +1,18 @@
 import {
-  createContext,
+  createComputed,
   createEffect,
   createMemo,
   createSignal,
   For,
+  mapArray,
   Match,
   on,
   onCleanup,
   Show,
   Switch,
   untrack,
-  useContext,
 } from "solid-js"
-import { createStore } from "solid-js/store"
+import { createStore, reconcile } from "solid-js/store"
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
 import {
@@ -21,6 +21,7 @@ import {
   type Instrument,
   isInstrumentNote,
   type Message,
+  type Part,
   type Question as OfficeQuestion,
   type TextPart,
   type ToolPart,
@@ -31,7 +32,7 @@ import { SplitBorder } from "../../ui/border"
 import { useTuiPaths } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
 import { useTheme } from "../../context/theme"
-import { BoxRenderable, ScrollBoxRenderable, TextAttributes, type RGBA } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, type RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import { Locale } from "../../util/locale"
 import { Dynamic, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
@@ -53,7 +54,6 @@ import { useEpilogue } from "../../context/epilogue"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
 import { formatTranscript, outputText, personLabel } from "../../util/transcript"
 import { sessionEpilogue } from "../../util/presentation"
-import { setPreLayoutSiblingMargin } from "../../util/layout"
 import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { getScrollAcceleration } from "../../util/scroll"
@@ -62,7 +62,7 @@ import { OPENCORP_BASE_MODE, useBindings, useCommandShortcut } from "../../keyma
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { usePermission } from "../../context/permission"
-import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented, statusLabel } from "@opencorp/client"
+import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented, statusLabel, type OfficeState } from "@opencorp/client"
 import { answerShown } from "../chat/answer"
 import { QuestionCard } from "../chat/card"
 import { HarnessCard } from "../chat/harness-card"
@@ -74,14 +74,30 @@ import { Composer } from "./composer"
 import { busyCounts, busyTab, childState, familyQuestions, HARNESS_TITLE, harnessFamily } from "./composer/tabs"
 import { sessionOwner, speakerLabel } from "./speakers"
 import { NoteLine } from "./note-line"
+import { alwaysSeparate, InlineToolRow } from "./message-parts"
+import { context, use } from "./render-context"
+import { SessionGroupView } from "./group-view"
+import { groupMemory } from "./group-memory"
+import {
+  defaultVerbosity,
+  groupID,
+  verbosities,
+  type GroupKind,
+  type PartRef,
+  type SessionEntry,
+  type SessionRow,
+  type Verbosity,
+} from "./grouping/session"
+import { blankText, reduceMessageRows } from "./rows"
 
-export const alwaysSeparate = new WeakSet<BoxRenderable>()
+export { alwaysSeparate, InlineToolRow } from "./message-parts"
 
 const sessionBindingCommands = [
   "session.toggle.conceal",
   "session.toggle.timestamps",
-  "session.toggle.actions",
   "session.toggle.scrollbar",
+  "session.toggle.exploration_grouping",
+  "session.verbosity.cycle",
   "session.toggle.generic_tool_output",
   "session.first",
   "session.last",
@@ -105,27 +121,6 @@ const sessionGlobalBindingCommands = [
 ] as const
 
 const sessionGlobalUnfocusedBindingCommands = ["session.first", "session.last"] as const
-
-const context = createContext<{
-  width: number
-  sessionID: string
-  conceal: () => boolean
-  /** Whether the last reply can still grow. */
-  streaming: () => boolean
-  showTimestamps: () => boolean
-  showDetails: () => boolean
-  showGenericToolOutput: () => boolean
-  diffWrapMode: () => "word" | "none"
-  tui: ReturnType<typeof useTuiConfig>
-  /** Opens instrument `id` in the right pane, as the session's `onOpen`. */
-  onOpen?: (id: string) => void
-}>()
-
-function use() {
-  const ctx = useContext(context)
-  if (!ctx) throw new Error("useContext must be used within a Session component")
-  return ctx
-}
 
 /** Whether a message has a text part with more than whitespace: the view draws nothing for a blank one. */
 function hasText(message: Message) {
@@ -361,10 +356,19 @@ export function Session(props: SessionProps) {
   const dimensions = useTerminalDimensions()
   const [conceal, setConceal] = createSignal(true)
   const [timestamps, setTimestamps] = kv.signal<"hide" | "show">("timestamps", "hide")
-  const [showDetails, setShowDetails] = kv.signal("tool_details_visibility", true)
   const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
+  const [verbositySetting, setVerbosity] = kv.signal<Verbosity>("session_verbosity", defaultVerbosity)
+  const [grouping, setGrouping] = kv.signal<"none" | "auto">("session_grouping", "auto")
+  const verbosity = createMemo(() =>
+    verbosities.includes(verbositySetting()) ? verbositySetting() : defaultVerbosity,
+  )
+  const groupExploration = createMemo(() => grouping() !== "none")
+  const groups = groupMemory(useRenderer())
+  // High opens the reads' and searches' groups by default; everything else starts collapsed.
+  const groupExpanded = (groupID: string, kind: GroupKind) =>
+    groups.groupExpanded(props.sessionID, groupID) ?? (verbosity() === "high" && kind === "exploration")
 
   const instruments = () => props.shells ?? []
   // In a child session (a Codex or Claude Code session an employee's chat drives), the chat that drives it.
@@ -621,11 +625,22 @@ export function Session(props: SessionProps) {
       },
     },
     {
-      title: showDetails() ? "Hide tool details" : "Show tool details",
-      value: "session.toggle.actions",
+      title: groupExploration() ? "Show tool calls individually" : "Group related tool calls",
+      value: "session.toggle.exploration_grouping",
       category: "Session",
       run: () => {
-        setShowDetails((prev) => !prev)
+        const next = groupExploration() ? "none" : "auto"
+        setGrouping(() => next)
+        dialog.clear()
+      },
+    },
+    {
+      title: `Verbosity: ${Locale.titlecase(verbosity())}`,
+      value: "session.verbosity.cycle",
+      category: "Session",
+      run: () => {
+        const next = verbosities[(verbosities.indexOf(verbosity()) + 1) % verbosities.length]
+        setVerbosity(() => next)
         dialog.clear()
       },
     },
@@ -715,7 +730,7 @@ export function Session(props: SessionProps) {
       slash: { name: "copy" },
       run: async () => {
         try {
-          const text = transcript(showDetails())
+          const text = transcript(true)
           if (!text) return
           await clipboard.write?.(text)
           toast.show({ message: "Session transcript copied to clipboard!", variant: "success" })
@@ -737,7 +752,7 @@ export function Session(props: SessionProps) {
           const options = await DialogExportOptions.show(
             dialog,
             `session-${current.id.slice(0, 8)}.md`,
-            showDetails(),
+            true,
             false,
           )
           if (options === null) return
@@ -841,9 +856,12 @@ export function Session(props: SessionProps) {
         conceal,
         streaming,
         showTimestamps,
-        showDetails,
         showGenericToolOutput,
         diffWrapMode,
+        verbosity,
+        groupExploration,
+        groupExpanded,
+        setGroupExpanded: (groupID, expanded) => groups.setGroupExpanded(props.sessionID, groupID, expanded),
         tui: tuiConfig,
         get onOpen() {
           return props.onOpen
@@ -1172,26 +1190,73 @@ function UserMessage(props: {
   )
 }
 
+/**
+ * A reply's parts: each run of tool calls grouped as the verbosity says (one folded line at Low), its other parts as
+ * they are. The rows are reconciled by key, so a row keeps its view as parts come in.
+ */
 function AssistantMessage(props: { message: Message; last: boolean }) {
+  const ctx = use()
+  const office = useOffice()
+  const permission = usePermission()
+  const [rows, setRows] = createStore<(SessionRow & { key: string })[]>([])
+  // Each part's blankness in a memo of its own: a streamed delta rebuilds the rows only when a text stops being blank.
+  const blanks = createMemo(mapArray(() => props.message.parts, (part) => createMemo(() => blankText(part))))
+  createComputed(() => {
+    const blank = blanks()
+    const waiting = new Set(
+      props.message.parts.flatMap((part) =>
+        part.type === "tool" && part.yian_call_id && permission.waiting(ctx.sessionID, part.yian_call_id)
+          ? [part.id]
+          : [],
+      ),
+    )
+    const next = reduceMessageRows(props.message, ctx.verbosity(), toolName, waiting, (_, index) => !!blank[index]?.())
+    setRows(reconcile(next.map((row) => ({ ...row, key: rowKey(row) })), { key: "key" }))
+  })
+  const part = (id: string) => props.message.parts.find((p) => p.id === id)
+  // A harness call runs while its session does, as upstream's subagent call runs while its subagent works.
+  const item = (ref: PartRef) => {
+    const found = part(ref.partID)
+    if (found?.type !== "tool") return undefined
+    const harness = HARNESS_CALL.test(found.tool)
+      ? toolView(found.tool, found.input ?? {}, outputText(found.output)).input
+      : undefined
+    const busy = harness !== undefined && childRunning(office.state, harnessChild(office.state, ctx.sessionID, harness))
+    return { name: toolName(found), state: busy ? ("running" as const) : found.state }
+  }
+  // Keyed by the part, which the office replaces whole when it changes.
+  const entry = (entry: SessionEntry) => (
+    <Show when={part(entry.ref.partID)} keyed>
+      {(found) => <PartView part={found} last={props.last && props.message.parts.at(-1)?.id === found.id} />}
+    </Show>
+  )
   return (
-    <For each={props.message.parts}>
-      {(part, index) => {
-        const component = createMemo(() => PART_MAPPING[part.type as keyof typeof PART_MAPPING])
-        return (
-          <Show when={component()}>
-            <Dynamic
-              last={props.last && index() === props.message.parts.length - 1}
-              component={component()}
-              part={part as any}
-            />
-          </Show>
-        )
-      }}
+    <For each={rows}>
+      {(row) => (
+        <Switch>
+          <Match when={row.type === "group" ? row : undefined}>
+            {(group) => <SessionGroupView row={group()} item={item} entry={entry} />}
+          </Match>
+          <Match when={row.type === "part" ? row : undefined}>{(row) => entry(row())}</Match>
+        </Switch>
+      )}
     </For>
   )
 }
 
-const INLINE_TOOL_ICON_WIDTH = 2
+/** A row's key: a part's id, or a group's. */
+function rowKey(row: SessionRow) {
+  return row.type === "group" ? (groupID(row, 0) ?? "") : JSON.stringify([row.type, row.ref.messageID, row.ref.partID])
+}
+
+function PartView(props: { part: Part; last: boolean }) {
+  const component = createMemo(() => PART_MAPPING[props.part.type as keyof typeof PART_MAPPING])
+  return (
+    <Show when={component()}>
+      <Dynamic last={props.last} component={component()} part={props.part as any} />
+    </Show>
+  )
+}
 
 function TextPartView(props: { last: boolean; part: TextPart }) {
   const ctx = use()
@@ -1383,6 +1448,27 @@ export function toolView(
   return { view: "generic", input }
 }
 
+/**
+ * The upstream tool a call stands for, by its view, which decides how a run of calls groups and how its summary counts
+ * it: `shell` for a command, typed line or shell call; a harness call by its harness (`Codex`), as upstream's subagent
+ * call; any other tool by its title or name.
+ */
+export function toolName(part: ToolPart): string {
+  const view = toolView(part.tool, part.input ?? {})
+  switch (view.view) {
+    case "shell":
+    case "typed":
+    case "terminal":
+      return "shell"
+    case "harness":
+      return HARNESS_TITLE[view.input.harness as "codex" | "claude"]
+    case "generic":
+      return view.title ?? part.tool
+    default:
+      return view.view
+  }
+}
+
 /** The line edit_file's reply says a single-place edit starts on, if it says one. */
 export function editStartLine(output: string | undefined): number | undefined {
   const match = output?.match(/^replaced 1 occurrence in .* at line (\d+)$/s)
@@ -1438,11 +1524,7 @@ const PART_MAPPING = {
 }
 
 function ToolPartView(props: { last: boolean; part: ToolPart }) {
-  const ctx = use()
   const view = createMemo(() => toolView(props.part.tool, props.part.input ?? {}, outputText(props.part.output)))
-
-  // Completed tools fold away when tool details are hidden.
-  const shouldHide = createMemo(() => !ctx.showDetails() && props.part.state === "completed")
 
   const toolprops = {
     get input() {
@@ -1463,46 +1545,44 @@ function ToolPartView(props: { last: boolean; part: ToolPart }) {
   }
 
   return (
-    <Show when={!shouldHide()}>
-      <Switch>
-        <Match when={view().view === "shell"}>
-          <Shell {...toolprops} />
-        </Match>
-        <Match when={view().view === "typed"}>
-          <TypedLine {...toolprops} />
-        </Match>
-        <Match when={view().view === "terminal"}>
-          <ShellCall {...toolprops} />
-        </Match>
-        <Match when={view().view === "list"}>
-          <List {...toolprops} />
-        </Match>
-        <Match when={view().view === "read"}>
-          <Read {...toolprops} />
-        </Match>
-        <Match when={view().view === "search"}>
-          <Search {...toolprops} />
-        </Match>
-        <Match when={view().view === "write"}>
-          <Write {...toolprops} />
-        </Match>
-        <Match when={view().view === "edit"}>
-          <Edit {...toolprops} />
-        </Match>
-        <Match when={view().view === "patch"}>
-          <Patch {...toolprops} />
-        </Match>
-        <Match when={view().view === "question"}>
-          <Question {...toolprops} />
-        </Match>
-        <Match when={view().view === "harness"}>
-          <HarnessCall {...toolprops} />
-        </Match>
-        <Match when={true}>
-          <GenericTool {...toolprops} />
-        </Match>
-      </Switch>
-    </Show>
+    <Switch>
+      <Match when={view().view === "shell"}>
+        <Shell {...toolprops} />
+      </Match>
+      <Match when={view().view === "typed"}>
+        <TypedLine {...toolprops} />
+      </Match>
+      <Match when={view().view === "terminal"}>
+        <ShellCall {...toolprops} />
+      </Match>
+      <Match when={view().view === "list"}>
+        <List {...toolprops} />
+      </Match>
+      <Match when={view().view === "read"}>
+        <Read {...toolprops} />
+      </Match>
+      <Match when={view().view === "search"}>
+        <Search {...toolprops} />
+      </Match>
+      <Match when={view().view === "write"}>
+        <Write {...toolprops} />
+      </Match>
+      <Match when={view().view === "edit"}>
+        <Edit {...toolprops} />
+      </Match>
+      <Match when={view().view === "patch"}>
+        <Patch {...toolprops} />
+      </Match>
+      <Match when={view().view === "question"}>
+        <Question {...toolprops} />
+      </Match>
+      <Match when={view().view === "harness"}>
+        <HarnessCall {...toolprops} />
+      </Match>
+      <Match when={true}>
+        <GenericTool {...toolprops} />
+      </Match>
+    </Switch>
   )
 }
 
@@ -1628,85 +1708,6 @@ function InlineTool(props: {
       {props.children}
       {note() ? ` · ${note()}` : ""}
     </InlineToolRow>
-  )
-}
-
-export function InlineToolRow(props: {
-  icon: string
-  iconColor?: RGBA
-  color?: RGBA
-  errorColor?: RGBA
-  failed?: boolean
-  denied?: boolean
-  error?: string
-  errorExpanded?: boolean
-  complete: unknown
-  pending: string
-  failure?: string
-  spinner?: boolean
-  separate?: boolean
-  children: JSX.Element
-  onMouseOver?: () => void
-  onMouseOut?: () => void
-  onMouseUp?: () => void
-}) {
-  return (
-    <box
-      paddingLeft={3}
-      onMouseOver={props.onMouseOver}
-      onMouseOut={props.onMouseOut}
-      onMouseUp={props.onMouseUp}
-      ref={(el: BoxRenderable) => {
-        if (props.separate) alwaysSeparate.add(el)
-        setPreLayoutSiblingMargin(el, (previous) => {
-          return props.separate ||
-            (previous instanceof BoxRenderable && (previous.height > 1 || alwaysSeparate.has(previous)))
-            ? 1
-            : 0
-        })
-      }}
-    >
-      <Switch>
-        <Match when={props.spinner}>
-          <Spinner color={props.color} children={props.children} />
-        </Match>
-        <Match when={true}>
-          <Show
-            fallback={
-              <text
-                fg={props.color}
-                attributes={props.denied ? TextAttributes.STRIKETHROUGH : undefined}
-              >
-                ~ {props.pending}
-              </text>
-            }
-            when={props.complete || props.failed}
-          >
-            <box flexDirection="row">
-              <text
-                width={INLINE_TOOL_ICON_WIDTH}
-                fg={props.failed ? props.errorColor : (props.iconColor ?? props.color)}
-                attributes={props.denied ? TextAttributes.STRIKETHROUGH : undefined}
-              >
-                {props.icon}
-              </text>
-              <text
-                flexGrow={1}
-                fg={props.failed ? props.errorColor : props.color}
-                attributes={props.denied ? TextAttributes.STRIKETHROUGH : undefined}
-              >
-                {props.failed && !props.complete ? (props.failure ?? props.children) : props.children}
-              </text>
-            </box>
-          </Show>
-        </Match>
-      </Switch>
-      <Show when={props.failed && props.errorExpanded}>
-        <box paddingLeft={INLINE_TOOL_ICON_WIDTH}>
-          <text fg={props.errorColor}>{props.error}</text>
-        </box>
-      </Show>
-    </box>
   )
 }
 
@@ -2113,6 +2114,18 @@ function Question(props: ToolProps) {
   )
 }
 
+/** The chat's session that a harness call's view names, if the chat lists it. */
+function harnessChild(state: OfficeState, sessionID: string, input: Record<string, unknown>) {
+  const named = stringValue(input.session)
+  if (named === undefined) return undefined
+  return state.instruments[sessionID]?.find((i) => i.kind === input.harness && i.name === named)
+}
+
+/** Whether a listed Codex or Claude Code session runs a turn. */
+function childRunning(state: OfficeState, listed: Instrument | undefined) {
+  return !!listed && childState(state.sessions.find((s) => s.id === listed.id), listed) === "running"
+}
+
 /**
  * An employee's call to a Codex or Claude Code session, as upstream's subagent row: the session by the picker's name
  * (`Codex: codex 1`) and the message, or the call (`interrupt`), then why it was refused or the session failed, as a
@@ -2127,17 +2140,9 @@ function HarnessCall(props: ToolProps) {
   const call = () => stringValue(props.input.call)
   const name = () => stringValue(props.input.session)
   const message = createMemo(() => display(stringValue(props.input.message)?.replace(/\s+/g, " ").trim() ?? ""))
-  const child = createMemo(() => {
-    const named = name()
-    if (named === undefined) return undefined
-    return office.state.instruments[ctx.sessionID]?.find((i) => i.kind === harness() && i.name === named)
-  })
+  const child = createMemo(() => harnessChild(office.state, ctx.sessionID, props.input))
   const continuation = () => call() !== "start"
-  const isRunning = createMemo(() => {
-    const listed = child()
-    if (running(props.part)) return true
-    return !!listed && childState(office.state.sessions.find((s) => s.id === listed.id), listed) === "running"
-  })
+  const isRunning = createMemo(() => running(props.part) || childRunning(office.state, child()))
   const what = () => (call() === "start" || call() === "send" ? message() : call())
   const label = () => {
     const named = name()

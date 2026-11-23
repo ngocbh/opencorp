@@ -1,9 +1,15 @@
 import type { Message } from "@opencorp/protocol"
-import { expect, onTestFinished, test } from "bun:test"
+import { afterAll, beforeEach, expect, onTestFinished, test } from "bun:test"
 import { createFakeOffice, createStub } from "./fixture/fake-office"
 import { bootFrame } from "./fixture/frame"
+import { writeKV } from "./fixture/kv"
 import { until } from "./fixture/until"
 import { INTERRUPTED_TEXT } from "../src/routes/chat/freeze"
+
+// These tests read each tool call's own row, so the transcript shows every call (High), as upstream's tests of its
+// tool rows pin it; later test files expect the default.
+beforeEach(() => writeKV({ session_verbosity: "high" }))
+afterAll(() => writeKV({ session_verbosity: undefined }))
 
 test("a waiting session's header names who it waits on, and a capped one says so", async () => {
   const office = createFakeOffice()

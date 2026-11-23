@@ -10,6 +10,10 @@ description: "Open the TUI in a project folder to talk to your employees, and hi
 Run `opencorp` in a project folder. In a folder nobody has worked in yet, it first asks "Who do you
 want to talk to?". `opencorp -c` continues the newest session in that folder.
 
+In the chat, each run of your employee's tool calls shows as one line, such as `+ 3 commands, 1 edit, 4 reads`:
+click it to see the calls. "Verbosity" in the command list (ctrl+p) switches between Low (the default), Medium, which
+folds only reads and searches, and High, which shows every call.
+
 ## Hire
 
 In that picker, or after opening it with `/people` or ctrl+x p, pick "Hire new…". Fill in Name,

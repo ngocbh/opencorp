@@ -112,7 +112,6 @@ export const Definitions = {
   messages_last_user: keybind("none", "Navigate to last user message"),
   messages_copy: keybind("<leader>y", "Copy message"),
   messages_toggle_conceal: keybind("<leader>h", "Toggle code block concealment in messages"),
-  tool_details: keybind("none", "Toggle tool details visibility"),
 
   prompt_submit: keybind("none", "Submit prompt"),
   prompt_stash: keybind("none", "Stash prompt"),
@@ -159,6 +158,9 @@ export const Definitions = {
   input_select_all: keybind("super+a", "Select all in input"),
   history_previous: keybind("up", "Previous history item"),
   history_next: keybind("down", "Next history item"),
+
+  "session.toggle.exploration_grouping": keybind("none", "Toggle related tool call grouping"),
+  "session.verbosity.cycle": keybind("none", "Cycle transcript verbosity"),
 
   "pane.focus.left": keybind("<leader>left", "Give the chat the keys, the pane staying open"),
   "pane.focus.right": keybind("<leader>right", "Give the pane the keys"),
@@ -272,7 +274,6 @@ export const CommandMap = {
   messages_last_user: "session.messages_last_user",
   messages_copy: "messages.copy",
   messages_toggle_conceal: "session.toggle.conceal",
-  tool_details: "session.toggle.actions",
   prompt_submit: "prompt.submit",
   prompt_stash: "prompt.stash",
   prompt_stash_pop: "prompt.stash.pop",
