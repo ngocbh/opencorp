@@ -759,6 +759,39 @@ test("ctrl+x ↓ opens no picker behind a Codex session's card in the chat, nor 
   }
 })
 
+test("a Codex card in both the chat and the pane leaves the pane's prompt its Esc, and an answer in the pane closes both", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  const shown = (f: string) => f.split("$ touch a").length - 1
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    await openFirst(app)
+    await app.until((f) => f.includes("Codex says hello."))
+    const card = office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
+    await app.until((f) => shown(f) === 2)
+    // On the pane's prompt, under its card folded, the card the chat shows takes none of the pane's keys.
+    app.input.pressKey("t", { ctrl: true })
+    await app.until((f) => shown(f) === 1)
+    app.input.typeText("draft")
+    await app.until((f) => f.includes("draft"))
+    await escape(app)
+    await app.until((f) => !f.includes("draft"))
+    expect(sent(office, `/sessions/${child.id}/interrupt`)).toEqual([])
+    await escape(app)
+    await until(() => sent(office, `/sessions/${child.id}/interrupt`).length === 1)
+    app.input.pressKey("t", { ctrl: true })
+    await app.until((f) => shown(f) === 2)
+    app.input.pressKey("1")
+    await app.until((f) => shown(f) === 0 && !f.includes("Codex asks"))
+    expect(sent(office, `/questions/${card.id}/answer`)).toEqual([{ answer: "Approve", answer_kind: "option" }])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("below 108 columns a pane that opens itself over a draft or a card waits, a line says so, and ctrl+x → shows it", async () => {
   const office = createFakeOffice()
   const { sid, app } = await boot(office, 100)

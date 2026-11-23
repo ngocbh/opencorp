@@ -5,7 +5,6 @@ import {
   createSignal,
   For,
   onCleanup,
-  onMount,
   Show,
   untrack,
   type ParentProps,
@@ -229,7 +228,10 @@ export function QuestionView(
     next()
   }
 
-  onMount(() => {
+  // Its mode is the keymap's while its side has the keys, as the picker's is: a card that shows in both the chat and
+  // the pane leaves the other side's base keys (a prompt's Esc) alone.
+  createEffect(() => {
+    if (!interactive()) return
     const popMode = modeStack.push(QUESTION_MODE)
     onCleanup(popMode)
   })
