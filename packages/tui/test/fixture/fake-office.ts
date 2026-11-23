@@ -276,6 +276,20 @@ export function createFakeOffice(
     if (!ok) throw fail(422, "invalid_body", message)
   }
   const str = (v: unknown) => typeof v === "string" && v.length > 0
+  /** The message id a page's cursor names in session `session`, as the office reads it; 400 `bad_cursor` otherwise. */
+  const cursorId = (raw: string, session: string) => {
+    const bad = () => fail(400, "bad_cursor", "before isn't a cursor a page of this session's messages gave")
+    if (!/^[A-Za-z0-9_-]+$/.test(raw)) throw bad()
+    let value: { session?: unknown; id?: unknown } | null
+    try {
+      value = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"))
+    } catch {
+      throw bad()
+    }
+    if (typeof value?.session !== "string" || typeof value.id !== "string" || value.id === "") throw bad()
+    if (value.session !== session) throw fail(400, "bad_cursor", "before is a cursor of another session's messages")
+    return value.id
+  }
   const human = () => state.people.find((p) => p.kind === "human")?.handle ?? "ngocbh"
   const ceo = () => state.people.find((p) => p.kind === "human" && !p.manager)?.handle ?? human()
 
@@ -1133,7 +1147,21 @@ export function createFakeOffice(
     [
       "GET",
       "/sessions/:id/messages",
-      ({ params }) => (session(params.id), Response.json((state.messages[params.id] ?? []).map(servedMessage))),
+      ({ params, query }) => {
+        session(params.id)
+        const all = (state.messages[params.id] ?? []).map(servedMessage)
+        // As the office: the whole list unless `limit` or `before` asks for a page, the newest before the cursor.
+        if (!query.has("limit") && !query.has("before")) return Response.json(all)
+        const raw = query.get("limit") ?? "50"
+        const limit = /^[0-9]+$/.test(raw) ? Number(raw) : 0
+        check(limit >= 1 && limit <= 500, "limit must be an integer from 1 to 500")
+        const before = query.has("before") ? cursorId(query.get("before")!, params.id) : null
+        const end = before === null ? all.length : all.findIndex((m) => m.id === before)
+        if (end < 0) throw fail(400, "bad_cursor", "before names a message this session's transcript no longer has")
+        const start = Math.max(0, end - limit)
+        const cursor = (id: string) => Buffer.from(JSON.stringify({ session: params.id, id })).toString("base64url")
+        return Response.json({ messages: all.slice(start, end), next: start > 0 ? cursor(all[start]!.id) : null })
+      },
     ],
     ["POST", "/sessions/:id/prompt", ({ params, body, actor }) => turn(params.id, body, actor)],
     ["POST", "/sessions/:id/steer", ({ params, body, actor }) => turn(params.id, body, actor)],

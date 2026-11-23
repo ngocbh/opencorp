@@ -101,6 +101,7 @@ import {
   type ScrollAnchor,
 } from "./anchors"
 import { rowsAfter, rowsBefore, rowWeight } from "./mount-budget"
+import { createHistoryPrepend } from "./history"
 
 export { alwaysSeparate, InlineToolRow } from "./message-parts"
 
@@ -620,12 +621,41 @@ export function Session(props: SessionProps) {
       { defer: true },
     ),
   )
+  /**
+   * What a load of older messages into transcript `id` runs as they go in: what the reader sees stays in place, and the
+   * mount window keeps its messages, `added` places on. With `mount`, a window that starts at the first message held
+   * starts at the first loaded, so the page mounts, as upstream's history prepend mounts it.
+   */
+  const keepView = (id: string, mount: boolean) => (added: number) => {
+    if (viewID() !== id) return
+    pinAbove()
+    batch(() => {
+      setHiddenRows((h) => (h === undefined || (mount && h === 0) ? h : h + added))
+      setVisibleRowsEnd((end) => (end === undefined ? end : end + added))
+    })
+  }
+  // The office sends a transcript a page at a time: above the first message held, the page before it loads.
+  const prependHistory = createHistoryPrepend({
+    sessionID: () => viewID() ?? "",
+    more: (id) => id !== "" && office.hasOlder(id),
+    loadMore: (id) => office.loadOlder(id, { beforePublish: keepView(id, true) }),
+    afterLayout,
+    active: (id) => viewID() === id && !!scroll && !scroll.isDestroyed,
+    scrollBy: (amount) => {
+      scroll.scrollBy(amount)
+      updateAwayFromBottom()
+    },
+  })
+  /** Loads every older message of the transcript in view, leaving what the reader sees and what is mounted. */
+  const loadAll = async () => {
+    const id = viewID()
+    if (id && office.hasOlder(id)) await office.loadOlder(id, { all: true, beforePublish: keepView(id, false) })
+  }
   let revealingOlderRows = false
   const revealOlderRows = (scrollBy = 0) => {
     const current = hidden()
     if (revealingOlderRows || !scroll || scroll.isDestroyed || scroll.scrollTop > scroll.viewport.height) return false
-    // The office sends the whole transcript at once: above its first message there is nothing more to load.
-    if (current === 0) return false
+    if (current === 0) return prependHistory(scrollBy)
     revealingOlderRows = true
     scroll.stickyScroll = false
     pinAbove()
@@ -793,11 +823,13 @@ export function Session(props: SessionProps) {
     return [...visibleMessages].reverse().find((c) => c.y < scrollTop - 10)?.id ?? null
   }
 
-  // Scrolls to the next message in `direction`, or by a page when there is none.
-  const scrollToMessage = (direction: "next" | "prev") =>
+  // Scrolls to the next message in `direction`, or by a page when there is none; above the first message held, the
+  // page before it loads first.
+  const scrollToMessage = (direction: "next" | "prev"): void =>
     ensureAllRows(() => {
       const targetID = findNextVisibleMessage(direction)
       const child = targetID && scroll.getChildren().find((c) => c.id === targetID)
+      if (!child && direction === "prev" && prependHistory(0, () => scrollToMessage(direction))) return
       if (child) scroll.scrollBy(child.y - scroll.y - 1)
       else scroll.scrollBy(direction === "next" ? scroll.height : -scroll.height)
       updateAwayFromBottom()
@@ -822,8 +854,16 @@ export function Session(props: SessionProps) {
     }, 50)
   }
 
-  /** The first message: the head mounts in the tail's place, and the view goes to the top. */
-  function toTop() {
+  /** The first message: every older page loads, the head mounts in the tail's place, and the view goes to the top. */
+  function toTop(loaded = false) {
+    const id = viewID()
+    if (!loaded && id && office.hasOlder(id)) {
+      loadAll().then(
+        () => viewID() === id && scroll && !scroll.isDestroyed && toTop(true),
+        (error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }),
+      )
+      return
+    }
     scroll.stickyScroll = false
     batch(() => {
       setHiddenRows(0)
@@ -981,7 +1021,7 @@ export function Session(props: SessionProps) {
         ["Line down", "session.line.down", () => moveTranscript(1)],
         ["Half page up", "session.half.page.up", () => moveTranscript(-scroll.height / 4)],
         ["Half page down", "session.half.page.down", () => moveTranscript(scroll.height / 4)],
-        ["First message", "session.first", toTop],
+        ["First message", "session.first", () => toTop()],
         ["Last message", "session.last", toBottom],
       ] as const
     ).map(([title, value, move]) => ({
@@ -999,13 +1039,19 @@ export function Session(props: SessionProps) {
       value: "session.messages_last_user",
       category: "Session",
       hidden: true,
-      run: () =>
-        ensureAllRows(() => {
-          const message = messages().findLast((m) => m.role === "user" && !isInstrumentNote(m) && hasText(m))
-          const child = message && scroll.getChildren().find((child) => child.id === message.id)
-          if (child) scroll.scrollBy(child.y - scroll.y - 1)
-          updateAwayFromBottom()
-        }),
+      run: () => {
+        const last = () => messages().findLast((m) => m.role === "user" && !isInstrumentNote(m) && hasText(m))
+        const jump = () =>
+          ensureAllRows(() => {
+            const message = last()
+            const child = message && scroll.getChildren().find((child) => child.id === message.id)
+            if (child) scroll.scrollBy(child.y - scroll.y - 1)
+            updateAwayFromBottom()
+          })
+        // Past the pages held, it may be in an older one.
+        if (last()) jump()
+        else loadAll().then(jump, () => {})
+      },
     },
     {
       title: "Next message",
@@ -1043,6 +1089,7 @@ export function Session(props: SessionProps) {
       slash: { name: "copy" },
       run: async () => {
         try {
+          await loadAll()
           const text = transcript(true)
           if (!text) return
           await clipboard.write?.(text)
@@ -1069,6 +1116,7 @@ export function Session(props: SessionProps) {
             false,
           )
           if (options === null) return
+          await loadAll()
           const text = transcript(options.toolDetails)!
           if (options.openWithoutSaving) {
             await openEditor({ renderer, value: text, cwd: current.cwd })

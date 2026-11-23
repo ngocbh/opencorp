@@ -2,13 +2,23 @@
 // (re)connect re-reads state over GET: open the stream, wait for `: connected` (the office
 // subscribes before sending it), fetch while buffering stream events, apply the snapshot,
 // then replay the buffer on top.
-import type { Event, Instrument, LiveEvent, Message, Person, Question } from "@opencorp/protocol"
+import type { Event, Instrument, LiveEvent, Message, MessagePage, Person, Question } from "@opencorp/protocol"
 import type { OfficeClient } from "./client"
 import { BadToken, failureKind, OfficeError, OfficeUnavailable, UnknownDevice } from "./errors"
 import { asInstrument } from "./live"
 import { runEach } from "./queue"
 import type { StreamEvent, SubscribeOptions, Subscription } from "./sse"
-import { applyLive, applyMeta, replay, upsertQuestion, upsertSession, type OfficeState } from "./store"
+import {
+  applyLive,
+  applyMeta,
+  putNewest,
+  putOlder,
+  replay,
+  upsertQuestion,
+  upsertSession,
+  type MessagesPage,
+  type OfficeState,
+} from "./store"
 
 /** `error`: the office is reachable but its state couldn't be read (see `error()`); retrying. */
 export type OfficeStatus = "connecting" | "online" | "offline" | "error"
@@ -30,6 +40,10 @@ const SESSION_LIMIT = 50
 const FOLDER_LIMIT = 500
 /** The events held back while a snapshot loads, per bootstrap and per session load. */
 const MAX_BUFFERED = 10_000
+/** A synced session's messages are read this many at a time, newest first, as upstream's client reads them. */
+export const MESSAGE_PAGE = 20
+/** The page size of a load of every older message. */
+const ALL_PAGE = 200
 
 const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x)
 
@@ -103,6 +117,8 @@ export function createOfficeSync(opts: {
   state: () => OfficeState
   /** Applies a change to the state; may run it later, but in call order. */
   mutate: (fn: (s: OfficeState) => void) => void
+  /** Resolves once the changes `mutate` queued so far are applied; a `mutate` that applies them at once needs none. */
+  settled?: () => Promise<void>
   /**
    * Called on each status change, with the failure's message when the status is `error`, and the failure itself
    * (`cause`) when there is one: an `UnknownDevice` means the device or browser must sign in again.
@@ -121,6 +137,10 @@ export function createOfficeSync(opts: {
   const cleanPeople = (people: Person[]) =>
     clean ? people.map((p) => ({ ...p, name: clean(p.name), title: clean(p.title) })) : people
   const cleanMessages = (messages: Message[]) => (clean ? messages.map((m) => cleanMessage(m, clean)) : messages)
+  const cleanPage = (page: MessagePage): MessagesPage => ({
+    messages: cleanMessages(page.messages),
+    next: page.next ?? null,
+  })
   const cleanInstruments = (list: Instrument[]) => (clean ? list.map((i) => cleanInstrument(i, clean)) : list)
   // After stop(), loads still in flight must not touch the state.
   let stopped = false
@@ -140,6 +160,10 @@ export function createOfficeSync(opts: {
   const synced = new Set<string>()
   const pending = new Map<string, StreamEvent[]>()
   const loads = new Map<string, Promise<void>>()
+  // Each session's load of older messages in flight; it resolves whether its page went in.
+  const olderLoads = new Map<string, Promise<boolean>>()
+  // Sessions whose next load replaces their messages: an older page found its cursor gone.
+  const replacing = new Set<string>()
   const listeners = new Map<string, Set<(e: any) => void>>()
 
   function setStatus(next: OfficeStatus, message?: string, failure?: unknown) {
@@ -261,8 +285,10 @@ export function createOfficeSync(opts: {
   /** Stops keeping a session live and drops its messages and instruments, which would only go stale. */
   function unsync(id: string) {
     synced.delete(id)
+    replacing.delete(id)
     mutate((s) => {
       delete s.messages[id]
+      delete s.messageCursor[id]
       delete s.instruments[id]
     })
   }
@@ -277,14 +303,23 @@ export function createOfficeSync(opts: {
     }
   }
 
+  /** A session, its newest page of messages, its open questions and its instruments. */
   async function loadSession(id: string) {
-    const [session, messages, questions, instruments] = await Promise.all([
+    const [session, page, questions, instruments] = await Promise.all([
       client.sessions.get(id),
-      client.sessions.messages(id),
+      client.sessions.messagePage(id, { limit: MESSAGE_PAGE }),
       openQuestionsOf(id),
       instrumentsOf(id),
     ])
-    return { id, session, messages: cleanMessages(messages), questions, instruments: cleanInstruments(instruments) }
+    return { id, session, page: cleanPage(page), questions, instruments: cleanInstruments(instruments) }
+  }
+
+  /** Puts a loaded session in the state: its newest page goes on the older messages held (`putNewest`). */
+  function putLoaded(s: OfficeState, l: Awaited<ReturnType<typeof loadSession>>) {
+    putNewest(s, l.id, l.page, { replace: replacing.delete(l.id) })
+    s.instruments[l.id] = l.instruments
+    upsertSession(s, l.session)
+    for (const q of l.questions) s.questions[q.id] = q
   }
 
   /**
@@ -326,10 +361,7 @@ export function createOfficeSync(opts: {
       if (mine !== generation) continue
       pending.delete(id)
       mutate((s) => {
-        s.messages[id] = l.messages
-        s.instruments[id] = l.instruments
-        upsertSession(s, l.session)
-        for (const q of l.questions) s.questions[q.id] = q
+        putLoaded(s, l)
         replay(s, window)
       })
       fire(window)
@@ -367,13 +399,7 @@ export function createOfficeSync(opts: {
           if (q) s.questions[id] = q
           else delete s.questions[id]
         }
-        for (const l of loaded) {
-          if (!l) continue
-          s.messages[l.id] = l.messages
-          s.instruments[l.id] = l.instruments
-          upsertSession(s, l.session)
-          for (const q of l.questions) s.questions[q.id] = q
-        }
+        for (const l of loaded) if (l) putLoaded(s, l)
         replay(s, events)
       })
       setStatus("online")
@@ -401,6 +427,52 @@ export function createOfficeSync(opts: {
     return load
   }
 
+  /**
+   * Loads the next older page of a synced session's messages, or with `all` every older one, and puts it before those
+   * held (`putOlder`); resolves once it is put, or dropped because the held messages moved on meanwhile. One load runs
+   * at a time per session: a call while one runs waits for it, and then loads only with `all`. `beforePublish` runs as
+   * the page goes in, in the same update, with how many messages go in front. A cursor the office no longer takes (its
+   * message is gone) reloads the session's newest page in place of what it holds.
+   */
+  async function loadOlder(
+    id: string,
+    options: { all?: boolean; beforePublish?: (added: number) => void } = {},
+  ): Promise<void> {
+    while (olderLoads.has(id)) {
+      const published = await olderLoads.get(id)!.catch(() => false)
+      if (!options.all && published) return
+    }
+    const load = (async () => {
+      // What earlier changes put in, the cursor among them, is read once they are applied.
+      await opts.settled?.()
+      const cursor = opts.state().messageCursor[id]
+      if (cursor === undefined || stopped) return false
+      const older: Message[] = []
+      let next: string | null = cursor
+      do {
+        const page: MessagesPage = cleanPage(
+          await client.sessions.messagePage(id, { limit: options.all ? ALL_PAGE : MESSAGE_PAGE, before: next }),
+        )
+        older.unshift(...page.messages)
+        next = page.next
+      } while (options.all && next !== null)
+      let put = false
+      mutate((s) => (put = putOlder(s, id, { messages: older, next }, cursor, options.beforePublish)))
+      await opts.settled?.()
+      return put
+    })()
+    olderLoads.set(id, load)
+    try {
+      await load
+    } catch (e) {
+      if (!(e instanceof OfficeError && e.code === "bad_cursor") || !synced.has(id)) throw e
+      replacing.add(id)
+      await syncSession(id)
+    } finally {
+      if (olderLoads.get(id) === load) olderLoads.delete(id)
+    }
+  }
+
   return {
     /** Starts following the office. */
     start() {
@@ -417,6 +489,7 @@ export function createOfficeSync(opts: {
     /** Why the last bootstrap failed, while the status is `error`. */
     error: () => error,
     syncSession,
+    loadOlder,
     /** Re-reads a question, e.g. after the office says it is no longer open; drops it if the office has none. */
     async refreshQuestion(id: string) {
       const q = await recheck(id)

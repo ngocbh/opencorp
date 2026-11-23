@@ -1,7 +1,8 @@
-// A long transcript mounts in pages, as upstream's mount budget mounts its rows: only the tail when the session opens,
-// older messages a chunk at a time as the reader scrolls near the top, with no jump. Message navigation mounts the
-// rest first; a reply that streams still keeps the view at the bottom; copy and export read every message; a
-// session opens where the reader left it; and scrolled up, upstream's "Jump to latest" goes back to the bottom.
+// A long transcript loads and mounts in pages, as upstream's do: the newest page of messages when the session opens,
+// the page before it as the reader scrolls to the top, mounting only the tail of what is loaded, and older messages a
+// chunk at a time, with no jump. Message navigation loads and mounts the rest first; a reply that streams still keeps
+// the view at the bottom; copy and export read every message; a session opens where the reader left it; and scrolled
+// up, upstream's "Jump to latest" goes back to the bottom.
 import type { Message, Part, Session, ToolPart } from "@opencorp/protocol"
 import { ScrollBoxRenderable, type Renderable } from "@opentui/core"
 import { TestRecorder } from "@opentui/core/testing"
@@ -12,6 +13,7 @@ import { createFakeOffice, createStub, seed, type FakeOffice } from "../../fixtu
 import { bootFrame } from "../../fixture/frame"
 import { writeKV } from "../../fixture/kv"
 import { until } from "../../fixture/until"
+import { MESSAGE_PAGE } from "@opencorp/client"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 
 type App = Awaited<ReturnType<typeof bootFrame>>
@@ -75,7 +77,7 @@ async function boot(
 /** Waits until session `id` shows `shows` and its read has settled, past the scroll that follows it. */
 async function opened(app: App, office: FakeOffice, id: string, shows: string) {
   await app.until((f) => f.includes(shows))
-  await until(() => office.requests.some((r) => r.path === `/sessions/${id}/messages`))
+  await until(() => office.requests.some((r) => r.path.startsWith(`/sessions/${id}/messages`)))
   await Bun.sleep(100)
   return app.until((f) => f.includes(shows))
 }
@@ -115,9 +117,13 @@ async function runCommand(app: App, title: string) {
 async function wheelUp(app: App, done: (frame: string) => boolean) {
   const recorder = new TestRecorder(app.setup.renderer)
   recorder.rec()
-  for (let step = 0; step < 400 && !done(app.frame()); step++) {
+  const deadline = Date.now() + 30_000
+  for (let step = 0; step < 4000 && Date.now() < deadline && !done(app.frame()); step++) {
+    const before = app.frame()
     await app.setup.mockMouse.scroll(30, 12, "up")
     await app.setup.renderOnce()
+    // At the top, the page before loads while the wheel waits.
+    if (app.frame() === before) await Bun.sleep(10)
   }
   // The anchor that held the view lets go a frame after it mounted the rows above.
   await app.setup.renderOnce()
@@ -125,15 +131,69 @@ async function wheelUp(app: App, done: (frame: string) => boolean) {
   return recorder.recordedFrames.map((frame) => earliest(frame.frame))
 }
 
-test("a long transcript mounts only its tail", async () => {
+/** The reads of session `id`'s messages: whether the newest page was read (each view that opens it reads it), how
+ *  many older pages were, and how many whole transcripts. */
+function reads(office: FakeOffice, id: string) {
+  const paths = office.requests.map((r) => r.path).filter((path) => path.startsWith(`/sessions/${id}/messages`))
+  return {
+    newest: paths.some((path) => path === `/sessions/${id}/messages?limit=${MESSAGE_PAGE}`),
+    older: paths.filter((path) => path.includes("before=")).length,
+    whole: paths.filter((path) => !path.includes("?")).length,
+  }
+}
+
+/** Loads every page with the first message, then goes back to the last: the tail mounts as when the session opens. */
+async function loadEveryPage(app: App) {
+  app.input.pressKey("g", { ctrl: true })
+  await app.until((f) => f.includes("Turn 0 prompt"))
+  app.input.pressKey("F7")
+  await app.until((f) => !f.includes("Turn 0 prompt"))
+  await Bun.sleep(100)
+}
+
+test("a long chat opens on its newest page of messages, all of it mounted", async () => {
+  const { office, s, app } = await boot((id) => turns(id, 100), "Turn 99 answer")
+  try {
+    expect(app.frame()).not.toContain("Turn 0 prompt")
+    const view = transcript(app, userID(99))
+    // 200 messages: the newest 20 load, from turn 90, within the 40 entries the tail mounts.
+    expect(view.mounted(userID(90))).toBe(true)
+    expect(view.mounted(userID(89))).toBe(false)
+    expect(reads(office, s.id)).toEqual({ newest: true, older: 0, whole: 0 })
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("scrolling to the top loads the pages before, never moving what the reader sees", async () => {
+  const { office, s, app } = await boot((id) => turns(id, 100), "Turn 99 answer")
+  try {
+    const earliestTurns = await wheelUp(app, (f) => f.includes("Turn 0 prompt"))
+    expect(app.frame()).toContain("Turn 0 prompt")
+    expect(earliestTurns.at(-1)).toBe(0)
+    // A wheel tick moves less than a turn, so the earliest turn on screen steps up by at most one a frame. A frame
+    // drawn before the loaded rows are scrolled past would show their first turn instead.
+    expect(jumps(earliestTurns)).toEqual([])
+    expect(transcript(app, userID(0)).mounted(userID(99))).toBe(true)
+    // Each page of 20 before the newest, once.
+    expect(reads(office, s.id)).toEqual({ newest: true, older: 9, whole: 0 })
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("loaded pages mount only the tail, and older messages a chunk at a time as the reader nears the top", async () => {
   const { office, app } = await boot((id) => turns(id, 100), "Turn 99 answer")
   try {
-    const f = app.frame()
-    expect(f).not.toContain("Turn 0 prompt")
+    await loadEveryPage(app)
     const view = transcript(app, userID(99))
     // 200 messages, each one entry: the newest 40 mount, from turn 80.
     expect(view.mounted(userID(80))).toBe(true)
     expect(view.mounted(userID(79))).toBe(false)
+    const earliestTurns = await wheelUp(app, (f) => f.includes("Turn 60 prompt"))
+    expect(jumps(earliestTurns)).toEqual([])
     expect(view.mounted(userID(0))).toBe(false)
   } finally {
     await app.stop()
@@ -141,16 +201,19 @@ test("a long transcript mounts only its tail", async () => {
   }
 })
 
-test("scrolling to the top mounts older messages a chunk at a time, never moving what the reader sees", async () => {
-  const { office, app } = await boot((id) => turns(id, 100), "Turn 99 answer")
+test("the previous message, past the newest page, loads the page before it", async () => {
+  const { office, s, app } = await boot((id) => turns(id, 30), "Turn 29 answer")
   try {
-    const earliestTurns = await wheelUp(app, (f) => f.includes("Turn 0 prompt"))
-    expect(app.frame()).toContain("Turn 0 prompt")
-    expect(earliestTurns.at(-1)).toBe(0)
-    // A wheel tick moves less than a turn, so the earliest turn on screen steps up by at most one a frame. A frame
-    // drawn before the mounted rows are scrolled past would show their first turn instead.
-    expect(jumps(earliestTurns)).toEqual([])
-    expect(transcript(app, userID(0)).mounted(userID(99))).toBe(true)
+    const seen: number[] = []
+    for (let step = 0; step < 200 && !app.frame().includes("Turn 0 prompt"); step++) {
+      app.input.pressKey("F5")
+      await app.setup.renderOnce()
+      await Bun.sleep(20)
+      seen.push(earliest(app.frame()))
+    }
+    await app.until((f) => f.includes("Turn 0 prompt"))
+    expect(seen.filter((turn, index) => index > 0 && turn > seen[index - 1]!)).toEqual([])
+    expect(reads(office, s.id)).toMatchObject({ newest: true, older: 2 })
   } finally {
     await app.stop()
     office.stop()
@@ -190,6 +253,7 @@ test("a reply that streams keeps the view at the bottom, and the tail follows ne
   const { s, app } = await boot((id) => turns(id, 100), "Turn 99 answer", office)
   try {
     await app.until((f) => f.includes("@minh · busy"))
+    await loadEveryPage(app)
     for (let line = 1; line <= 30; line++)
       office.live({
         type: "part.delta",
@@ -281,13 +345,33 @@ test("a chat that fits on screen never shows Jump to latest", async () => {
   }
 })
 
-test("copying the transcript copies every message, mounted or not", async () => {
+test("after older pages load, Jump to latest goes back to the newest page, each message once", async () => {
+  const { office, s, app } = await boot((id) => turns(id, 100), "Turn 99 answer")
+  try {
+    await wheelUp(app, (f) => f.includes("Turn 70 prompt"))
+    expect(reads(office, s.id).older).toBeGreaterThan(0)
+    const f = await app.until((f) => f.includes(JUMP))
+    const jump = at(f, JUMP)
+    await app.setup.mockMouse.click(jump.x + 2, jump.y)
+    const back = await app.until((f) => f.includes("Turn 99 answer") && !f.includes(JUMP))
+    for (const t of [97, 98, 99]) expect(back.split(`Turn ${t} answer`).length - 1).toBe(1)
+    // The older pages stay loaded, each message once; the tail is mounted again.
+    const view = transcript(app, userID(99))
+    expect(view.mounted(userID(80))).toBe(true)
+    expect(view.mounted(userID(79))).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("copying the transcript copies every message, loaded or not", async () => {
   // The machine's clipboard is left alone: the app's writes are kept here instead.
   const real = { ...clipboard }
   const copied: string[] = []
   const fake = { write: async (text: string) => void copied.push(text) }
   mock.module("../../../src/context/clipboard", () => ({ ...real, useClipboard: () => fake }))
-  const { office, app } = await boot((id) => turns(id, 100), "Turn 99 answer")
+  const { office, s, app } = await boot((id) => turns(id, 100), "Turn 99 answer")
   try {
     expect(transcript(app, userID(99)).mounted(userID(0))).toBe(false)
     await runCommand(app, "Copy session transcript")
@@ -297,6 +381,9 @@ test("copying the transcript copies every message, mounted or not", async () => 
       expect(copied[0]).toContain(`Turn ${t} prompt`)
       expect(copied[0]).toContain(`Turn ${t} answer`)
     }
+    // The older 180 in pages of 200, then mounted no more than before.
+    expect(reads(office, s.id)).toEqual({ newest: true, older: 1, whole: 0 })
+    expect(transcript(app, userID(99)).mounted(userID(0))).toBe(false)
   } finally {
     await app.stop()
     office.stop()
@@ -379,6 +466,8 @@ test("an expanded group spends the mounting budget that older messages used", as
     "Explored: 100 reads",
   )
   try {
+    await loadEveryPage(app)
+    await app.until((f) => f.includes("Explored: 100 reads"))
     const view = transcript(app, userID(30))
     // Collapsed: 40 entries, a message each and the group one. Turn 11 onward is mounted.
     expect(view.mounted(userID(11))).toBe(true)

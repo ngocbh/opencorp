@@ -56,7 +56,7 @@ test("the session list shows this folder's sessions, newest first, and opens one
     expect(f).not.toContain("/tmp/other")
     app.input.pressEnter()
     await app.until((f) => f.includes("fix the flaky test"))
-    expect(fake.requests.some((r) => r.path === `/sessions/${S1}/messages`)).toBe(true)
+    expect(fake.requests.some((r) => r.path.startsWith(`/sessions/${S1}/messages`))).toBe(true)
   } finally {
     await app.stop()
     fake.stop()
@@ -149,7 +149,7 @@ test("--continue stays home when the folder has no session", async () => {
     await app.until((f) => f.includes("Ask anything"))
     await Bun.sleep(200)
     expect(await app.until((f) => f.includes("Ask anything"))).not.toContain("@minh · idle")
-    expect(fake.requests.some((r) => r.path.endsWith("/messages"))).toBe(false)
+    expect(fake.requests.some((r) => r.path.includes("/messages"))).toBe(false)
   } finally {
     await app.stop()
     fake.stop()

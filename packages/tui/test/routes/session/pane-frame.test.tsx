@@ -621,7 +621,7 @@ test("a Codex session's card, open before its chat was, shows in the chat above 
     expect(sent(office, `/sessions/${chat.id}/prompt`)).toEqual([])
     await app.until((f) => !f.includes("$ touch a"))
     // The chat read only the session's open cards, not its transcript.
-    expect(office.requests.some((r) => r.path === `/sessions/${child.id}/messages`)).toBe(false)
+    expect(office.requests.some((r) => r.path.startsWith(`/sessions/${child.id}/messages`))).toBe(false)
   } finally {
     await app.stop()
     office.stop()

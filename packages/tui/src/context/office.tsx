@@ -34,6 +34,7 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
       cwd: props.cwd,
       state: () => state,
       mutate: flush.mutate,
+      settled: flush.settled,
       // Model output and names are drawn into the terminal, which would act on their control characters.
       clean: display,
       // "online" follows the snapshot it was set after, so readers never see it with stale state.
@@ -94,6 +95,17 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
         await sync.syncSession(id)
         await flush.settled()
       },
+      /**
+       * Loads the next older page of a synced session's messages, or every older one with `all`, before those `state`
+       * holds; resolves once they are in. `beforePublish` runs as they go in, in the same update, with how many go in
+       * front.
+       */
+      async loadOlder(id: string, opts?: { all?: boolean; beforePublish?: (added: number) => void }) {
+        await sync.loadOlder(id, opts)
+        await flush.settled()
+      },
+      /** Whether a synced session has older messages than `state` holds. */
+      hasOlder: (id: string) => state.messageCursor[id] !== undefined,
       /** Re-reads a question into `state`, e.g. after an answer finds it already closed. */
       async refreshQuestion(id: string) {
         await sync.refreshQuestion(id)
