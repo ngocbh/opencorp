@@ -71,8 +71,8 @@ curl -fsSL https://raw.githubusercontent.com/ngocbh/opencorp/main/uninstall.sh |
 ```
 
 While an office is set up, it first runs `opencorp offboard`, which asks before it removes anything
-and keeps company work that isn't pushed. Then it removes the command, the binary and its `PATH`
-lines, and the clone with the `node_modules` folders, HQ's build (`packages/app/dist`) and the CLI's
-(`packages/cli/dist`) that install made in it.
+and keeps company work that isn't pushed. Then it removes the command, its `PATH` lines and the
+binary's builds in `packages/cli/dist/npm`, and the clone with the `node_modules` folders and HQ's
+build (`packages/app/dist`) that install made in it.
 It keeps the clone, and names what's in the way, when it holds work found nowhere else, ignored files
 such as `.env` included. Bun, its rc lines and `~/.opencorp` stay, and so do rc files, emptied.

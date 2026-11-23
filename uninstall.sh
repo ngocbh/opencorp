@@ -1,9 +1,10 @@
 #!/bin/sh
 # Takes out what `install.sh` put in. While an office is set up, it first runs `opencorp offboard`
 # on the terminal, which asks before it removes anything and keeps company work that isn't pushed;
-# if that doesn't finish, nothing else changes. Then it removes the `opencorp` wrapper and the binary
-# install.sh built, the PATH lines in the shell rc files, and the clone, if install.sh made it and it
-# holds no work that isn't pushed. It leaves Bun and the office home (~/.opencorp) in place.
+# if that doesn't finish, nothing else changes. Then it removes the `opencorp` wrapper and the builds
+# of the binary in the checkout it runs, the PATH lines in the shell rc files, and the clone, if
+# install.sh made it and it holds no work that isn't pushed. It leaves Bun and the office home
+# (~/.opencorp) in place.
 #
 #   curl -fsSL https://raw.githubusercontent.com/ngocbh/opencorp/main/uninstall.sh | bash
 #   ./uninstall.sh [--dir DIR]
@@ -109,15 +110,23 @@ wrapper_checkout() {
   printf '%s\n' "${wc_to%/packages/cli/bin/opencorp}"
 }
 
-# The folder of the binary install.sh's wrapper $1 runs, from its fourth line, when it is the build in the wrapper's
-# checkout $2 (`packages/cli/dist/npm/opencorp-<os>-<cpu>/bin/opencorp`).
-wrapper_binary() {
-  wb_to=$(LC_ALL=C sed -n '4{p;q;}' "$1")
-  case $wb_to in "# compiled, as $2/packages/cli/dist/npm/opencorp-"*"/bin/opencorp, which uninstall.sh also removes;") ;; *) return 1 ;; esac
-  wb_to=${wb_to#"# compiled, as $2/packages/cli/dist/npm/"}
-  wb_to=${wb_to%"/bin/opencorp, which uninstall.sh also removes;"}
-  case $wb_to in opencorp-*/* | opencorp-) return 1 ;; esac
-  printf '%s\n' "$2/packages/cli/dist/npm/$wb_to"
+# Whether $1 is an OpenCorp checkout.
+is_checkout() {
+  [ -f "$1/packages/cli/bin/opencorp" ] && grep -q '"name": *"opencorp-workspace"' "$1/package.json" 2>/dev/null
+}
+
+# Removes the builds in the checkout $1, which may stay: every `opencorp` and `opencorp-*` folder in
+# packages/cli/dist/npm (the binary install.sh runs, the npm shim beside it, a last build a failed one left behind, and
+# a build's `.new` and `.old` folders), then those two folders once that empties them. Never through a link.
+remove_builds() {
+  rb_npm=$1/packages/cli/dist/npm
+  if [ -L "$1/packages/cli/dist" ] || [ -L "$rb_npm" ] || [ ! -d "$rb_npm" ]; then return 0; fi
+  for rb_f in "$rb_npm"/opencorp "$rb_npm"/opencorp-*; do
+    if [ -e "$rb_f" ] || [ -L "$rb_f" ]; then
+      if rm -rf "$rb_f"; then ok "Removed $rb_f"; else fail "Couldn't remove all of $rb_f."; fi
+    fi
+  done
+  rmdir "$rb_npm" "$1/packages/cli/dist" 2>/dev/null || true
 }
 
 # Whether $1 and $2 are the same folder, both there.
@@ -299,18 +308,16 @@ main() {
     if [ -z "$CLONE" ]; then CLONE=$OTHER OTHER=; elif same_dir "$CLONE" "$OTHER"; then OTHER=; fi
   fi
 
-  BUILD=
+  BUILT_IN=
   if is_wrapper "$TARGET"; then
-    if WCO=$(wrapper_checkout "$TARGET"); then BUILD=$(wrapper_binary "$TARGET" "$WCO") || BUILD=; fi
+    BUILT_IN=$(wrapper_checkout "$TARGET") || BUILT_IN=
     if rm -f "$TARGET"; then ok "Removed $TARGET"; else fail "Couldn't remove $TARGET."; fi
   elif [ -e "$TARGET" ]; then
     ok "Left $TARGET in place: install.sh did not write it."
   fi
 
-  # The binary install.sh built, in a checkout that may stay.
-  if [ -n "$BUILD" ] && { [ -e "$BUILD" ] || [ -L "$BUILD" ]; }; then
-    if rm -rf "$BUILD"; then ok "Removed $BUILD"; else fail "Couldn't remove all of $BUILD."; fi
-  fi
+  # The builds in the checkout the wrapper ran, which may stay.
+  if [ -n "$BUILT_IN" ] && is_checkout "$BUILT_IN"; then remove_builds "$BUILT_IN"; fi
 
   path_lines
   for rc in "$HOME/.bashrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" \

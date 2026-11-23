@@ -478,7 +478,6 @@ main() {
   mkdir -p "$BIN_DIR"
   TMP=$TARGET.tmp.$$
   if [ -n "$BINARY" ]; then
-    # The fourth line names the binary, which uninstall.sh removes with the wrapper.
     cat >"$TMP" <<EOF
 #!/bin/sh
 $WRAPPER_MARK
