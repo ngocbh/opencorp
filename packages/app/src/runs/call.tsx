@@ -1,6 +1,6 @@
 // An agent node's model calls in its detail, and one call rebuilt by the office from the run log: the request it sent
 // (system prompt, messages, tools, model and settings), the reply (thought, text), each tool call with its arguments,
-// the gate's notes and its result, and its attempts, usage and finish. Tool rows and thought blocks follow OpenCode's
+// the gate's notes and its result, and its attempts, usage and finish. Tool rows and thought blocks follow upstream's
 // session UI (its BasicTool and ThoughtRow), and a long text folds to its head until "Show all", as its tall diffs do.
 import type {
   RunCall,
@@ -372,7 +372,7 @@ function PartView(props: { part: RunCallPart; call: RunCall; at: string }) {
   )
 }
 
-/** A model's thought: "Thought", opened on a click, as OpenCode's ThoughtRow shows one. */
+/** A model's thought: "Thought", opened on a click, as upstream's `ThoughtRow` shows one. */
 function Thought(props: { text: string; cut: boolean }) {
   return (
     <details class="group">
@@ -388,7 +388,7 @@ function Thought(props: { text: string; cut: boolean }) {
 }
 
 /**
- * One tool call of the reply, as OpenCode's BasicTool shows a tool: a row with its name, its arguments in a line and
+ * One tool call of the reply, as upstream's `BasicTool` shows a tool: a row with its name, its arguments in a line and
  * its state, which opens on its arguments and result. The gate's notes show under the row, open or not.
  */
 function ToolCard(props: { result: RunCallToolResult; call: RunCall; at: string }) {
@@ -444,7 +444,7 @@ function scrollParent(el: HTMLElement): HTMLElement | null {
 }
 
 /**
- * A text, folded to its head when long, with "Show all" and "Show less" (as OpenCode folds a tall diff: closing keeps
+ * A text, folded to its head when long, with "Show all" and "Show less" (as upstream folds a tall diff: closing keeps
  * the toggle where it was pressed). A text the office cut says so once shown whole.
  */
 function LongText(props: { text: string; cut?: boolean; error?: boolean }) {

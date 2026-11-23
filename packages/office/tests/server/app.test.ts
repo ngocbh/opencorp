@@ -142,6 +142,8 @@ const TABLE: [string, string, string, unknown][] = [
   ["GET", "/runs/:id/events", "/runs/R1/events", null],
   ["GET", "/runs/:id/events/:seq", "/runs/R1/events/3", null],
   ["GET", "/runs/:id/log", "/runs/R1/log", null],
+  ["GET", "/runs/:id/calls", "/runs/R1/calls?node=reply", null],
+  ["GET", "/runs/:id/calls/*node/:n", "/runs/R1/calls/chat%230/reply/1", null],
   ["GET", "/connections", "/connections", null],
   ["POST", "/connections", "/connections", { provider: "azure", api_key: "sk-test-0000" }],
   ["PUT", "/connections/default", "/connections/default", { connection: "office" }],
