@@ -3135,6 +3135,10 @@ test("a reply that fails over the cost cap holds its fresh run until the cap is 
     }
   }
   expect([...shown.values()]).toEqual(["hi", "more"])
+  // The failure's notice says it is read, as every message the office builds does.
+  const notices = o.lives.filter((event) => event.type === "message.updated" && event.data.role === "assistant")
+  expect(notices.filter((event) => JSON.stringify(event.data.parts).includes('"error"')).map((e) => e.data.unread))
+    .toEqual([false])
 })
 
 test("end while the fresh run of a failed reply is held closes it without a model call", async () => {

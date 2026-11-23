@@ -87,6 +87,16 @@ function errors(events: HarnessEvent[]): string[] {
 
 // --- text, deltas, reasoning, turn ends and errors ---------------------------------------
 
+test("every message it writes says it is read: a Codex session takes a message into the running turn", () => {
+  const { t, events } = tr()
+  feed(t, agentMessage("m1", "Hello there"))
+  t.user("and also", "ngocbh")
+  t.error("the turn failed")
+  const messages = events.flatMap((e) => (e.type === "message" ? [e.message] : []))
+  expect(messages.map((message) => message.role)).toEqual(["assistant", "user", "assistant"])
+  expect(messages.map((message) => message.unread)).toEqual([false, false, false])
+})
+
 test("an agent message streams into one text part", () => {
   const { t, events } = tr()
   feed(t, agentMessage("m1", "Hello there"))

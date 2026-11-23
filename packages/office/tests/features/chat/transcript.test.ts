@@ -436,6 +436,14 @@ test("a send stays unread until a take or a steer reads it, and a withdrawn one 
     ["Plan the trip.", false],
     ["Also mention Rome.", false],
   ])
+  // Every message says whether it is unread, the replies included.
+  const all = messages(runs, sid, ["r1"], { transcript })
+  expect(all.map((m) => [m.role, m.unread])).toEqual([
+    ["user", false],
+    ["assistant", false],
+    ["user", false],
+    ["assistant", false],
+  ])
   await apply(job, fake, [send("s2", "Never mind.")])
   expect(users().at(-1)).toEqual(["Never mind.", true])
   await apply(job, fake, [{ id: "w", op: "withdraw", inbox: "messages" }])

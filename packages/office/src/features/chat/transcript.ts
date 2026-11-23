@@ -676,7 +676,16 @@ function render(
 /** The assistant message the record at `seq` (at `at`) of the run `runId` opens, with no parts yet. */
 function assistantMessage(sessionId: string, runId: string, seq: number, at: string): Message {
   const id = messageId(runId, seq)
-  return { id, session_id: sessionId, role: "assistant", author: null, instrument: null, parts: [], created_at: at }
+  return {
+    id,
+    session_id: sessionId,
+    role: "assistant",
+    author: null,
+    instrument: null,
+    unread: false,
+    parts: [],
+    created_at: at,
+  }
 }
 
 /** The user message of `send` in the run `runId`: its last text part, since earlier ones are the turn's context. A

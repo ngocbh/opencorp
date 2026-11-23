@@ -2805,6 +2805,7 @@ export class SessionActor implements LiveCalls {
       session_id: this.sessionId,
       role: "assistant",
       author: null,
+      unread: false,
       parts: [{ id: newId(), type: "error", message: text }],
       created_at: now(),
     }

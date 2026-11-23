@@ -152,6 +152,16 @@ test("a message mid-turn is a steer: what Claude Code writes after it opens a ne
   expect(messageOf("COPPER-OTTER")).not.toBe((callMessage as Extract<HarnessEvent, { type: "part" }>).messageId)
 })
 
+test("every message it writes says it is read: a Claude Code session takes a message into the running turn", () => {
+  const { t, events } = translator()
+  t.line(line("tools.jsonl:17"))
+  t.user("also check b", "ngoc")
+  t.error("the session failed")
+  const messages = events.flatMap((e) => (e.type === "message" ? [e.message] : []))
+  expect(messages.map((message) => message.role)).toEqual(["assistant", "user", "assistant"])
+  expect(messages.map((message) => message.unread)).toEqual([false, false, false])
+})
+
 test("lines that aren't the transcript's are left to the caller, and a subagent's own lines are left out", () => {
   const { t, events } = translator()
   for (const source of ["tools.jsonl:7", "text-cancel.jsonl:13", "controls.jsonl:24", "tools.jsonl:18"]) {
