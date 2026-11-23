@@ -126,10 +126,10 @@ it lists claude.
   A chat has at most four live sessions of each harness.
 - **Drafts.** Each chat and session keeps its own unsent text, so what you type in one never shows in another.
 - **Codex's cards.** What Codex asks you shows as a card in its session and in your employee's chat, above the prompt
-  and after the chat's own cards. The card or the prompt has your keys, and ctrl+t moves them, to the chat's own card
-  when one waits behind it; a card that opens while you answer another waits its turn. If a card closes unanswered
-  while you type into it (Codex stopped waiting, say), the rest of your line is dropped until Enter. Esc on the card
-  stops the session's turn.
+  and after the chat's own cards; in the chat it says which session asks (`codex 1 asks`). The card or the prompt has
+  your keys, and ctrl+t moves them, to the chat's own card when one waits behind it; a card that opens while you
+  answer another waits its turn. If a card closes unanswered while you type into it (Codex stopped waiting, say), the
+  rest of your line is dropped until Enter. Esc on the card stops the session's turn.
 - **Waits and notes.** Starting a session or sending it a message replies within 5 seconds, unless your employee asks
   to wait longer (at most two minutes), and a message ends the wait as it ends a command's. The harness works on,
   and when a turn your employee was told is still running ends, they get a note from its session (signed `codex 1`

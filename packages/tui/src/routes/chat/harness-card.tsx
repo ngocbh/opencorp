@@ -24,6 +24,9 @@ export function HarnessCard(props: {
   question: Question
   active: boolean
   waiting: boolean
+  /** The session that asks, by its name in the chat's list (`codex 1`), when the card shows in the chat; Codex in the
+   *  session's own view. */
+  asker?: string
   /** Called when Esc interrupts the session, before the office is asked to. */
   onInterrupt?: () => void
   /** Where ctrl+t gives the keys, for its hint: the prompt unless given. */
@@ -39,6 +42,7 @@ export function HarnessCard(props: {
   const dialog = useDialog()
   const model = createMemo(() => cardModel(props.question))
   const title = () => display(props.question.title ?? props.question.question)
+  const asks = () => `${props.asker === undefined ? "Codex" : display(props.asker)} asks`
   const focusKey = useCommandShortcut("session.card.focus")
   // Esc interrupts while a turn is starting, running or waiting, as in the prompt.
   const canInterrupt = createMemo(() =>
@@ -100,13 +104,13 @@ export function HarnessCard(props: {
       fallback={
         <box paddingLeft={2}>
           <text fg={theme.textMuted} wrapMode="none">
-            {props.waiting ? `Codex asks: ${title()} (waiting)` : `Codex asks: ${title()} · ${focusKey()} to answer`}
+            {props.waiting ? `${asks()}: ${title()} (waiting)` : `${asks()}: ${title()} · ${focusKey()} to answer`}
           </text>
         </box>
       }
     >
       <QuestionView
-        header="Codex asks"
+        header={asks()}
         pages={model()?.pages ?? []}
         // A dialog over the card has the keys: its secret box reads the whole app's keyboard, not a focused box.
         enabled={dialog.stack.length === 0}

@@ -261,15 +261,15 @@ license, the upstream paths and commit, and our paths.
 - **What:** the descendants' requests in the parent session: a session with no parent lists its own requests, then
   its descendants', and answers a child's where it is; a child lists only its own. Adapted: the requests are the open
   Codex cards of the chat's Codex and Claude Code sessions, shown above the chat's prompt as in the child's own view
-  (the first card or the prompt holding the keys), waiting as lines while one of the chat's own cards holds the
-  prompt's place; the card with the keys keeps them until it closes or ctrl+t moves them, a card that opens meanwhile
-  waiting as a line, the chat's own included, and once the chat's own card closes the keys go back to whoever had them
-  before it; Esc on one interrupts that child.
+  (the first card or the prompt holding the keys) and saying which session asks (`codex 1 asks`), waiting as lines
+  while one of the chat's own cards holds the prompt's place; the card with the keys keeps them until it closes or
+  ctrl+t moves them, a card that opens meanwhile waiting as a line, the chat's own included, and once the chat's own
+  card closes the keys go back to whoever had them before it; Esc on one interrupts that child.
 - **Upstream:** `packages/tui/src/routes/session/index.tsx` (`descendantSessionIDs`, `permissions`, `forms`, the
   prompt's `Switch`), read at commit `4332e24f` (2026-11-21).
 - **Ours:** `packages/tui/src/routes/session/composer/tabs.ts` (`familyQuestions`),
-  `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/component/session-frame.tsx`,
-  `packages/tui/test/routes/session/pane-frame.test.tsx`.
+  `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/routes/chat/harness-card.tsx`,
+  `packages/tui/src/component/session-frame.tsx`, `packages/tui/test/routes/session/pane-frame.test.tsx`.
 - **What:** ported from current upstream: the reconnecting overlay, a dimmed full screen with a raised box holding a
   spinner line and a muted line, and the app's timer that shows it once the connection has been down past a grace
   and hides it when the connection is back: one second after a drop, five before the first connection. Adapted: home
@@ -334,21 +334,23 @@ license, the upstream paths and commit, and our paths.
   `packages/tui/test/cli/tui/mount-budget.test.ts`, `packages/tui/test/cli/tui/anchors.test.ts`,
   `packages/tui/test/routes/session/paged-transcript-frame.test.tsx`,
   `packages/tui/test/routes/session/activity-anchor-frame.test.tsx`.
-- **What:** ported from current upstream: session links. In a reply's text a session's id is underlined in the link
-  colour, and a plain click on it (not one that ends a selection, nor a modified one) opens that session; a code span
-  links only when it is exactly an id, and fenced code and table cells never link. Adapted: an id is a bare ULID, so it
-  links only when the TUI's list holds that session and it is neither the transcript's own nor the route's, with no
-  lookup; it keeps its text, since our sessions have no title; the hook has no filter, a ULID having no prefix, and a
-  session joining the list re-renders every block that names it, even when a delta naming it lands in the same
-  update; a click opens the session through the transcript's `onOpen` (one of the chat's Codex or Claude Code sessions
-  in the right pane) or goes there; there is no `@session:` form and no dialog to close.
+- **What:** ported from current upstream: session links. In a reply's text a session's id shows as a label in the link
+  colour, underlined, raw markdown showing the id, and a plain click on it (not one that ends a selection, nor a
+  modified one) opens that session; a code span links only when it is exactly an id, and fenced code and table cells
+  never link. Adapted: an id is a bare ULID, so it links only when the TUI's list holds that session and it is neither
+  the transcript's own nor the route's, with no lookup; our sessions have no title, so the label is the session's
+  person and its name in its chat's list, or its kind (`@minh · codex 1`, `@minh · chat`); the hook has no filter, a
+  ULID having no prefix, and a session joining the list re-renders every block that names it, even when a delta naming
+  it lands in the same update; a click opens the session through the transcript's `onOpen` (one of the chat's Codex or
+  Claude Code sessions in the right pane) or goes there; there is no `@session:` form and no dialog to close.
 - **Upstream:** `packages/tui/src/ui/session-link.ts`, `packages/tui/src/ui/link.tsx` (`plainClick`),
   `packages/util/src/session-mention.ts`, `packages/tui/src/routes/session/message-parts.tsx` (`TextPart`'s ref),
   `packages/tui/test/ui/session-link.test.tsx` and `packages/util/src/session-mention.test.ts`, read at commit
   `4332e24f` (2026-11-21).
 - **Ours:** `packages/tui/src/ui/session-link.ts`, `packages/tui/src/ui/link.ts`,
-  `packages/tui/src/util/session-mention.ts`, `packages/tui/src/routes/session/index.tsx` (`TextPartView`),
-  `packages/tui/test/ui/session-link.test.tsx`, `packages/tui/test/util/session-mention.test.ts`,
+  `packages/tui/src/util/session-mention.ts`, `packages/tui/src/util/session.ts` (`sessionLabels`),
+  `packages/tui/src/routes/session/index.tsx` (`TextPartView`), `packages/tui/test/ui/session-link.test.tsx`,
+  `packages/tui/test/util/session-mention.test.ts`, `packages/tui/test/util/session.test.ts`,
   `packages/tui/test/routes/session/session-links-frame.test.tsx`.
 - **What:** the check before a terminal starts that its folder is a directory, since a PTY's library may start the
   shell in the home instead, ported for learning's shells.

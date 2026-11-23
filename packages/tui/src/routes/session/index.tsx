@@ -471,6 +471,11 @@ export function Session(props: SessionProps) {
       tokens: tokens > 0 ? `${Locale.number(tokens)} tokens` : undefined,
     }
   })
+  // A card of one of the chat's Codex or Claude Code sessions says which asks, by its name in the chat's list.
+  const askerName = (sessionID: string) =>
+    sessionID === props.sessionID
+      ? undefined
+      : harnessFamily(office.state, props.sessionID).find((entry) => entry.sessionID === sessionID)?.name
   // The session's approver, whose word wins in it (`sessionOwner`).
   const approver = () => sessionOwner(session(), office.state.people)
   // In a Codex or Claude Code session an employee's chat drives, both the owner and the employee write to the
@@ -1337,6 +1342,7 @@ export function Session(props: SessionProps) {
                           ) : (
                             <HarnessCard
                               question={q()}
+                              asker={askerName(q().session_id)}
                               active={id === active()?.id}
                               waiting={i() > 0 || !stackOpen()}
                               focusLabel={ownNext() && `answer ${personLabel(office.state.people, ownNext()!.asker)}`}

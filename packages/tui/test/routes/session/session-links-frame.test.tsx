@@ -1,5 +1,6 @@
-// Session ids in an assistant reply, as upstream's session links: the id of a session the TUI holds is underlined in
-// the link colour, and a click opens it, one of the chat's Codex or Claude Code sessions in the right pane.
+// Session ids in an assistant reply, as upstream's session links: the id of a session the TUI holds shows as its
+// label (`@minh · codex 1`), underlined in the link colour, and a click opens it, one of the chat's Codex or Claude Code
+// sessions in the right pane.
 import type { Instrument, Message, Session } from "@opencorp/protocol"
 import { TextAttributes } from "@opentui/core"
 import { expect, setDefaultTimeout, test } from "bun:test"
@@ -16,6 +17,9 @@ const AT = "2026-11-22T10:00:00.000Z"
 const theme = resolveTheme(DEFAULT_THEMES[DEFAULT_THEME]!, "dark")
 // A ULID the office holds no session for, as a run's id.
 const unknown = "01JQ8Z3V4XKM5N6P7R8S9T0WXY"
+/** What a link to one of minh's chats says, and to the chat's Codex session. */
+const CHAT = "@minh · chat"
+const CODEX = "@minh · codex 1"
 
 /** An assistant message in `session` saying `text`. */
 const say = (office: FakeOffice, session: string, text: string): Message => ({
@@ -81,7 +85,7 @@ async function click(app: App, needle: string) {
 /** Whether the right pane is open: its box's top-left corner shows. */
 const paneOpen = (f: string) => f.includes("┌")
 
-test("a reply links another session's id and the chat's Codex session's; the chat's own and an unknown ULID stay plain", async () => {
+test("a reply links another session's id and the chat's Codex session's by their labels; the chat's own and an unknown ULID stay plain", async () => {
   let other!: Session
   let child!: Session
   const { office, chat, app } = await boot((office, chat) => {
@@ -91,11 +95,13 @@ test("a reply links another session's id and the chat's Codex session's; the cha
   })
   try {
     await app.until((f) => f.includes(unknown) && underlined(app).length === 2)
-    expect(underlined(app).map((s) => s.text.trim())).toEqual([other.id, child.id])
+    expect(underlined(app).map((s) => s.text.trim())).toEqual([CHAT, CODEX])
+    expect(app.frame()).toContain(`Ask ${CHAT} or ${CODEX}.`)
+    expect(app.frame()).not.toContain(other.id)
     // In the link colour, as upstream's.
     for (const span of underlined(app)) expect(span.fg.equals(theme.markdownLink)).toBe(true)
     expect(app.frame()).toContain(`This chat is ${chat.id}, and`)
-    expect(app.frame()).toContain(`${unknown} is a run.`)
+    expect(app.frame()).toContain(`${unknown} is a`)
   } finally {
     await app.stop()
     office.stop()
@@ -111,7 +117,7 @@ test("a click on the chat's Codex session's id opens it in the right pane, besid
   try {
     await app.until(() => underlined(app).length === 1)
     expect(paneOpen(app.frame())).toBe(false)
-    await click(app, child.id)
+    await click(app, CODEX)
     const f = await app.until((f) => paneOpen(f) && f.includes("codex 1 says hello."))
     // Beside the chat, which still shows the reply.
     expect(f).toContain("Codex runs in")
@@ -130,7 +136,7 @@ test("a click on another session's id goes to it", async () => {
   })
   try {
     await app.until(() => underlined(app).length === 1)
-    await click(app, other.id)
+    await click(app, CHAT)
     const f = await app.until((f) => f.includes("The other chat says hi."))
     expect(f).not.toContain("for the plan.")
   } finally {
@@ -147,7 +153,7 @@ test("a code span links only when it is exactly a session's id", async () => {
   })
   try {
     await app.until(() => underlined(app).length === 1)
-    expect(underlined(app).map((s) => s.text.trim())).toEqual([child.id])
+    expect(underlined(app).map((s) => s.text.trim())).toEqual([CODEX])
     expect(app.frame()).toContain(`codex resume ${child.id}`)
   } finally {
     await app.stop()
@@ -165,8 +171,8 @@ test("with a dozen sessions in the office, a reply still links an id, and a repl
   })
   try {
     await app.until((f) => f.includes("Nothing to link here.") && underlined(app).length === 1)
-    expect(underlined(app).map((s) => s.text.trim())).toEqual([other.id])
-    await click(app, other.id)
+    expect(underlined(app).map((s) => s.text.trim())).toEqual([CHAT])
+    await click(app, CHAT)
     await app.until((f) => f.includes("The other chat says hi."))
   } finally {
     await app.stop()
@@ -190,7 +196,7 @@ test("a session that comes into the list with a delta naming it links in every b
       data: { message_id: message.id, part_id: message.parts[0]!.id, text: `\n\nThen ${later} again.` },
     })
     await app.until((f) => f.includes("again.") && underlined(app).length === 2)
-    expect(underlined(app).map((s) => s.text.trim())).toEqual([later, later])
+    expect(underlined(app).map((s) => s.text.trim())).toEqual([CHAT, CHAT])
   } finally {
     await app.stop()
     office.stop()
@@ -212,7 +218,42 @@ test("an id a delta brings before its session is listed links once the session j
     expect(underlined(app)).toHaveLength(0)
     office.newSession({ id: later, person: "minh", cwd: "/tmp/proj" })
     await app.until(() => underlined(app).length === 1)
-    expect(underlined(app).map((s) => s.text.trim())).toEqual([later])
+    expect(underlined(app).map((s) => s.text.trim())).toEqual([CHAT])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a Codex session the chat doesn't list yet is named by its harness, then by its name once listed", async () => {
+  let child!: Session
+  const { office, chat, app } = await boot((office, chat) => {
+    // Started, but not yet in the chat's list.
+    child = office.newSession({
+      person: "minh",
+      cwd: "/tmp/proj",
+      harness: "codex",
+      kind: "instrument",
+      instrument_of: chat.id,
+    })
+    return `Codex works in ${child.id}.`
+  })
+  try {
+    await app.until(() => underlined(app).length === 1)
+    expect(underlined(app).map((s) => s.text.trim())).toEqual(["@minh · Codex session"])
+    office.addInstrument(chat.id, {
+      id: child.id,
+      session_id: chat.id,
+      kind: "codex",
+      name: "codex 3",
+      driver: "minh",
+      profile: "harness",
+      interactive: false,
+      status: "idle",
+      created_at: AT,
+      updated_at: AT,
+    })
+    await app.until(() => underlined(app).map((s) => s.text.trim()).join() === "@minh · codex 3")
   } finally {
     await app.stop()
     office.stop()

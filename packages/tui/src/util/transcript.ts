@@ -5,7 +5,7 @@ export type TranscriptOptions = {
 }
 
 /** The session's display name: `@handle`, or the bare handle if the person is unknown. */
-export function personLabel(people: readonly Person[], handle: string) {
+export function personLabel(people: readonly Pick<Person, "handle">[], handle: string) {
   return people.some((p) => p.handle === handle) ? `@${handle}` : handle
 }
 

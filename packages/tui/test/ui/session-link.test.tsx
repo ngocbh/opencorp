@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 // The upstream TUI's session-link tests, for our sessions: a bare ULID links when it names a session the TUI holds,
-// and keeps its text, since our sessions have no title.
+// and shows its label (`@minh · chat`) in place of upstream's title.
 import { afterEach, expect, test } from "bun:test"
 import { CodeRenderable, SyntaxStyle, TextAttributes, type MarkdownRenderable, type Renderable } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
@@ -18,13 +18,18 @@ const unknown = "01JQ8Z3V4XKM5N6P7R8S9T0WXZ"
 let office: FakeOffice
 afterEach(() => office?.stop())
 
-/** A fake office holding the seeded chat, `current`, and `known`, another session. */
+/** A fake office holding the seeded chat, `current`, and `known`, another session, a chat of minh's. */
 function setup() {
   office = createFakeOffice()
   const current = office.state.sessions[0]!.id
   const known = office.newSession({ person: "minh", cwd: "/tmp/proj" }).id
   return { current, known }
 }
+
+/** What a link to minh's chat says. */
+const CHAT = "@minh · chat"
+/** What a link to ngocbh's side chat says. */
+const SIDE = "@ngocbh · side chat"
 
 test("session links in markdown", async () => {
   const { current, known } = setup()
@@ -69,25 +74,27 @@ test("session links in markdown", async () => {
       (frame) => linked().length > 0 && [current, own, unknown, later, known].every((id) => frame.includes(id)),
     )
     // The chat the route shows, the transcript's own session and ids the TUI doesn't hold stay plain, as does code.
-    expect(linked()).toBe(known)
-    expect(app.captureCharFrame().split(known)).toHaveLength(3)
+    expect(linked()).toBe(CHAT)
+    // The fenced copy keeps the id; the link shows the label.
+    expect(app.captureCharFrame().split(known)).toHaveLength(2)
     // The office's list is the only lookup.
     expect(office.requests.filter((r) => r.path.includes(unknown) || r.path.includes(later))).toEqual([])
 
-    office.newSession({ id: later, person: "minh", cwd: "/tmp/proj" })
-    await waitForHighlightedFrame(app, () => linked() === `${known} ${later}`)
+    office.newSession({ id: later, person: "ngocbh", cwd: "/tmp/proj", kind: "side" })
+    await waitForHighlightedFrame(app, () => linked() === `${CHAT} ${SIDE}`)
+    expect(app.captureCharFrame()).not.toContain(later)
 
     const rows = app.captureCharFrame().split("\n")
-    const clicked = rows.findIndex((row) => row.includes(later))
+    const clicked = rows.findIndex((row) => row.includes(SIDE))
     app.renderer.clearSelection()
-    await app.mockMouse.click(rows[clicked]!.indexOf(later) + 4, clicked)
+    await app.mockMouse.click(rows[clicked]!.indexOf(SIDE) + 4, clicked)
     expect(route.data).toEqual({ type: "session", sessionID: later })
   } finally {
     app.renderer.destroy()
   }
 })
 
-test("a wrapped id opens its session from either row, and plain text, drags and modified clicks do not", async () => {
+test("a wrapped label opens its session from either row, and plain text, drags and modified clicks do not", async () => {
   const { current, known } = setup()
   let route!: ReturnType<typeof useRoute>
 
@@ -105,15 +112,15 @@ test("a wrapped id opens its session from either row, and plain text, drags and 
     )
   }
 
-  const app = await mount(current, () => <Transcript />, 20, 6)
+  const app = await mount(current, () => <Transcript />, 14, 6)
 
   try {
-    await waitForHighlightedFrame(app, () => underlined(app).join("") === known)
+    await waitForHighlightedFrame(app, () => underlined(app).join(" ") === CHAT)
     const rows = app.captureCharFrame().split("\n")
-    const head = rows.findIndex((row) => row.includes(known.slice(0, 4)))
-    const tail = rows.findIndex((row) => row.includes(known.slice(-4)))
+    const head = rows.findIndex((row) => row.includes("@minh"))
+    const tail = rows.findIndex((row) => row.includes("chat"))
     expect(tail).toBeGreaterThan(head)
-    const x = rows[head]!.indexOf(known.slice(0, 4))
+    const x = rows[head]!.indexOf("@minh")
 
     await app.mockMouse.click(rows[0]!.indexOf("see"), 0)
     await app.mockMouse.click(rows[tail]!.indexOf("now"), tail)
@@ -125,7 +132,7 @@ test("a wrapped id opens its session from either row, and plain text, drags and 
     expect(route.data).toEqual({ type: "session", sessionID: current })
 
     app.renderer.clearSelection()
-    await app.mockMouse.click(rows[tail]!.indexOf(known.slice(-4)) + 1, tail)
+    await app.mockMouse.click(rows[tail]!.indexOf("chat") + 1, tail)
     expect(route.data).toEqual({ type: "session", sessionID: known })
   } finally {
     app.renderer.destroy()
@@ -154,10 +161,10 @@ test("a click opens the session with onOpen when the transcript gives one", asyn
   const app = await mount(current, () => <Transcript />, 80, 4)
 
   try {
-    await waitForHighlightedFrame(app, () => underlined(app).join("") === known)
+    await waitForHighlightedFrame(app, () => underlined(app).join(" ") === CHAT)
     const rows = app.captureCharFrame().split("\n")
-    const y = rows.findIndex((row) => row.includes(known))
-    await app.mockMouse.click(rows[y]!.indexOf(known) + 2, y)
+    const y = rows.findIndex((row) => row.includes(CHAT))
+    await app.mockMouse.click(rows[y]!.indexOf(CHAT) + 2, y)
     expect(opened).toEqual([known])
     expect(route.data).toEqual({ type: "session", sessionID: current })
   } finally {
@@ -186,7 +193,8 @@ test.each([true, false])("code spans link only when they are exactly an ID, conc
 
   try {
     await waitForHighlightedFrame(app, () => underlined(app).length > 0)
-    expect(underlined(app)).toEqual([known])
+    // Raw markdown shows the source, as upstream's does.
+    expect(underlined(app)).toEqual([conceal ? CHAT : known])
     expect(app.captureCharFrame()).toContain(`codex resume ${known}`)
   } finally {
     app.renderer.destroy()
@@ -217,7 +225,7 @@ test("a session coming into the list reruns the hook only on the blocks that men
   const app = await mount(current, () => <Transcript />, 80, 8)
 
   try {
-    await waitForHighlightedFrame(app, () => underlined(app).join(" ") === `${known} ${known}`)
+    await waitForHighlightedFrame(app, () => underlined(app).join(" ") === `${CHAT} ${CHAT}`)
     // Record the blocks the hook runs on again.
     const hook = markdown.inlineHook!
     const reran: string[] = []
@@ -225,8 +233,8 @@ test("a session coming into the list reruns the hook only on the blocks that men
     await app.renderOnce()
     reran.length = 0
 
-    office.newSession({ id: later, person: "minh", cwd: "/tmp/proj" })
-    await waitForHighlightedFrame(app, () => underlined(app).join(" ") === `${known} ${known} ${later} ${later}`)
+    office.newSession({ id: later, person: "ngocbh", cwd: "/tmp/proj", kind: "side" })
+    await waitForHighlightedFrame(app, () => underlined(app).join(" ") === `${CHAT} ${CHAT} ${SIDE} ${SIDE}`)
     expect(reran.toSorted()).toEqual([`Second ${known} and ${later}`, `Third ${later}`])
   } finally {
     app.renderer.destroy()
