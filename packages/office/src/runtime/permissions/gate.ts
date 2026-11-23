@@ -21,11 +21,12 @@ import { toolRuleMatches, toolWords } from "../../company/rules.ts"
 import { type CheckInput, dontAskRefusal, type Mode, type Rule, type Verdict } from "./policy.ts"
 
 /** A model's tool call as the gate decides it: the name the model sees, where the tool comes from, the model's
- *  arguments, and 1, or more for a call sent again after a crash. */
+ *  arguments (null when a restored hold recorded none), and 1, or more for a call sent again after a stop or crash
+ *  (yian's count, never the model's). */
 export interface ToolCall {
   readonly tool: string
   readonly source: ToolSource
-  readonly arguments: Readonly<Record<string, unknown>>
+  readonly arguments: Readonly<Record<string, unknown>> | null
   readonly attempt: number
 }
 
@@ -52,8 +53,12 @@ const READ_ONLY = "read-only"
 const FILE_OP = "a file operation in the workspace"
 const HARNESS = "a harness session in its profile"
 const BY_RULE = "an allow rule"
-const RESENT = "sent again after a crash; its first try was let run"
+const RELEASED = "released before a stop or crash cut it off"
 const UNNAMED = "its name can't be written in a rule, so no rule covers it"
+const UNREAD = "its arguments couldn't be read"
+/** What the model reads for a call sent again that would ask, whose first try was never released: a stop or crash
+ *  may have cut it off while the gate decided, so nobody approved it, and yian can't hold a call that may have run. */
+export const CUT_OFF = "Not run: it was cut off before it was approved."
 const TOO_LONG = "its arguments are too long for Auto's check: read all of them before you say Yes"
 /** The calls that only read, which ask nothing while a rules file doesn't load, by their words. */
 const READS = new Set([
@@ -76,9 +81,9 @@ export function decideCall(call: ToolCall, policy: CallPolicy): CallDecision {
   const own = policy.rules.filter((r) => r.kind === "tool" && toolRuleMatches(r.pattern, words))
   const denied = own.find((r) => r.effect === "deny")
   if (denied) return { verdict: "refuse", reason: `Not run: a deny rule: ${denied.pattern}.` }
-  // A call sent again may have run, so yian can't hold it: its first try was let run, so this one is too.
-  if (call.attempt > 1) return { verdict: "run", note: RESENT }
   if (policy.blocked !== null && !isRead(words)) return asks(policy.blocked)
+  // Nothing can judge a call whose arguments are unknown, nor offer a rule for it.
+  if (call.arguments === null) return asks(UNREAD)
   const asked = own.find((r) => r.effect === "ask")
   if (asked) return asks(`an ask rule: ${asked.pattern}`)
   if (own.some((r) => r.effect === "allow")) return { verdict: "run", note: BY_RULE }
@@ -112,6 +117,14 @@ function row(
   return { verdict: "check", input: { kind: "tool", command, profile: "none", cwd: "", host: "" }, rules: exact }
 }
 
+/** What `decision` becomes for a call yian sent again after a stop or crash (`attempt` over 1), which yian can't hold
+ *  since it may have run: a run or a refusal stands; one that would ask, or go to Auto's check, runs only when the
+ *  run released the call before (`released`), else it is refused (`CUT_OFF`). */
+export function resent(decision: CallDecision, released: boolean): CallDecision {
+  if (decision.verdict === "run" || decision.verdict === "refuse") return decision
+  return released ? { verdict: "run", note: RELEASED } : { verdict: "refuse", reason: CUT_OFF }
+}
+
 /** What Auto's check's `verdict` decides for a call it held, with `rules` for its card, in `mode` now: a run runs,
  *  noting the check's reason; anything else asks, or is refused once the session doesn't ask. */
 export function afterCheck(verdict: Verdict, rules: readonly string[], mode: Mode): CallDecision {
@@ -122,15 +135,16 @@ export function afterCheck(verdict: Verdict, rules: readonly string[], mode: Mod
   return mode === "dontAsk" ? { verdict: "refuse", reason: dontAskRefusal(reason) } : { verdict: "ask", reason, rules }
 }
 
-/** The approval card a call is held on: the call as the model made it (its name and its arguments as JSON), why it
- *  asks, and the rules "don't ask again" may add. A big integer argument shows as its digits. */
+/** The approval card a call is held on: the call as the model made it (its name and its arguments as JSON, or its
+ *  name alone when they couldn't be read), why it asks, and the rules "don't ask again" may add. A big integer
+ *  argument shows as its digits. */
 export function toolCard(call: ToolCall, asked: { reason: string; rules: readonly string[] }): Approval {
-  const text = jsonText(call.arguments)
+  const args = call.arguments
   return {
     kind: "tool",
     tool: call.tool,
-    action: `${call.tool} ${text}`,
-    args: JSON.parse(jsonText(call.arguments, true)) as Record<string, unknown>,
+    action: args === null ? call.tool : `${call.tool} ${jsonText(args)}`,
+    args: args === null ? {} : (JSON.parse(jsonText(args, true)) as Record<string, unknown>),
     why: "",
     reason: asked.reason,
     rules: [...asked.rules],

@@ -3,9 +3,12 @@
  *  do to a held call. The run's worker is scripted: these tests drive its gate calls and events. */
 import fs from "node:fs"
 import path from "node:path"
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { stringify } from "yaml"
 import type { GatedCall, ToolSource } from "@ngocbh/yian/tools"
+import { iterRunRecords } from "@ngocbh/yian/run"
+import { ChatApprovals } from "../../../src/features/chat/approvals.ts"
+import { CUT_OFF } from "../../../src/runtime/permissions/gate.ts"
 import { isPending } from "@ngocbh/yian/tools"
 import type { CheckRunner } from "../../../src/runtime/permissions/classifier.ts"
 import type { CheckInput, Mode } from "../../../src/runtime/permissions/policy.ts"
@@ -17,7 +20,8 @@ import { git } from "../../company/helpers.ts"
 import { CEO } from "../../server/helpers.ts"
 import { waitFor } from "../../helpers.ts"
 import {
-  chatOffice, fakeLlm, makeActor, makeHarness, newSession, noWorkersLeft, running, scriptedWorker, status, texts,
+  chatOffice, fakeLlm, makeActor, makeHarness, newSession, noWorkersLeft, running, scriptedWorker, session, status,
+  texts,
 } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -26,6 +30,21 @@ afterAll(noWorkersLeft)
 const MCP: ToolSource = { kind: "mcp", server: "github", tool: "create_issue" }
 const MODULE: ToolSource = { kind: "module", alias: "crm", ref: "./crm.ts", export: "quote" }
 const START: ToolSource = { kind: "host", group: "codex", tool: "start" }
+
+/** Auto's check that waits for the test: each check waits until `finish` gives it a verdict, or its stop. */
+function heldCheck(): { runCheck: CheckRunner; judged: CheckInput[]; finish(verdict: "run" | "ask"): void } {
+  const judged: CheckInput[] = []
+  const waiting: ((verdict: "run" | "ask") => void)[] = []
+  const runCheck: CheckRunner = async (input, { signal }) => {
+    judged.push(input)
+    const verdict = await new Promise<"run" | "ask">((resolve, reject) => {
+      waiting.push(resolve)
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+    })
+    return { output: { verdict, reason: verdict === "run" ? "it only reads" : "it posts data" } }
+  }
+  return { runCheck, judged, finish: (verdict) => waiting.shift()!(verdict) }
+}
 
 /** Auto's check's verdict on each call it judges, by the call's text: run unless `asks` names it. */
 function fakeCheck(asks: string[] = []): { runCheck: CheckRunner; judged: CheckInput[] } {
@@ -50,7 +69,8 @@ async function gated(
     rules = [],
     agent = [],
     runCheck,
-  }: { rules?: [string, string][]; agent?: [string, string][]; runCheck?: CheckRunner } = {},
+    secrets,
+  }: { rules?: [string, string][]; agent?: [string, string][]; runCheck?: CheckRunner; secrets?: string[] } = {},
 ) {
   const fake = await fakeLlm()
   const yaml = (list: [string, string][]) =>
@@ -60,14 +80,17 @@ async function gated(
   const workers = scriptedWorker(o)
   const sid = await newSession(o, { openedBy: CEO })
   o.office.store.updateSession(sid, { mode })
-  const actor = makeActor(o, sid, runCheck === undefined ? {} : { runCheck })
+  const actor = makeActor(o, sid, {
+    ...(runCheck === undefined ? {} : { runCheck }),
+    ...(secrets === undefined ? {} : { secretValues: async () => secrets }),
+  })
   await actor.start()
   const runId = actor.runId!
   const { worker, handlers, deliveries } = workers[0]!
   const callId = (n: number) => `${runId}/chat#0/reply/1/${n}`
-  const gate = (source: ToolSource, n = 0, args: GatedCall["arguments"] = { title: "Fix" }) => {
+  const gate = (source: ToolSource, n = 0, args: GatedCall["arguments"] = { title: "Fix" }, attempt = 1) => {
     const call: GatedCall = {
-      callId: callId(n), node: "chat#0/reply", tool: `tool_${n}`, source, arguments: args, scopes: [], attempt: 1,
+      callId: callId(n), node: "chat#0/reply", tool: `tool_${n}`, source, arguments: args, scopes: [], attempt,
     }
     return handlers.gateCall(worker, call)
   }
@@ -191,6 +214,20 @@ test("in auto, Auto's check judges an MCP or module call from its words and argu
   ])
 })
 
+test("Auto's check never reads a secret value: the company's are redacted from a call's arguments", async () => {
+  const check = fakeCheck()
+  const g = await gated("auto", { runCheck: check.runCheck, secrets: ["sk-SECRET-4f2a91"] })
+  expect(isPending(await g.gate(MCP, 0, { title: "Fix", token: "sk-SECRET-4f2a91" }))).toBe(true)
+  g.held()
+  await g.delivered("release")
+  expect(check.judged).toHaveLength(1)
+  expect(check.judged[0]!.command).not.toContain("sk-SECRET-4f2a91")
+  expect(check.judged[0]!.command).toStartWith('mcp github create_issue {"title":"Fix","token":')
+  // Its audit row holds what the check read.
+  const [row] = g.o.office.store.listAudit({ sessionId: g.sid }).filter((r) => r.kind === "check")
+  expect(JSON.stringify(row!.args)).not.toContain("sk-SECRET-4f2a91")
+})
+
 test("a session that doesn't ask refuses what would ask, with no card", async () => {
   const g = await gated("dontAsk")
   expect(await g.gate(MCP)).toEqual({
@@ -229,19 +266,114 @@ test("removing the ask rule that held a call decides it again, and its row now r
   expect(g.card()).toMatchObject({ status: "answered", answer: YES, answered_by: CEO })
 })
 
+test("a call sent again whose first try the run never released is refused; one it released runs", async () => {
+  const g = await gated("default")
+  expect(await g.gate(MCP, 0, { title: "Fix" }, 2)).toEqual({ refuse: CUT_OFF })
+  expect(g.cards()).toEqual([])
+  expect(isPending(await g.gate(MCP, 1))).toBe(true)
+  g.held(1)
+  const card = await waitFor(() => g.card(1), { what: "the card" })
+  await g.actor.answer(card.id, YES, "option", { by: CEO })
+  await g.delivered("release", 1)
+  expect(await g.gate(MCP, 1, { title: "Fix" }, 2)).toEqual({
+    run: true,
+    note: "released before a stop or crash cut it off",
+  })
+})
+
+test("a mode switch while Auto's check runs wins over its verdict: ask makes a card, dontAsk refuses", async () => {
+  const check = heldCheck()
+  const g = await gated("auto", { runCheck: check.runCheck })
+  expect(isPending(await g.gate(MCP, 0))).toBe(true)
+  expect(isPending(await g.gate(MCP, 1))).toBe(true)
+  g.held(0)
+  g.held(1)
+  await waitFor(() => check.judged.length === 2, { what: "two checks" })
+  g.o.office.store.updateSession(g.sid, { mode: "ask" })
+  check.finish("run")
+  const card = await waitFor(() => g.card(0), { what: "the card" })
+  expect(card.approval).toMatchObject({ reason: "Ask mode" })
+  g.o.office.store.updateSession(g.sid, { mode: "dontAsk" })
+  check.finish("run")
+  expect(await g.delivered("complete", 1)).toMatchObject({
+    result: { output: "Not run: this session doesn't ask (dontAsk mode): Default mode asks before an MCP tool." },
+  })
+  expect(g.deliveries.filter((d) => d.op === "release")).toEqual([])
+})
+
+test("a deny rule that loads while Auto's check runs refuses the call, whatever the check says", async () => {
+  const check = heldCheck()
+  const g = await gated("auto", { agent: [["allow", "host toolbox x"]], runCheck: check.runCheck })
+  expect(isPending(await g.gate(MCP))).toBe(true)
+  g.held()
+  await waitFor(() => check.judged.length === 1, { what: "the check" })
+  const company = g.o.office.paths.company
+  const deny = { effect: "deny", kind: "tool", pattern: "mcp github *" }
+  fs.writeFileSync(path.join(company, "rules.yaml"), stringify({ rules: [deny] }))
+  git(company, "commit", "-qam", "deny github")
+  // A change the session commits reads the rules files again.
+  await g.actor.removeRule({ effect: "allow", kind: "tool", pattern: "host toolbox x", source: "agent" }, CEO)
+  check.finish("run")
+  expect(await g.delivered("complete")).toMatchObject({ result: { output: "Not run: a deny rule: mcp github *." } })
+  expect(g.deliveries.filter((d) => d.op === "release")).toEqual([])
+})
+
+test("Esc while Auto's check runs closes the hold for good: nothing runs, and no later re-check revives it", async () => {
+  const check = heldCheck()
+  const g = await gated("auto", { agent: [["allow", "host toolbox x"]], runCheck: check.runCheck })
+  expect(isPending(await g.gate(MCP))).toBe(true)
+  g.held()
+  await waitFor(() => check.judged.length === 1, { what: "the check" })
+  const stopped = g.actor.interrupt()
+  const interrupt = await waitFor(() => g.deliveries.find((d) => d.op === "interrupt"), { what: "the interrupt" })
+  // A waiting run's interrupt closes the hold in its reply, with no CallClosed event.
+  g.handlers.deliverReply(g.worker, { type: "deliver_reply", id: interrupt.id, seq: null, closed: [g.callId(0)] })
+  await stopped
+  await g.actor.removeRule({ effect: "allow", kind: "tool", pattern: "host toolbox x", source: "agent" }, CEO)
+  await Bun.sleep(100)
+  expect(check.judged).toHaveLength(1)
+  expect(g.cards()).toEqual([])
+  expect(g.deliveries.filter((d) => d.op === "release" || d.op === "complete")).toEqual([])
+})
+
+test("a hold yian reports twice gets one check", async () => {
+  const check = heldCheck()
+  const g = await gated("auto", { runCheck: check.runCheck })
+  expect(isPending(await g.gate(MCP))).toBe(true)
+  g.held()
+  g.held()
+  await waitFor(() => check.judged.length === 1, { what: "the check" })
+  await Bun.sleep(100)
+  expect(check.judged).toHaveLength(1)
+  check.finish("run")
+  await g.delivered("release")
+  expect(g.deliveries.filter((d) => d.op === "release")).toHaveLength(1)
+})
+
 // --- the employee's run, in a real worker ------------------------------------------------------------------------
 
 /** Words only the chat's requests hold. */
 const CHAT = "You work in the office alongside"
 
-/** A harness whose toolbox has a `quote` tool counting its calls in `quoted`, with `rules` as the company's tool
- *  rules, and a chat of minh's in `mode`, idle at its first turn. */
-async function quoting(fake: Awaited<ReturnType<typeof fakeLlm>>, rules: [string, string][], mode: Mode = "auto") {
+/** A harness whose toolbox has a `quote` tool counting its calls in `quoted` (and each call's id in `ids`), with
+ *  `rules` as the company's tool rules, and a chat of minh's in `mode`, idle at its first turn. A `resumable` tool may
+ *  be sent again after a stop or crash; with `hangFirst`, its first call never returns. */
+async function quoting(
+  fake: Awaited<ReturnType<typeof fakeLlm>>,
+  rules: [string, string][],
+  mode: Mode = "auto",
+  { resumable = false, hangFirst = false }: { resumable?: boolean; hangFirst?: boolean } = {},
+) {
   const quoted: unknown[] = []
+  /** The call id of each call of the tool, in order. */
+  const ids: (string | undefined)[] = []
   const quote: OfficeTool = {
     description: "Quote a price.",
     parameters: { type: "object", properties: { amount: { type: "integer" } }, required: ["amount"] },
-    call: (args) => {
+    ...(resumable ? { resumable: true } : {}),
+    call: (args, options) => {
+      ids.push(options?.callId)
+      if (hangFirst && ids.length === 1) return new Promise(() => {})
       quoted.push(args.amount)
       return `quoted ${String(args.amount)}`
     },
@@ -257,7 +389,7 @@ async function quoting(fake: Awaited<ReturnType<typeof fakeLlm>>, rules: [string
     })
     return open()[0]!
   }
-  return { h, id, quoted, open, cardOpen }
+  return { h, id, quoted, ids, open, cardOpen }
 }
 
 /** A rules file's YAML: each `[effect, pattern]` a tool rule. */
@@ -326,3 +458,94 @@ test("after a restart, an open hold is decided again by the rules read then", as
   expect(q.quoted).toEqual([7])
   expect(q.h.store.getQuestion(card.id)).toMatchObject({ answer: YES })
 })
+
+/** Holds the gate's first decision on a first try of the toolbox's `quote` until the test ends: as if the office
+ *  hadn't answered yet when a stop or crash came. Returns how many it held. */
+function holdFirstDecision(): () => number {
+  const original = ChatApprovals.prototype.gate
+  let held = 0
+  const spy = spyOn(ChatApprovals.prototype, "gate").mockImplementation(function (
+    this: ChatApprovals,
+    runId: string,
+    call: GatedCall,
+  ) {
+    if (call.tool === "toolbox_quote" && call.attempt === 1 && held === 0) {
+      held += 1
+      return new Promise(() => {}) as never
+    }
+    return original.call(this, runId, call)
+  })
+  onTestFinished(() => spy.mockRestore())
+  return () => held
+}
+
+/** Each `released` step of `log`: the call id it released. */
+function releases(log: string): string[] {
+  return [...iterRunRecords(log, { kinds: ["node_step"] })].flatMap((entry) => {
+    const step = (entry.envelope!.record as unknown as { step: { kind: string; call_id?: string } }).step
+    return step.kind === "released" ? [step.call_id!] : []
+  })
+}
+
+test("a call a crash cut off while the gate decided is refused when yian sends it again, and never runs", async () => {
+  const fake = await fakeLlm()
+  fake.script(QUOTE(5), { match: "cut off before it was approved", content: "It was cut off." })
+  const held = holdFirstDecision()
+  const q = await quoting(fake, [["ask", "host toolbox quote"]], "auto", { resumable: true })
+  await q.h.harness.prompt(q.id, "quote it")
+  await waitFor(() => held() === 1, { what: "the held decision" })
+  q.h.registry.get(q.id)!.kill()
+  await waitFor(() => texts(q.h, q.id).includes("It was cut off.") && status(q.h, q.id) === "idle", {
+    what: "the reply",
+  })
+  expect(q.ids).toEqual([])
+  expect(q.open()).toEqual([])
+})
+
+test("a call an office stop cut off while the gate decided is refused when yian sends it again", async () => {
+  const fake = await fakeLlm()
+  fake.script(QUOTE(5), { match: "cut off before it was approved", content: "It was cut off." })
+  const held = holdFirstDecision()
+  const q = await quoting(fake, [["ask", "host toolbox quote"]], "auto", { resumable: true })
+  await q.h.harness.prompt(q.id, "quote it")
+  await waitFor(() => held() === 1, { what: "the held decision" })
+  await q.h.reopen()
+  await q.h.harness.restore()
+  await waitFor(() => texts(q.h, q.id).includes("It was cut off.") && status(q.h, q.id) === "idle", {
+    what: "the reply",
+  })
+  expect(q.ids).toEqual([])
+})
+
+test("a released call a crash cut off runs again when yian sends it again, with no new card", async () => {
+  const fake = await fakeLlm()
+  fake.script(QUOTE(5), { match: "quoted 5", content: "Quoted." })
+  const q = await quoting(fake, [["ask", "host toolbox quote"]], "auto", { resumable: true, hangFirst: true })
+  await q.h.harness.prompt(q.id, "quote it")
+  const card = await q.cardOpen()
+  await q.h.harness.answer(card.id, YES, "option", { by: CEO })
+  await waitFor(() => q.ids.length === 1, { what: "the released call" })
+  q.h.registry.get(q.id)!.kill()
+  await waitFor(() => texts(q.h, q.id).includes("Quoted.") && status(q.h, q.id) === "idle", { what: "the reply" })
+  // Sent again under its own call id, once.
+  expect(q.ids).toEqual([q.ids[0], q.ids[0]])
+  expect(q.quoted).toEqual([5])
+  expect(q.h.store.listQuestions({ sessionId: q.id, source: "approval" })).toHaveLength(1)
+})
+
+test("after a restart, an owner's Yes that never reached the run releases the call exactly once", async () => {
+  const fake = await fakeLlm()
+  fake.script(QUOTE(5), { match: "quoted 5", content: "Quoted." })
+  const q = await quoting(fake, [["ask", "host toolbox quote"]])
+  await q.h.harness.prompt(q.id, "quote it")
+  const card = await q.cardOpen()
+  // The Yes is stored, and the office stops before it reaches the run.
+  q.h.store.answerQuestion(card.id, YES, "option", CEO)
+  await q.h.reopen()
+  await q.h.harness.restore()
+  await waitFor(() => texts(q.h, q.id).includes("Quoted.") && status(q.h, q.id) === "idle", { what: "the reply" })
+  expect(q.quoted).toEqual([5])
+  const runId = session(q.h, q.id).run_ids.at(-1)!
+  expect(releases(path.join(q.h.office.paths.runs, runId, "log.jsonl"))).toEqual([card.call_id!])
+})
+

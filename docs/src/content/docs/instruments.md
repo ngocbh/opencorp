@@ -76,7 +76,8 @@ Each other tool call your employee's model makes also goes through the chat's mo
   last `*` stands for one or more words. Deny rules refuse in every mode, then ask rules ask, then allow rules run.
   "Don't ask again" and "Always allow" add the call's exact words.
 - **Cards.** Yes runs the call once; No tells your employee what you wrote. While a card is open, the reply's later
-  calls wait. An open card survives an office restart, and is decided again by the rules then.
+  calls wait. An open card survives an office restart, and is decided again by the rules then. A call a stop or crash
+  cut off before you approved it isn't run when your employee's work resumes.
 - **Only your employee's calls.** A company flow's own steps that call a tool directly (`call:`, `map`, `loop`) skip
   the mode and the rules: only the calls your employee's model makes are gated.
 

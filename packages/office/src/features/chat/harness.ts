@@ -176,6 +176,7 @@ export class ChatHarness implements SessionHarness {
       },
       keepMs,
       ...(checkTimeoutMs === undefined ? {} : { checkTimeoutMs }),
+      secretValues: () => this.monitor.secretValues(),
       hooks,
       answers: this.answers,
       transcript: this.transcript,

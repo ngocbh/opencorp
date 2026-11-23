@@ -3,7 +3,7 @@
 import { expect, test } from "bun:test"
 import type { ToolSource } from "@ngocbh/yian/tools"
 import {
-  afterCheck, type CallDecision, decideCall, MAX_CHECK_BYTES, type ToolCall, toolCard,
+  afterCheck, type CallDecision, CUT_OFF, decideCall, MAX_CHECK_BYTES, resent, type ToolCall, toolCard,
 } from "../../../src/runtime/permissions/gate.ts"
 import { type Mode, MODES, type Rule } from "../../../src/runtime/permissions/policy.ts"
 
@@ -140,13 +140,44 @@ test("the terminal's run and type pass: the terminal still decides its own comma
   }
 })
 
-test("a call sent again after a crash, which may have run, is never held: only a deny rule refuses it", () => {
-  const again = (source: ToolSource, mode: Mode, rules: Rule[] = []) =>
-    decideCall(call(source, {}, 2), { mode, rules, blocked: "a file doesn't load" })
+test("a call sent again after a stop or crash is decided as any other: its first try may never have been decided", () => {
+  const again = (source: ToolSource, mode: Mode, rules: Rule[] = [], blocked: string | null = null) =>
+    decideCall(call(source, {}, 2), { mode, rules, blocked })
   for (const mode of MODES) {
-    expect(again(MCP, mode, [rule("ask", "*")])).toEqual(run("sent again after a crash; its first try was let run"))
+    const asked = again(MCP, mode, [rule("ask", "*")])
+    const ask: CallDecision = { verdict: "ask", reason: "an ask rule: *", rules: [] }
+    expect(asked).toEqual(mode === "dontAsk" ? DONT("an ask rule: *") : ask)
     expect(again(host("company", "ask_manager"), mode, [rule("deny", "*")]).verdict).toBe("refuse")
+    // While a rules file doesn't load, its deny rules aren't known: the call asks, or dontAsk refuses it.
+    expect(again(MEMORY, mode, [], "rules.yaml doesn't load").verdict).toBe(mode === "dontAsk" ? "refuse" : "ask")
   }
+})
+
+test("a call sent again that would ask runs only when its first try was released; else it is refused", () => {
+  const asked: CallDecision = { verdict: "ask", reason: "Ask mode", rules: [] }
+  const check = decideCall(call(MCP), { mode: "auto", rules: [], blocked: null })
+  for (const decision of [asked, check]) {
+    expect(resent(decision, false)).toEqual({ verdict: "refuse", reason: CUT_OFF })
+    expect(resent(decision, true)).toEqual(run("released before a stop or crash cut it off"))
+  }
+  expect(CUT_OFF).toBe("Not run: it was cut off before it was approved.")
+  // A run or a refusal stands, released or not.
+  for (const released of [false, true]) {
+    expect(resent(run("read-only"), released)).toEqual(run("read-only"))
+    expect(resent({ verdict: "refuse", reason: "Not run: a deny rule: *." }, released).verdict).toBe("refuse")
+  }
+})
+
+test("a held call whose arguments couldn't be read asks in every mode, offering nothing, and a deny rule refuses it", () => {
+  const unread = { ...call(MCP), arguments: null }
+  const why = "its arguments couldn't be read"
+  for (const mode of MODES) {
+    expect(decideCall(unread, { mode, rules: [rule("allow", "*")], blocked: null })).toEqual(
+      mode === "dontAsk" ? DONT(why) : { verdict: "ask", reason: why, rules: [] },
+    )
+    expect(decideCall(unread, { mode, rules: [rule("deny", "*")], blocked: null }).verdict).toBe("refuse")
+  }
+  expect(toolCard(unread, { reason: why, rules: [] })).toMatchObject({ action: "the_tool", args: {} })
 })
 
 test("in auto, a call whose arguments are too long for Auto's check asks", () => {

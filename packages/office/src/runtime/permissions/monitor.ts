@@ -223,6 +223,23 @@ export class Monitor {
     }
   }
 
+  /** The value of every secret an asset of the company names that is set, each once: what no model may read, so the
+   *  office redacts it from what Auto's check reads. */
+  async secretValues(): Promise<string[]> {
+    const names = new Set([...loadRepo(this.root).assets.values()].flatMap((asset) => asset.secrets))
+    const values = new Set<string>()
+    for (const name of names) {
+      try {
+        const value = await this.secrets.get(name)
+        if (value) values.add(value)
+      } catch (error) {
+        // One nobody set has no value to redact.
+        if (!(error instanceof SecretNotSetError)) throw error
+      }
+    }
+    return [...values]
+  }
+
   async #secret(name: string): Promise<string> {
     try {
       return await this.secrets.get(name)

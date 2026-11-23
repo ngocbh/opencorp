@@ -6,6 +6,7 @@ import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { GatedCall } from "@ngocbh/yian/tools"
 import {
   inspectRun,
+  iterRunRecords,
   type LiveViewCall,
   pendingCalls,
   type RunInspection,
@@ -114,6 +115,8 @@ export interface ActorContext {
   readonly checkTimeoutMs?: number
   /** Runs Auto's check in place of a `classify` worker job: for tests. */
   readonly runCheck?: CheckRunner
+  /** The company's asset secret values, which no model may read (the monitor's); none when absent. */
+  readonly secretValues?: () => Promise<string[]>
   /** How long, in ms, a worker stays parked after a run call that left its run waiting; 0 keeps none (default
    *  `KEEP_MS`). */
   readonly keepMs?: number
@@ -573,6 +576,11 @@ export class SessionActor implements LiveCalls {
         completeCall: (callId, output) =>
           this.#deliver(new Pending({ id: newId(), op: "complete", call_id: callId, result: { output } })),
         onQuestion: this.#onQuestion,
+        released: (runId, callId) => releasedIn(this.#logOf(runId), callId),
+        secretValues: async () => [
+          ...(this.#run?.provider ? runSecrets(this.#run.provider) : []),
+          ...((await this.#ctx.secretValues?.()) ?? []),
+        ],
       },
       ...(ctx.checkTimeoutMs === undefined ? {} : { checkTimeoutMs: ctx.checkTimeoutMs }),
       ...(ctx.runCheck === undefined ? {} : { runCheck: ctx.runCheck }),
@@ -2670,7 +2678,10 @@ export class SessionActor implements LiveCalls {
     if (p.done && !(p.early && Object.hasOwn(reply, "seq") && !this.#finished)) return
     if (Object.hasOwn(reply, "seq")) {
       const closed = Array.isArray(reply.closed) ? reply.closed.map(String) : []
-      for (const callId of closed) this.#closedCall(run.runId, callId, op === "cancel" ? "cancelled" : "interrupted")
+      for (const callId of closed) {
+        this.#closedCall(run.runId, callId, op === "cancel" ? "cancelled" : "interrupted")
+        this.#approvals.closed(callId)
+      }
       const wakesRun = op === "send" || op === "complete" || op === "release" || op === "close"
       if (p.late && (wakesRun || closed.length > 0)) this.#readvance = true
       // A job that only delivers leaves the message for the next advance's take too.
@@ -3699,6 +3710,20 @@ function costFigure(usd: number): string {
   let figure = Math.round(usd * 1e4) / 1e4
   if (figure < usd) figure += 1e-4
   return figure.toFixed(4)
+}
+
+/** Whether the run log `log` records that call `callId` was released (a `released` step); false when it doesn't, or
+ *  can't be read. */
+function releasedIn(log: string, callId: string): boolean {
+  try {
+    for (const entry of iterRunRecords(log, { kinds: ["node_step"], maxLineBytes: LINE_CAP })) {
+      const step = (entry.envelope?.record as { step?: Record<string, unknown> } | undefined)?.step
+      if (step?.kind === "released" && step.call_id === callId) return true
+    }
+  } catch {
+    // Unreadable: not known to be released, so the call isn't let run.
+  }
+  return false
 }
 
 /** Whether `p` wakes the agent: a message (`send`), a call's answer (`complete`) or a held call let run

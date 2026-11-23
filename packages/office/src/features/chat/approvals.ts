@@ -14,7 +14,7 @@ import {
   Check, type CheckRecord, type CheckRunner, type CheckWorkers, inWorker,
 } from "../../runtime/permissions/classifier.ts"
 import {
-  afterCheck, type CallDecision, type CallPolicy, decideCall, type ToolCall, toolCard,
+  afterCheck, type CallDecision, type CallPolicy, decideCall, resent, type ToolCall, toolCard,
 } from "../../runtime/permissions/gate.ts"
 import {
   type CheckInput, decide, dontAskRefusal, judged, type Permissions, type Rule, RuleBook, type Where,
@@ -24,7 +24,7 @@ import type { OnQuestion } from "../../runtime/questions/ask.ts"
 import type { AnswerKind } from "../../runtime/sessions/harness.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store } from "../../runtime/store/store.ts"
 import type { OfficePaths } from "../../util/home.ts"
-import { DETAIL_CHARS } from "../../util/redact.ts"
+import { DETAIL_CHARS, redact } from "../../util/redact.ts"
 import { errorName } from "../../runtime/worker/rpc.ts"
 import type { RunSpec } from "./run_spec.ts"
 
@@ -57,6 +57,10 @@ export interface ApprovalHost {
   completeCall(callId: string, output: string): Promise<void>
   /** Stores a card of the run's calls (the actor's `onQuestion`). */
   onQuestion: OnQuestion
+  /** Whether run `runId`'s log records that call `callId` was released. */
+  released(runId: string, callId: string): boolean
+  /** The secret values no model may read: the run's model key, and the company's asset secrets. */
+  secretValues(): Promise<string[]>
 }
 
 /** A call the gate held, by its call id: its run, the call as the gate decided it, whether yian holds it yet
@@ -128,6 +132,8 @@ export class ChatApprovals {
   readonly #running = new Map<string, AbortController>()
   /** The calls the gate held, by call id, until each is answered, released, completed or closed. */
   readonly #holds = new Map<string, Hold>()
+  /** The calls this office released, by call id: a call yian sends again after a stop or crash runs only if it was. */
+  readonly #released = new Set<string>()
 
   constructor(o: {
     store: Store
@@ -278,7 +284,12 @@ export class ChatApprovals {
    *  yian takes it: a run, with its note; a refusal; or `pending()`, holding the call until it is decided again once
    *  yian holds it (`held`). */
   gate(runId: string, call: GatedCall): GateDecision {
-    const decision = decideCall(call, this.#policy())
+    let decision = decideCall(call, this.#policy())
+    // Sent again after a stop or crash, which may have cut it off as the gate decided: yian can't hold it.
+    if (call.attempt > 1) {
+      const released = this.#released.has(call.callId) || this.#host.released(runId, call.callId)
+      decision = resent(decision, released)
+    }
     if (decision.verdict === "run") return decision.note === null ? undefined : { run: true, note: decision.note }
     if (decision.verdict === "refuse") return { refuse: decision.reason }
     const { tool, source, arguments: args, attempt } = call
@@ -321,7 +332,8 @@ export class ChatApprovals {
     for (const call of calls) {
       if (!call.held || call.source === null || !call.callId.startsWith(`${runId}/`)) continue
       if (this.#holds.has(call.callId)) continue
-      const known = { tool: call.tool, source: call.source, arguments: call.arguments ?? {}, attempt: 1 }
+      // Arguments it didn't record are none the gate can judge: it asks.
+      const known = { tool: call.tool, source: call.source, arguments: call.arguments, attempt: 1 }
       this.#holds.set(call.callId, { runId, callId: call.callId, call: known, held: true, check: null })
     }
     // After the restart's own step: what it releases or completes goes to the run as any later delivery does.
@@ -353,6 +365,8 @@ export class ChatApprovals {
    * with no card runs (released), is refused (completed with why), gets its card, or goes to Auto's check.
    */
   async #settle(hold: Hold, by: string | null): Promise<void> {
+    // A check on it decides it when it ends.
+    if (hold.check !== null) return
     const card = this.#store.getQuestionByCall(hold.callId)
     if (this.#host.liveRun() !== hold.runId || (card !== undefined && card.status !== "open")) {
       this.#holds.delete(hold.callId)
@@ -364,7 +378,13 @@ export class ChatApprovals {
     const answered = this.#answer(card, YES, "option", by)
     if (answered === null) return
     this.#holds.delete(hold.callId)
-    await this.#host.release(hold.callId, decision.note, answered)
+    await this.#release(hold.callId, decision.note, answered)
+  }
+
+  /** Releases call `callId` (`ApprovalHost.release`), remembering that it did. */
+  #release(callId: string, note: string | null, card: QuestionRecord | null): Promise<void> {
+    this.#released.add(callId)
+    return this.#host.release(callId, note, card)
   }
 
   /** Acts on `decision` for held call `hold`, which has no card: releases it, completes it with its refusal, makes its
@@ -373,7 +393,7 @@ export class ChatApprovals {
     switch (decision.verdict) {
       case "run":
         this.#holds.delete(hold.callId)
-        return this.#host.release(hold.callId, decision.note, null)
+        return this.#release(hold.callId, decision.note, null)
       case "refuse":
         this.#holds.delete(hold.callId)
         return this.#host.completeCall(hold.callId, decision.reason)
@@ -395,20 +415,30 @@ export class ChatApprovals {
     }
   }
 
-  /** Runs Auto's check on held call `hold` (`input`, its card offering `rules`) in the background; its verdict is acted
-   *  on, on the actor's queue, unless the check was stopped, the call closed, or the run is no longer live. */
+  /**
+   * Runs Auto's check on held call `hold` (`input`, its card offering `rules`) in the background, the secret values no
+   * model may read redacted from what it reads. Once it ends, on the actor's queue, the call is decided again: a
+   * mode switch, a rule or a rules file that changed meanwhile wins, and the check's verdict decides only a call still
+   * for Auto's check. Nothing happens once the check was stopped, the call closed, or the run is no longer live.
+   */
   #judge(hold: Hold, input: CheckInput, rules: readonly string[]): void {
     const stop = new AbortController()
     hold.check = stop
-    void judged((checked, signal) => this.#check.judge(checked, signal), input, stop.signal).then((verdict) => {
+    void (async () => {
+      const secrets = await this.#host.secretValues().catch(() => null)
+      // Unable to know the secrets, nothing goes to a model: the call asks.
+      const verdict = secrets === null
+        ? { verdict: "ask" as const, reason: "its secrets couldn't be read", failed: true }
+        : await judged((checked, signal) => this.#check.judge(checked, signal), redacted(input, secrets), stop.signal)
       hold.check = null
       if (stop.signal.aborted || this.#holds.get(hold.callId) !== hold) return
       this.#host.post("a check's verdict", async () => {
         if (this.#holds.get(hold.callId) !== hold || this.#host.liveRun() !== hold.runId) return
-        await this.#act(hold, afterCheck(verdict, rules, this.#session().mode))
+        const now = decideCall(hold.call, this.#policy())
+        await this.#act(hold, now.verdict === "check" ? afterCheck(verdict, rules, this.#session().mode) : now)
         this.#host.settle("after a check")
       })
-    })
+    })()
   }
 
   /**
@@ -425,7 +455,7 @@ export class ChatApprovals {
       // A tool card's call runs where yian holds it: released, its rules added first.
       this.#holds.delete(card.call_id!)
       const added = await this.remember(card)
-      await this.#host.release(card.call_id!, credit, card)
+      await this.#release(card.call_id!, credit, card)
       if (added) await this.#recheck(card.answered_by)
       return
     }
@@ -585,6 +615,11 @@ export class ChatApprovals {
     const { prices, subscription } = this.#pricing
     this.#charge(entry.runId, entry.model, callUsd(prices, entry.model, entry.usage), subscription)
   }
+}
+
+/** `input` with each of `secrets` redacted from its command, which a model reads. */
+function redacted(input: CheckInput, secrets: readonly string[]): CheckInput {
+  return secrets.length === 0 ? input : { ...input, command: redact(input.command, [], secrets) }
 }
 
 /** What tells a rule from another: its effect, kind and pattern. */
