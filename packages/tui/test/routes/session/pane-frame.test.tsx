@@ -4,7 +4,7 @@
 // screen. ctrl+x ←/→ move the keys between the chat and the pane, a click in either side focuses it, ctrl+x ↑ closes
 // it, and ctrl+x o shows it full screen or split. Unlike upstream's, it sits in a box in its driver's colour, bright
 // with the keys and dim without; its header says who drives it.
-import type { Instrument, Session } from "@opencorp/protocol"
+import type { Instrument, Message, Session } from "@opencorp/protocol"
 import type { CapturedLine, RGBA } from "@opentui/core"
 import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -548,6 +548,9 @@ test("a secret card in a pane without the keys reads none of what the owner type
     await app.until((f) => f.includes("Paste the deploy token"))
     await leader(app, "left")
     await app.until((f) => f.includes("ctrl+x → focus pane"))
+    // The card shows in the chat too, with the chat's keys: ctrl+t gives them to the chat's prompt.
+    app.input.pressKey("t", { ctrl: true })
+    await app.until((f) => f.includes("Codex asks: Token? · ctrl+t to answer"))
     app.input.typeText("sentinel-77")
     await app.until((f) => f.includes("sentinel-77"))
     app.input.pressEnter()
@@ -588,6 +591,123 @@ test("a shell that waits for a password while a card is open opens beside it, th
     f = await app.until((f) => f.includes("type your password here"))
     app.input.typeText("pw")
     await until(() => typed(office, ssh.id) === "pw")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+// A chat shows its Codex sessions' cards too, after its own, as the upstream TUI's parent session shows its
+// descendants' permission prompts and forms.
+
+/** The bodies of the requests sent to `path`. */
+const sent = (office: FakeOffice, path: string) => office.requests.filter((r) => r.path === path).map((r) => r.body)
+
+test("a Codex session's card, open before its chat was, shows in the chat above the prompt and answers from there", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const card = office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    const f = await app.until((f) => f.includes("$ touch a"))
+    expect(f).toContain("Codex asks")
+    expect(corner(f)).toBeUndefined()
+    // The card has the keys: a digit answers it, and nothing goes to the chat.
+    app.input.pressKey("1")
+    await until(() => office.state.questions[card.id]!.status !== "open")
+    expect(sent(office, `/questions/${card.id}/answer`)).toEqual([{ answer: "Approve", answer_kind: "option" }])
+    expect(sent(office, `/sessions/${chat.id}/prompt`)).toEqual([])
+    await app.until((f) => !f.includes("$ touch a"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("the chat's own card comes first, a Codex session's waiting as a line behind it, then taking the keys", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    const card = office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
+    await app.until((f) => f.includes("$ touch a"))
+    const own = office.addApproval(chat.id, {
+      kind: "command",
+      tool: "terminal_run",
+      action: "make deploy",
+      args: { shell: "shell 1", command: "make deploy" },
+      reason: "Ask mode",
+      rules: [],
+    })
+    const f = await app.until(
+      (f) => f.includes("make deploy") && f.includes("Codex asks: Codex wants to run a command (waiting)"),
+    )
+    expect(f).not.toContain("$ touch a")
+    office.expire(own.id)
+    await app.until((f) => f.includes("$ touch a") && !f.includes("make deploy"))
+    app.input.pressKey("1")
+    await until(() => office.state.questions[card.id]!.status !== "open")
+    expect(sent(office, `/questions/${card.id}/answer`)).toEqual([{ answer: "Approve", answer_kind: "option" }])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a Codex session's card that opens while the chat's prompt holds a draft leaves the keys there; ctrl+t gives them", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    app.input.typeText("half a")
+    await app.until((f) => f.includes("half a"))
+    const card = office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
+    await app.until((f) => f.includes("Codex asks: Codex wants to run a command · ctrl+t to answer"))
+    // A digit typed for the prompt stays text there and picks nothing.
+    app.input.typeText(" 1")
+    await app.until((f) => f.includes("half a 1"))
+    expect(office.state.questions[card.id]!.status).toBe("open")
+    app.input.pressKey("t", { ctrl: true })
+    await app.until((f) => f.includes("$ touch a"))
+    app.input.pressKey("1")
+    await until(() => office.state.questions[card.id]!.status !== "open")
+    expect(sent(office, `/questions/${card.id}/answer`)).toEqual([{ answer: "Approve", answer_kind: "option" }])
+    expect(sent(office, `/sessions/${chat.id}/prompt`)).toEqual([])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("Esc on a Codex session's card in the chat interrupts that session, not the chat, whose reply goes on showing", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const reply: Message = {
+    id: office.nextId(),
+    session_id: chat.id,
+    role: "assistant",
+    created_at: new Date().toISOString(),
+    parts: [{ id: office.nextId(), type: "text", text: "Looking" }],
+  }
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    office.setStatus(chat.id, "busy")
+    office.live({ type: "message.updated", session_id: chat.id, data: reply as never })
+    office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
+    await app.until((f) => f.includes("Looking") && f.includes("$ touch a"))
+    await escape(app)
+    await until(() => sent(office, `/sessions/${child.id}/interrupt`).length === 1)
+    expect(sent(office, `/sessions/${chat.id}/interrupt`)).toEqual([])
+    // Esc froze nothing in the chat: what its reply writes next still shows.
+    const part = { ...reply.parts[0]!, text: "Looking at it" }
+    office.live({ type: "part.updated", session_id: chat.id, data: { message_id: reply.id, part } as never })
+    await app.until((f) => f.includes("Looking at it"))
   } finally {
     await app.stop()
     office.stop()

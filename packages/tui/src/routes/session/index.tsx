@@ -60,7 +60,7 @@ import { OPENCORP_BASE_MODE, useBindings } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { usePermission } from "../../context/permission"
-import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented, openQuestions, statusLabel } from "@opencorp/client"
+import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented, statusLabel } from "@opencorp/client"
 import { answerShown } from "../chat/answer"
 import { QuestionCard } from "../chat/card"
 import { HarnessCard } from "../chat/harness-card"
@@ -69,7 +69,7 @@ import { freeze, frozenList, unfreeze, type Freeze } from "../chat/freeze"
 import { display } from "../../util/printable"
 import { useLocal } from "../../context/local"
 import { Composer } from "./composer"
-import { busyCounts, busyTab, childState, HARNESS_TITLE, harnessFamily } from "./composer/tabs"
+import { busyCounts, busyTab, childState, familyQuestions, HARNESS_TITLE, harnessFamily } from "./composer/tabs"
 import { sessionOwner, speakerLabel } from "./speakers"
 import { NoteLine } from "./note-line"
 
@@ -182,8 +182,13 @@ export function Session(props: SessionProps) {
   const local = useLocal()
   const promptRef = usePromptRef()
   const session = createMemo(() => office.state.sessions.find((s) => s.id === props.sessionID))
-  const cards = createMemo(() => openQuestions(office.state, props.sessionID))
-  const question = createMemo(() => cards()[0])
+  // The open cards here: this session's own first, then, in a chat, its Codex and Claude Code sessions'.
+  const cards = createMemo(() => familyQuestions(office.state, props.sessionID))
+  // This session's own first card.
+  const question = createMemo(() => {
+    const first = cards()[0]
+    return first?.session_id === props.sessionID ? first : undefined
+  })
   // A Codex session shows every open card above a prompt that stays; the first card or the prompt has the keys.
   const codex = createMemo(() => session()?.harness === "codex")
   // A Codex or Claude Code session: a harness of its own, which takes a message mid-turn into the running turn.
@@ -191,19 +196,19 @@ export function Session(props: SessionProps) {
   // A card on the chat (an approval, a question), which takes what room it needs and scrolls in the rest.
   const card = createMemo(() => !codex() && question() !== undefined)
   const permission = usePermission()
-  // Whether the chat's mode can be switched here. Never while a card is open: the card hides the prompt and its mode
-  // label, and a switch to dontAsk would answer an approval card.
+  // Whether the chat's mode can be switched here. Never while one of its own cards is open: the card hides the prompt
+  // and its mode label, and a switch to dontAsk would answer an approval card. A Codex session's card in the chat
+  // does neither: the prompt stays under it, and dontAsk leaves it open.
   const switchable = () => permission.mode(props.sessionID) !== null && !question()
+  // The cards above a prompt that stays: a Codex session's own, or a chat's Codex sessions', shown in the chat as in
+  // their own view. They wait as lines while one of the chat's own cards holds the prompt's place.
+  const stacked = createMemo(() => (harnessed() ? cards() : cards().filter((q) => q.session_id !== props.sessionID)))
+  const stackOpen = createMemo(() => stacked().length > 0 && (harnessed() ? codex() : !question()))
   const [focus, setFocus] = createSignal<"card" | "prompt">("card")
-  const cardFocused = createMemo(() => codex() && cards().length > 0 && focus() === "card")
+  const cardFocused = createMemo(() => stackOpen() && focus() === "card")
   // Cards opening when none were open take the keys, unless this side's prompt holds a draft: keys typed for the
   // prompt must never land on a card, where a digit or Enter picks an option.
-  createEffect(
-    on(
-      () => cards().length > 0,
-      (open) => open && setFocus(promptRef.current?.current.input ? "prompt" : "card"),
-    ),
-  )
+  createEffect(on(stackOpen, (open) => open && setFocus(promptRef.current?.current.input ? "prompt" : "card")))
   // The card whose side chat is showing; the view shows the side session in place of the chat.
   const [sideOf, setSideOf] = createSignal<string>()
   const sideQuestion = createMemo(() => {
@@ -305,9 +310,9 @@ export function Session(props: SessionProps) {
   // subagent's. A live or idle child keeps its prompt, where the owner writes to the harness.
   const readOnly = createMemo(() => !!parentID() && childState(session(), undefined) === "ended")
   // The picker in the prompt's place: opened with ↓, or always in a child that ended. A card takes its place while one
-  // is open, as the upstream TUI's permission prompts do.
+  // is open, a Codex session's in its chat too, as the upstream TUI's permission prompts (its descendants' too) do.
   const [composer, setComposer] = createStore({ open: false, tab: undefined as string | undefined })
-  const composerVisible = createMemo(() => readOnly() || (composer.open && !question()))
+  const composerVisible = createMemo(() => readOnly() || (composer.open && cards().length === 0))
   const openingTab = () =>
     busyTab(
       busyCounts({
@@ -326,6 +331,16 @@ export function Session(props: SessionProps) {
       if (parent) office.syncSession(parent).catch(() => {})
     }),
   )
+  // A chat shows its Codex sessions' cards: each live one is loaded too, for the cards it opened before this view did.
+  const loadedChildren = new Set<string>()
+  createEffect(() => {
+    if (parentID()) return
+    for (const entry of harnessFamily(office.state, props.sessionID)) {
+      if (entry.state === "ended" || loadedChildren.has(entry.sessionID)) continue
+      loadedChildren.add(entry.sessionID)
+      office.syncSession(entry.sessionID).catch(() => {})
+    }
+  })
   // In a child, its name in the chat's list, who drives it and the tokens its harness reported.
   const childInfo = createMemo(() => {
     const current = session()
@@ -488,7 +503,7 @@ export function Session(props: SessionProps) {
       title: "Open an instrument…",
       value: "session.child.first",
       category: "Session",
-      enabled: !question(),
+      enabled: cards().length === 0,
       run: (ctx?: { payload?: unknown }) => {
         const tab = ctx?.payload
         if (tab === "subagents" || tab === "shell") setComposer({ open: true, tab })
@@ -698,7 +713,7 @@ export function Session(props: SessionProps) {
         title: "Move between the open card and the prompt",
         category: "Session",
         hidden: true,
-        enabled: codex() && cards().length > 0 && dialog.stack.length === 0,
+        enabled: stackOpen() && dialog.stack.length === 0,
         run: () => setFocus((f) => (f === "card" ? "prompt" : "card")),
       },
     ],
@@ -905,6 +920,22 @@ export function Session(props: SessionProps) {
                   onOpen={(id) => props.onOpen?.(id)}
                 />
                 <Show when={!composerVisible()}>
+                  {/* Keyed by id, so a card whose question is re-read (a reconnect) keeps its state. */}
+                  <For each={stacked().map((q) => q.id)}>
+                    {(id, i) => (
+                      <Show when={office.state.questions[id]}>
+                        {(q) => (
+                          <HarnessCard
+                            question={q()}
+                            active={i() === 0 && cardFocused()}
+                            waiting={i() > 0 || !stackOpen()}
+                            // Esc on a Codex session's card in its chat stops that session's turn, not the chat's.
+                            onInterrupt={q().session_id === props.sessionID ? interrupt : undefined}
+                          />
+                        )}
+                      </Show>
+                    )}
+                  </For>
                   <Show
                     when={harnessed()}
                     fallback={
@@ -914,6 +945,7 @@ export function Session(props: SessionProps) {
                         fallback={
                           <Prompt
                             visible={true}
+                            inactive={cardFocused()}
                             ref={bind}
                             onSend={lift}
                             onSubmit={() => toBottom()}
@@ -954,21 +986,6 @@ export function Session(props: SessionProps) {
                       </Show>
                     }
                   >
-                    {/* Keyed by id, so a card whose question is re-read (a reconnect) keeps its state. */}
-                    <For each={cards().map((q) => q.id)}>
-                      {(id, i) => (
-                        <Show when={office.state.questions[id]}>
-                          {(q) => (
-                            <HarnessCard
-                              question={q()}
-                              active={i() === 0 && cardFocused()}
-                              waiting={i() > 0}
-                              onInterrupt={interrupt}
-                            />
-                          )}
-                        </Show>
-                      )}
-                    </For>
                     <Prompt
                       visible={true}
                       inactive={cardFocused()}

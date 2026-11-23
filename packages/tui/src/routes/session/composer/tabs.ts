@@ -1,4 +1,5 @@
-import type { Instrument, Session } from "@opencorp/protocol"
+import { openQuestions, type OfficeState } from "@opencorp/client"
+import type { Instrument, Question, Session } from "@opencorp/protocol"
 import { createEffect, createMemo, createSignal, on, untrack, type Signal } from "solid-js"
 import { createStore } from "solid-js/store"
 import type { ComposerTab } from "./context"
@@ -89,6 +90,21 @@ export function harnessFamily(
       prefix,
     }
   })
+}
+
+/**
+ * The open cards session `sessionID` shows, as the upstream TUI's session lists its descendants' requests: a chat's
+ * own first, then its Codex and Claude Code sessions', in the order the picker lists them; a child's own only.
+ */
+export function familyQuestions(state: OfficeState, sessionID: string): Question[] {
+  const own = openQuestions(state, sessionID)
+  if (state.sessions.find((s) => s.id === sessionID)?.instrument_of) return own
+  return [
+    ...own,
+    ...harnessFamily(state, sessionID)
+      .filter((entry) => entry.sessionID !== sessionID)
+      .flatMap((entry) => openQuestions(state, entry.sessionID)),
+  ]
 }
 
 /**
