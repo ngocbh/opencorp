@@ -263,17 +263,30 @@ export function askUserStub(rpc: Rpc): AskHandler {
   }
 }
 
+/** How long, in ms, a run waits for the office's gate to decide a call before the call is refused. The office
+ *  decides at once, holding what waits for a person or a check, so only a stuck office reaches it. */
+export const GATE_TIMEOUT_MS = 30_000
+
+/** What a failed gate request's reply says, whatever failed in the office: it reaches the worker's log in yian's
+ *  warning, so it never quotes the office's own error. */
+export const GATE_FAILED = "the office's permission check failed"
+
 /**
  * Yian's `beforeToolCall`, answered by the office: one `gate_call` request per model tool call, carrying the
  * `GatedCall` (`call`, in the wire's field names). The office's `{run: true}` runs the call, with its `note` when it
  * has one; `{refuse}` refuses it with that text; `{hold: true}` holds it (`pending()`) until the office releases or
- * completes it. An error reply, a reply of any other shape, a closed channel or a stop makes the hook throw, and yian
- * then refuses the call with its fixed text: the gate fails closed. The request ends when the decision is no longer
- * wanted (`ctx.signal`).
+ * completes it. An error reply, a reply of any other type or shape, a closed channel, a stop, or no reply within
+ * `timeoutMs` makes the hook throw, and yian then refuses the call with its fixed text: the gate fails closed. The
+ * request ends when the decision is no longer wanted (`ctx.signal`), and a late reply is dropped.
  */
-export function gateHook(rpc: Rpc): (call: GatedCall, ctx: GateContext) => Promise<GateDecision> {
-  return async (call, ctx) =>
-    decisionOf(await rpc.request("gate_call", { call: wireCall(call) }, { signal: ctx.signal }))
+export function gateHook(
+  rpc: Rpc,
+  { timeoutMs = GATE_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): (call: GatedCall, ctx: GateContext) => Promise<GateDecision> {
+  return async (call, ctx) => {
+    const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(timeoutMs)])
+    return decisionOf(await rpc.request("gate_call", { call: wireCall(call) }, { signal }))
+  }
 }
 
 /** `call` in the wire's field names. */
@@ -289,9 +302,10 @@ function wireCall(call: GatedCall): Frame {
   }
 }
 
-/** The yian decision a `gate_decision` reply says; throws a `TypeError` for a reply of any other shape. */
+/** The yian decision a `gate_decision` reply says; throws a `TypeError` for a reply of any other type or shape. */
 function decisionOf(reply: Frame): GateDecision {
-  const { type: _type, id: _id, ...fields } = reply
+  const { type, id: _id, ...fields } = reply
+  if (type !== REQUEST_REPLIES.gate_call) throw new TypeError("the office's reply to a gate_call isn't a gate_decision")
   const keys = Object.keys(fields).sort().join(",")
   if (keys === "hold" && fields.hold === true) return pending()
   if (keys === "refuse" && typeof fields.refuse === "string") return { refuse: fields.refuse }
@@ -512,11 +526,11 @@ export type RpcLog = (level: "INFO" | "WARNING", line: string) => void
  * (with its `note`), `{refuse}`, or `{hold: true}` for `pending()`.
  *
  * A malformed request, a question, tool call or gate call whose `call_id` isn't of `worker.job`'s run, a tool not in
- * the job's groups, a memory the job doesn't name, a failing tool, question, gate or memory call, or a gate decision
- * of another shape is `{error: "failed", message}`; a question the handler refuses with `AskRefused` is `{error:
- * "refused", message}`. A memory call's error branded by yian is its kind (`busy`, `change_id_reused` or `missing`),
- * and a refusal the model reads (a `ReportedToolError`) is `{error: "refused", message, permanent}`. Throws a
- * `TypeError` for a frame whose type isn't a request type.
+ * the job's groups, a memory the job doesn't name, or a failing tool, question or memory call is `{error: "failed",
+ * message}`; a gate that fails or decides nothing of the right shape is `{error: "failed", message: GATE_FAILED}`; a
+ * question the handler refuses with `AskRefused` is `{error: "refused", message}`. A memory call's error branded by
+ * yian is its kind (`busy`, `change_id_reused` or `missing`), and a refusal the model reads (a `ReportedToolError`)
+ * is `{error: "refused", message, permanent}`. Throws a `TypeError` for a frame whose type isn't a request type.
  */
 export async function answerRequest(
   frame: Frame,
@@ -547,7 +561,14 @@ export async function answerRequest(
         return isPending(result) ? { ...head, pending: true } : { ...head, result: result ?? null }
       }
       case "gate_call":
-        return { ...head, ...decisionFields(await handlers.gateCall(worker, args.call)) }
+        try {
+          return { ...head, ...decisionFields(await handlers.gateCall(worker, args.call)) }
+        } catch (error) {
+          // The name only, here and in the reply's fixed text: yian's warning puts the reply's text in the worker's
+          // log, and the message could quote the call.
+          write(log, "INFO", `worker gate_call request failed: ${errorName(error)}`)
+          return { ...head, error: "failed", message: GATE_FAILED }
+        }
       case "memory":
         return { ...head, ...(await handlers.memory(worker, args.request)) }
     }

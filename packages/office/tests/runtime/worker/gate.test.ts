@@ -2,7 +2,7 @@
  *  the office, whose answer runs it (with a note or not), refuses it or holds it; a request that fails refuses it. */
 import path from "node:path"
 import type { GatedCall } from "@ngocbh/yian"
-import { iterRunRecords } from "@ngocbh/yian/run"
+import { inspectRun, iterRunRecords } from "@ngocbh/yian/run"
 import { isPending, pending, ToolSet } from "@ngocbh/yian/tools"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { ChannelClosed, type Frame } from "../../../src/runtime/worker/channel.ts"
@@ -10,6 +10,8 @@ import { groupSpecs, type Job, toolSpec } from "../../../src/runtime/worker/job.
 import {
   answerRequest,
   BaseHandlers,
+  GATE_FAILED,
+  GATE_TIMEOUT_MS,
   gateHook,
   type OfficeTool,
   RemoteError,
@@ -17,10 +19,12 @@ import {
   Rpc,
 } from "../../../src/runtime/worker/rpc.ts"
 import { fakeLlm } from "../../features/chat/helpers.ts"
+import { waitFor } from "../../helpers.ts"
 import {
   advanceJob,
   base,
   channelPair,
+  inProcessWorker,
   makeJob,
   officeEnd,
   profileMemory,
@@ -35,7 +39,7 @@ import {
 setDefaultTimeout(30_000)
 
 /** Yian's text for a call whose host check failed. */
-const GATE_FAILED = "The host's permission check failed; the call didn't run."
+const YIAN_GATE_FAILED = "The host's permission check failed; the call didn't run."
 
 const SIGNAL = new AbortController().signal
 
@@ -145,7 +149,7 @@ test("the base handlers run every call", async () => {
   expect(reply).toEqual({ type: "gate_decision", id: 1, run: true })
 })
 
-test("an office gate that throws or answers no decision is a failed reply, so the hook throws", async () => {
+test("an office gate that throws or answers no decision is a failed reply of fixed text, so the hook throws", async () => {
   const bad: (() => unknown)[] = [
     () => {
       throw new Error("the rules can't be read")
@@ -160,12 +164,45 @@ test("an office gate that throws or answers no decision is a failed reply, so th
   for (const decide of bad) {
     const handlers = new Gating(decide)
     const frame = { type: "gate_call", id: 1, call: wire(CALLS[0]!) }
-    const reply = await answerRequest(frame, handlers, workerFor(handlers))
-    expect(reply.error).toBe("failed")
+    const lines: string[] = []
+    const reply = await answerRequest(frame, handlers, workerFor(handlers), { log: (_, line) => void lines.push(line) })
+    // Yian's warning in the worker's log quotes the reply's text, so it never holds the office's own error.
+    expect(reply).toEqual({ type: "gate_decision", id: 1, error: "failed", message: GATE_FAILED })
+    expect(lines).toEqual([expect.stringMatching(/^worker gate_call request failed: (Error|TypeError)$/)])
     const hook = gateHook(await officeEnd(handlers))
     const error = await hook(CALLS[0]!, { runId: "r1", signal: SIGNAL }).then(() => null, (e: unknown) => e)
     expect(error).toBeInstanceOf(RemoteError)
+    expect((error as Error).message).toBe(GATE_FAILED)
   }
+})
+
+test("a gate request the office doesn't answer in time makes the hook throw, so yian refuses the call", async () => {
+  expect(GATE_TIMEOUT_MS).toBe(30_000)
+  const handlers = new Gating(() => new Promise(() => {}))
+  const hook = gateHook(await officeEnd(handlers), { timeoutMs: 50 })
+  const error = await hook(CALLS[0]!, { runId: "r1", signal: SIGNAL }).then(() => null, (e: unknown) => e)
+  expect((error as Error).name).toBe("TimeoutError")
+  expect(handlers.gated).toHaveLength(1)
+})
+
+test("a late reply to a request that was given up is dropped, and never answers another call", async () => {
+  const { office, worker } = await channelPair()
+  const rpc = new Rpc(worker)
+  void (async () => {
+    for (;;) rpc.deliver(await worker.recv())
+  })().catch(() => {})
+  const hook = gateHook(rpc)
+  const stop = new AbortController()
+  const first = hook(CALLS[0]!, { runId: "r1", signal: stop.signal })
+  const given = await office.recv()
+  stop.abort(new Error("the node stopped"))
+  expect(await first.then(() => null, (e: unknown) => e)).toEqual(new Error("the node stopped"))
+  const second = hook(CALLS[1]!, { runId: "r1", signal: SIGNAL })
+  const asked = await office.recv()
+  expect(asked.id).not.toBe(given.id)
+  await office.send({ type: "gate_decision", id: given.id, refuse: "Late." })
+  await office.send({ type: "gate_decision", id: asked.id, run: true })
+  expect(await second).toBeUndefined()
 })
 
 test("a reply that isn't a decision, a closed channel and an aborted request all make the hook throw", async () => {
@@ -179,6 +216,8 @@ test("a reply that isn't a decision, a closed channel and an aborted request all
   })().catch(() => {})
   const hook = gateHook(rpc)
   const replies: Frame[] = [
+    { type: "tool_result", run: true },
+    { type: "answer", hold: true },
     { type: "gate_decision", hold: false },
     { type: "gate_decision", run: true, note: null },
     { type: "gate_decision", run: true, extra: 1 },
@@ -345,7 +384,7 @@ test("the office's answer runs a call with its note, refuses it, and a gate that
   expect(rec.gated.map((call) => call.arguments.text)).toEqual(["a", "b", "c"])
   expect(calls).toEqual(["a"])
   const results = JSON.stringify(fake.requests()[1]!.messages)
-  for (const text of ['"A"', "Not run: a deny rule: shout b.", GATE_FAILED]) expect(results).toContain(text)
+  for (const text of ['"A"', "Not run: a deny rule: shout b.", YIAN_GATE_FAILED]) expect(results).toContain(text)
   // The note is kept in the log for audit; the model never reads it.
   expect(results).not.toContain("an allow rule")
   const notes = toolSteps(job).map((step) => [step.note ?? null, step.closed ?? null])
@@ -381,6 +420,33 @@ test("a held call waits, marked held; a release delivery runs it once, and the a
   expect(calls).toEqual(["first", "second"])
   expect(gatedRecords(chat)[0]).toEqual(["run_started", true])
   expect(toolSteps(chat).some((step) => step.note === "approved by @ceo")).toBe(true)
+})
+
+test("a gated run that a stop cut off is marked gated again when an advance resumes it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "", tool_calls: [{ name: "toolbox_shout", arguments: { text: "hi" } }] }, { content: "done" })
+  let called = false
+  const hanging: OfficeTool = {
+    ...shouting(),
+    call: () => {
+      called = true
+      return new Promise(() => {})
+    },
+  }
+  const first = new Gating(() => undefined, { tools: { toolbox: { shout: hanging } } })
+  const chat = makeJob(base(), "flows/tools.yaml", {}, first)
+  const worker = await inProcessWorker(chat, first, { env: fake.env() })
+  await waitFor(() => called, { timeout: 10_000, what: "the tool call" })
+  expect(await worker.stop()).toBe(true)
+  await worker.wait()
+  expect(inspectRun(chat.log).status).toBe("stopped")
+  const rec = new Gating(() => undefined, { tools: { toolbox: { shout: shouting() } } })
+  await run(advanceJob(chat), rec, { env: fake.env() })
+  expect([rec.outcome?.status, rec.outcome?.output], String(rec.outcome?.message)).toEqual(["succeeded", "done"])
+  expect(gatedRecords(chat)).toEqual([
+    ["run_started", true],
+    ["run_resumed", true],
+  ])
 })
 
 test("a held call that a complete answers never runs, and a release of it after is refused", async () => {

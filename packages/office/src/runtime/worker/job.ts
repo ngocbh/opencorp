@@ -43,7 +43,7 @@ export const Delivery = z.discriminatedUnion("op", [
     call_id: z.string(),
     result: z.union([z.strictObject({ output: present }), z.strictObject({ error: z.string() })]),
   }),
-  z.strictObject({ id: deliveryId, op: z.literal("release"), call_id: z.string(), note: z.string().optional() }),
+  z.strictObject({ id: deliveryId, op: z.literal("release"), call_id: z.string(), note: z.string().min(1).optional() }),
   z.strictObject({ id: deliveryId, op: z.literal("close"), inbox: z.string() }),
   z.strictObject({ id: deliveryId, op: z.literal("withdraw"), inbox: z.string() }),
   z.strictObject({ id: deliveryId, op: z.literal("interrupt"), inbox: z.string() }),
