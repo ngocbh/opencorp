@@ -1,5 +1,8 @@
-/** `learn_hq`'s `save_access` tool, which saves reach.sh and notes.md once the owner approves them on a card and the
- *  whole chain works in OpenCorp's connection shell. */
+/** `learn_hq`'s `save_access` tool, which saves reach.sh and notes.md in the destination's folder once the owner
+ *  approves them on a card and the whole chain works in OpenCorp's connection shell. The host binds the folder: the
+ *  model can't name another destination's. */
+import fs from "node:fs"
+import path from "node:path"
 import type { QuestionCard, SessionBinding } from "../../../runtime/sessions/builtin.ts"
 import type { OfficeTool } from "../../../runtime/worker/rpc.ts"
 import { clean } from "../../setup/prompts.ts"
@@ -7,8 +10,9 @@ import { redact, strip } from "../../../util/redact.ts"
 import { writePrivate } from "../../../util/private_files.ts"
 import type { Connection } from "../connect.ts"
 import { chainTest, type ConnectionShell } from "../connection.ts"
+import { nameAfter, present } from "../destinations.ts"
 import { ASCII_ONLY, credentialWarning, type Learning, namesCredentials } from "../learning.ts"
-import type { ReachPaths } from "../paths.ts"
+import { isTemp, type ReachPaths } from "../paths.ts"
 import { beforeSaving } from "../risks.ts"
 import { lineCount, numberedLines, oddCharacter } from "../../../util/show.ts"
 import { wellFormed } from "../ssh.ts"
@@ -31,11 +35,14 @@ export function secretIn(text: string, keys: readonly string[]): string | null {
 
 export const SAVE = "Test it, then save it"
 export const CANCEL = "Don't save it"
-/** The save card's title. */
-export const SAVE_TITLE = "OpenCorp wants to save how this machine reaches HQ"
-/** The question for a reach.sh of `lines` lines. */
-export const saveQuestion = (lines: number) =>
-  `Save this ${lines}-line reach.sh and the notes, after testing the whole connection?`
+/** The save card's title for destination `name`, or for a first one named after its host. */
+export const saveTitle = (name: string | null) =>
+  name === null ? "OpenCorp wants to save how this machine reaches HQ" : `OpenCorp wants to save the path to ${name}`
+/** The question for a reach.sh of `lines` lines to destination `name`, or to a first one named after its host. */
+export const saveQuestion = (lines: number, name: string | null) =>
+  name === null
+    ? `Save this ${lines}-line reach.sh and the notes, after testing the whole connection? The path is named after the first host it reaches.`
+    : `Save the path to ${name}, this ${lines}-line reach.sh and the notes, after testing the whole connection?`
 /** Why the save card asks, in every mode: what `dontAsk`'s refusal names. */
 export const SAVING_ASKS = "saving how this machine reaches HQ always asks the owner"
 export const SAVED = "Saved, and the whole connection works."
@@ -74,28 +81,32 @@ function problemIn(files: ToSave, keys: readonly string[]): string | null {
   return null
 }
 
-/** The save card for `files`: its title, both files numbered, what to know before saving (the fixed risks first,
- *  then the agent's), a warning when reach.sh names hq's credentials, and the question, which the owner reads whole
- *  before the choices. The title heads the text too, as a single question's card shows only its text. */
-export function saveCard(files: ToSave, paths: ReachPaths): QuestionCard {
+/** The save card for `files`, to destination `name` (null for a first one named after its host): its title, both
+ *  files numbered, what to know before saving (the fixed risks first, then the agent's), a warning when reach.sh
+ *  names hq's credentials, and the question, which the owner reads whole before the choices. The title heads the
+ *  text too, as a single question's card shows only its text. */
+export function saveCard(files: ToSave, paths: ReachPaths, name: string | null): QuestionCard {
   const risks = [...beforeSaving(paths), ...files.risks].map(clean)
+  const title = saveTitle(name)
+  // Where they'll be: a first path's folder is renamed once it's saved.
+  const file = (base: string) => clean(name === null ? base : path.join(paths.root, name, base))
   const lines = [
-    SAVE_TITLE,
+    title,
     "",
-    clean(`${paths.script}, which runs on every visit:`),
+    `${file("reach.sh")}, which runs on every visit:`,
     ...numberedLines(files.script),
     "",
     // Notes may hold any printable text: they're read, never run.
-    clean(`${paths.notes}:`),
+    `${file("notes.md")}:`,
     ...numberedLines(files.notes, clean),
     "",
     "Before you save it:",
     ...risks.map((risk) => `  - ${risk}`),
     ...(namesCredentials(files.script, paths) ? ["", clean(credentialWarning(paths))] : []),
     "",
-    saveQuestion(lineCount(files.script)),
+    saveQuestion(lineCount(files.script), name),
   ]
-  return { title: SAVE_TITLE, question: lines.join("\n"), options: [SAVE, CANCEL], reason: SAVING_ASKS }
+  return { title, question: lines.join("\n"), options: [SAVE, CANCEL], reason: SAVING_ASKS }
 }
 
 /** What `save_access` needs from its session: the learning run's state, the binding its card is held through, and
@@ -120,7 +131,7 @@ export function saveAccess(args: Record<string, unknown>, callId: string | undef
   const problem = problemIn(files, state.secrets())
   if (problem !== null) return `Not saved: ${problem}.`
   if (callId === undefined) return "Not saved: this call can't wait for the owner's answer."
-  return host.binding.ask(saveCard(files, state.ctx.paths), callId, async (answer, signal) => {
+  return host.binding.ask(saveCard(files, state.ctx.paths, state.name), callId, async (answer, signal) => {
     if (answer.typed) {
       const wanted = strip(answer.value)
       return wanted ? `Not saved: the owner wants a change: ${wellFormed(wanted)}` : NOT_SAVED
@@ -131,7 +142,9 @@ export function saveAccess(args: Record<string, unknown>, callId: string | undef
     const bytes = Buffer.from(files.script, "utf8")
     const tested = await chainTest(host.connection(), bytes, state.port, ctx)
     if (typeof tested === "string") return `Not saved: ${wellFormed(tested)}`
-    await save(bytes, files.notes, tested, state)
+    const saved = await save(bytes, files.notes, tested, state)
+    if (typeof saved === "string") return `Not saved: ${saved}`
+    state.saved = saved
     state.connection = tested
     return `${SAVED} Reply with one line for the owner.`
   })
@@ -140,11 +153,20 @@ export function saveAccess(args: Record<string, unknown>, callId: string | undef
 const NOT_SAVED = "Not saved: the owner didn't save it."
 const AGAIN = "Not saved again: the path is saved and connected already; reply with one line for the owner."
 
-/** Writes reach.sh, its approved copy, notes.md, then access.json, each 0600; the old path stays whole until reach.sh
- *  is replaced. `signed_in_at` stays only while the port, the host and HQ's socket there are the last connection's:
- *  the browser's cookie is tied to the port, and its session lives in that HQ's store. */
-async function save(bytes: Buffer, notes: string, conn: Connection, state: Learning): Promise<void> {
+/** Writes reach.sh, its approved copy, notes.md, then access.json, each 0600, in the destination's folder; the old
+ *  path stays whole until reach.sh is replaced. `signed_in_at` stays only while the port, the host and HQ's socket
+ *  there are the last connection's: the browser's cookie is tied to the port, and its session lives in that HQ's
+ *  store. A first path's folder is then renamed to its name: the one given, or one after the host it reaches first.
+ *  Resolves to the folder it saved in, or to why it can't: the name given was taken meanwhile. */
+async function save(bytes: Buffer, notes: string, conn: Connection, state: Learning): Promise<ReachPaths | string> {
   const { paths } = state.ctx
+  let name: string | null = null
+  if (isTemp(paths.name)) {
+    const taken = (n: string) => present(path.join(paths.root, n))
+    if (state.name !== null && taken(state.name))
+      return `another \`opencorp hq\` saved a path to ${state.name} meanwhile; nothing more can be saved under that name now`
+    name = state.name ?? nameAfter(conn.spec, taken)
+  }
   let old: Access | null
   try {
     old = await readAccess(paths)
@@ -167,7 +189,11 @@ async function save(bytes: Buffer, notes: string, conn: Connection, state: Learn
     signed_in_at: signedIn,
     host: conn.spec.host,
     socket: conn.socket,
+    cm: paths.cmId!,
   })
+  if (name === null) return paths
+  fs.renameSync(paths.dir, path.join(paths.root, name))
+  return paths.renamed(name)
 }
 
 /** `learn_hq`'s `save_access` tool for `host`'s session: a group of one, so the model calls it by its own name. */

@@ -83,11 +83,12 @@ describe.skipIf(!TMUX)("on a real terminal", () => {
     t.type("hunter2")
     await t.see("Connected.")
     expect(c.fake.tty()).toEqual(["hunter2"])
-    // The node's hop rode the client's own login master: hq/cm holds only OpenCorp's node master.
-    expect(fs.readdirSync(c.cm)).toEqual(["node"])
+    // The node's hop rode the client's own login master: the destination's socket folder holds only OpenCorp's node
+    // master.
+    expect(fs.readdirSync(c.cm!)).toEqual(["node"])
     t.keys("C-c")
     expect(await t.exit()).toBe("exit=0")
-    expect(fs.readdirSync(c.cm)).toEqual([])
+    expect(fs.readdirSync(c.cm!)).toEqual([])
     expect(fs.lstatSync(path.join(mine, fakeControlName("login1"))).isSocket()).toBe(true)
     // What's left is the client's login master alone, for their terminals to reuse.
     const left = c.fake.masters()
@@ -124,7 +125,8 @@ describe.skipIf(!TMUX)("on a dumb terminal", () => {
   test("so does relearning, exiting 1", async () => {
     const c = await client(null)
     onTestFinished(() => removeClient(c))
-    fs.writeFileSync(path.join(c.hq, "reach.sh"), "exit 3\n", { mode: 0o600 })
+    fs.mkdirSync(c.dest, { mode: 0o700 })
+    fs.writeFileSync(path.join(c.dest, "reach.sh"), "exit 3\n", { mode: 0o600 })
     const t = terminal(c, { term: "dumb", args: ["--relearn"] })
     expect(await t.exit()).toBe("exit=1")
     expect(t.screen()).toContain(NEEDS_TUI)
@@ -134,7 +136,8 @@ describe.skipIf(!TMUX)("on a dumb terminal", () => {
   test("Ctrl-C at the numbered question to approve reach.sh ends it at once", async () => {
     const c = await client(null)
     onTestFinished(() => removeClient(c))
-    fs.writeFileSync(path.join(c.hq, "reach.sh"), "exit 3\n", { mode: 0o600 })
+    fs.mkdirSync(c.dest, { mode: 0o700 })
+    fs.writeFileSync(path.join(c.dest, "reach.sh"), "exit 3\n", { mode: 0o600 })
     await ctrlCEndsIt(terminal(c, { term: "dumb" }), "Run this 1-line reach.sh on every visit? [Stop]:")
     expect(pidsNaming(c.hq)).toEqual([])
   }, 60_000)

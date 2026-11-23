@@ -12,11 +12,11 @@ setDefaultTimeout(30_000)
 test("reach.sh naming hq's credential files or folder gets a warning", async () => {
   const { ctx } = await learning([])
   expect(credentialWarning(ctx.paths)).toBe(
-    `Careful: this names ${ctx.paths.dir}, provider.json or auth.json, which hold the model's key or its ChatGPT` +
+    `Careful: this names ${ctx.paths.root}, provider.json or auth.json, which hold the model's key or its ChatGPT` +
       " sign-in; what reads them reaches the model.",
   )
   const home = path.basename(ctx.paths.home)
-  for (const command of ["cat auth.json", `ls ${ctx.paths.dir}`, `grep -r x ~/${home}/hq`, "cat $HOME/x/provider.json"]) {
+  for (const command of ["cat auth.json", "cat ../provider.json", `ls ${ctx.paths.root}`, `grep -r x ~/${home}/hq`, "cat $HOME/x/provider.json"]) {
     expect(namesCredentials(command, ctx.paths)).toBe(true)
   }
   expect(namesCredentials("ssh login1 squeue --me", ctx.paths)).toBe(false)

@@ -744,7 +744,7 @@ test("with no office, no reach.sh and no terminal, opencorp hq says to start the
     expect(run.stderr()).toStartWith(
       "opencorp hq: no office answers here. If HQ runs on this machine, start it with `opencorp start` (`opencorp doctor` says why it's down).\n" +
         "To reach HQ on another machine, run `opencorp hq` in a terminal to learn the way there with an agent, or write " +
-        path.join(home, "hq", "reach.sh"),
+        path.join(home, "hq", "NAME", "reach.sh"),
     )
     expect(run.stdout()).toBe("")
     expect(fs.readdirSync(home)).toEqual([])
@@ -789,9 +789,9 @@ describe("from another machine", () => {
     run.child.kill("SIGINT")
     expect(await run.exited).toBe(0)
     expect(c.fake.masters()).toEqual([])
-    expect(fs.readdirSync(c.cm)).toEqual([])
+    expect(fs.readdirSync(c.cm!)).toEqual([])
     expect(pidsNaming(c.hq)).toEqual([])
-    const access = JSON.parse(fs.readFileSync(path.join(c.hq, "access.json"), "utf8"))
+    const access = JSON.parse(fs.readFileSync(path.join(c.dest, "access.json"), "utf8"))
     expect(access.signed_in_at).not.toBeNull()
   }, 120_000)
 

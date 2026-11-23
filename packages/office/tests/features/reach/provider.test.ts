@@ -55,7 +55,7 @@ test("learnProvider can sign in to a ChatGPT subscription, keeps it in hq/auth.j
   expect(first.env).toEqual({ YIAN_AUTH_FILE: paths.auth })
   expect(first.llm_config).toEqual(SUBSCRIBED_LLM)
   // Checked on the new sign-in while it waits beside hq/auth.json.
-  const pending = path.join(paths.dir, "auth.new.json")
+  const pending = path.join(paths.root, "auth.new.json")
   expect(checked.map((p) => [p.llm_config, p.env])).toEqual([[SUBSCRIBED_LLM, { YIAN_AUTH_FILE: pending }]])
   expect(fs.existsSync(pending)).toBe(false)
   expect(JSON.parse(fs.readFileSync(paths.provider, "utf8"))).toEqual({ method: "subscription", llm_config: SUBSCRIBED_LLM })
@@ -135,7 +135,7 @@ const REFUSED = new AuthError("OpenAI authentication request failed (HTTP 401, r
 
 test("learning removes a sign-in a stopped check left waiting beside hq/auth.json", async () => {
   const { paths } = await expiredHome()
-  const pending = path.join(paths.dir, "auth.new.json")
+  const pending = path.join(paths.root, "auth.new.json")
   await new AuthStore(pending).save("openai", tokens("stray", 3600), "gpt-5.5")
   const subscription = fakeSubscription({ refreshed: tokens("new", 3600) })
   await learnProvider(paths, new Script([]), { listers: NO_LISTING, checkModel: async () => null, auth: subscription.auth })
@@ -260,7 +260,7 @@ test("a stop at any point of saving leaves provider.json beside its checked sign
     const { paths } = await reachCtx(dir, fake)
     await writePrivate(paths.provider, JSON.stringify(state.provider))
     if (state.auth) await new AuthStore(paths.auth).save("openai", tokens("old", 3600), "gpt-4.1")
-    await new AuthStore(path.join(paths.dir, "auth.new.json")).save("openai", tokens("new", 3600), "gpt-5.5-codex")
+    await new AuthStore(path.join(paths.root, "auth.new.json")).save("openai", tokens("new", 3600), "gpt-5.5-codex")
     const ask = new Script(["openai", "", ""])
     const checked: unknown[] = []
     await learnProvider(paths, ask, {
@@ -271,7 +271,7 @@ test("a stop at any point of saving leaves provider.json beside its checked sign
       },
       auth: fakeSubscription().auth,
     })
-    expect(fs.existsSync(path.join(paths.dir, "auth.new.json"))).toBe(false)
+    expect(fs.existsSync(path.join(paths.root, "auth.new.json"))).toBe(false)
     if (asks) {
       expect(ask.seen[0]).toBe(`${paths.provider} signs in to a ChatGPT subscription, but its sign-in ${paths.auth} is missing; set up the model again.`)
       expect(checked).toHaveLength(1)

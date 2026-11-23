@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { PAIR_CODE_TTL_MS } from "@opencorp/protocol"
 import { startTime } from "../../../src/util/proc.ts"
-import { makeDirs, ReachPaths } from "../../../src/features/reach/paths.ts"
+import { cmIdOf, makeDirs, ReachPaths, tempName } from "../../../src/features/reach/paths.ts"
 import { isSocket, runChild, sshEnv, startMaster, waitForSocket } from "../../../src/features/reach/ssh.ts"
 import {
   type Access,
@@ -15,6 +15,7 @@ import {
   cleanUp,
   codeFrom,
   DEFAULT_PORT,
+  nextPort,
   readAccess,
   removeAtExpiry,
   STATUS_STALE_MS,
@@ -34,9 +35,9 @@ setDefaultTimeout(30_000)
 
 const STATE = fileURLToPath(new URL("../../../src/features/reach/state.ts", import.meta.url))
 
-/** A fresh home with the hq folders made. */
-function reachPaths(): ReachPaths {
-  const paths = new ReachPaths(path.join(shortDir(), "h"))
+/** A fresh home with destination `name`'s folders made. */
+function reachPaths(name = "misha", home = path.join(shortDir(), "h")): ReachPaths {
+  const paths = new ReachPaths(home, name, "0a1b2c")
   makeDirs(paths)
   return paths
 }
@@ -47,6 +48,7 @@ const ACCESS: Access = {
   learned_at: "2026-11-11T10:00:00.000Z",
   last_used_at: null,
   signed_in_at: null,
+  cm: "0a1b2c",
 }
 
 test("a second takeLock gets null while the first holds it", () => {
@@ -61,13 +63,35 @@ test("a second takeLock gets null while the first holds it", () => {
   again!.release()
 })
 
+test("each destination has its own lock: two can be open at once, and the same one twice is refused", () => {
+  const misha = reachPaths("misha")
+  const login1 = reachPaths("login1", misha.home)
+  expect(misha.lock).not.toBe(login1.lock)
+  const one = takeLock(misha)
+  const two = takeLock(login1)
+  expect([one, two].map((lock) => lock !== null)).toEqual([true, true])
+  expect(takeLock(misha)).toBeNull()
+  expect(takeLock(login1)).toBeNull()
+  one!.release()
+  two!.release()
+})
+
+test("a new destination's port is the first from 49381 that no saved one uses", () => {
+  expect(nextPort([])).toBe(49381)
+  expect(nextPort([49381])).toBe(49382)
+  expect(nextPort([49382])).toBe(49381)
+  expect(nextPort([49381, 49382, 49384])).toBe(49383)
+  // A port below the first, or one another way chose, doesn't hold a new one back.
+  expect(nextPort([49380, 50000, 49381])).toBe(49382)
+})
+
 test("the lock is free once its holder dies, even by SIGKILL, and a child it started never holds it", async () => {
   const paths = reachPaths()
   const script = [
     `import { spawn } from "node:child_process"`,
     `import { ReachPaths } from ${JSON.stringify(path.join(path.dirname(STATE), "paths.ts"))}`,
     `import { takeLock } from ${JSON.stringify(STATE)}`,
-    `const lock = takeLock(new ReachPaths(${JSON.stringify(paths.home)}))`,
+    `const lock = takeLock(new ReachPaths(${JSON.stringify(paths.home)}, "misha"))`,
     `if (lock === null) process.exit(3)`,
     `const sleep = spawn("/bin/sleep", ["30"], { stdio: "ignore" })`,
     `console.log("held " + sleep.pid)`,
@@ -107,7 +131,9 @@ test("access.json round-trips at 0600, reads null when missing, and is an Access
   await writeAccess(paths, signedIn)
   expect(await readAccess(paths)).toEqual(signedIn)
   await expect(writeAccess(paths, { ...ACCESS, port: 80 })).rejects.toThrow()
-  for (const bad of ["not json", JSON.stringify({ ...ACCESS, port: 80 }), JSON.stringify({ ...ACCESS, extra: 1 })]) {
+  await expect(writeAccess(paths, { ...ACCESS, cm: "../x" })).rejects.toThrow()
+  const { cm: _, ...noCm } = ACCESS
+  for (const bad of ["not json", JSON.stringify({ ...ACCESS, port: 80 }), JSON.stringify({ ...ACCESS, extra: 1 }), JSON.stringify(noCm), JSON.stringify({ ...ACCESS, cm: "0A1B2C" })]) {
     fs.writeFileSync(paths.access, bad, { mode: 0o600 })
     await expect(readAccess(paths)).rejects.toBeInstanceOf(AccessError)
   }
@@ -212,4 +238,33 @@ test("start-up cleanup ends leftover masters and removes expired files and stale
   fs.writeFileSync(ctx.paths.candidate, "")
   await cleanUp(ctx, Date.now())
   expect(fs.existsSync(ctx.paths.candidate)).toBe(true)
+})
+
+test("a learning run's folder that was abandoned long ago goes, with its socket folder; a fresh or held one stays", async () => {
+  const { dir, fake } = fakeHome()
+  const ctx = await reachCtx(dir, fake)
+  /** A learning run's temporary folder and its socket folder, last changed `ago` ms before now. */
+  const temp = (ago: number) => {
+    const paths = new ReachPaths(dir, tempName())
+    makeDirs(paths)
+    const withCm = paths.withCm(cmIdOf(paths.dir))
+    makeDirs(withCm)
+    const when = new Date(Date.now() - ago)
+    fs.utimesSync(paths.dir, when, when)
+    return withCm
+  }
+  const abandoned = temp(STATUS_STALE_MS + 1000)
+  const fresh = temp(0)
+  const held = temp(STATUS_STALE_MS + 1000)
+  const lock = takeLock(held)
+  expect(lock).not.toBeNull()
+  onTestFinished(() => lock!.release())
+  await cleanUp(ctx, Date.now())
+  expect([abandoned, fresh, held].map((p) => [fs.existsSync(p.dir), fs.existsSync(p.cm)])).toEqual([
+    [false, false],
+    [true, true],
+    [true, true],
+  ])
+  // A saved destination's folder is never a learning run's.
+  expect(fs.existsSync(ctx.paths.dir)).toBe(true)
 })

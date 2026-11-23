@@ -16,15 +16,17 @@ import { sandboxAvailable } from "./helpers.ts"
 setDefaultTimeout(30_000)
 
 /** A temp home as the profile meets it: `.ssh` with a config, a key and known_hosts; a secret and a `.bashrc`
- *  beside it; and `.opencorp` with hq's key, sign-in, the visit's ssh files and `cm/`, a learned file, a
- *  connection and the company. `make` builds a policy over it, with `<root>/tmp` as the call's temp folder and
- *  `hq/ssh/status.4242` as its status file. */
+ *  beside it; and `.opencorp` with hq's key and sign-in, destination misha's ssh files and a learned file, another
+ *  destination's folder, misha's `cm-0a1b2c/`, a connection and the company. `make` builds a policy over it for
+ *  misha, with `<root>/tmp` as the call's temp folder and `hq/misha/ssh/status.4242` as its status file. */
 function layout() {
   const root = tempDir()
   const home = path.join(root, "home")
   const ssh = path.join(home, ".ssh")
   const office = path.join(home, ".opencorp")
   const hq = path.join(office, "hq")
+  const hqSsh = path.join(hq, "misha", "ssh")
+  const other = path.join(hq, "login1")
   const tmp = path.join(root, "tmp")
   const file = (p: string, text: string, mode = 0o600) => {
     fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 })
@@ -38,19 +40,23 @@ function layout() {
   file(path.join(home, ".bashrc"), "# rc\n")
   file(path.join(hq, "provider.json"), '{"key":"decoy-provider"}\n')
   file(path.join(hq, "auth.json"), '{"token":"decoy-auth"}\n')
-  file(path.join(hq, "learned.json"), "{}\n")
-  file(path.join(hq, "ssh", "config"), "# Written by opencorp hq on each visit; edits are lost.\n")
-  file(path.join(hq, "ssh", "bin", "ssh"), "#!/bin/sh\n", 0o700)
+  file(path.join(hq, "misha", "learned.json"), "{}\n")
+  file(path.join(hqSsh, "config"), "# Written by opencorp hq on each visit; edits are lost.\n")
+  file(path.join(hqSsh, "bin", "ssh"), "#!/bin/sh\n", 0o700)
+  file(path.join(other, "reach.sh"), "echo decoy-other-destination\n")
+  file(path.join(other, "ssh", "config"), "# another destination's\n")
   file(path.join(office, "office", "connections", "work.json"), '{"token":"decoy-connection"}\n')
   file(path.join(office, "company", "rules.yaml"), "[]\n")
-  fs.mkdirSync(path.join(hq, "cm"), { mode: 0o700 })
+  fs.mkdirSync(path.join(hq, "cm-0a1b2c"), { mode: 0o700 })
   fs.mkdirSync(tmp)
-  const statusFile = path.join(hq, "ssh", "status.4242")
+  const statusFile = path.join(hqSsh, "status.4242")
   return {
     root,
     home,
     ssh,
     hq,
+    hqSsh,
+    other,
     tmp,
     file,
     statusFile,
@@ -59,7 +65,7 @@ function layout() {
     provider: path.join(hq, "provider.json"),
     auth: path.join(hq, "auth.json"),
     connection: path.join(office, "office", "connections", "work.json"),
-    make: (more: Partial<SshPolicyInit> = {}) => new SshPolicy({ home, hq, tmpdir: tmp, statusFile, ...more }),
+    make: (more: Partial<SshPolicyInit> = {}) => new SshPolicy({ home, hq, hqSsh, tmpdir: tmp, statusFile, ...more }),
   }
 }
 
@@ -80,7 +86,7 @@ test("an SSH-only policy binds ~/.ssh read-only, known_hosts and the status file
   expect(policy.kind).toBe("ssh")
   expect(policy.home).toBe(h.home)
   expect(policy.tmpdir).toBe(h.tmp)
-  expect(policy.readOnly).toEqual([h.ssh, path.join(h.hq, "ssh")])
+  expect(policy.readOnly).toEqual([h.ssh, h.hqSsh])
   expect(policy.writable).toEqual([h.knownHosts, h.statusFile])
   expect(policy.sockets).toEqual([])
   expect(policy.agentSocket).toBeNull()
@@ -92,7 +98,7 @@ test("an SSH-only policy binds ~/.ssh read-only, known_hosts and the status file
   expect(fs.statSync(policy.controlDir).isDirectory()).toBe(true)
   expect(mode(policy.controlDir)).toBe(0o700)
   const lists = [...policy.readOnly, ...policy.writable, ...policy.sockets]
-  expect(lists.filter((p) => p.startsWith(path.join(h.hq, "cm")))).toEqual([])
+  expect(lists.filter((p) => p.startsWith(path.join(h.hq, "cm-0a1b2c")))).toEqual([])
   // Created first, private, so the bind has a source for the wrapper's appends.
   expect(fs.readFileSync(h.statusFile, "utf8")).toBe("")
   expect(mode(h.statusFile)).toBe(0o600)
@@ -106,7 +112,7 @@ test("the agent's socket and a ticket are bound where they resolve, and a ticket
   const extra = path.join(h.root, "extra")
   fs.mkdirSync(extra)
   const policy = h.make({ agentSocket: path.join(h.root, "agent-link"), kerberos: `FILE:${ticket}`, readOnly: [extra] })
-  expect(policy.readOnly).toEqual([h.ssh, path.join(h.hq, "ssh"), extra])
+  expect(policy.readOnly).toEqual([h.ssh, h.hqSsh, extra])
   expect(policy.writable).toEqual([h.knownHosts, h.statusFile, ticket])
   expect(policy.sockets).toEqual([agent])
   expect(policy.agentSocket).toBe(agent)
@@ -132,7 +138,7 @@ test("the agent's socket and a ticket are bound where they resolve, and a ticket
   ])
   // Nor is anything of OpenCorp's: the office's own socket, or its files posing as a ticket.
   const officeSocket = await listening(path.join(h.home, ".opencorp", "office", "office.sock"))
-  const learned = path.join(h.hq, "learned.json")
+  const learned = path.join(h.hq, "misha", "learned.json")
   const own = h.make({ agentSocket: officeSocket, kerberos: `FILE:${learned}` })
   expect([own.writable, own.sockets, own.credentials]).toEqual([[h.knownHosts, h.statusFile], [], []])
   expect(own.notes).toEqual([
@@ -186,13 +192,18 @@ test("a policy that would bind hq, the home, provider.json, auth.json or a conne
     }
   }
   // The temp folder is written: it may not hold hq or the home, nor lie in hq or ~/.ssh.
-  for (const tmpdir of [h.hq, h.home, path.join(h.hq, "ssh"), h.ssh]) {
+  for (const tmpdir of [h.hq, h.home, h.hqSsh, h.ssh]) {
     expect(() => h.make({ tmpdir }), tmpdir).toThrow(UnsafeProfile)
   }
   expect(() => h.make({ statusFile: h.provider })).toThrow(UnsafeProfile)
   // The status file is bound read-write, so it may only be the wrapper's own, in hq/ssh.
   expect(() => h.make({ statusFile: path.join(h.home, "secret.txt") })).toThrow(UnsafeProfile)
-  expect(() => h.make({ statusFile: path.join(h.hq, "cm", "status.4242") })).toThrow(UnsafeProfile)
+  expect(() => h.make({ statusFile: path.join(h.hq, "cm-0a1b2c", "status.4242") })).toThrow(UnsafeProfile)
+  // The destination's ssh folder is in hq, and the status file in it: never hq itself, nor a folder elsewhere.
+  for (const hqSsh of [h.hq, h.ssh, h.tmp]) {
+    expect(() => h.make({ hqSsh, statusFile: path.join(hqSsh, "status.4242") }), hqSsh).toThrow(UnsafeProfile)
+  }
+  expect(() => h.make({ statusFile: path.join(h.other, "ssh", "status.4242") })).toThrow(UnsafeProfile)
   // Nothing is created for a policy that is refused.
   expect(fs.existsSync(h.knownHosts)).toBe(false)
   expect(fs.existsSync(h.statusFile)).toBe(false)
@@ -250,7 +261,7 @@ test("a hard link to a credential inside ~/.ssh or hq/ssh is refused", () => {
   for (const [link, target] of [
     [path.join(h.ssh, "innocent"), h.provider],
     [path.join(h.ssh, "sub", "deeper"), h.auth],
-    [path.join(h.hq, "ssh", "notes"), h.connection],
+    [path.join(h.hqSsh, "notes"), h.connection],
   ] as const) {
     fs.mkdirSync(path.dirname(link), { recursive: true })
     fs.linkSync(target, link)
@@ -269,7 +280,7 @@ test("only identity, certificate and known-hosts files the user owns outright ar
   const cert = h.file(path.join(h.home, "certs", "c.pub"), "cert")
   const hosts = h.file(path.join(h.home, "kh"), "h ssh-ed25519 AAAA\n")
   const history = h.file(path.join(h.home, ".bash_history"), "ssh h\n")
-  const learned = path.join(h.hq, "learned.json")
+  const learned = path.join(h.hq, "misha", "learned.json")
   const company = path.join(h.home, ".opencorp", "company", "rules.yaml")
   const linked = path.join(h.home, "link-key")
   fs.symlinkSync(key, linked)
@@ -293,7 +304,7 @@ test("only identity, certificate and known-hosts files the user owns outright ar
     ],
   })
   // The key's .pub and -cert.pub come with it, as ssh reads them beside it; ~/.ssh and /etc/ssh are mounted anyway.
-  expect(policy.readOnly).toEqual([h.ssh, key, pub, autoCert, cert, hosts, path.join(h.hq, "ssh")])
+  expect(policy.readOnly).toEqual([h.ssh, key, pub, autoCert, cert, hosts, h.hqSsh])
   // Every private key ssh may read in the sandbox, for the command reader.
   expect(policy.credentials).toEqual([key, path.join(h.ssh, "id_test")])
   expect(policy.notes).toEqual([
@@ -309,7 +320,7 @@ test("only identity, certificate and known-hosts files the user owns outright ar
 test("an ssh outside the system folders is bound read-only, and refused where it would expose hq or the home", () => {
   const h = layout()
   // The system's own is mounted with the system.
-  expect(h.make({ ssh: "/usr/bin/ssh" }).readOnly).toEqual([h.ssh, path.join(h.hq, "ssh")])
+  expect(h.make({ ssh: "/usr/bin/ssh" }).readOnly).toEqual([h.ssh, h.hqSsh])
   // One elsewhere is bound by itself, after the files ssh -G names: where it resolves, and, since the wrapper runs it
   // by the name it was found by, a link to it too.
   const own = h.file(path.join(h.root, "openssh", "bin", "ssh"), "#!/bin/sh\n", 0o755)
@@ -317,26 +328,26 @@ test("an ssh outside the system folders is bound read-only, and refused where it
   fs.symlinkSync(own, link)
   const key = h.file(path.join(h.home, "keys", "id"), "decoy-key")
   const policy = h.make({ ssh: link, sshFiles: [identity(key)] })
-  expect(policy.readOnly).toEqual([h.ssh, key, own, link, path.join(h.hq, "ssh")])
+  expect(policy.readOnly).toEqual([h.ssh, key, own, link, h.hqSsh])
   expect(policy.notes).toEqual([])
-  expect(h.make({ ssh: own }).readOnly).toEqual([h.ssh, own, path.join(h.hq, "ssh")])
+  expect(h.make({ ssh: own }).readOnly).toEqual([h.ssh, own, h.hqSsh])
   // A link outside the system's folders to the system's own ssh: the link alone.
   const toSystem = path.join(h.root, "bin", "ssh")
   fs.mkdirSync(path.dirname(toSystem))
   fs.symlinkSync("/usr/bin/ssh", toSystem)
-  expect(h.make({ ssh: toSystem }).readOnly).toEqual([h.ssh, toSystem, path.join(h.hq, "ssh")])
+  expect(h.make({ ssh: toSystem }).readOnly).toEqual([h.ssh, toSystem, h.hqSsh])
   // A link in OpenCorp's home is refused, wherever it leads.
   const inHq = path.join(h.hq, "ssh-link")
   fs.symlinkSync(own, inHq)
   expect(() => h.make({ ssh: inHq })).toThrow(UnsafeProfile)
   // Nothing is bound where it would expose hq, the home, OpenCorp's files or a credential.
   fs.linkSync(h.provider, path.join(h.root, "ssh-provider"))
-  for (const ssh of [h.home, h.hq, h.provider, path.join(h.root, "ssh-provider"), path.join(h.hq, "learned.json")]) {
+  for (const ssh of [h.home, h.hq, h.provider, path.join(h.root, "ssh-provider"), path.join(h.hq, "misha", "learned.json")]) {
     expect(() => h.make({ ssh }), ssh).toThrow(UnsafeProfile)
   }
   // One that is no regular file is left out, with a note.
   const folder = path.join(h.root, "openssh")
-  expect(h.make({ ssh: folder }).readOnly).toEqual([h.ssh, path.join(h.hq, "ssh")])
+  expect(h.make({ ssh: folder }).readOnly).toEqual([h.ssh, h.hqSsh])
   expect(h.make({ ssh: folder }).notes).toEqual([`ssh ${folder} is not bound: it is not a regular file`])
 })
 
@@ -344,9 +355,9 @@ test.skipIf(process.platform !== "linux")(
   "on Linux a wrapper in hq/ssh is mounted over ssh, the system's ssh and the visit's wrapper, and ssh at REAL_SSH",
   () => {
     const h = layout()
-    const wrapper = h.file(path.join(h.hq, "ssh", "agent-ssh"), "#!/bin/sh\n", 0o700)
+    const wrapper = h.file(path.join(h.hqSsh, "agent-ssh"), "#!/bin/sh\n", 0o700)
     const own = h.file(path.join(h.root, "openssh", "bin", "ssh"), "#!/bin/sh\n", 0o755)
-    const visit = path.join(h.hq, "ssh", "bin", "ssh")
+    const visit = path.join(h.hqSsh, "bin", "ssh")
     const policy = h.make({ ssh: own, wrapper, wrapperOver: [visit] })
     const system = ["/usr/local/bin/ssh", "/usr/bin/ssh", "/bin/ssh", "/usr/sbin/ssh", "/sbin/ssh"]
       .filter((p) => fs.existsSync(p))
@@ -359,7 +370,7 @@ test.skipIf(process.platform !== "linux")(
     expect(h.make({ ssh: own }).sshOver).toEqual([])
     const outside = h.file(path.join(h.tmp, "agent-ssh"), "#!/bin/sh\n", 0o700)
     expect(() => h.make({ ssh: own, wrapper: outside })).toThrow(UnsafeProfile)
-    const link = path.join(h.hq, "ssh", "agent-link")
+    const link = path.join(h.hqSsh, "agent-link")
     fs.symlinkSync(outside, link)
     expect(() => h.make({ ssh: own, wrapper: link })).toThrow(UnsafeProfile)
   },
@@ -374,14 +385,14 @@ test("a ControlPath folder outside ~/.ssh is bound read-only only when it is the
   await listening(path.join(cm, "master"))
   const policy = h.make({ sshFiles: [control(cm)] })
   // Read-only, to connect to: ssh rides a master of the user's there, and can't bind one.
-  expect(policy.readOnly).toEqual([h.ssh, cm, path.join(h.hq, "ssh")])
+  expect(policy.readOnly).toEqual([h.ssh, cm, h.hqSsh])
   expect(policy.socketFolders).toEqual([h.ssh, cm])
   expect(policy.writable).toEqual([h.knownHosts, h.statusFile])
   expect(policy.notes).toEqual([])
   // In ~/.ssh it is mounted with it, and connected to there.
   const inSsh = path.join(h.ssh, "tmp")
   fs.mkdirSync(inSsh, { mode: 0o700 })
-  expect(h.make({ sshFiles: [control(inSsh)] }).readOnly).toEqual([h.ssh, path.join(h.hq, "ssh")])
+  expect(h.make({ sshFiles: [control(inSsh)] }).readOnly).toEqual([h.ssh, h.hqSsh])
   expect(h.make({ sshFiles: [control(inSsh)] }).socketFolders).toEqual([h.ssh])
   // Anything else is left out, with a note.
   const open = path.join(h.root, "open")
@@ -395,14 +406,14 @@ test("a ControlPath folder outside ~/.ssh is bound read-only only when it is the
   const cases: [string, string][] = [
     [open, "it is not 0700"],
     [mixed, "it holds something other than sockets"],
-    [path.join(h.hq, "cm"), "it is in OpenCorp's home"],
+    [path.join(h.hq, "cm-0a1b2c"), "it is in OpenCorp's home"],
     [path.join(h.root, "missing"), "nothing is there"],
     [file, "it is not a folder"],
     ["/", "it is not the user's"],
   ]
   for (const [folder, why] of cases) {
     const left = h.make({ sshFiles: [control(folder)] })
-    expect([folder, left.readOnly, left.socketFolders]).toEqual([folder, [h.ssh, path.join(h.hq, "ssh")], [h.ssh]])
+    expect([folder, left.readOnly, left.socketFolders]).toEqual([folder, [h.ssh, h.hqSsh], [h.ssh]])
     expect(left.notes).toEqual([`the ControlPath folder ${folder} is not bound: ${why}`])
   }
 })
@@ -447,7 +458,7 @@ test.skipIf(process.platform !== "linux" || !fs.existsSync("/etc/ssh/ssh_config"
     const targets = policy.systemConfig.map(([, target]) => target)
     if (fs.statSync("/etc/ssh/ssh_config").uid !== process.getuid!()) expect(targets).toContain("/etc/ssh/ssh_config")
     for (const [copy, target] of policy.systemConfig) {
-      expect(path.dirname(copy)).toBe(path.join(h.hq, "ssh", "system"))
+      expect(path.dirname(copy)).toBe(path.join(h.hqSsh, "system"))
       expect(fs.readFileSync(copy)).toEqual(fs.readFileSync(target))
       expect(fs.statSync(copy).uid).toBe(process.getuid!())
       expect(mode(copy)).toBe(0o600)
@@ -456,7 +467,7 @@ test.skipIf(process.platform !== "linux" || !fs.existsSync("/etc/ssh/ssh_config"
     fs.writeFileSync(policy.systemConfig[0]![0], "stale\n")
     expect(h.make().systemConfig).toEqual(policy.systemConfig)
     expect(fs.readFileSync(policy.systemConfig[0]![0])).toEqual(fs.readFileSync(policy.systemConfig[0]![1]))
-    expect(fs.readdirSync(path.join(h.hq, "ssh", "system"))).toHaveLength(policy.systemConfig.length)
+    expect(fs.readdirSync(path.join(h.hqSsh, "system"))).toHaveLength(policy.systemConfig.length)
   },
 )
 
@@ -464,7 +475,7 @@ test.skipIf(!sandboxAvailable())(
   "ssh -G runs in the profile, and its files keep their kinds while the rest of its lines are ignored",
   async () => {
     const h = layout()
-    const config = path.join(h.hq, "ssh", "config")
+    const config = path.join(h.hqSsh, "config")
     const secret = path.join(h.home, "secret.txt")
     const printed = [
       "user x",
@@ -518,7 +529,7 @@ async function sh(policy: SshPolicy, script: string, ...args: string[]) {
 }
 
 test.skipIf(!sandboxAvailable())(
-  "in the SSH-only sandbox, provider.json, auth.json and the rest of the home can't be read",
+  "in the SSH-only sandbox, provider.json, auth.json, another destination's folder and the rest of the home can't be read",
   async () => {
     const h = layout()
     const script = [
@@ -527,17 +538,22 @@ test.skipIf(!sandboxAvailable())(
       'ls -1A "$0"',
       "echo ---",
       'ls -1A "$0/.opencorp/hq"',
+      "echo ---",
+      'ls -1A "$0/.opencorp/hq/misha"',
     ].join("\n")
-    const r = await sh(h.make(), script, h.home, h.provider, h.auth, h.connection, path.join(h.home, "secret.txt"))
-    const [cats, home, hq] = r.out.split("---\n")
+    const others = [path.join(h.other, "reach.sh"), path.join(h.other, "ssh", "config")]
+    const r = await sh(h.make(), script, h.home, h.provider, h.auth, h.connection, path.join(h.home, "secret.txt"), ...others)
+    const [cats, home, hq, misha] = r.out.split("---\n")
     const exits = [...cats!.matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1]))
-    expect(exits, r.out + r.err).toHaveLength(4)
+    expect(exits, r.out + r.err).toHaveLength(6)
     for (const exit of exits) expect(exit, r.out + r.err).not.toBe(0)
     expect(r.out).not.toContain("decoy")
+    expect(r.out).not.toContain("another destination's")
     if (process.platform === "linux") {
-      // bubblewrap makes the mount points' folders, and nothing else of the home: no hq/cm.
+      // bubblewrap makes the mount points' folders, and nothing else of the home: no cm-*, no other destination.
       expect(home!.split("\n").filter(Boolean)).toEqual([".opencorp", ".ssh"])
-      expect(hq!.split("\n").filter(Boolean)).toEqual(["ssh"])
+      expect(hq!.split("\n").filter(Boolean)).toEqual(["misha"])
+      expect(misha!.split("\n").filter(Boolean)).toEqual(["ssh"])
     } else {
       // Seatbelt gives the home and hq metadata only, so listing them fails.
       expect(r.exit, r.out + r.err).not.toBe(0)
@@ -567,8 +583,8 @@ test.skipIf(!sandboxAvailable())(
       'ln "$HOME/.ssh/known_hosts" "$TMPDIR/kh" 2>/dev/null && echo "LINKED known_hosts"',
       "exit 0",
     ].join("\n")
-    const hqCm = path.join(h.hq, "cm")
-    const r = await sh(policy, script, h.statusFile, policy.controlDir, path.join(h.hq, "ssh"), hqCm, h.provider)
+    const hqCm = path.join(h.hq, "cm-0a1b2c")
+    const r = await sh(policy, script, h.statusFile, policy.controlDir, h.hqSsh, hqCm, h.provider)
     expect(r.exit, r.out + r.err).toBe(0)
     expect(r.out).toBe("Host *\ndecoy-ssh-key\nWROTE\n")
     expect(fs.readFileSync(h.knownHosts, "utf8")).toBe("h ssh-ed25519 AAAA\nnew ssh-ed25519 BBBB\n")
@@ -578,7 +594,7 @@ test.skipIf(!sandboxAvailable())(
     expect(fs.readFileSync(path.join(h.ssh, "config"), "utf8")).toBe(before)
     expect(fs.readdirSync(hqCm)).toEqual([])
     expect(fs.existsSync(path.join(h.ssh, "new"))).toBe(false)
-    expect(fs.existsSync(path.join(h.hq, "ssh", "new"))).toBe(false)
+    expect(fs.existsSync(path.join(h.hqSsh, "new"))).toBe(false)
     expect(fs.existsSync(path.join(h.home, "new"))).toBe(false)
     expect(fs.readFileSync(h.provider, "utf8")).toBe('{"key":"decoy-provider"}\n')
   },
@@ -591,7 +607,7 @@ test.skipIf(!sandboxAvailable() || (!fs.existsSync(SSH) && !process.env.OPENCORP
   "the real ssh reads the system's config in the profile",
   async () => {
     const h = layout()
-    const config = path.join(h.hq, "ssh", "config")
+    const config = path.join(h.hqSsh, "config")
     fs.writeFileSync(config, `Include "${path.join(h.ssh, "config")}"\nInclude "/etc/ssh/ssh_config"\n`)
     const r = await run(h.make(), [SSH, "-G", "-F", config, "localhost"], { timeout: 20 })
     const err = r.stderr.toString()

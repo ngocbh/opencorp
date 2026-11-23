@@ -7,6 +7,7 @@ import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { cmIdOf } from "@opencorp/office/features/reach/paths"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "@opencorp/office/testing/fake_ssh"
 import type { TestOffice } from "@opencorp/office/testing/office"
 
@@ -64,16 +65,19 @@ export function reachScript(office: TestOffice): string {
   return `set -eu\nssh login1 true\nprintf '%s\\n' '${JSON.stringify(spec)}'\n`
 }
 
-/** The client: `root` is its HOME and `root/c` its OPENCORP_HOME, with reach.sh for `office` (approved unless
- *  `approved` is false, with access.json on a free port; none with `office` null, only a 0700 hq folder), and the
- *  fake ssh in `fakeDir`, a 0700 `/tmp/oc-f-XXXX` outside the home, first on PATH and named by
+/** The client: `root` is its HOME and `root/c` its OPENCORP_HOME, with destination `dest` (`hq/login1`, named after
+ *  its login host as a first learn names it) saved with reach.sh for `office` (approved unless `approved` is false,
+ *  with access.json on a free port; none with `office` null, only a 0700 hq folder), its control sockets in `cm`, and
+ *  the fake ssh in `fakeDir`, a 0700 `/tmp/oc-f-XXXX` outside the home, first on PATH and named by
  *  `OPENCORP_TEST_SSH_DIR`: compiled there with `compiled`, for the agent's sandbox to run. */
 export interface Client {
   readonly root: string
   readonly fakeDir: string
   readonly home: string
   readonly hq: string
-  readonly cm: string
+  readonly dest: string
+  /** Its control-socket folder; null with `office` null. */
+  readonly cm: string | null
   readonly port: number
   readonly fake: FakeSsh
   /** The environment the CLI runs with: nothing else of this process's. */
@@ -99,28 +103,52 @@ export async function client(
   const hq = path.join(home, "hq")
   fs.mkdirSync(hq, { recursive: true, mode: 0o700 })
   fs.chmodSync(home, 0o700)
-  const body = office === null ? null : reachScript(office)
-  if (body !== null) fs.writeFileSync(path.join(hq, "reach.sh"), body, { mode: 0o600 })
   const port = await freePort()
-  if (body !== null && approved) {
-    fs.writeFileSync(path.join(hq, "reach.approved.sh"), body, { mode: 0o600 })
+  const dest = path.join(hq, "login1")
+  const saved = office === null ? null : await destination(hq, "login1", office, { approved, port })
+  return { root, fakeDir, home, hq, dest, cm: saved?.cm ?? null, port, fake, env: clientEnv(root, fake, fakeDir) }
+}
+
+/** Saves destination `name` in the client's `hq` folder, reaching `office`: reach.sh, approved unless `approved` is
+ *  false, with access.json on `port` and `over` in it; resolves to its folder and its control-socket folder, as a
+ *  visit finds it. */
+export async function destination(
+  hq: string,
+  name: string,
+  office: TestOffice,
+  { approved = true, port, over = {} }: { approved?: boolean; port: number; over?: Record<string, unknown> },
+): Promise<{ dir: string; cm: string }> {
+  const dir = path.join(hq, name)
+  fs.mkdirSync(dir, { mode: 0o700 })
+  const id = cmIdOf(dir)
+  const body = reachScript(office)
+  fs.writeFileSync(path.join(dir, "reach.sh"), body, { mode: 0o600 })
+  if (approved) {
+    fs.writeFileSync(path.join(dir, "reach.approved.sh"), body, { mode: 0o600 })
     const access = {
       port,
       sha256: createHash("sha256").update(body).digest("hex"),
       learned_at: new Date().toISOString(),
       last_used_at: null,
       signed_in_at: null,
+      cm: id,
+      ...over,
     }
-    fs.writeFileSync(path.join(hq, "access.json"), JSON.stringify(access), { mode: 0o600 })
+    fs.writeFileSync(path.join(dir, "access.json"), JSON.stringify(access), { mode: 0o600 })
   }
-  const env = {
+  return { dir, cm: path.join(hq, `cm-${id}`) }
+}
+
+/** The environment the client's CLI runs with: nothing else of this process's. */
+function clientEnv(root: string, fake: FakeSsh, fakeDir: string): Record<string, string> {
+  const home = path.join(root, "c")
+  return {
     PATH: `${fake.bin}:/usr/bin:/bin`,
     HOME: root,
     OPENCORP_HOME: home,
     OPENCORP_BUN: process.execPath,
     [TEST_SSH_DIR]: fakeDir,
   }
-  return { root, fakeDir, home, hq, cm: path.join(hq, "cm"), port, fake, env }
 }
 
 /** Kills what's left of `c`, each process whose command line names one of its folders, and removes them. Never the

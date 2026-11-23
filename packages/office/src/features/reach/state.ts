@@ -1,5 +1,5 @@
-/** A visit's state in the hq folder: the lock that lets one `opencorp hq` run at a time, `access.json`, the redirect
- *  files that sign a browser in, and the clean-up a new visit starts with. */
+/** A visit's state in its destination's folder: the lock that lets one `opencorp hq` at a time reach it,
+ *  `access.json`, the redirect files that sign a browser in, and the clean-up a new visit starts with. */
 import { createHash, randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
@@ -8,10 +8,10 @@ import { PAIR_CODE_TTL_MS, Timestamp } from "@opencorp/protocol"
 import { z } from "zod"
 import { readPrivate, writePrivate } from "../../util/private_files.ts"
 import { redirectPage } from "../../util/redirect.ts"
-import type { ReachPaths } from "./paths.ts"
+import { cmIdOf, isTemp, ReachPaths } from "./paths.ts"
 import { exitAll, type ReachContext } from "./ssh.ts"
 
-/** Takes `hq/lock` for this visit, or null when another `opencorp hq` holds it. It's yian's `lockFile`, a SQLite
+/** Takes the destination's `lock` for this visit, or null when another `opencorp hq` holds it. It's yian's `lockFile`, a SQLite
  *  exclusive transaction: the kernel frees it when this process dies however it dies, and no child holds it (POSIX
  *  locks aren't inherited, and SQLite opens the file close-on-exec). */
 export function takeLock(paths: ReachPaths): FileLock | null {
@@ -23,11 +23,22 @@ export function takeLock(paths: ReachPaths): FileLock | null {
   }
 }
 
-/** The CLI's `LOCAL_PORT`, its printed socket forwards' port; the cookie is tied to it. */
+/** The CLI's `LOCAL_PORT`, its printed socket forwards' port, and the first destination's; the cookie is tied to
+ *  it. */
 export const DEFAULT_PORT = 49381
 
+/** The port for a new destination: the first from `DEFAULT_PORT` that none of `used`, the saved destinations' ports,
+ *  is. Each destination keeps its own, so each stays signed in to its HQ: the cookie's name carries the port. */
+export function nextPort(used: Iterable<number>): number {
+  const taken = new Set(used)
+  let port = DEFAULT_PORT
+  while (taken.has(port)) port++
+  return port
+}
+
 /** `access.json`: the local port HQ is forwarded to, the approved reach.sh's sha256, when the path was learned, last
- *  used, and last signed a browser in, and the host and HQ's socket of the last connection (missing until one). */
+ *  used, and last signed a browser in, the host and HQ's socket of the last connection (missing until one), and the
+ *  id of the destination's control-socket folder, `hq/cm-<cm>`. */
 export const Access = z.strictObject({
   port: z.int().min(1024).max(65535),
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
@@ -36,6 +47,7 @@ export const Access = z.strictObject({
   signed_in_at: Timestamp.nullable(),
   host: z.string().optional(),
   socket: z.string().optional(),
+  cm: z.string().regex(/^[0-9a-f]{6}$/),
 })
 export type Access = z.output<typeof Access>
 
@@ -105,7 +117,7 @@ export function removeAtExpiry(file: string, ms: number = PAIR_CODE_TTL_MS): voi
 
 const REDIRECTS = [/^pair-.*\.html$/, /^\.pair-.*\.html\..*\.tmp$/]
 
-/** Deletes `pair-*.html` and `.pair-*.html.*.tmp` in `hq/` older than `PAIR_CODE_TTL_MS`. */
+/** Deletes `pair-*.html` and `.pair-*.html.*.tmp` in the destination's folder older than `PAIR_CODE_TTL_MS`. */
 export function sweepRedirects(paths: ReachPaths, now: number): void {
   removeOlder(paths.dir, (name) => REDIRECTS.some((re) => re.test(name)), now - PAIR_CODE_TTL_MS)
 }
@@ -114,7 +126,7 @@ export function sweepRedirects(paths: ReachPaths, now: number): void {
 export const STATUS_STALE_MS = 10 * 60_000
 
 /** The lock holder's start: `exitAll`, `sweepRedirects`, and `ssh/status.*`, `ssh/agent-status.*`, `reach.new.sh` and
- *  the replays' copies of reach.sh (`.reach-*.sh`) older than `STATUS_STALE_MS`. */
+ *  the replays' copies of reach.sh (`.reach-*.sh`) older than `STATUS_STALE_MS`; then `sweepTemps`. */
 export async function cleanUp(ctx: ReachContext, now: number): Promise<void> {
   const { paths } = ctx
   await exitAll(ctx)
@@ -125,6 +137,44 @@ export async function cleanUp(ctx: ReachContext, now: number): Promise<void> {
     (name) => name === path.basename(paths.candidate) || /^\.reach-[0-9]+-[0-9a-f]+\.sh$/.test(name),
     now - STATUS_STALE_MS,
   )
+  await sweepTemps(ctx, now)
+}
+
+/** Removes each learning run's temporary folder in `hq/` other than this visit's that was last changed before
+ *  `STATUS_STALE_MS` and whose lock is free, so no run is learning there: its masters ended first, then its
+ *  control-socket folder, then the folder. A run that saved renamed its folder, so what's left was abandoned. */
+export async function sweepTemps(ctx: ReachContext, now: number): Promise<void> {
+  for (const name of readdirOrEmpty(ctx.paths.root)) {
+    if (!isTemp(name) || name === ctx.paths.name) continue
+    const found = new ReachPaths(ctx.paths.home, name)
+    const st = fs.lstatSync(found.dir, { throwIfNoEntry: false })
+    if (st === undefined || !st.isDirectory() || st.mtimeMs >= now - STATUS_STALE_MS) continue
+    let lock: FileLock | null
+    try {
+      lock = takeLock(found)
+    } catch {
+      // A lock file that isn't private, say: not ours to judge.
+      continue
+    }
+    if (lock === null) continue
+    try {
+      const temp = found.withCm(cmIdOf(found.dir))
+      await exitAll({ ...ctx, paths: temp })
+      fs.rmSync(temp.cm, { recursive: true, force: true })
+      fs.rmSync(temp.dir, { recursive: true, force: true })
+    } finally {
+      lock.release()
+    }
+  }
+}
+
+function readdirOrEmpty(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
+    throw error
+  }
 }
 
 /** Deletes the files in `dir` whose names `match` and that were last changed before `before` (ms). */

@@ -22,7 +22,7 @@ import {
 
 const [home, mode, port] = process.argv.slice(2) as [string, string, string]
 const ctx: ReachContext = {
-  paths: new ReachPaths(home),
+  paths: new ReachPaths(home, "misha", "0a1b2c"),
   ssh: "/usr/bin/ssh",
   env: { PATH: "/usr/bin:/bin", HOME: home },
   batch: false,

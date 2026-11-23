@@ -1,5 +1,6 @@
-/** The SSH-only sandbox: what OpenCorp's `hq` shell may touch as the owner. It gets the network and the owner's SSH,
- *  but never the model's key or sign-in in hq/, OpenCorp's other files, nor the rest of the home.
+/** The SSH-only sandbox: what OpenCorp's `hq` shell may touch as the owner. It gets the network, the owner's SSH and
+ *  its own destination's `hq/<name>/ssh`, read-only, but never the model's key or sign-in in hq/, another
+ *  destination's folder, OpenCorp's other files, nor the rest of the home.
  *
  *  `~/.ssh` is read-only, as is the owner's ControlPath folder where the profile binds one, so the shell's ssh rides a
  *  connection the owner has open there and can bind no socket of its own: its config says `ControlMaster no`. `hq/cm`,
@@ -41,11 +42,14 @@ export interface SshFile {
 export interface SshPolicyInit {
   /** The owner's home as ssh sees it (the passwd entry's): `~/.ssh` is read there. */
   home: string
-  /** `<OPENCORP_HOME>/hq`. */
+  /** `<OPENCORP_HOME>/hq`, never bound: the model's sign-in and every destination's folder are in it. */
   hq: string
+  /** The destination's `hq/<name>/ssh`: its wrappers, configs and the status file, bound read-only, the only part of
+   *  hq that is. */
+  hqSsh: string
   /** A private, writable temp folder: the call's TMPDIR and working folder. */
   tmpdir: string
-  /** The wrapper's exit-status file under `hq/ssh/`. */
+  /** The wrapper's exit-status file under `hqSsh`. */
   statusFile: string
   /** SSH_AUTH_SOCK: a socket, or a link to one. */
   agentSocket?: string | null
@@ -120,7 +124,8 @@ export class SshPolicy {
    * - for a bind that is or holds `hq` or the home, that is, holds or lies inside `hq/provider.json`, `hq/auth.json`
    *   or the connections' folder, or that is a hard link to one of their files; a hard link to one anywhere in
    *   `~/.ssh` or `hq/ssh`, which are mounted whole, counts too;
-   * - for a temp folder inside `hq` or `~/.ssh`, and a status file outside `hq/ssh`;
+   * - for a temp folder inside `hq` or `~/.ssh`, a destination's ssh folder outside `hq`, and a status file outside
+   *   that folder;
    * - for a known_hosts, status file or ticket file (bound read-write) that is a link, not a regular file, not the
    *   user's, or has other hard links, and for a `controlDir` that is a link, not a folder, or not the user's.
    *
@@ -138,14 +143,14 @@ export class SshPolicy {
    * outside the system's folders and the temp folder; one that would expose hq, the home, a secret or OpenCorp's
    * files throws, and one that is no regular file gets a note.
    *
-   * Throws `Error` when `tmpdir` or `hq/ssh` is not an existing folder.
+   * Throws `Error` when `tmpdir` or the destination's ssh folder is not an existing folder.
    */
   constructor(init: SshPolicyInit) {
     const home = realPath(init.home)
     const hq = realPath(init.hq)
     const office = realPath(path.dirname(init.hq))
     const ssh = realPath(path.join(home, ".ssh"))
-    const hqSsh = existingDir("hq/ssh", path.join(hq, "ssh"))
+    const hqSsh = existingDir("hq/<name>/ssh", init.hqSsh)
     const tmpdir = existingDir("tmpdir", init.tmpdir)
     const knownHosts = path.join(ssh, "known_hosts")
     const statusDir = realPath(path.dirname(init.statusFile))
@@ -160,11 +165,14 @@ export class SshPolicy {
     if (within(tmpdir, hq) || within(tmpdir, ssh)) {
       throw new UnsafeProfile(`the SSH-only sandbox's temp folder ${tmpdir} lies in ${within(tmpdir, hq) ? hq : ssh}`)
     }
+    // Mounted whole: a link there to hq would bind it.
+    denied.check(hqSsh, "hq/<name>/ssh")
+    if (path.dirname(path.dirname(hqSsh)) !== hq || path.basename(hqSsh) !== "ssh") {
+      throw new UnsafeProfile(`the SSH-only sandbox's ssh folder ${hqSsh} is not a destination's ssh folder in ${hq}`)
+    }
     if (statusDir !== hqSsh) {
       throw new UnsafeProfile(`the SSH-only sandbox's status file ${status} is not in ${hqSsh}`)
     }
-    // Mounted whole: a link there to hq would bind it.
-    denied.check(hqSsh, "hq/ssh")
     writableFile(knownHosts, "known_hosts")
     writableFile(status, "the status file")
     const folder = lstat(controlDir)

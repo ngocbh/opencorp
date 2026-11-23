@@ -163,7 +163,7 @@ test("where ssh knows them, the session options follow the includes as defaults"
 
 test("after a failure, a visit names what the owner's config sets for each host that a visit can't work with", async () => {
   const dir = shortDir()
-  const paths = new ReachPaths(path.join(dir, "h"))
+  const paths = new ReachPaths(path.join(dir, "h"), "misha", "0a1b2c")
   makeDirs(paths)
   for (const folder of ["mine", "readonly"]) fs.mkdirSync(path.join(dir, folder))
   fs.chmodSync(path.join(dir, "readonly"), 0o500)
@@ -212,7 +212,7 @@ test("after a failure, a visit names what the owner's config sets for each host 
 
 test("the visit's stop ends the checks at once", async () => {
   const dir = shortDir()
-  const paths = new ReachPaths(path.join(dir, "h"))
+  const paths = new ReachPaths(path.join(dir, "h"), "misha", "0a1b2c")
   makeDirs(paths)
   // An ssh whose -G never answers, as a config's slow `Match exec` might.
   const slow = path.join(dir, "slow-ssh")
@@ -324,7 +324,7 @@ test("the wrapper records no status for a control command, which opens no connec
 })
 
 test("writeSshFiles writes the configs 0600 and the wrapper 0700", async () => {
-  const paths = new ReachPaths(path.join(shortDir(), "h"))
+  const paths = new ReachPaths(path.join(shortDir(), "h"), "misha", "0a1b2c")
   makeDirs(paths)
   await writeSshFiles(paths, "/usr/bin/ssh", ["/i/one"])
   expect(fs.statSync(paths.config).mode & 0o777).toBe(0o600)
@@ -372,7 +372,7 @@ function context(paths: ReachPaths, env: Record<string, string | undefined>, bat
 
 test("findSsh takes the first ssh on PATH that isn't our wrapper", () => {
   const dir = shortDir()
-  const paths = new ReachPaths(path.join(dir, "h"))
+  const paths = new ReachPaths(path.join(dir, "h"), "misha", "0a1b2c")
   makeDirs(paths)
   anSsh(paths.bin)
   const a = anSsh(path.join(dir, "a"))
@@ -393,7 +393,7 @@ test("findSsh takes the first ssh on PATH that isn't our wrapper", () => {
 })
 
 test("children get our wrapper first and only HOME, SSH_AUTH_SOCK and our two variables", () => {
-  const paths = new ReachPaths("/h")
+  const paths = new ReachPaths("/h", "misha", "0a1b2c")
   const env = { PATH: "/usr/bin:/bin", HOME: "/home/x", SSH_AUTH_SOCK: "/a/agent", OPENCORP_HOME: "/h", SECRET: "x" }
   const got = sshEnv(context(paths, env))
   expect(Object.keys(got).sort()).toEqual(["HOME", "OPENCORP_SSH_CONFIG", "OPENCORP_SSH_STATUS", "PATH", "SSH_AUTH_SOCK"])
@@ -412,7 +412,7 @@ test("children get our wrapper first and only HOME, SSH_AUTH_SOCK and our two va
 })
 
 test("status files are reset before a run and read as numbers and hosts", () => {
-  const paths = new ReachPaths(path.join(shortDir(), "h"))
+  const paths = new ReachPaths(path.join(shortDir(), "h"), "misha", "0a1b2c")
   makeDirs(paths)
   const ctx = context(paths, {})
   expect(readStatuses(ctx)).toEqual([])

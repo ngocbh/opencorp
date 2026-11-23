@@ -31,15 +31,15 @@ function text(name: string, values: Record<string, string | number> = {}): strin
   )
 }
 
-/** Shown before every learning run, ahead of asking to use the model. */
-export const beforeLearning = (paths: ReachPaths): string[] => text("beforeLearning", { dir: paths.dir })
+/** Shown before every learning run, ahead of asking to use the model; `root` is the hq folder. */
+export const beforeLearning = (root: string): string[] => text("beforeLearning", { dir: root })
 
 /** Shown on save_access's card with the two files, before the owner saves; the agent's risks for this setup follow. */
 export const beforeSaving = (paths: ReachPaths): string[] =>
   text("beforeSaving", { persist_s: PERSIST_S, provider: paths.provider, auth: paths.auth })
 
 /** Shown before learning's shells start with no sandbox; `why` says why there's none. */
-export const noSandbox = (paths: ReachPaths, why: string): string[] => text("noSandbox", { why, dir: paths.dir })
+export const noSandbox = (paths: ReachPaths, why: string): string[] => text("noSandbox", { why, dir: paths.root })
 /** Asked after `noSandbox`, offering `RUN_UNSANDBOXED` and `STOP`, the default. */
 export const NO_SANDBOX_QUESTION = text("NO_SANDBOX_QUESTION").join("\n")
 export const RUN_UNSANDBOXED = text("RUN_UNSANDBOXED").join("\n")

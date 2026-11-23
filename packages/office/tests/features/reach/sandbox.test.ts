@@ -22,7 +22,7 @@ async function home() {
   const ssh = path.join(dir, ".ssh")
   fs.mkdirSync(path.join(ssh, "tmp"), { recursive: true, mode: 0o700 })
   fs.writeFileSync(path.join(ssh, "config"), `Host *\n  ControlPath ${ssh}/tmp/%C\n`, { mode: 0o600 })
-  const paths = new ReachPaths(path.join(dir, ".opencorp"))
+  const paths = new ReachPaths(path.join(dir, ".opencorp"), "misha", "0a1b2c")
   makeDirs(paths)
   fs.writeFileSync(paths.provider, '{"key":"decoy-provider"}\n', { mode: 0o600 })
   fs.writeFileSync(paths.auth, '{"token":"decoy-auth"}\n', { mode: 0o600 })
@@ -66,12 +66,20 @@ test("a temp folder or status file that would expose hq is refused", async () =>
   const make = (tmpdir: string) => agentPolicy(h.paths, { home: h.dir, tmpdir, ssh: SSH, env: {} })
   const inHq = path.join(h.paths.dir, "tmp")
   fs.mkdirSync(inHq, { mode: 0o700 })
-  for (const tmpdir of [inHq, h.paths.dir, h.paths.home, h.dir]) await expect(make(tmpdir)).rejects.toThrow(UnsafeProfile)
-  // hq/ssh, where the status file is, swapped for a link to hq: binding it would bind hq whole.
+  for (const tmpdir of [inHq, h.paths.dir, h.paths.root, h.paths.home, h.dir]) await expect(make(tmpdir)).rejects.toThrow(UnsafeProfile)
+  // hq/<name>/ssh, where the status file is, swapped for a link to hq: binding it would bind hq whole.
   fs.renameSync(h.paths.ssh, `${h.paths.ssh}.real`)
-  fs.symlinkSync(h.paths.dir, h.paths.ssh)
+  fs.symlinkSync(h.paths.root, h.paths.ssh)
   await expect(make(h.tmpdir)).rejects.toThrow(UnsafeProfile)
   await expect(make(h.tmpdir)).rejects.toThrow("would expose hq")
+  // Or for a link to the destination's whole folder, or to another destination's ssh folder.
+  const other = new ReachPaths(h.paths.home, "login1", "0a1b2c")
+  makeDirs(other)
+  for (const target of [h.paths.dir, other.ssh]) {
+    fs.rmSync(h.paths.ssh)
+    fs.symlinkSync(target, h.paths.ssh)
+    await expect(make(h.tmpdir)).rejects.toThrow(UnsafeProfile)
+  }
 })
 
 /** `run`, whose sandbox is a stand-in command: `/bin/sh -c script`, run here, with what it exits and prints as the
@@ -138,7 +146,7 @@ test("the test fake's folder is bound only when OPENCORP_TEST_SSH_DIR names it, 
   const link = path.join(h.root, "link")
   fs.symlinkSync(fake, link)
   // OpenCorp's home outside the user's.
-  const office = new ReachPaths(path.join(h.root, "oc"))
+  const office = new ReachPaths(path.join(h.root, "oc"), "misha", "0a1b2c")
   makeDirs(office)
   await writeSshFiles(office, SSH, [path.join(h.ssh, "config")])
   const refused: [string, string, ReachPaths][] = [

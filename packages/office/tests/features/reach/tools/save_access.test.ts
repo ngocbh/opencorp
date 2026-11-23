@@ -12,14 +12,15 @@ import { MAX_SCRIPT_BYTES } from "../../../../src/features/reach/tools/replay.ts
 import {
   CANCEL,
   SAVE,
-  SAVE_TITLE,
   saveAccessTool,
   SAVED,
   saveQuestion,
+  saveTitle,
   SAVING_ASKS,
   secretIn,
 } from "../../../../src/features/reach/tools/save_access.ts"
 import { type FakeSsh, fakeControlName } from "../../../../src/testing/fake_ssh.ts"
+import { isTemp, ReachPaths, tempName } from "../../../../src/features/reach/paths.ts"
 import { writePrivate } from "../../../../src/util/private_files.ts"
 import { chain, KEY, learning, NOTES } from "../helpers.ts"
 
@@ -47,7 +48,7 @@ test("a file with a secret is refused before any card", async () => {
     expect(told).not.toContain(KEY)
     expect(cards).toEqual([])
     expect(fake.calls()).toEqual([])
-    expect(fs.readdirSync(ctx.paths.dir).sort()).toEqual(["cm", "ssh"])
+    expect(fs.readdirSync(ctx.paths.dir).sort()).toEqual(["ssh"])
   }
   expect(secretIn("ssh login1 true", [""])).toBeNull()
   // So are files over 1 MiB, which a visit never reads.
@@ -58,15 +59,15 @@ test("a file with a secret is refused before any card", async () => {
   expect(cards).toEqual([])
 })
 
-test("the save card shows both files numbered, the fixed risks before the setup's own and the warning, and offers to test and save", async () => {
-  const { save, cards, ctx } = await learning([{ value: CANCEL, typed: false }])
+test("the save card names the destination, shows both files numbered, the fixed risks before the setup's own and the warning, and offers to test and save", async () => {
+  const { save, cards, ctx } = await learning([{ value: CANCEL, typed: false }], { wanted: "misha" })
   const script = `set -eu\nssh login1 true\ncat ${ctx.paths.provider}\n`
   await save({ script, notes: "Line one, café.\n\nLine ‮two.\n", risks: ["Duo on the node too: two prompts."] })
   expect(cards).toEqual([
     {
-      title: SAVE_TITLE,
+      title: saveTitle("misha"),
       question: [
-        SAVE_TITLE,
+        saveTitle("misha"),
         "",
         `${ctx.paths.script}, which runs on every visit:`,
         "  1  set -eu",
@@ -84,16 +85,31 @@ test("the save card shows both files numbered, the fixed risks before the setup'
         "",
         credentialWarning(ctx.paths),
         "",
-        saveQuestion(3),
+        saveQuestion(3, "misha"),
       ].join("\n"),
       options: [SAVE, CANCEL],
       reason: SAVING_ASKS,
     },
   ])
-  expect(SAVE_TITLE).toBe("OpenCorp wants to save how this machine reaches HQ")
+  expect(saveTitle("misha")).toBe("OpenCorp wants to save the path to misha")
   expect([SAVE, CANCEL]).toEqual(["Test it, then save it", "Don't save it"])
-  expect(saveQuestion(3)).toBe("Save this 3-line reach.sh and the notes, after testing the whole connection?")
-  expect(beforeLearning(ctx.paths).some((line) => cards[0]!.question.includes(line))).toBe(false)
+  expect(saveQuestion(3, "misha")).toBe("Save the path to misha, this 3-line reach.sh and the notes, after testing the whole connection?")
+  expect(beforeLearning(ctx.paths.root).some((line) => cards[0]!.question.includes(line))).toBe(false)
+})
+
+test("a first path's card, with no name given, says it's named after the host it reaches and shows no folder yet", async () => {
+  const { save, cards } = await learning([{ value: CANCEL, typed: false }], { name: tempName() })
+  await save({ script: "set -eu\nexit 3\n", notes: NOTES, risks: [] })
+  const lines = cards[0]!.question.split("\n")
+  expect(cards[0]!.title).toBe("OpenCorp wants to save how this machine reaches HQ")
+  expect(lines[0]).toBe(saveTitle(null))
+  expect(lines).toContain("reach.sh, which runs on every visit:")
+  expect(lines).toContain("notes.md:")
+  expect(lines.at(-1)).toBe(saveQuestion(2, null))
+  expect(saveQuestion(2, null)).toBe(
+    "Save this 2-line reach.sh and the notes, after testing the whole connection? The path is named after the first host it reaches.",
+  )
+  expect(cards[0]!.question).not.toContain(".new-")
 })
 
 test("the save card asks in every mode and is refused in dontAsk", async () => {
@@ -106,6 +122,8 @@ test("the save card asks in every mode and is refused in dontAsk", async () => {
   expect(fs.existsSync(ctx.paths.script)).toBe(false)
   const tool = saveAccessTool({ state: null!, binding: null!, connection: null! })
   expect(tool.parameters).toMatchObject({ required: ["script", "notes", "risks"] })
+  // The host binds the folder: the model names none.
+  expect(Object.keys((tool.parameters as { properties: object }).properties)).toEqual(["script", "notes", "risks"])
 })
 
 test("a No with words reaches the agent as what should change, and saves nothing", async () => {
@@ -161,6 +179,7 @@ async function oldPath(ctx: ReachContext, over: Partial<Access> = {}): Promise<v
     learned_at: "2026-11-01T10:00:00.000Z",
     last_used_at: "2026-11-02T10:00:00.000Z",
     signed_in_at: "2026-11-02T10:00:00.000Z",
+    cm: ctx.paths.cmId!,
     ...over,
   })
 }
@@ -246,4 +265,44 @@ test("relearning keeps signed_in_at only while the port, the host and HQ's socke
     await exitAll(c.ctx)
     expect(c.fake.masters()).toEqual([])
   }
+})
+
+test("a first path, learned in a temporary folder, is saved under the name given, and nowhere else", async () => {
+  const c = await chain([YES], {}, { name: tempName(), wanted: "misha" })
+  const temp = c.ctx.paths
+  expect(await c.save({ script: scriptFor(c.spec), notes: NOTES, risks: [] })).toStartWith(SAVED)
+  const misha = new ReachPaths(temp.home, "misha", temp.cmId)
+  expect(c.state.saved?.dir).toBe(misha.dir)
+  expect(fs.existsSync(temp.dir)).toBe(false)
+  expect(fs.readFileSync(misha.script, "utf8")).toBe(scriptFor(c.spec))
+  // Its control-socket folder is the same, and access.json records it: the connection holds across the rename.
+  expect(await readAccess(misha)).toMatchObject({ cm: temp.cmId, host: "node1" })
+  expect(isSocket(misha.node)).toBe(true)
+  expect(fs.readdirSync(temp.root).filter((name) => !name.startsWith("cm-")).sort()).toEqual(["misha", "sessions"])
+  await exitAll({ ...c.ctx, paths: misha })
+})
+
+test("a first path with no name given is named after its first jump host, with -2 on a clash", async () => {
+  for (const [taken, name] of [[[], "login1"], [["login1"], "login1-2"], [["login1", "login1-2"], "login1-3"]] as const) {
+    const c = await chain([YES], {}, { name: tempName() })
+    for (const other of taken) fs.mkdirSync(path.join(c.ctx.paths.root, other), { mode: 0o700 })
+    expect(await c.save({ script: scriptFor(c.spec), notes: NOTES, risks: [] })).toStartWith(SAVED)
+    expect(c.state.saved?.name).toBe(name)
+    expect(isTemp(c.state.saved!.name)).toBe(false)
+    expect(fs.readFileSync(c.state.saved!.script, "utf8")).toBe(scriptFor(c.spec))
+    await exitAll({ ...c.ctx, paths: c.state.saved! })
+  }
+})
+
+test("a first path whose name another opencorp hq saved meanwhile is not saved, and nothing is renamed", async () => {
+  const c = await chain([YES], {}, { name: tempName(), wanted: "misha" })
+  fs.mkdirSync(path.join(c.ctx.paths.root, "misha"), { mode: 0o700 })
+  expect(await c.save({ script: scriptFor(c.spec), notes: NOTES, risks: [] })).toBe(
+    "Not saved: another `opencorp hq` saved a path to misha meanwhile; nothing more can be saved under that name now",
+  )
+  expect(c.state.saved).toBeNull()
+  expect(c.state.connection).toBeNull()
+  expect(fs.readdirSync(path.join(c.ctx.paths.root, "misha"))).toEqual([])
+  expect(fs.existsSync(c.ctx.paths.script)).toBe(false)
+  await exitAll(c.ctx)
 })
