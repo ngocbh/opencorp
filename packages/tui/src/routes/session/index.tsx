@@ -58,7 +58,7 @@ import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseShellOutput, collapseToolOutput } from "../../util/collapse-tool-output"
-import { OPENCORP_BASE_MODE, useBindings } from "../../keymap"
+import { OPENCORP_BASE_MODE, useBindings, useCommandShortcut } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { usePermission } from "../../context/permission"
@@ -200,10 +200,11 @@ export function Session(props: SessionProps) {
   // never land on another card.
   const [keyed, setKeyed] = createSignal<string>()
   const held = createMemo(() => cards().find((q) => q.id === keyed()))
-  // The chat's own card in the prompt's place: the one with the keys, else its first unless a stacked card has them.
+  // The chat's own card in the prompt's place: the one with the keys. Until it has them the prompt stays, so what it
+  // holds can be read as the card takes its place.
   const question = createMemo(() => {
     const h = held()
-    return h ? own().find((q) => q.id === h.id) : own()[0]
+    return h && own().some((q) => q.id === h.id) ? h : undefined
   })
   // A card on the chat (an approval, a question), which takes what room it needs and scrolls in the rest.
   const card = createMemo(() => !codex() && question() !== undefined)
@@ -219,21 +220,45 @@ export function Session(props: SessionProps) {
     const h = held()
     return h && stackOpen() && stacked().some((q) => q.id === h.id) ? h : undefined
   })
+  // The chat's own card ctrl+t gives the keys to from the stacked card that has them, which it waits behind.
+  const ownNext = createMemo(() => (active() ? own()[0] : undefined))
+  // Whether one of the chat's own cards has the keys, and who had them before it took the prompt's place, to get them
+  // back once it closes: a stacked card (its id); the prompt (null) when it had them over folded cards or held a
+  // draft; else nobody (undefined), and the next card takes them as any card opening does.
+  let ownHasKeys = false
+  let backTo: string | null | undefined
+  /** Gives the keys to card `next`, or to the prompt. */
+  function give(next: string | undefined) {
+    const toOwn = !!next && own().some((q) => q.id === next)
+    if (toOwn && !ownHasKeys) {
+      const k = keyed()
+      const promptHad = (k === undefined && stacked().length > 0) || !!promptRef.current?.current.input
+      backTo = k && cards().some((q) => q.id === k) ? k : promptHad ? null : undefined
+    }
+    ownHasKeys = toOwn
+    setKeyed(next)
+  }
   // Once the card with the keys closes, or while the prompt has them, the usual rules pick who has them next: the
-  // chat's own first card takes the prompt's place; else the next stacked card does, or, when none were open, the
-  // first unless this side's prompt holds a draft. Keys typed for the prompt must never land on a card, where a digit
-  // or Enter picks an option.
+  // chat's own first card takes the prompt's place; once the last closes, whoever had them before it does; else the
+  // next stacked card, or, when none were open, the first unless this side's prompt holds a draft. Keys typed for the
+  // prompt must never land on a card, where a digit or Enter picks an option.
   let stackWasOpen = false
   createEffect(() => {
     const k = keyed()
+    const list = cards()
     const open = stackOpen()
     const opened = open && !stackWasOpen
     stackWasOpen = open
-    if (k && cards().some((q) => q.id === k)) return
+    if (k && list.some((q) => q.id === k)) return
     untrack(() => {
       const first = own()[0]
-      if (first) setKeyed(first.id)
-      else if (k || (opened && !promptRef.current?.current.input)) setKeyed(stacked()[0]?.id)
+      if (first) return give(first.id)
+      if (ownHasKeys) {
+        const to = backTo
+        backTo = undefined
+        return give(to === null ? undefined : to && stacked().some((q) => q.id === to) ? to : stacked()[0]?.id)
+      }
+      if (k || (opened && !promptRef.current?.current.input)) give(stacked()[0]?.id)
     })
   })
   // The lines above the prompt, or above the chat's own card in its place: the stacked card with the keys first, then
@@ -753,7 +778,7 @@ export function Session(props: SessionProps) {
         category: "Session",
         hidden: true,
         enabled: stackOpen() && dialog.stack.length === 0,
-        run: () => setKeyed(active() ? undefined : stacked()[0]?.id),
+        run: () => give(active() ? ownNext()?.id : stacked()[0]?.id),
       },
     ],
     bindings: tuiConfig.keybinds.gather("session.card", ["session.card.focus"]),
@@ -965,12 +990,13 @@ export function Session(props: SessionProps) {
                       <Show when={office.state.questions[id]}>
                         {(q) =>
                           own().some((o) => o.id === id) ? (
-                            <WaitingCard question={q()} />
+                            <WaitingCard question={q()} next={id === ownNext()?.id} />
                           ) : (
                             <HarnessCard
                               question={q()}
                               active={id === active()?.id}
                               waiting={i() > 0 || !stackOpen()}
+                              focusLabel={ownNext() && `answer ${personLabel(office.state.people, ownNext()!.asker)}`}
                               // Esc on a Codex session's card in its chat stops that session's turn, not the chat's.
                               onInterrupt={q().session_id === props.sessionID ? interrupt : undefined}
                             />
@@ -1049,10 +1075,12 @@ export function Session(props: SessionProps) {
   )
 }
 
-/** One of the chat's own cards while a card of its Codex sessions has the keys: one line, which takes no keys. */
-function WaitingCard(props: { question: OfficeQuestion }) {
+/** One of the chat's own cards while a card of its Codex sessions has the keys: one line, which takes no keys. The
+ *  `next`, which ctrl+t gives the keys to, says so. */
+function WaitingCard(props: { question: OfficeQuestion; next: boolean }) {
   const office = useOffice()
   const { theme } = useTheme()
+  const focusKey = useCommandShortcut("session.card.focus")
   const title = () => {
     const q = props.question
     if (q.source === "approval") return display(q.title ?? "Permission required")
@@ -1060,7 +1088,9 @@ function WaitingCard(props: { question: OfficeQuestion }) {
   }
   return (
     <box paddingLeft={2}>
-      <text fg={theme.textMuted} wrapMode="none">{`${title()} (waiting)`}</text>
+      <text fg={theme.textMuted} wrapMode="none">
+        {props.next ? `${title()} · ${focusKey()} to answer` : `${title()} (waiting)`}
+      </text>
     </box>
   )
 }

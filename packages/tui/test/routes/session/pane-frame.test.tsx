@@ -707,7 +707,7 @@ test("an approval the chat opens while a Codex secret card has the keys waits as
     const secret = office.addQuestion(secretCard(child.id, "1"))
     await typeHalfSecret(app)
     const own = deployApproval(office, chat.id)
-    await app.until((f) => f.includes("@minh wants to run a command (waiting)") && f.includes("Paste the deploy token"))
+    await app.until((f) => f.includes("@minh wants to run a command · ctrl+t to answer") && f.includes("Paste the deploy token"))
     app.input.typeText("er1")
     await app.until((f) => f.includes("•••••••") && !f.includes("er1"))
     app.input.pressEnter()
@@ -732,7 +732,7 @@ test("a question the chat opens while a Codex secret card has the keys waits as 
     const secret = office.addQuestion(secretCard(child.id, "1"))
     await typeHalfSecret(app)
     const own = office.addQuestion({ session_id: chat.id, question: "Which branch?" })
-    await app.until((f) => f.includes("@minh asks: Which branch? (waiting)"))
+    await app.until((f) => f.includes("@minh asks: Which branch? · ctrl+t to answer"))
     app.input.typeText("er2")
     await app.until((f) => f.includes("•••••••"))
     expect(app.frame()).not.toContain("er2")
@@ -740,7 +740,7 @@ test("a question the chat opens while a Codex secret card has the keys waits as 
     await until(() => office.state.questions[secret.id]!.status !== "open")
     expect(sent(office, `/questions/${secret.id}/answer`)).toEqual([{ answer: { Token: "hunter2" }, answer_kind: "text" }])
     expect(sent(office, `/questions/${own.id}/answer`)).toEqual([])
-    await app.until((f) => f.includes("Which branch?") && !f.includes("(waiting)"))
+    await app.until((f) => f.includes("Which branch?") && !f.includes("to answer"))
   } finally {
     await app.stop()
     office.stop()
@@ -769,6 +769,65 @@ test("a card from an older Codex session waits behind a younger one's that has t
     app.input.pressKey("1")
     await until(() => office.state.questions[card.id]!.status !== "open")
     expect(sent(office, `/questions/${card.id}/answer`)).toEqual([{ answer: "Approve", answer_kind: "option" }])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a draft keeps the keys over a folded Codex card, through one of the chat's own cards coming and going", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    app.input.typeText("half a")
+    await app.until((f) => f.includes("half a"))
+    const card = office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
+    await app.until((f) => f.includes("ctrl+t to answer"))
+    const own = office.addQuestion({ session_id: chat.id, question: "Which branch?", options: ["main", "dev"] })
+    await app.until((f) => f.includes("Which branch?") && f.includes("1. main"))
+    await Bun.sleep(100)
+    app.input.pressKey("1")
+    await until(() => office.state.questions[own.id]!.status !== "open")
+    // The keys go back to the draft, as before the chat's card opened: a digit is text there, not a pick.
+    await app.until((f) => f.includes("half a") && f.includes("ctrl+t to answer"))
+    app.input.typeText(" 2")
+    await app.until((f) => f.includes("half a 2"))
+    expect(sent(office, `/questions/${card.id}/answer`)).toEqual([])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("with the chat's own card waiting behind a Codex card, ctrl+t says it answers that card, goes there, and comes back", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    const card = office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
+    await app.until((f) => f.includes("$ touch a"))
+    const own = office.addQuestion({ session_id: chat.id, question: "Which branch?", options: ["main", "dev"] })
+    // Neither the card's hint nor the waiting line says the prompt: ctrl+t goes to the chat's card.
+    const f = await app.until((f) => f.includes("@minh asks: Which branch? · ctrl+t to answer"))
+    expect(f).toContain("$ touch a")
+    expect(f).not.toContain("prompt")
+    app.input.pressKey("t", { ctrl: true })
+    await app.until((f) => f.includes("1. main") && !f.includes("$ touch a"))
+    await Bun.sleep(100)
+    app.input.pressKey("2")
+    await until(() => office.state.questions[own.id]!.status !== "open")
+    expect(sent(office, `/questions/${own.id}/answer`)).toEqual([{ answer: "dev", answer_kind: "option" }])
+    // Then the Codex card has the keys again, as before ctrl+t.
+    await app.until((f) => f.includes("$ touch a"))
+    app.input.pressKey("1")
+    await until(() => office.state.questions[card.id]!.status !== "open")
+    expect(sent(office, `/questions/${card.id}/answer`)).toEqual([{ answer: "Approve", answer_kind: "option" }])
+    expect(sent(office, `/sessions/${chat.id}/prompt`)).toEqual([])
   } finally {
     await app.stop()
     office.stop()

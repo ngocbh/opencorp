@@ -26,6 +26,8 @@ export function HarnessCard(props: {
   waiting: boolean
   /** Called when Esc interrupts the session, before the office is asked to. */
   onInterrupt?: () => void
+  /** Where ctrl+t gives the keys, for its hint: the prompt unless given. */
+  focusLabel?: string
 }) {
   const office = useOffice()
   const toast = useToast()
@@ -100,7 +102,7 @@ export function HarnessCard(props: {
           // Ctrl+C on an empty box, or off the box, leaves the view as it does in the chat.
           ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
         ]}
-        hints={[...(canInterrupt() ? [{ key: "esc", label: "interrupt Codex" }] : []), { key: focusKey(), label: "prompt" }]}
+        hints={[...(canInterrupt() ? [{ key: "esc", label: "interrupt Codex" }] : []), { key: focusKey(), label: props.focusLabel ?? "prompt" }]}
         onSubmit={(answers) => {
           const m = model()
           const req = m && buildAnswer(m, answers)
