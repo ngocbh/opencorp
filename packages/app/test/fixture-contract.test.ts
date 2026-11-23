@@ -19,6 +19,8 @@ import {
   Health,
   HqStatus,
   Question,
+  RunCall,
+  RunCallList,
   RunPage,
   Session,
 } from "@opencorp/protocol"
@@ -157,7 +159,19 @@ async function script(hq: Browser, code: string): Promise<Seen[]> {
   await step("file at an unserved commit", read("0".repeat(40), file))
   await step("file not in the tree", read(commit.id, "no/such.md"))
   await step("file", read(commit.id, file), CompanyFile)
-  await step("runs", hq.get("/api/runs"), readableIds(RunPage), (b) => b.runs[0])
+  const runs = await step("runs", hq.get("/api/runs"), readableIds(RunPage), (b) => b.runs[0])
+  // The first run's newest reply node, its model calls, and its first call rebuilt.
+  const run = (JSON.parse(runs.text).runs[0]?.run_id as string | undefined) ?? "NOPE"
+  const nodes = JSON.parse((await hq.get(`/api/runs/${run}/nodes`)).text).nodes as { node_id: string }[] | undefined
+  const reply = nodes?.find((n) => n.node_id.endsWith("/reply"))?.node_id ?? "reply"
+  const list = await step("model calls", hq.get(`/api/runs/${run}/calls?${new URLSearchParams({ node: reply })}`),
+    readableIds(RunCallList), (b) => b.calls[0])
+  const n = (JSON.parse(list.text).calls?.[0]?.n as number | undefined) ?? 1
+  await step("model call", hq.get(`/api/runs/${run}/calls/${reply.split("/").map(encodeURIComponent).join("/")}/${n}`),
+    RunCall)
+  await step("model calls without a node", hq.get(`/api/runs/${run}/calls`))
+  await step("model call of no node", hq.get(`/api/runs/${run}/calls/nope/1`))
+  await step("model call of an unknown run", hq.get("/api/runs/NOPE/calls/reply/1"))
   await step("runs with an unknown status", hq.get("/api/runs?status=nope"))
   await step("runs recent with since", hq.get(`/api/runs?${new URLSearchParams({ recent: now, since: day })}`))
   await step("unknown run", hq.get("/api/runs/NOPE"))
@@ -186,6 +200,11 @@ const EXPECTED: [string, number, string | null][] = [
   ["file not in the tree", 404, "no_file"],
   ["file", 200, null],
   ["runs", 200, null],
+  ["model calls", 200, null],
+  ["model call", 200, null],
+  ["model calls without a node", 422, "invalid_body"],
+  ["model call of no node", 404, "not_found"],
+  ["model call of an unknown run", 404, "not_found"],
   ["runs with an unknown status", 422, "invalid_body"],
   ["runs recent with since", 422, "invalid_body"],
   ["unknown run", 404, "not_found"],
@@ -295,7 +314,7 @@ test("the fixture answers the hq script as the real hq does", async () => {
   expect(want.map((s) => [s.step, s.status, s.error])).toEqual(EXPECTED)
   expect(want.filter((s) => s.parses === false).map((s) => s.step)).toEqual([])
   // The chat's session and run are there to compare with.
-  expect(want.filter((s) => s.item).map((s) => s.step)).toEqual(expect.arrayContaining(["sessions", "runs"]))
+  expect(want.filter((s) => s.item).map((s) => s.step)).toEqual(expect.arrayContaining(["sessions", "runs", "model calls"]))
   // Items are compared where both sides have one; the other side's list is then checked by its schema only.
   want.forEach((w, i) => {
     const g = got[i]

@@ -372,6 +372,17 @@ license, the upstream paths and commit, and our paths.
 - **Upstream:** `packages/core/src/plugin/provider/claude-agent/claude/{probe,query-options}.ts` and the recordings
   above, read at commit `df46f69` (2026-11-16).
 - **Ours:** `packages/office/src/tools/claude/{claude,probe}.ts`.
+- **What:** HQ's model call view takes the session UI's look for a tool and a thought, as a design: a tool call is a
+  row with a chevron, its name, its arguments in one line and its state, which opens on its details (`BasicTool`), and
+  a model's reasoning is a "Thought" row that opens on its text (`ThoughtRow`). Ported: the fold of a tall text, shown
+  as its head with a "Show all" toggle (`aria-expanded`, `aria-controls`) that keeps its place when it closes by
+  scrolling its scroll parent back (`FileDiffFold`'s `flip`, `scrollParent`). Adapted: the fold cuts the text to its
+  first lines rather than clipping its height, since HQ's CSP forbids style attributes; native `details` and plain
+  Tailwind classes stand in for upstream's `Collapsible`, icons and CSS; there are no durations or markdown.
+- **Upstream:** `packages/session-ui/src/components/basic-tool.tsx`,
+  `packages/session-ui/src/timeline-next/tools/thought.tsx` and `packages/session-ui/src/tools/tool-renderer.tsx`
+  (`FileDiffFold`, `scrollParent`), read at commit `4332e24f` (2026-11-22).
+- **Ours:** `packages/app/src/runs/call.tsx` (`ToolCard`, `Thought`, `LongText`, `scrollParent`).
 
 ## Paperclip
 

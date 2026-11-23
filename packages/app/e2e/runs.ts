@@ -1,6 +1,9 @@
 // Run Logs data for the fixture HQ: top-level runs, newest first, and the runs started from each, as GET /api/runs and
-// GET /api/runs?parent= answer them; and each run's page (its header, node and record pages) as GET /api/runs/{id} and its routes answer them.
-import type { RunDetail, RunDivider, RunEvent, RunNode, RunSummary } from "@opencorp/protocol"
+// GET /api/runs?parent= answer them; each run's page (its header, node and record pages) as GET /api/runs/{id} and its
+// routes answer them; and agent nodes' model calls, as GET /api/runs/{id}/calls and its routes answer them.
+import type {
+  RunCall, RunCallEntry, RunCallMessage, RunDetail, RunDivider, RunEvent, RunNode, RunSummary,
+} from "@opencorp/protocol"
 
 /** A run id: "01JA1H" and `n`, 26 characters. */
 export const rid = (n: number) => `01JA1H${String(n).padStart(20, "0")}`
@@ -92,7 +95,7 @@ export function runPages(data: Runs): RunPages {
   const nodes5 = [
     node(41, "chat#3/ask", { status: "open", end_seq: null }),
     ...turn(3, 34).slice(3),
-    node(31, "chat#2/reply"),
+    node(31, "chat#2/reply", { kind: "agent" }),
     node(25, "chat#2/reply", { status: "restarted", end_seq: null }),
     ...turn(2, 20).slice(1),
     node(15, "chat#1/reply", { status: "failed", error: "AuthError: 401 invalid key" }),
@@ -118,7 +121,7 @@ export function runPages(data: Runs): RunPages {
     [rid(5)]: { detail: detail(rid(5)), nodes: nodes5, dividers: [{ seq: 30, retried: ["chat#2/reply"] }], events: events5 },
     [rid(3)]: { detail: detail(rid(3)), nodes: [], dividers: [], events: [] },
     [rid(6)]: { detail: detail(rid(6), { usage: { input_tokens: 10, output_tokens: 2, usd: 0 } }),
-                nodes: [node(3, "chat#0/reply")], dividers: [], events: [{ seq: 4, kind: "node_succeeded",
+                nodes: [node(3, "chat#0/reply", { kind: "agent" })], dividers: [], events: [{ seq: 4, kind: "node_succeeded",
                 node_id: "chat#0/reply", payload: { value: { output: "Quota." } }, cut: [],
                 withheld: null, size: null }] },
     [rid(4)]: { detail: detail(rid(4), { log_state: "not_started", log_message: "no run log: the run didn't start",
@@ -144,3 +147,90 @@ export const wholeEvents = (): Record<string, Record<number, RunEvent>> => ({
   [rid(2)]: { 2: { seq: 2, kind: "node_succeeded", node_id: "debrief", payload: { value: { output: { lessons: [] } } },
     cut: [], withheld: null, size: null } },
 })
+
+/** A node's model calls: GET /api/runs/{id}/calls?node= lists `list`, and GET /api/runs/{id}/calls/{node}/{n} answers
+ * the call one of whose attempts is `n`. */
+export type NodeCalls = { list: RunCallEntry[]; calls: RunCall[] }
+/** Model calls by run id and node id. */
+export type RunCalls = Record<string, Record<string, NodeCalls>>
+
+/** A file listing of 30 lines: long enough to fold. */
+export const LISTING = Array.from({ length: 30 }, (_, i) => `notes-${String(i).padStart(2, "0")}.md`).join("\n")
+
+/**
+ * Run 5's `chat#2/reply`: call 2, its first attempt cut short and retried, thinks, then saves the notes (held, then
+ * released by @ngocbh) and lists the folder (allowed as read-only, its long listing folded); call 5 says "Done.". And
+ * run 6's `chat#0/reply`: call 1, which an interrupt cut.
+ */
+export function runCalls(): RunCalls {
+  const at = (second: number) => new Date(BASE + 30 * 60_000 + second * 1000).toISOString()
+  const usage = { input_tokens: 1200, output_tokens: 80, cache_read_tokens: 800, cache_creation_tokens: null,
+                  reasoning_tokens: 40 }
+  const tools = [
+    { name: "workspace_save", description: "Save a file in the workspace.", strict: null,
+      parameters: { type: "object", properties: { path: { type: "string" }, text: { type: "string" } } } },
+    { name: "terminal_run", description: "Run a command in a shell.", strict: null,
+      parameters: { type: "object", properties: { command: { type: "string" } } } },
+  ]
+  const save = { path: "notes.md", text: "Ship on Friday." }
+  const asked = [
+    { role: "user", author: "ngocbh", parts: [{ type: "text" as const, text: "Hi Kai." }] },
+    { role: "assistant", author: null, parts: [{ type: "text" as const, text: "Hello." }] },
+    { role: "user", author: "ngocbh", parts: [{ type: "text" as const, text: "Save the notes, then list the folder." }] },
+  ]
+  const reply2 = { role: "assistant", author: null, parts: [
+    { type: "reasoning" as const, text: "The notes are short: save them, then list." },
+    { type: "text" as const, text: "Saving the notes, then listing the folder." },
+    { type: "tool_call" as const, id: "c1", name: "workspace_save", arguments: save, raw_arguments: null },
+    { type: "tool_call" as const, id: "c2", name: "terminal_run", arguments: { command: "ls" }, raw_arguments: null },
+  ] }
+  const request = (messages: RunCallMessage[]) => ({
+    model: "gpt-5", params: { provider: "openai", model: "gpt-5", reasoning: { effort: "medium" } },
+    system: "You are Kai (@kai), Engineer at Acme. Speak as yourself, in the first person.", messages, tools,
+    tool_choice: null, parallel_tool_calls: null, output_format: null,
+  })
+  const call2: RunCall = {
+    node_id: "chat#2/reply", n: 2, purpose: "chat", request: request(asked), digest_mismatch: false,
+    attempts: [
+      { n: 1, started_at: at(0), first_token_at: at(1), finished_at: at(1), retry_in: 0.4, usage: null,
+        error: { kind: "incomplete", message: "the stream ended before its finish event" } },
+      { n: 2, started_at: at(2), first_token_at: at(3), finished_at: at(4), error: null, retry_in: null, usage },
+    ],
+    reply: reply2,
+    tool_results: [
+      { call_id: "c1", name: "workspace_save", arguments: save, output: "saved notes.md", is_error: false, closed: null,
+        started_at: at(9), note: null, held: true, release_note: "approved by @ngocbh" },
+      { call_id: "c2", name: "terminal_run", arguments: { command: "ls" }, output: LISTING, is_error: false,
+        closed: null, started_at: at(10), note: "read-only", held: false, release_note: null },
+    ],
+    usage, finish: "tool_calls", interrupted: false, cut: [],
+  }
+  const results = { role: "tool", author: null, parts: [
+    { type: "tool_result" as const, call_id: "c1", name: "workspace_save", content: "saved notes.md", is_error: false },
+    { type: "tool_result" as const, call_id: "c2", name: "terminal_run", content: LISTING, is_error: false },
+  ] }
+  const call5: RunCall = {
+    node_id: "chat#2/reply", n: 5, purpose: "chat", request: request([...asked, reply2, results]),
+    digest_mismatch: false,
+    attempts: [{ n: 5, started_at: at(11), first_token_at: at(12), finished_at: at(12), error: null, retry_in: null,
+                 usage }],
+    reply: { role: "assistant", author: null, parts: [{ type: "text", text: "Done." }] },
+    tool_results: [], usage, finish: "stop", interrupted: false, cut: [],
+  }
+  const cutShort: RunCall = {
+    node_id: "chat#0/reply", n: 1, purpose: "chat", digest_mismatch: false,
+    request: request([{ role: "user", author: "ann", parts: [{ type: "text", text: "What's our quota?" }] }]),
+    attempts: [{ n: 1, started_at: at(0), first_token_at: at(1), finished_at: at(2), error: null, retry_in: null,
+                 usage: null }],
+    reply: { role: "assistant", author: null, parts: [{ type: "text", text: "Let me" }] },
+    tool_results: [], usage: null, finish: "interrupted", interrupted: true, cut: [],
+  }
+  const entry = (call: RunCall, model = "gpt-5"): RunCallEntry => ({
+    node_id: call.node_id, n: call.n, purpose: call.purpose, model, started_at: call.attempts[0]!.started_at,
+    attempts: call.attempts.length, finish: call.finish ?? null,
+  })
+  return {
+    [rid(5)]: { "chat#2/reply": { list: [entry(call2), entry(call5)], calls: [call2, call5] } },
+    [rid(6)]: { "chat#0/reply": { list: [entry(cutShort)], calls: [cutShort] } },
+  }
+}
