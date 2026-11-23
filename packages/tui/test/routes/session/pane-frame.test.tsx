@@ -619,6 +619,25 @@ test("a Codex session's card, open before its chat was, shows in the chat above 
     expect(sent(office, `/questions/${card.id}/answer`)).toEqual([{ answer: "Approve", answer_kind: "option" }])
     expect(sent(office, `/sessions/${chat.id}/prompt`)).toEqual([])
     await app.until((f) => !f.includes("$ touch a"))
+    // The chat read only the session's open cards, not its transcript.
+    expect(office.requests.some((r) => r.path === `/sessions/${child.id}/messages`)).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a card a Codex session opens while the office's stream is down shows in the chat once it is back", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    // No stream hears it: the office has no replay, so the chat reads the session's cards again.
+    office.dropStreams()
+    office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
+    await app.until((f) => f.includes("$ touch a"), 8000)
   } finally {
     await app.stop()
     office.stop()

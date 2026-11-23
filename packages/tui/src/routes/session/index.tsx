@@ -364,14 +364,20 @@ export function Session(props: SessionProps) {
       if (parent) office.syncSession(parent).catch(() => {})
     }),
   )
-  // A chat shows its Codex sessions' cards: each live one is loaded too, for the cards it opened before this view did.
-  const loadedChildren = new Set<string>()
+  // A chat shows its Codex sessions' cards. Events bring those they open while the office's stream is up; each live
+  // session's open cards are read once more each time the office comes online, for the cards it opened before this
+  // view did or while the stream was down, since the office has no replay. Only the cards: not the transcripts.
+  const cardsRead = new Set<string>()
   createEffect(() => {
+    if (office.status() !== "online") return cardsRead.clear()
     if (parentID()) return
     for (const entry of harnessFamily(office.state, props.sessionID)) {
-      if (entry.state === "ended" || loadedChildren.has(entry.sessionID)) continue
-      loadedChildren.add(entry.sessionID)
-      office.syncSession(entry.sessionID).catch(() => {})
+      if (entry.state === "ended" || cardsRead.has(entry.sessionID)) continue
+      cardsRead.add(entry.sessionID)
+      office.client.questions
+        .list({ session: entry.sessionID, status: "open" })
+        .then((open) => Promise.all(open.map((q) => office.putQuestion(q))))
+        .catch(() => {})
     }
   })
   // In a child, its name in the chat's list, who drives it and the tokens its harness reported.
