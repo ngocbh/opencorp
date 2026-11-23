@@ -86,12 +86,12 @@ export class PipeShell {
 
   /** Runs the agent's `command` as its own sandboxed call and waits for its end, `waitMs` or `signal`. Refused, with
    *  nothing run, when the shell isn't idle, the command is empty, holds a control character other than newline and
-   *  tab, or is over 64 KiB. */
-  async run(command: string, waitMs: number, signal?: AbortSignal): Promise<Reply> {
+   *  tab, or is over 64 KiB. Its record names `callId`, the yian call that ran it, when given. */
+  async run(command: string, waitMs: number, signal?: AbortSignal, callId?: string): Promise<Reply> {
     const why = this.runProblem(command)
     if (why !== null) return this.refusal(why)
     try {
-      this.host.record.command(command, this.host.driver)
+      this.host.record.command(command, this.host.driver, callId)
     } catch (error) {
       return this.refusal(`the shell's record can't be written: ${(error as Error).message}`)
     }

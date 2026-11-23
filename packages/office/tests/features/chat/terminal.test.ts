@@ -11,9 +11,12 @@ import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { EmployeeTerminal } from "../../../src/features/chat/terminal.ts"
 import { sessionOption } from "../../../src/runtime/questions/approval.ts"
 import { readRecord } from "../../../src/tools/terminal/record.ts"
+import { decidedFor } from "../../../src/tools/terminal/terminal.ts"
+import { Instruments } from "../../../src/runtime/sessions/instruments.ts"
 import { CEO } from "../../server/helpers.ts"
-import { waitFor } from "../../helpers.ts"
+import { tempDir, waitFor } from "../../helpers.ts"
 import { ended, ownSleepers, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import { fakePipes, json, permissions } from "../../tools/terminal/helpers.ts"
 import { fakeLlm, type HarnessOffice, makeHarness, noWorkersLeft, running, status, texts, toolResults } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -180,6 +183,52 @@ sandboxed("Esc stops the agent and the command its call waited on", async () => 
   const shell = listed(h, id)[0]!
   expect(readRecord(recordOf(h, id, shell.id))!.commands).toMatchObject([{ exit: null }])
   expect((await toolResults(h, id))[0]!.note).toBe("an allow rule")
+})
+
+test("a command that ends after the agent's next turn has begun keeps the run and call it started in", async () => {
+  const dir = tempDir()
+  const pipes = fakePipes(dir)
+  const folder = path.join(dir, "session")
+  const terminal = new EmployeeTerminal({
+    shells: pipes.shells,
+    sessionId: "S1",
+    person: "minh",
+    folder,
+    instruments: new Instruments(() => {}),
+    mode: () => "auto",
+  })
+  // Each run's gate let its command run, as an allow rule does.
+  const { perms } = permissions({ mode: "ask" })
+  const allowed = (command: string) => {
+    const plan = terminal.plan("run", { command, why: "x" })
+    if (!plan.decide) throw new Error("the terminal has nothing to decide")
+    return decidedFor(plan, false)
+  }
+  const ledger = new Map([
+    ["r1/n/1/0", allowed("make long")],
+    ["r2/n/1/0", allowed("echo next")],
+  ])
+  const gated = { ...perms, decided: (callId: string | undefined) => ledger.get(callId ?? "") ?? null }
+  terminal.bind(gated)
+  const run = terminal.tools().run
+  expect(json(await run.call({ command: "make long", why: "x", wait: 0 }, { callId: "r1/n/1/0" }))).toMatchObject({
+    status: "running",
+  })
+  // The next turn's run is built while the command goes on: what it runs is its own.
+  terminal.bind(gated)
+  expect(json(await run.call({ command: "echo next", why: "x" }, { callId: "r2/n/1/0" }))).toMatchObject({ exit: 0 })
+  pipes.end("make long", 0)
+  const records = path.join(folder, "terminal")
+  const commands = () =>
+    fs.readdirSync(records).flatMap((id) => readRecord(path.join(records, id))!.commands)
+      .map(({ command, run, call, exit }) => ({ command, run, call, exit }))
+      .sort((a, b) => a.command.localeCompare(b.command))
+  await waitFor(() => commands().every((c) => c.exit === 0), { what: "the long command's end" })
+  expect(commands()).toEqual([
+    { command: "echo next", run: "r2", call: "r2/n/1/0", exit: 0 },
+    { command: "make long", run: "r1", call: "r1/n/1/0", exit: 0 },
+  ])
+  await terminal.close()
 })
 
 sandboxed("a command the agent was told is running goes on after Esc, and the agent reads it later", async () => {

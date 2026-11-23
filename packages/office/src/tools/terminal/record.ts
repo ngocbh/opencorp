@@ -27,13 +27,16 @@ export interface RecordMeta {
 /** A shell's state in its record: running until its host ends it, or until a start finds it cut off. */
 export type RecordState = "running" | "ended" | "failed" | "interrupted"
 
-/** A command the shell ran: what, who ran it, when, and its exit code once it ended (null for none, as when a signal
- *  ended it). No `exit` means it never ended in the record: still running, or cut off. `told` is the key of the note
- *  the agent is owed of its end, once its reply said it runs on, until something else told the agent of it. */
+/** A command the shell ran: what, who ran it, when, the yian call that ran it and that call's run (when it has one),
+ *  and its exit code once it ended (null for none, as when a signal ended it). No `exit` means it never ended in the
+ *  record: still running, or cut off. `told` is the key of the note the agent is owed of its end, once its reply said
+ *  it runs on, until something else told the agent of it. */
 export interface RecordedCommand {
   command: string
   by: string
   at: string
+  call?: string
+  run?: string
   exit?: number | null
   told?: string
 }
@@ -70,11 +73,13 @@ const isText = (value: unknown): value is string => typeof value === "string"
 /** Whether `value` is a command as meta.json holds it. */
 function isCommand(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false
-  const { command, by, at, exit, told } = value as Record<string, unknown>
+  const { command, by, at, call, run, exit, told } = value as Record<string, unknown>
   return (
     isText(command) &&
     isText(by) &&
     isText(at) &&
+    (call === undefined || isText(call)) &&
+    (run === undefined || isText(run)) &&
     (exit === undefined || exit === null || typeof exit === "number") &&
     (told === undefined || isText(told))
   )
@@ -138,11 +143,13 @@ export class InstrumentRecord {
     view.onSettled((text) => this.write(text))
   }
 
-  /** Records that `by` ran `command`: a command line the agent runs, never the owner's keys, which no record takes.
-   *  Throws, recording nothing, when meta.json can't be written. */
-  command(command: string, by: string): void {
+  /** Records that `by` ran `command`, for yian call `callId` (`<run>/...`) when it has one: a command line the agent
+   *  runs, never the owner's keys, which no record takes. Throws, recording nothing, when meta.json can't be written. */
+  command(command: string, by: string, callId?: string): void {
     if (this.file.state !== "running") return
-    this.file.commands.push({ command, by, at: now() })
+    const slash = callId?.indexOf("/") ?? -1
+    const call = callId === undefined ? {} : { call: callId, run: slash < 0 ? callId : callId.slice(0, slash) }
+    this.file.commands.push({ command, by, at: now(), ...call })
     try {
       this.save()
     } catch (error) {

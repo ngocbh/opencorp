@@ -502,7 +502,7 @@ export class Terminal {
       seen: false, stopped: null, told: false, end: null, ended: Promise.withResolvers<void>(),
     }
     entry.running = running
-    const reply = await shell.run(parsed.command, parsed.waitMs, call.signal)
+    const reply = await shell.run(parsed.command, parsed.waitMs, call.signal, call.callId)
     // Refused by the shell itself: it never started.
     if (!running.seen && entry.running === running) entry.running = null
     if (!call.signal.aborted && running.seen && reply.refused === undefined && runsOn(reply)) {

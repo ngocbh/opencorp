@@ -333,15 +333,16 @@ export class PtyShell {
 
   /** Runs the agent's `command` and waits for its end, a secret prompt, `waitMs` or `signal`. Refused, with nothing
    *  typed, when the shell isn't idle, the owner is part-way through a line, the command is empty or holds a control
-   *  character other than newline and tab, or a line of it would be over 1000 bytes. */
-  async run(command: string, waitMs: number, signal?: AbortSignal): Promise<Reply> {
+   *  character other than newline and tab, or a line of it would be over 1000 bytes. Its record names `callId`, the
+   *  yian call that ran it, when given. */
+  async run(command: string, waitMs: number, signal?: AbortSignal, callId?: string): Promise<Reply> {
     const why = this.runProblem(command)
     if (why !== null) return this.refusal(why)
     const nonce = randomBytes(NONCE_BYTES).toString("hex")
     const token = randomBytes(NONCE_BYTES).toString("hex")
     const typed = typedLine(command, token, nonce, this.kind)
     try {
-      this.host.record.command(command, this.host.driver)
+      this.host.record.command(command, this.host.driver, callId)
     } catch (error) {
       return this.refusal(`the shell's record can't be written: ${(error as Error).message}`)
     }

@@ -209,6 +209,18 @@ test("a record left running when its host stopped is marked interrupted on the n
   expect(recoverRecords(path.join(session, "missing"))).toEqual([])
 })
 
+test("a command's record names the call and the run it started in, when it has them", () => {
+  const dir = path.join(tempDir(), "sh_1")
+  const record = new InstrumentRecord(dir, META)
+  record.command("ls", "@minh", "r1/chat#0/reply/1/0")
+  record.exit(0)
+  record.command("make", "@minh")
+  expect(readRecord(dir)!.commands.map(({ command, run, call }) => ({ command, run, call }))).toEqual([
+    { command: "ls", run: "r1", call: "r1/chat#0/reply/1/0" },
+    { command: "make", run: undefined, call: undefined },
+  ])
+})
+
 test("recovery marks each record still running interrupted, once: a command with no exit is one its host's stop cut off", () => {
   const session = tempDir()
   const left = new InstrumentRecord(path.join(session, "sh_1"), { ...META, id: "sh_1" })

@@ -477,7 +477,9 @@ test("a command that ends after the agent's wait gets its exit in its shell's re
   const check = async () => ({ verdict: "run" as const, reason: "builds the project" })
   const t = openTerminal({ perms: permissions({ check }).perms, shells: (dir) => (fake = fakePipes(dir)).shells })
   expect(json(await t.call("run", { command: "make", why: "x", wait: 0 }))).toMatchObject({ status: "running" })
-  expect(t.record("sh_1").commands).toEqual([{ command: "make", by: "@minh", at: expect.any(String) }])
+  expect(t.record("sh_1").commands).toEqual([
+    { command: "make", by: "@minh", at: expect.any(String), call: "r/n/1/0", run: "r" },
+  ])
   fake.end("make", 0)
   await waitFor(() => t.record("sh_1").commands[0]?.exit === 0, { what: "the command's exit" })
 })
