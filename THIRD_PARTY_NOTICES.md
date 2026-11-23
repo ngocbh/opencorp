@@ -261,9 +261,10 @@ license, the upstream paths and commit, and our paths.
   into one muted line counting its finished work (`+ 3 commands, 1 edit, 4 reads`), spinning with what runs until
   something finishes, and a click opens it; Medium groups only reads and searches (`Explored: 2 reads, 1 search`);
   High opens those groups. Questions never fold, a call waiting on an approval stays below its group, and the open
-  groups are kept per session in memory. The group tree is copied as is. Adapted: a run is an assistant message's
-  consecutive tool parts, which a text part ends; the office's tools map to upstream's by their view (a Codex or
-  Claude Code call as its subagent call); no thoughts, instruction loads or code-mode scripts; the settings live in
+  groups are kept per session in memory. The group tree is copied as is, its merge and split included, which only its
+  tests use until the transcript pages. Adapted: a run is an assistant message's consecutive tool parts, which a text,
+  file or error part ends (blank text doesn't); the office's tools map to upstream's by their view (a Codex or Claude
+  Code call as its subagent call, running while its session runs); no thoughts, instruction loads or code-mode scripts; the settings live in
   `kv.json` and the commands in the palette; the expanded calls keep the transcript's own spacing; no scroll anchors
   or paging.
 - **Upstream:** `packages/tui/src/routes/session/grouping/{tree,session}.ts`,
