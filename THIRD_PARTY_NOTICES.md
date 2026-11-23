@@ -235,6 +235,18 @@ license, the upstream paths and commit, and our paths.
   read at commit `4332e24f` (2026-11-21).
 - **Ours:** `packages/tui/src/routes/session/index.tsx` (`UserMessage`, `unreadHint`),
   `packages/tui/test/routes/session/unread-message-frame.test.tsx`.
+- **What:** the descendants' requests in the parent session: a session with no parent lists its own requests, then
+  its descendants', and answers a child's where it is; a child lists only its own. Adapted: the requests are the open
+  Codex cards of the chat's Codex and Claude Code sessions, shown above the chat's prompt as in the child's own view
+  (the first card or the prompt holding the keys), waiting as lines while one of the chat's own cards holds the
+  prompt's place; the card with the keys keeps them until it closes or ctrl+t moves them, a card that opens meanwhile
+  waiting as a line, the chat's own included, and once the chat's own card closes the keys go back to whoever had them
+  before it; Esc on one interrupts that child.
+- **Upstream:** `packages/tui/src/routes/session/index.tsx` (`descendantSessionIDs`, `permissions`, `forms`, the
+  prompt's `Switch`), read at commit `4332e24f` (2026-11-21).
+- **Ours:** `packages/tui/src/routes/session/composer/tabs.ts` (`familyQuestions`),
+  `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/component/session-frame.tsx`,
+  `packages/tui/test/routes/session/pane-frame.test.tsx`.
 - **What:** the check before a terminal starts that its folder is a directory, since a PTY's library may start the
   shell in the home instead, ported for learning's shells.
 - **Upstream:** `packages/core/src/persistent-pty/index.ts` (`create`), read at commit `df46f69` (2026-11-16).

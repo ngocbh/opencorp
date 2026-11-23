@@ -1,5 +1,5 @@
 import { createStore } from "solid-js/store"
-import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
 import { Portal, useTerminalDimensions } from "@opentui/solid"
 import type { BoxRenderable, TextareaRenderable } from "@opentui/core"
 import type { AnswerRequest, Question } from "@opencorp/protocol"
@@ -11,6 +11,7 @@ import { usePermission } from "../../context/permission"
 import { useTuiConfig } from "../../config"
 import { useBindings, useCommandShortcut, useOpenCorpModeStack } from "../../keymap"
 import { useDialog } from "../../ui/dialog"
+import { useInteractivity } from "../../context/interactivity"
 import { useToast } from "../../ui/toast"
 import { createReadThrough, wrap } from "../../ui/read-through"
 import { errorMessage } from "../../util/error"
@@ -82,8 +83,11 @@ export function PermissionPrompt(props: { question: Question | undefined }) {
     return open.length > 1 && at >= 0 ? ` · ${at + 1} of ${open.length}` : ""
   })
 
-  // Base-mode keys (the prompt's, Shift+Tab's mode switch) are off while the card shows.
-  onMount(() => {
+  // Base-mode keys (the prompt's, Shift+Tab's mode switch) are off while the card shows, as a question card's are:
+  // only while its side has the keys and no dialog is over it, since the mode stack is the whole app's.
+  const interactive = useInteractivity()
+  createEffect(() => {
+    if (!interactive() || dialog.stack.length > 0) return
     const popMode = modeStack.push(QUESTION_MODE)
     onCleanup(popMode)
   })

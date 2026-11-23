@@ -21,7 +21,7 @@ import { PromptRefProvider, usePromptRef } from "../context/prompt"
 import { useRoute } from "../context/route"
 import { useBindings, useCommandShortcut, useOpenCorpKeymap } from "../keymap"
 import { Session } from "../routes/session"
-import { childState } from "../routes/session/composer/tabs"
+import { childState, familyQuestions } from "../routes/session/composer/tabs"
 import { InstrumentPanel, InstrumentScreen, type Driver } from "../routes/session/instrument-view"
 import { endsLine } from "../routes/session/keys"
 import { Sidebar } from "../routes/session/sidebar"
@@ -152,8 +152,8 @@ export function SessionFrame(props: { sessionID: string }) {
   const [itself, setItself] = createSignal(false)
   // A pane that goes while the owner is mid-line in its shell, however it goes, leaves the rest of that line (a
   // password's, perhaps) going nowhere: the keys are dropped until its Enter, Ctrl-C or Ctrl-D, and only then does
-  // the chat get them.
-  const [dropping, setDropping] = createSignal(false)
+  // the chat get them. So does a card that closes under their typing without their answer: what closed, while they are.
+  const [dropping, setDropping] = createSignal<"shell" | "card">()
 
   const focusSession = () => {
     // Full screen leaves no chat, unless it is a narrow screen's, which waits once the chat has the keys.
@@ -202,15 +202,17 @@ export function SessionFrame(props: { sessionID: string }) {
         if (!dropping()) return
         consume()
         if (!endsLine(event)) return
-        setDropping(false)
-        prompt.current?.focus()
+        const what = dropping()
+        setDropping(undefined)
+        // After a card, the card or prompt with the keys has focus already.
+        if (what === "shell") prompt.current?.focus()
       },
       { priority: 200 },
     ),
   )
   /** Starts dropping the owner's keys when the open pane goes while they are mid-line in its shell. */
   function leaving() {
-    if (untrack(midLine)) setDropping(true)
+    if (untrack(midLine)) setDropping("shell")
   }
 
   /** Opens instrument `id` in the pane, with the keys and in the presentation last chosen; or, with `keys` false,
@@ -268,12 +270,13 @@ export function SessionFrame(props: { sessionID: string }) {
 
   // A PTY shell waiting for the approver's password opens itself when no pane is open. It takes the keys only while
   // the owner types nowhere else, so the password can't go to the chat and on to the model; with a draft in the prompt
-  // or a card open, it opens beside the chat (waiting, on a narrow screen) and the owner gives it the keys. It closes
-  // once the wait ends and the owner has finished the line they were typing into it, a password's rest that must not
-  // reach the chat, unless the owner has since opened something else.
+  // or a card open (the chat's, or one of its Codex sessions' that shows in it), it opens beside the chat (waiting, on
+  // a narrow screen) and the owner gives it the keys. It closes once the wait ends and the owner has finished the line
+  // they were typing into it, a password's rest that must not reach the chat, unless the owner has since opened
+  // something else.
   const secretWait = (i: Instrument) => i.interactive && i.status === "waiting" && i.waiting === "secret"
   const typingElsewhere = () =>
-    !!prompt.current?.current.input || openQuestions(office.state, props.sessionID).length > 0
+    !!prompt.current?.current.input || familyQuestions(office.state, props.sessionID).length > 0
   createEffect(
     on(
       () => (approving() ? shells().find(secretWait)?.id : undefined),
@@ -368,7 +371,8 @@ export function SessionFrame(props: { sessionID: string }) {
         title: "Open the picker of the chat's sessions and shells",
         category: "Session",
         hidden: true,
-        enabled: openQuestions(office.state, props.sessionID).length === 0,
+        // The picker can't show while a card holds its place, its Codex sessions' cards in a chat included.
+        enabled: familyQuestions(office.state, props.sessionID).length === 0,
         run: selectInstrument,
       },
       {
@@ -459,6 +463,7 @@ export function SessionFrame(props: { sessionID: string }) {
             onOpen={openInstrument}
             onPicker={(show) => (showPicker = show)}
             keysDropped={dropping()}
+            onCardLost={() => setDropping("card")}
             paneNote={paneNote()}
           />
         </InteractivityProvider>
@@ -531,6 +536,9 @@ export function SessionFrame(props: { sessionID: string }) {
                                   pane={{ close: closePanel, leave: leavePane }}
                                   width={(fullscreen() ? availableWidth() : paneResize.size()) - 2}
                                   onOpen={openInstrument}
+                                  // Full screen, the chat that says it is hidden.
+                                  keysDropped={fullscreen() ? dropping() : undefined}
+                                  onCardLost={() => setDropping("card")}
                                 />
                               </PromptRefProvider>
                             }

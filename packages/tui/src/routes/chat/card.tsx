@@ -8,6 +8,7 @@ import { personLabel } from "../../util/transcript"
 import { useToast } from "../../ui/toast"
 import { useTuiConfig } from "../../config"
 import { useBindings } from "../../keymap"
+import { useDialog } from "../../ui/dialog"
 import { buildAnswer, cardModel } from "./answer"
 import { leaveBindings } from "./leave"
 import { QUESTION_MODE, QuestionView, type QuestionViewHandle } from "./question-view"
@@ -19,11 +20,19 @@ import { display } from "../../util/printable"
  * expired one shows that discussion, which can be dismissed. It stays mounted, `hidden`, while its side chat shows,
  * so page answers survive the chat.
  */
-export function QuestionCard(props: { question: Question | undefined; hidden?: boolean; onChat: () => void }) {
+export function QuestionCard(props: {
+  question: Question | undefined
+  hidden?: boolean
+  onChat: () => void
+  /** Called when the card closes under the owner's typing without their answer or stop from here (the run restarted,
+   *  or it was answered elsewhere): the rest of their line must go nowhere. */
+  onLost?: () => void
+}) {
   const office = useOffice()
   const toast = useToast()
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
+  const dialog = useDialog()
 
   // The card stays mounted while its question is replaced by a newer copy (a reconnect re-reads
   // it); keep the last copy for the moment the question goes before the card does.
@@ -73,11 +82,19 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
   // One office call at a time: a second pick, stop, send back, or dismiss while one is in flight
   // would race it.
   let sending = false
+  // Whether one of the owner's actions from here (an answer, a stop, a send back) is out or closed the card: the card
+  // closing after it, an answer refused because it was taken say, is their doing.
+  let answered = false
 
   function call(run: () => Promise<unknown>) {
     if (sending) return toast.show({ message: "Busy: the last action is still sending", variant: "info" })
     sending = true
-    run().finally(() => (sending = false))
+    answered = true
+    run().finally(() => {
+      sending = false
+      // One that left the card open, as a dismiss or a failure does, is no longer the owner's doing.
+      if (office.state.questions[question().id]?.status === "open") answered = false
+    })
   }
 
   function send(req: AnswerRequest) {
@@ -182,9 +199,13 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
       ]}
       hints={stoppable() ? [{ key: "esc", label: `stop ${asker()}` }] : []}
       notice={confirming() ? `Stop ${asker()}? y/N` : undefined}
-      enabled={!confirming()}
+      // A dialog over the card has the keys, as over a Codex card: a digit typed in the palette picks nothing here.
+      enabled={!confirming() && dialog.stack.length === 0}
       hidden={props.hidden}
       ref={(v) => (view = v)}
+      onGoneTyping={() => {
+        if (!answered && office.state.questions[question().id]?.status !== "open") props.onLost?.()
+      }}
       onSubmit={(answers) => {
         const m = model()
         const req = m && buildAnswer(m, answers)

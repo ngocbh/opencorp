@@ -684,3 +684,81 @@ test("a resize that makes a read question longer hides its answers until its new
     office.stop()
   }
 })
+
+test("a card that opens under the open palette takes none of its keys, and has them once the palette closes", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh auto ·"))
+    app.input.pressKey("p", { ctrl: true })
+    await app.until((f) => f.includes("Commands"))
+    const q = office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"] })
+    await Bun.sleep(200)
+    app.input.typeText("1")
+    await Bun.sleep(200)
+    expect(office.requests.filter((r) => r.path === `/questions/${q.id}/answer`)).toEqual([])
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Commands") && f.includes("Deploy now?"))
+    await Bun.sleep(100)
+    app.input.pressKey("1")
+    await app.until(() => office.state.questions[q.id].status !== "open")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("sending a discussion back with text in the box drops none of the owner's keys", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({
+    session_id: s.id,
+    question: "Deploy now?",
+    options: ["yes", "no"],
+    discussion: [{ role: "user", text: "why?" }],
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Send discussion back"))
+    await Bun.sleep(100)
+    app.input.pressKey("3")
+    await Bun.sleep(100)
+    app.input.typeText("abc")
+    await app.until((f) => f.includes("abc"))
+    app.input.pressArrow("down")
+    await app.setup.renderOnce()
+    app.input.pressArrow("down")
+    await app.setup.renderOnce()
+    app.input.pressEnter()
+    await app.until(() => office.state.questions[q.id].status !== "open")
+    await app.until((f) => !f.includes("Deploy now?"))
+    await Bun.sleep(100)
+    expect(app.frame()).not.toContain("keys are dropped")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("an answer the office refuses as already answered closes the card and drops none of the owner's keys", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({ session_id: s.id, question: "Which branch?" })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Which branch?"))
+    // Answered elsewhere, with no event yet: this TUI's answer is refused.
+    office.state.questions[q.id] = { ...office.state.questions[q.id], status: "answered", answer: "dev" }
+    await Bun.sleep(100)
+    app.input.typeText("main")
+    await app.until((f) => f.includes("main"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("already answered") && !f.includes("Which branch?"))
+    await Bun.sleep(100)
+    expect(app.frame()).not.toContain("keys are dropped")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

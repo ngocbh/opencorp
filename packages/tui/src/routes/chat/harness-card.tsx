@@ -26,6 +26,11 @@ export function HarnessCard(props: {
   waiting: boolean
   /** Called when Esc interrupts the session, before the office is asked to. */
   onInterrupt?: () => void
+  /** Where ctrl+t gives the keys, for its hint: the prompt unless given. */
+  focusLabel?: string
+  /** Called when the card closes under the owner's typing without their answer from here (Codex stopped waiting, or
+   *  it was answered elsewhere): the rest of their line must go nowhere. */
+  onLost?: () => void
 }) {
   const office = useOffice()
   const toast = useToast()
@@ -41,6 +46,9 @@ export function HarnessCard(props: {
   )
   // One answer call at a time: a second pick while one is in flight would race it.
   let sending = false
+  // Whether the owner's answer or Esc from here is out or taken: the card closing after it (an answer refused because it
+  // was taken, Codex no longer waiting once the turn stops) is their doing.
+  let answered = false
 
   /** Says the answer never reached Codex, which stopped waiting for the card. */
   function unused() {
@@ -50,13 +58,14 @@ export function HarnessCard(props: {
   function send(req: AnswerRequest) {
     if (sending) return
     sending = true
+    answered = true
     const id = props.question.id
     office.client.questions
       .answer(id, req)
       .then((q) => {
         // The card closes on any status but open; a stale one means Codex never got the answer.
         if (q.status === "stale") unused()
-        office.putQuestion(q)
+        return office.putQuestion(q)
       })
       .catch((error) => {
         if (error instanceof OfficeError && error.status === 409)
@@ -69,14 +78,20 @@ export function HarnessCard(props: {
             })
         toast.show({ title: "Answering failed", message: errorMessage(error), variant: "error" })
       })
-      .finally(() => (sending = false))
+      .finally(() => {
+        sending = false
+        // An answer that left the card open, as one that failed, is no longer the owner's doing.
+        if (office.state.questions[id]?.status === "open") answered = false
+      })
   }
 
   function interrupt() {
     props.onInterrupt?.()
-    office.client.sessions
-      .interrupt(props.question.session_id)
-      .catch((error) => toast.show({ title: "Interrupting failed", message: errorMessage(error), variant: "error" }))
+    answered = true
+    office.client.sessions.interrupt(props.question.session_id).catch((error) => {
+      answered = false
+      toast.show({ title: "Interrupting failed", message: errorMessage(error), variant: "error" })
+    })
   }
 
   return (
@@ -100,11 +115,14 @@ export function HarnessCard(props: {
           // Ctrl+C on an empty box, or off the box, leaves the view as it does in the chat.
           ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
         ]}
-        hints={[...(canInterrupt() ? [{ key: "esc", label: "interrupt Codex" }] : []), { key: focusKey(), label: "prompt" }]}
+        hints={[...(canInterrupt() ? [{ key: "esc", label: "interrupt Codex" }] : []), { key: focusKey(), label: props.focusLabel ?? "prompt" }]}
         onSubmit={(answers) => {
           const m = model()
           const req = m && buildAnswer(m, answers)
           if (req) send(req)
+        }}
+        onGoneTyping={() => {
+          if (!answered && office.state.questions[props.question.id]?.status !== "open") props.onLost?.()
         }}
       >
         <Show when={props.question.title}>

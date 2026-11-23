@@ -5,7 +5,6 @@ import {
   createSignal,
   For,
   onCleanup,
-  onMount,
   Show,
   untrack,
   type ParentProps,
@@ -19,6 +18,7 @@ import { useTuiConfig } from "../../config"
 import { clearFirst, useBindings, useOpenCorpModeStack } from "../../keymap"
 import { SecretInput } from "../../ui/secret-input"
 import { useInteractivity } from "../../context/interactivity"
+import { useDialog } from "../../ui/dialog"
 import { createReadThrough, wrap } from "../../ui/read-through"
 import type { CardPage, PageAnswer } from "./answer"
 import { display } from "../../util/printable"
@@ -73,6 +73,9 @@ export function QuestionView(
     hidden?: boolean
     /** Gets the view's handle once, as it mounts. */
     ref?: (view: QuestionViewHandle) => void
+    /** Called as it goes while it has the keys and a page holds typed text: its caller says whether that leaves the
+     *  owner mid-line, as when its card closed unanswered. */
+    onGoneTyping?: () => void
   }>,
 ) {
   const { theme } = useTheme()
@@ -158,6 +161,15 @@ export function QuestionView(
     )
   }
 
+  /** Whether a page holds text the owner typed: the box's, whose change event comes late, or a page's answer. */
+  function typedText() {
+    const el = box()
+    return (!!el && !el.isDestroyed && el.plainText !== "") || store.answers.some((a) => !!a?.text)
+  }
+  onCleanup(() => {
+    if (active() && typedText()) props.onGoneTyping?.()
+  })
+
   /** Copies the box's text into this page's answer; its change event comes late, so read it now. */
   function sync() {
     const el = box()
@@ -229,7 +241,14 @@ export function QuestionView(
     next()
   }
 
-  onMount(() => {
+  // Its mode is the keymap's while its side has the keys, as the picker's is, and while it shows with no dialog over
+  // it: the stack is the whole app's, and a mode pushed later lands on top. So a card shown in both the chat and the
+  // pane leaves the other side's base keys (a prompt's Esc) alone, a side chat's mode stays on top when the keys come
+  // back, and a dialog's mode stays on top while the dialog shows. Not `enabled`: a card's own confirm keys, shown
+  // while it isn't, are in this mode.
+  const dialog = useDialog()
+  createEffect(() => {
+    if (!interactive() || props.hidden || dialog.stack.length > 0) return
     const popMode = modeStack.push(QUESTION_MODE)
     onCleanup(popMode)
   })

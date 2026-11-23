@@ -2,11 +2,18 @@
 // The picker's tabs, ported from the upstream TUI's: a fixed order, the active tab kept while tabs come and go, and the
 // tab it opens on, the first with something running. Ours are Sessions (the chat's Codex and Claude Code sessions) and
 // Shell (its shells).
-import type { Instrument, Session } from "@opencorp/protocol"
+import type { Instrument, Question, Session } from "@opencorp/protocol"
+import { emptyState } from "@opencorp/client"
 import { expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { createSignal } from "solid-js"
-import { busyCounts, busyTab, createComposerTabs, harnessFamily } from "../../../src/routes/session/composer/tabs"
+import {
+  busyCounts,
+  busyTab,
+  createComposerTabs,
+  familyQuestions,
+  harnessFamily,
+} from "../../../src/routes/session/composer/tabs"
 
 async function setup(defaultTab?: string) {
   const [open, setOpen] = createSignal(false)
@@ -112,6 +119,31 @@ test("the family is the chat's Codex and Claude Code sessions, those the store d
   ])
   // From a child, the same family.
   expect(harnessFamily({ sessions, instruments }, ids.a).map((e) => e.sessionID)).toEqual([ids.a, ids.b])
+})
+
+test("a chat's open cards are its own first, then its sessions' in the picker's order; a child's are its own", () => {
+  const card = (id: string, sid: string, at: string, status: Question["status"] = "open") =>
+    ({ id, session_id: sid, source: "harness", run_id: "turn_1", node_id: "1", question: id, status, created_at: at }) as Question
+  const state = {
+    ...emptyState(),
+    sessions: [
+      session(ids.chat, {}),
+      session(ids.a, { harness: "codex", kind: "instrument", instrument_of: ids.chat, status: "busy" }),
+      session(ids.b, {
+        harness: "codex", kind: "instrument", instrument_of: ids.chat, status: "busy", created_at: "2026-11-20T10:01:00.000Z",
+      }),
+    ],
+    questions: Object.fromEntries(
+      [
+        card("b1", ids.b, "2026-11-20T10:02:00.000Z"),
+        card("a1", ids.a, "2026-11-20T10:03:00.000Z"),
+        card("a0", ids.a, "2026-11-20T10:00:30.000Z", "answered"),
+        card("own", ids.chat, "2026-11-20T10:04:00.000Z"),
+      ].map((q) => [q.id, q]),
+    ),
+  }
+  expect(familyQuestions(state, ids.chat).map((q) => q.id)).toEqual(["own", "a1", "b1"])
+  expect(familyQuestions(state, ids.a).map((q) => q.id)).toEqual(["a1"])
 })
 
 test("the picker opens on the first busy tab, else Sessions", () => {
