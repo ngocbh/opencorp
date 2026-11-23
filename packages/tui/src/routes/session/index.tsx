@@ -1252,7 +1252,8 @@ export function toolView(
     const reply = terminalReply(output)
     const session = stringValue(input[kind]) ?? stringValue(reply?.[kind])
     const message = stringValue(input.message)
-    return { view: "harness", input: { harness: kind, call: harness[2], session, message, refused: reply?.refused } }
+    const { refused, status, error } = reply ?? {}
+    return { view: "harness", input: { harness: kind, call: harness[2], session, message, refused, status, error } }
   }
   return { view: "generic", input }
 }
@@ -1989,10 +1990,10 @@ function Question(props: ToolProps) {
 
 /**
  * An employee's call to a Codex or Claude Code session, as upstream's subagent row: the session by the picker's name
- * (`Codex: codex 1`) and the message, or the call (`interrupt`), then why it was refused, as a terminal call says;
- * `✓` once a start is done and `↳` for a call to a session already started, or a spinner while the call or the
- * session runs. A click opens the session in the right pane; a call to a session the chat doesn't list (a start that
- * hasn't replied, or one its host removed) opens nothing.
+ * (`Codex: codex 1`) and the message, or the call (`interrupt`), then why it was refused or the session failed, as a
+ * terminal call says; `✓` once a start is done and `↳` for a call to a session already started, or a spinner while
+ * the call or the session runs. A click opens the session in the right pane; a call to a session the chat doesn't list
+ * (a start that hasn't replied, or one its host removed) opens nothing.
  */
 function HarnessCall(props: ToolProps) {
   const ctx = use()

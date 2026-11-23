@@ -177,7 +177,7 @@ test("a click on a call opens its session in the right pane; a call to a session
   }
 })
 
-test("a refused call says why after its label, as a terminal call does", async () => {
+test("a refused call, or one whose session failed, says why after its label, as a terminal call does", async () => {
   const { office, app } = await boot(
     [
       call(
@@ -186,6 +186,11 @@ test("a refused call says why after its label, as a terminal call does", async (
         JSON.stringify({ refused: "a turn the owner started runs" }),
       ),
       call("codex_send", { codex: "codex 1", message: "Go on" }, reply("codex", "codex 1")),
+      call(
+        "codex_history",
+        { codex: "codex 1" },
+        JSON.stringify({ codex: "codex 1", status: "failed", output: [], next: 0, more: false, error: "Codex exited" }),
+      ),
     ],
     (office, chat) => {
       child(office, chat, "codex", "codex 1", "idle")
@@ -197,6 +202,7 @@ test("a refused call says why after its label, as a terminal call does", async (
       "↳ Codex: codex 1 — Use the other API · refused: a turn the owner started runs",
     )
     expect(row(f, "Codex: codex 1 — Go on").text).toBe("↳ Codex: codex 1 — Go on")
+    expect(row(f, "Codex: codex 1 — history").text).toBe("↳ Codex: codex 1 — history · failed: Codex exited")
   } finally {
     await app.stop()
     office.stop()

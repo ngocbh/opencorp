@@ -30,7 +30,7 @@ test("toolView reads an employee's Codex or Claude Code call: the harness, the c
   // A start names its session only in its reply.
   expect(toolView("codex_start", { message: "Fix the parser", wait: 60 }, reply("codex", "codex 1"))).toEqual({
     view: "harness",
-    input: { harness: "codex", call: "start", session: "codex 1", message: "Fix the parser" },
+    input: { harness: "codex", call: "start", session: "codex 1", message: "Fix the parser", status: "idle" },
   })
   // While it runs there is no reply yet, and a refusal names no session.
   expect(toolView("codex_start", { message: "Fix the parser" }, "{}").input.session).toBeUndefined()
@@ -40,6 +40,15 @@ test("toolView reads an employee's Codex or Claude Code call: the harness, the c
     call: "start",
     message: "x",
     refused: "four sessions run",
+  })
+  // A session that failed says why.
+  const failed = JSON.stringify({ codex: "codex 1", status: "failed", output: [], error: "Codex exited" })
+  expect(toolView("codex_history", { codex: "codex 1" }, failed).input).toEqual({
+    harness: "codex",
+    call: "history",
+    session: "codex 1",
+    status: "failed",
+    error: "Codex exited",
   })
   // The other calls name it in their input.
   expect(toolView("claude_send", { claude: "claude 2", message: "Go on" }, "{}")).toEqual({
