@@ -51,8 +51,6 @@ export interface GateHost {
   /** What the session's terminal would act on for its tool `tool` (`run`, `type`) with `args`, read from its shells
    *  now (`Terminal.plan`); nothing to decide when it has no terminal or the arguments weren't recorded. */
   planCommand(tool: string, args: Readonly<Record<string, unknown>> | null): CommandPlan
-  /** The terminal's audit row of a command the gate held or refused (`Terminal.audited`). */
-  audited(plan: CommandPlan, outcome: "held" | "denied", reason: string): void
   /** Runs held call `callId` once (`release`), `note` kept in the run log; `card`'s answer is consumed once the run
    *  takes it. */
   release(callId: string, note: string | null, card: QuestionRecord | null): Promise<void>
@@ -154,8 +152,8 @@ export class CallGate {
         ? { cwd: text(approval.args.cwd) }
         : { line: text(approval.args.line) ?? "", into: text(approval.args.into) }
     return {
-      why: `approved by @${card.answered_by}`, basis, approved: true, tool: approval.tool, text: approval.action,
-      partial: approval.partial, shell: text(approval.args.shell),
+      basis, approved: true, tool: approval.tool, text: approval.action, partial: approval.partial,
+      shell: text(approval.args.shell),
     }
   }
 
@@ -175,18 +173,14 @@ export class CallGate {
     }
     if (decision.verdict === "run") {
       if (command !== null) {
-        const decided = decidedFor(command, `by ${decision.note}`, false)
-        this.#decided.set(call.callId, { decided, runId, gated: true })
+        this.#decided.set(call.callId, { decided: decidedFor(command, false), runId, gated: true })
       }
       return decision.note === null ? undefined : { run: true, note: decision.note }
     }
     // A later call of a reply the approver said No to: the same No, where it would ask.
     const refused = this.#refusedReplies.get(replyOf(call.callId))
     if (refused !== undefined && decision.verdict !== "refuse") decision = { verdict: "refuse", reason: refused }
-    if (decision.verdict === "refuse") {
-      if (command !== null) this.#host.audited(command, "denied", decision.reason)
-      return { refuse: decision.reason }
-    }
+    if (decision.verdict === "refuse") return { refuse: decision.reason }
     const held = { tool, source, arguments: args, attempt }
     const terminal = command !== null
     const hold = { runId, callId: call.callId, call: held, terminal, command, held: false, check: null }
@@ -309,12 +303,11 @@ export class CallGate {
   }
 
   /** Releases held call `hold` (`GateHost.release`), remembering that it did, `note` kept in the run log; a terminal
-   *  call takes what let it run when it acts (`by <note>`, `approved` when a card's Yes stands behind it). */
+   *  call takes what was decided when it acts (`approved` when a card's Yes stands behind it). */
   #release(hold: Hold, note: string | null, card: QuestionRecord | null, approved: boolean): Promise<void> {
     this.#released.add(hold.callId)
     if (hold.command !== null) {
-      const decided = decidedFor(hold.command, `by ${note}`, approved)
-      this.#decided.set(hold.callId, { decided, runId: hold.runId, gated: false })
+      this.#decided.set(hold.callId, { decided: decidedFor(hold.command, approved), runId: hold.runId, gated: false })
     }
     return this.#host.release(hold.callId, note, card)
   }
@@ -328,7 +321,6 @@ export class CallGate {
         return this.#release(hold, decision.note, null, false)
       case "refuse":
         this.#holds.delete(hold.callId)
-        if (hold.command !== null) this.#host.audited(hold.command, "denied", decision.reason)
         return this.#host.completeCall(hold.callId, decision.reason)
       case "check":
         this.#judge(hold, decision.input, decision.rules)
@@ -337,7 +329,6 @@ export class CallGate {
         try {
           const card = hold.command === null ? toolCard(hold.call, decision) : commandCard(hold.command, decision)
           this.#host.cards.hold(card, hold.runId, hold.callId)
-          if (hold.command !== null) this.#host.audited(hold.command, "held", decision.reason)
         } catch (error) {
           // A card that can't be stored would leave the call waiting for nobody.
           this.#host.log(`a held call's card can't be made (${errorName(error)})`)

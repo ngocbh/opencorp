@@ -10,7 +10,6 @@ import type { Message, ToolPart } from "@opencorp/protocol"
 import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { ChatApprovals } from "../../../src/features/chat/approvals.ts"
 import { alwaysOption, sessionOption, YES } from "../../../src/runtime/questions/approval.ts"
-import { DETAIL_CHARS } from "../../../src/util/redact.ts"
 import { INTERRUPTED } from "../../../src/runtime/questions/format.ts"
 import type { QuestionRecord } from "../../../src/runtime/store/store.ts"
 import { CEO } from "../../server/helpers.ts"
@@ -27,6 +26,7 @@ import {
   session,
   status,
   texts,
+  toolResults,
 } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -105,9 +105,30 @@ async function held(h: HarnessOffice, id: string, text: string, n = 1): Promise<
   return open()
 }
 
-/** The audit rows of session `id`'s shell calls (`kind` workspace) and of its checks (`kind` check). */
-function rows(h: HarnessOffice, id: string, kind = "workspace") {
-  return h.store.listAudit({ sessionId: id }).filter((row) => row.kind === kind)
+/** What became of each of session `id`'s shell calls, as its run's log says: `ran` with the gate's note, `refused`
+ *  with what the model read, `waiting` behind a held call, `held` on its card, `released` with what let it run,
+ *  `completed` with what its card's answer or the gate gave it in place of running, or how yian closed it
+ *  (`interrupted`). */
+async function calls(h: HarnessOffice, id: string): Promise<[string, string | null][]> {
+  const shell = (await toolResults(h, id)).filter((r) => r.name.startsWith("terminal_"))
+  return shell.map((r): [string, string | null] =>
+    r.closed !== null
+      ? [r.closed, r.closed === "refused" ? r.output : null]
+      : !r.held
+        ? r.output === null ? ["waiting", null] : ["ran", r.note]
+        : r.releaseNote !== null
+          ? ["released", r.releaseNote]
+          : r.output === null
+            ? ["held", null]
+            : ["completed", r.output],
+  )
+}
+
+/** The run ids of session `id`'s checks, by their logs in its `checks/` folder. */
+function checkRuns(h: HarnessOffice, id: string): string[] {
+  const dir = path.join(h.office.paths.sessionDir(id), "checks")
+  if (!fs.existsSync(dir)) return []
+  return fs.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).map((name) => name.slice(0, -".jsonl".length))
 }
 
 /** Waits until session `id` is idle with `text` among its replies. */
@@ -126,11 +147,6 @@ const AVA = {
   "people/ava/memory/profile.md": "# Ava, Engineer\n",
 }
 
-/** Each of session `id`'s shell calls as `[outcome, detail]`, a run's exit and duration left out. */
-function outcomes(h: HarnessOffice, id: string): [string, string | undefined][] {
-  return rows(h, id).map((r) => [r.outcome, r.detail?.replace(/^exit=0 duration=[\d.]+s /, "")])
-}
-
 /** The tool parts of session `id`'s messages. */
 async function tools(h: HarnessOffice, id: string): Promise<ToolPart[]> {
   return (await h.harness.messages(id)).flatMap((m) => m.parts.filter((p): p is ToolPart => p.type === "tool"))
@@ -147,13 +163,10 @@ sandboxed("a new chat starts in auto: a read-only command and a file operation i
   expect(fs.existsSync(path.join(h.folder, "build", "x"))).toBe(true)
   expect(checks(fake)).toEqual([])
   expect(h.store.listQuestions({ sessionId: id })).toEqual([])
-  expect(rows(h, id).map((r) => [r.outcome, r.detail?.replace(/^exit=0 duration=[\d.]+s /, "")])).toEqual([
-    ["ok", "by read-only"],
-    ["ok", "by a file operation in the workspace"],
-  ])
+  expect(await calls(h, id)).toEqual([["ran", "read-only"], ["ran", "a file operation in the workspace"]])
 })
 
-sandboxed("in auto a command the check says run runs, and the audit names the check's reason", async () => {
+sandboxed("in auto a command the check says run runs, released with the check's reason and its run", async () => {
   const fake = await fakeLlm()
   fake.script(shell("make"), verdict("make", "run", "builds the project"), says("Built."))
   const h = await makeHarness(fake)
@@ -162,13 +175,8 @@ sandboxed("in auto a command the check says run runs, and the audit names the ch
   await h.harness.prompt(id, "build it")
   await replied(h, id, "Built.")
   expect(fs.existsSync(path.join(h.folder, "built.txt"))).toBe(true)
-  const [judged] = rows(h, id, "check")
-  expect(judged).toMatchObject({ tool: "classify_command", outcome: "run", detail: "builds the project" })
-  expect(judged!.args).toMatchObject({ command: "make", profile: "workspace", cwd: h.folder, host: "", cached: false })
-  const [ran] = rows(h, id)
-  expect(ran!.outcome).toBe("ok")
-  expect(ran!.detail!).toEndWith(" by Auto's check: builds the project")
-  expect(ran!.id).toBeGreaterThan(judged!.id)
+  const [run] = checkRuns(h, id)
+  expect(await calls(h, id)).toEqual([["released", `Auto's check: builds the project (run ${run})`]])
   // The check is told the shell runs on the workspace profile, in the session's folder.
   const [asked] = checks(fake)
   expect(asked).toContain("<profile>workspace</profile>")
@@ -183,7 +191,7 @@ test("in auto a command the check says ask holds on a card that shows the check'
   const [q] = await held(h, id, "cancel it")
   expect(q!.approval).toMatchObject({ tool: "terminal_run", action: "scancel 42", reason: "Auto's check: cancels a cluster job" })
   expect(q!.options).toEqual([YES, sessionOption(["scancel 42"]), alwaysOption(["scancel 42"])])
-  expect(rows(h, id).map((r) => [r.outcome, r.detail])).toEqual([["held", "Auto's check: cancels a cluster job"]])
+  expect(await calls(h, id)).toEqual([["held", null]])
 })
 
 test("the check runs on the office's connection, and its cost is the session's", async () => {
@@ -195,14 +203,14 @@ test("the check runs on the office's connection, and its cost is the session's",
   const h = await makeHarness(fake, { prices: { stub: { input: 1000, output: 2000 } } })
   const id = await chat(h)
   await held(h, id, "cancel it")
-  const [judged] = rows(h, id, "check")
+  const [run] = checkRuns(h, id)
   const usage = h.store.listUsage(id)
-  const spent = usage.filter((u) => u.runId === judged!.runId)
+  const spent = usage.filter((u) => u.runId === run)
   expect(spent.map((u) => [u.model, u.usd])).toEqual([["stub", (7 * 1000 + 3 * 2000) / 1_000_000]])
   expect(usage.some((u) => u.runId === session(h, id).run_ids.at(-1))).toBe(true)
   expect(session(h, id).cost).toBeCloseTo(usage.reduce((sum, u) => sum + u.usd, 0), 10)
   // Its run log is the session's.
-  expect(fs.existsSync(path.join(h.office.paths.sessionDir(id), "checks", `${judged!.runId}.jsonl`))).toBe(true)
+  expect(fs.existsSync(path.join(h.office.paths.sessionDir(id), "checks", `${run}.jsonl`))).toBe(true)
 })
 
 sandboxed("the same command twice in one session is judged once", async () => {
@@ -214,11 +222,11 @@ sandboxed("the same command twice in one session is judged once", async () => {
   await h.harness.prompt(id, "build it twice")
   await replied(h, id, "Built twice.")
   expect(checks(fake)).toHaveLength(1)
-  expect(rows(h, id, "check").map((r) => [r.outcome, (r.args as { cached: boolean }).cached])).toEqual([
-    ["run", false],
-    ["run", true],
-  ])
-  expect(rows(h, id).map((r) => r.outcome)).toEqual(["ok", "ok"])
+  // One check run: the second command's release cites the verdict it made.
+  const runs = checkRuns(h, id)
+  expect(runs).toHaveLength(1)
+  const note = `Auto's check: builds the project (run ${runs[0]})`
+  expect(await calls(h, id)).toEqual([["released", note], ["released", note]])
 })
 
 test("a check that fails or doesn't finish asks, and the card says the check couldn't judge it", async () => {
@@ -235,7 +243,6 @@ test("a check that fails or doesn't finish asks, and the card says the check cou
   const late = await chat(h)
   const [timed] = await held(h, late, "build it")
   expect(timed!.approval!.reason).toBe("Auto asks: its check couldn't judge this: it didn't finish in 1.5 s")
-  expect(rows(h, late, "check").map((r) => r.outcome)).toEqual(["failed"])
 })
 
 sandboxed("in default a build command asks with no check, and a read-only one runs", async () => {
@@ -246,7 +253,7 @@ sandboxed("in default a build command asks with no check, and a read-only one ru
   const [q] = await held(h, id, "build it")
   expect(q!.approval!.reason).toBe("Default mode asks before what it doesn't know: make")
   expect(checks(fake)).toEqual([])
-  expect(rows(h, id).map((r) => r.outcome)).toEqual(["ok", "held"])
+  expect(await calls(h, id)).toEqual([["ran", "read-only"], ["held", null]])
 })
 
 test("a switch to dontAsk while Auto's check runs refuses the call, with no card", async () => {
@@ -265,7 +272,7 @@ test("a switch to dontAsk while Auto's check runs refuses the call, with no card
   fake.release()
   await replied(h, id, "I won't.")
   expect(h.store.listQuestions({ sessionId: id })).toEqual([])
-  expect(rows(h, id).map((r) => [r.outcome, r.detail])).toEqual([["denied", why]])
+  expect(await calls(h, id)).toEqual([["completed", why]])
 })
 
 test("the chat's permissions hold nothing: its terminal acts only on what the gate decided for each call", async () => {
@@ -293,7 +300,6 @@ test("the chat's permissions hold nothing: its terminal acts only on what the ga
       notice: never,
       settle: never,
       planCommand: never,
-      audited: never,
       release: never,
       completeCall: never,
       onQuestion: never,
@@ -308,16 +314,6 @@ test("the chat's permissions hold nothing: its terminal acts only on what the ga
   expect(asked).toEqual([])
 })
 
-test("a check's audit row keeps at most DETAIL_CHARS of its reason", async () => {
-  const fake = await fakeLlm()
-  fake.script(shell("scancel 42"), verdict("scancel 42", "ask", "x".repeat(5000)))
-  const h = await makeHarness(fake)
-  const id = await chat(h)
-  await held(h, id, "cancel it")
-  const [judged] = rows(h, id, "check")
-  expect(judged!.detail).toBe("x".repeat(DETAIL_CHARS))
-})
-
 test("in dontAsk a command the check says ask is refused with no card, and the agent reads why", async () => {
   const fake = await fakeLlm()
   const why = "Not run: this session doesn't ask (dontAsk mode): Auto's check: cancels a cluster job."
@@ -327,7 +323,7 @@ test("in dontAsk a command the check says ask is refused with no card, and the a
   await h.harness.prompt(id, "cancel it")
   await replied(h, id, "I won't.")
   expect(h.store.listQuestions({ sessionId: id })).toEqual([])
-  expect(rows(h, id).map((r) => [r.outcome, r.detail])).toEqual([["denied", why]])
+  expect(await calls(h, id)).toEqual([["completed", why]])
 })
 
 test("in ask mode the employee's command holds on an approval card, and the run waits", async () => {
@@ -368,10 +364,7 @@ sandboxed("Yes runs the command once, and the agent reads its output", async () 
   const [q] = await held(h, id, "list it")
   await h.harness.answer(q!.id, YES, "option", { by: CEO })
   await replied(h, id, "Listed.")
-  const ran = rows(h, id).filter((r) => r.outcome !== "held")
-  expect(ran.map((r) => [r.outcome, r.detail?.replace(/^exit=0 duration=[\d.]+s /, "")])).toEqual([
-    ["ok", "approved by @ngocbh"],
-  ])
+  expect(await calls(h, id)).toEqual([["released", `approved by @${CEO}`]])
   expect(h.store.getQuestion(q!.id)).toMatchObject({ status: "consumed", answered_by: CEO })
 })
 
@@ -405,7 +398,7 @@ test("No reaches the agent as the approver's words, and nothing runs", async () 
   const [q] = await held(h, id, "build it")
   await h.harness.answer(q!.id, "use make clean", "text", { by: CEO })
   await replied(h, id, "I'll clean first.")
-  expect(rows(h, id).map((r) => r.outcome)).toEqual(["held"])
+  expect(await calls(h, id)).toEqual([["completed", "Not run: the user said no: use make clean"]])
   expect(h.store.getQuestion(q!.id)).toMatchObject({ status: "consumed", answer: "use make clean" })
 })
 
@@ -418,11 +411,7 @@ sandboxed("don't ask again lets the next matching command run without a card", a
   await h.harness.answer(q!.id, sessionOption(["ls *"]), "option", { by: CEO })
   await replied(h, id, "Listed both.")
   expect(h.store.listQuestions({ sessionId: id }).map((c) => c.id)).toEqual([q!.id])
-  expect(rows(h, id).map((r) => [r.outcome, r.detail?.replace(/^exit=0 duration=[\d.]+s /, "")])).toEqual([
-    ["held", "Ask mode"],
-    ["ok", "approved by @ngocbh"],
-    ["ok", "by an allow rule"],
-  ])
+  expect(await calls(h, id)).toEqual([["released", `approved by @${CEO}`], ["ran", "an allow rule"]])
 })
 
 test("Esc while Auto's check runs for a terminal command types nothing and holds nothing", async () => {
@@ -434,15 +423,14 @@ test("Esc while Auto's check runs for a terminal command types nothing and holds
   await h.harness.prompt(id, "build it")
   await waitFor(() => checks(fake).length === 1, { what: "the check's request" })
   await h.harness.interrupt(id)
-  const stopped = await waitFor(() => rows(h, id, "check")[0], { what: "the stopped check's row" })
-  expect([stopped.outcome, stopped.detail]).toEqual(["failed", "it was stopped"])
-  await waitFor(() => h.registry.get(`classify-${stopped.runId}`) === undefined, { what: "the check's worker to go" })
+  const [run] = await waitFor(() => (checkRuns(h, id).length === 1 ? checkRuns(h, id) : null), { what: "the check's run" })
+  await waitFor(() => h.registry.get(`classify-${run}`) === undefined, { what: "the check's worker to go" })
   // Its verdict comes after the stop: the command still never starts.
   fake.release()
   await waitFor(() => status(h, id) === "idle", { what: "the turn's end" })
   await new Promise((resolve) => setTimeout(resolve, 500))
   expect(fs.existsSync(path.join(h.folder, "built.txt"))).toBe(false)
-  expect(rows(h, id)).toEqual([])
+  expect(await calls(h, id)).toEqual([["interrupted", null]])
   expect(h.store.listQuestions({ sessionId: id })).toEqual([])
 })
 
@@ -456,12 +444,12 @@ test("End while Auto's check runs for a terminal command types nothing", async (
   await waitFor(() => checks(fake).length === 1, { what: "the check's request" })
   await h.harness.end(id)
   await waitFor(() => status(h, id) === "ended", { what: "the end" })
-  const stopped = await waitFor(() => rows(h, id, "check")[0], { what: "the stopped check's row" })
-  await waitFor(() => h.registry.get(`classify-${stopped.runId}`) === undefined, { what: "the check's worker to go" })
+  const [run] = await waitFor(() => (checkRuns(h, id).length === 1 ? checkRuns(h, id) : null), { what: "the check's run" })
+  await waitFor(() => h.registry.get(`classify-${run}`) === undefined, { what: "the check's worker to go" })
   fake.release()
   await new Promise((resolve) => setTimeout(resolve, 500))
   expect(fs.existsSync(path.join(h.folder, "built.txt"))).toBe(false)
-  expect(rows(h, id)).toEqual([])
+  expect(await calls(h, id)).toEqual([["interrupted", null]])
 })
 
 test("No answers the reply's other calls that would ask with the same words", async () => {
@@ -478,7 +466,7 @@ test("No answers the reply's other calls that would ask with the same words", as
   expect(h.store.getQuestion(first!.id)).toMatchObject(answered)
   expect(h.store.listQuestions({ sessionId: id, source: "approval" })).toHaveLength(1)
   expect(chats(fake).at(-1)!.split(no)).toHaveLength(3)
-  expect(rows(h, id).map((r) => [r.outcome, r.detail])).toEqual([["held", "Ask mode"], ["denied", no]])
+  expect(await calls(h, id)).toEqual([["completed", no], ["refused", no]])
 })
 
 sandboxed("a new rule lets the reply's later calls it allows run, and the rest still ask", async () => {
@@ -491,12 +479,10 @@ sandboxed("a new rule lets the reply's later calls it allows run, and the rest s
   const [ls] = await held(h, id, "list and clean")
   expect(ls!.approval!.action).toBe("ls -l")
   await h.harness.answer(ls!.id, sessionOption(["ls *"]), "option", { by: CEO })
-  const approved = () => rows(h, id).filter((r) => r.outcome === "ok")
-  await waitFor(() => approved().length === 2, { what: "both listings" })
-  // The approver let `ls -l` run; the rule they added let `ls -a` run with no card, and its row says so.
-  const credit = (summary: string) =>
-    approved().find((r) => (r.args as { summary: string }).summary === summary)!.detail!.replace(/^exit=0 duration=[\d.]+s /, "")
-  expect([credit("command='ls -l'"), credit("command='ls -a'")]).toEqual(["approved by @ngocbh", "by an allow rule"])
+  const ran = async () => (await calls(h, id)).filter(([state]) => state === "released" || state === "ran")
+  await waitFor(async () => (await ran()).length === 2, { what: "both listings" })
+  // The approver let `ls -l` run; the rule they added let `ls -a` run with no card, and its note says so.
+  expect(await ran()).toEqual([["released", `approved by @${CEO}`], ["ran", "an allow rule"]])
   const open = () => h.store.listQuestions({ sessionId: id, status: "open", source: "approval" })
   await waitFor(() => open().length === 1, { what: "rm x's card" })
   const rm = open()[0]!
@@ -516,7 +502,7 @@ test("a switch to dontAsk answers the open approval cards with its refusal", asy
   await h.harness.setMode(id, "dontAsk", { by: CEO })
   await replied(h, id, "Understood.")
   expect(h.store.getQuestion(q!.id)).toMatchObject({ status: "consumed", answered_by: CEO, answer_kind: "text" })
-  expect(rows(h, id).map((r) => r.outcome)).toEqual(["held"])
+  expect(await calls(h, id)).toEqual([["completed", refusal]])
 })
 
 test("Esc closes an open approval card as interrupted, and nothing runs", async () => {
@@ -528,7 +514,7 @@ test("Esc closes an open approval card as interrupted, and nothing runs", async 
   await h.harness.interrupt(id)
   expect(h.store.getQuestion(q!.id)).toMatchObject({ status: "consumed", answer: INTERRUPTED, answer_kind: "interrupted" })
   await waitFor(() => status(h, id) === "idle", { what: "the turn's end" })
-  expect(rows(h, id).map((r) => r.outcome)).toEqual(["held"])
+  expect(await calls(h, id)).toEqual([["interrupted", null]])
 })
 
 test("the card's stop does what Esc does", async () => {
@@ -540,7 +526,7 @@ test("the card's stop does what Esc does", async () => {
   await h.harness.interrupt(id, { question: q!.id })
   expect(h.store.getQuestion(q!.id)).toMatchObject({ status: "consumed", answer: INTERRUPTED, answer_kind: "interrupted" })
   await waitFor(() => status(h, id) === "idle", { what: "the turn's end" })
-  expect(rows(h, id).map((r) => r.outcome)).toEqual(["held"])
+  expect(await calls(h, id)).toEqual([["interrupted", null]])
 })
 
 test("End while an approval card is open ends the session, closes the card, and runs nothing", async () => {
@@ -552,7 +538,7 @@ test("End while an approval card is open ends the session, closes the card, and 
   await h.harness.end(id)
   await waitFor(() => status(h, id) === "ended", { what: "the end" })
   expect(h.store.getQuestion(q!.id)).toMatchObject({ status: "consumed", answer_kind: "interrupted" })
-  expect(rows(h, id).map((r) => r.outcome)).toEqual(["held"])
+  expect(await calls(h, id)).toEqual([["interrupted", null]])
 })
 
 sandboxed("Esc while an approved command runs stops it, and the agent's turn ends interrupted", async () => {
@@ -571,8 +557,7 @@ sandboxed("Esc while an approved command runs stops it, and the agent's turn end
   await waitFor(() => status(h, id) === "idle", { what: "the turn's end" })
   // The approved command runs as the employee's own call, which Esc cuts off: it stops the command and replies.
   await waitFor(async () => (await tools(h, id))[0]?.state !== "running", { what: "the call's end" })
-  await waitFor(() => rows(h, id).length === 2, { what: "the command's row" })
-  expect(rows(h, id).map((r) => r.outcome)).toEqual(["held", "error"])
+  expect(await calls(h, id)).toEqual([["released", `approved by @${CEO}`]])
   expect(fake.requests()).toHaveLength(1)
 })
 
@@ -613,7 +598,7 @@ sandboxed("always adds the rules to the agent's file, and a new session of the a
   await h.harness.prompt(second, "list it again")
   await replied(h, second, "Listed again.")
   expect(h.store.listQuestions({ sessionId: second })).toEqual([])
-  expect(outcomes(h, second)).toEqual([["ok", "by an allow rule"]])
+  expect(await calls(h, second)).toEqual([["ran", "an allow rule"]])
 })
 
 test("a deny rule in the agent's file refuses the command in every mode", async () => {
@@ -630,7 +615,7 @@ test("a deny rule in the agent's file refuses the command in every mode", async 
   }
   expect(fs.existsSync(path.join(h.folder, "x"))).toBe(true)
   expect(h.store.listQuestions({ sessionId: id })).toEqual([])
-  expect(outcomes(h, id)).toEqual(modes.map(() => ["denied", "Not run: a deny rule: rm *."]))
+  expect(await calls(h, id)).toEqual(modes.map(() => ["refused", "Not run: a deny rule: rm *."]))
   expect(checks(fake)).toEqual([])
 })
 
@@ -645,7 +630,7 @@ test("a company deny refuses for every agent", async () => {
     const id = await chat(h, "auto", who)
     await h.harness.prompt(id, "clean up")
     await replied(h, id, `Kept it, ${who}.`)
-    expect(outcomes(h, id)).toEqual([["denied", `${denied}.`]])
+    expect(await calls(h, id)).toEqual([["refused", `${denied}.`]])
   }
   expect(fs.existsSync(path.join(h.folder, "x"))).toBe(true)
 })
@@ -660,7 +645,7 @@ test("an agent's allow doesn't beat a company deny", async () => {
   const id = await chat(h, "ask")
   await h.harness.prompt(id, "clean up")
   await replied(h, id, "Kept it.")
-  expect(outcomes(h, id)).toEqual([["denied", "Not run: a deny rule: rm *."]])
+  expect(await calls(h, id)).toEqual([["refused", "Not run: a deny rule: rm *."]])
   expect(h.store.listQuestions({ sessionId: id })).toEqual([])
   expect(fs.existsSync(path.join(h.folder, "x"))).toBe(true)
 })
@@ -674,7 +659,7 @@ sandboxed("a company allow applies to every agent", async () => {
     const id = await chat(h, "ask", who)
     await h.harness.prompt(id, "build it")
     await replied(h, id, `Built, ${who}.`)
-    expect(outcomes(h, id)).toEqual([["ok", "by an allow rule"]])
+    expect(await calls(h, id)).toEqual([["ran", "an allow rule"]])
     expect(h.store.listQuestions({ sessionId: id })).toEqual([])
   }
 })
@@ -718,19 +703,19 @@ sandboxed("a malformed rules file asks for everything and says why", async () =>
   const cards = await held(h, id, "build it")
   expect(cards.map((c) => [c.approval!.action, c.approval!.reason, c.options])).toEqual([["ls", why, [YES]]])
   expect(checks(fake)).toEqual([])
-  expect(outcomes(h, id)).toEqual([["held", why]])
+  expect(await calls(h, id)).toEqual([["held", null], ["waiting", null], ["waiting", null]])
   await h.harness.answer(cards[0]!.id, "no", "text", { by: CEO })
   await replied(h, id, "Waiting.")
   // The No settles `make`, which would ask too; minh's own deny still refuses `rm x` first.
-  expect(outcomes(h, id)).toEqual([
-    ["held", why],
-    ["denied", "Not run: the user said no: no"],
-    ["denied", "Not run: a deny rule: rm *."],
+  expect(await calls(h, id)).toEqual([
+    ["completed", "Not run: the user said no: no"],
+    ["refused", "Not run: the user said no: no"],
+    ["refused", "Not run: a deny rule: rm *."],
   ])
   h.store.updateSession(id, { mode: "dontAsk" })
   await h.harness.prompt(id, "list it")
   await replied(h, id, "Refused.")
-  expect(outcomes(h, id).at(-1)).toEqual(["denied", refused])
+  expect((await calls(h, id)).at(-1)).toEqual(["refused", refused])
   // The fix applies from the session's next run.
   const company = h.office.paths.company
   fs.writeFileSync(path.join(company, "rules.yaml"), rulesFile(["deny", "git push --force *"]))
@@ -738,7 +723,7 @@ sandboxed("a malformed rules file asks for everything and says why", async () =>
   h.store.updateSession(id, { mode: "auto" })
   await h.harness.prompt(id, "list it again")
   await replied(h, id, "Listed.")
-  expect(outcomes(h, id).at(-1)).toEqual(["ok", "by read-only"])
+  expect((await calls(h, id)).at(-1)).toEqual(["ran", "read-only"])
   expect(fs.existsSync(path.join(h.folder, "x"))).toBe(true)
 })
 
@@ -752,7 +737,7 @@ sandboxed("a malformed agent rules file blocks only that agent's sessions", asyn
   const ava = await chat(h, "auto", "ava")
   await h.harness.prompt(ava, "list it")
   await replied(h, ava, "Listed, ava.")
-  expect(outcomes(h, ava)).toEqual([["ok", "by read-only"]])
+  expect(await calls(h, ava)).toEqual([["ran", "read-only"]])
 })
 
 test("an always the agent's file can't take stays in the session, and the approver is told why", async () => {
@@ -799,7 +784,7 @@ test("a session's rules files are read again only once HEAD moves", async () => 
     log: never,
     host: {
       liveRun: never, completeWithAnswer: never, post: never, notice: never, settle: never, planCommand: never,
-      audited: never, release: never, completeCall: never, onQuestion: never,
+      release: never, completeCall: never, onQuestion: never,
       released: never, secretValues: never,
     },
   })

@@ -13,7 +13,7 @@
  *  nothing itself. The gate reads what a command or typed line would be from `plan`: a typed line whole, the shell's
  *  unfinished line with the new text, `partial` without Enter, `into` the command it is typed into, so `sca` then
  *  `ncel 42` is decided as `scancel 42`, never as two harmless pieces. It decides it, holds what asks on the host's
- *  card, and records its held and refused calls through `audited`. The call then acts only on what the gate decided
+ *  card. The call then acts only on what the gate decided
  *  for it (`Permissions.decided`), and only while the shell is still where it was decided (its folder, or its line
  *  and the command typed into), else it is refused, to be run again and checked again. The tools' own refusals come
  *  first: a command or line a shell can't take, a shell not ready for it, a secret prompt, the owner part-way through
@@ -31,8 +31,8 @@
  *  returns stops the command it waits on, as the owner's Ctrl-C does, and replies once it has ended (or after a few
  *  seconds). A command whose reply said it is still running goes on: the agent reads it later, or interrupts it.
  *
- *  **Audit.** The host's `audit` gets each command or typed line the gate holds or refuses (`audited`), and each
- *  command the gate let run, once it ends, during the agent's wait or after it.
+ *  **What is kept.** Each shell's record keeps the commands it ran, who ran them, when, and each one's exit; why a
+ *  command ran or was refused, and the reply the agent read, are in the run's log.
  *
  *  **Notes.** A host that takes them (`ended`) gets one note when a command whose reply said it runs on ends: its
  *  shell, the command, its exit and its last lines, fenced, keyed by the shell and the command's number there. None comes when
@@ -76,28 +76,6 @@ export type TerminalShells =
 /** The sandbox a terminal's shells run in, as an instrument and its record name it. */
 export type TerminalProfile = "workspace" | "ssh" | "none"
 
-/** One row of the host's audit. A held or refused call says why; a command that ran says how it ended, in seconds,
- *  and what let it run (`by <the gate's reason>`, or the approval's credit), and, when it ended with no exit, why
- *  (`stopped`). `shell` is null for a new shell not yet made. */
-export type TerminalAudit =
-  | {
-      readonly outcome: "held" | "denied"
-      readonly tool: "terminal_run" | "terminal_type"
-      readonly text: string
-      readonly shell: string | null
-      readonly reason: string
-    }
-  | {
-      readonly outcome: "ok" | "error"
-      readonly tool: "terminal_run"
-      readonly text: string
-      readonly shell: string
-      readonly exit: number | null
-      readonly duration: number
-      readonly why: string
-      readonly stopped: string | null
-    }
-
 /** A command the agent was told runs on has ended: its note, as the model reads it, and its shell. `key` names the
  *  command alone (`terminal:<shell id>:<n>`, the nth command the terminal ran in that shell), so a note sent again
  *  is the same note. */
@@ -122,8 +100,6 @@ export interface TerminalHost {
   readonly permissions: Permissions
   /** Binds new shell `name`, which runs in `profile`. */
   shellHost(name: string, profile: TerminalProfile): ShellBinding
-  /** Gets the terminal's audit rows (`TerminalAudit`), if the host keeps them. */
-  audit?(row: TerminalAudit): void
   /** Gets a note when a command the agent was told runs on ends, if the host tells the session (see the module). */
   ended?(note: CommandEnded): void
 }
@@ -144,11 +120,11 @@ export type CommandPlan =
       readonly shell: string | null
     }
 
-/** What the gate decided for the call `plan` says, letting it run as `why` says (`approved` when its approver said
- *  Yes on a card): `Permissions.decided`'s answer for it. */
-export function decidedFor(plan: CommandPlan & { decide: true }, why: string, approved: boolean): Decided {
+/** What the gate decided for the call `plan` says (`approved` when its approver said Yes on a card):
+ *  `Permissions.decided`'s answer for it. */
+export function decidedFor(plan: CommandPlan & { decide: true }, approved: boolean): Decided {
   const { tool, action, basis, shell } = plan
-  return { why, basis, approved, tool, text: action.text, partial: action.partial ?? false, shell }
+  return { basis, approved, tool, text: action.text, partial: action.partial ?? false, shell }
 }
 
 /** One of a terminal's shells: a PTY shell, or the workspace's pipes shell. */
@@ -196,7 +172,7 @@ const NOTE_BYTES = 2048
 const NOTE_READ = 4 * NOTE_BYTES
 /** How much of a command a note's first line shows. */
 const NOTE_COMMAND = 200
-/** Why a command ended with no exit, for its audit row. */
+/** Why a command ended with no exit, for its reply's note. */
 const CUT_OFF = "its call was cut off"
 const AGENT_INTERRUPT = "the agent interrupted it"
 const SHELL_ENDED = "its shell ended"
@@ -224,7 +200,7 @@ interface Entry {
   queue: Promise<unknown>
   /** The command the terminal ran here and its end hasn't come yet, if any. */
   running: Running | null
-  /** Why the last command the terminal ran here ended with no exit, as its audit row says; null when it had one. */
+  /** Why the last command the terminal ran here ended with no exit, as its reply's note says; null when it had one. */
   noExit: string | null
   /** How many commands the terminal has run here: each one's number, for its note's key. */
   commands: number
@@ -234,12 +210,11 @@ interface Entry {
   untold: Running | null
 }
 
-/** A command the terminal ran: what let it run, when, where its output starts in the view, its number in its shell,
+/** A command the terminal ran: what, when, where its output starts in the view, its number in its shell,
  *  whether the shell has started it, why the terminal stopped it (if it did), whether the agent was told it runs on,
  *  and its end. */
 interface Running {
   readonly command: string
-  readonly why: string
   readonly started: number
   readonly from: number
   readonly n: number
@@ -364,13 +339,6 @@ export class Terminal {
     return { decide: true, tool: "terminal_type", action, where, why: parsed.why, args: card, basis, shell: shellName }
   }
 
-  /** The session's gate held (`held`, with its card's reason) or refused (`denied`, with the refusal) the call `plan`
-   *  says: the host's audit gets its row. */
-  audited(plan: CommandPlan, outcome: "held" | "denied", reason: string): void {
-    if (!plan.decide) return
-    this.audit({ outcome, tool: plan.tool, text: plan.action.text, shell: plan.shell, reason })
-  }
-
   /** Where a shell starts. */
   private startWhere(): Where {
     const base = this.host.permissions.where()
@@ -484,7 +452,7 @@ export class Terminal {
         const moved = this.movedRun(call.decided, parsed, entry.name, this.where(entry.id).cwd)
         if (moved !== null) return this.text(entry, shell, shell.refusal(moved))
         if (call.signal.aborted) return STOPPED
-        return await this.runIn(entry, shell, parsed, call, call.decided!.why)
+        return await this.runIn(entry, shell, parsed, call)
       })
     }
     const { shells } = this.host
@@ -495,12 +463,11 @@ export class Terminal {
     const moved = this.movedRun(call.decided, parsed, null, this.where().cwd)
     if (moved !== null) return refusalText(moved)
     if (call.signal.aborted) return STOPPED
-    const ran = call.decided!.why
     const entry = this.create()
     if (typeof entry === "string") return refusalText(entry)
     return await this.queue(entry, async (shell) => {
       if (call.signal.aborted) return STOPPED
-      return await this.runIn(entry, shell, parsed, call, ran)
+      return await this.runIn(entry, shell, parsed, call)
     })
   }
 
@@ -520,8 +487,8 @@ export class Terminal {
     return was === folder ? null : MOVED_FOLDER(was ?? null, folder)
   }
 
-  /** Runs the command in `shell`, which the gate let run (`why`, for its audit row), and replies. Its
-   *  end, whenever it comes, goes to the host's audit, and, when this reply said it runs on, to the host's notes. A
+  /** Runs the command in `shell`, which the gate let run, and replies. Its end, whenever it comes, goes to the
+   *  shell's record, and, when this reply said it runs on, to the host's notes. A
    *  call cut off before its reply stops the command, as the owner's Ctrl-C does, and replies once it has ended, or
    *  after `STOP_WAIT_MS`. */
   private async runIn(
@@ -529,10 +496,9 @@ export class Terminal {
     shell: TerminalShell,
     parsed: Parsed & { tool: "run" },
     call: Call,
-    why: string,
   ): Promise<string> {
     const running: Running = {
-      command: parsed.command, why, started: performance.now(), from: shell.viewEnd(), n: ++entry.commands,
+      command: parsed.command, started: performance.now(), from: shell.viewEnd(), n: ++entry.commands,
       seen: false, stopped: null, told: false, end: null, ended: Promise.withResolvers<void>(),
     }
     entry.running = running
@@ -561,7 +527,7 @@ export class Terminal {
   }
 
   /** Follows `entry`'s state for the command the terminal ran there: it starts when the shell runs it, and ends when
-   *  the shell stops running it, its row then going to the host's audit. */
+   *  the shell stops running it. */
   private follow(entry: Entry, state: ShellState): void {
     const running = entry.running
     if (running === null) return
@@ -575,15 +541,12 @@ export class Terminal {
     if (state.status === "running" || state.status === "waiting") return
     entry.running = null
     const duration = (performance.now() - running.started) / 1000
-    const { command: text, why } = running
-    const outcome = state.exit === 0 ? "ok" : "error"
     const stopped = state.exit !== null
       ? null
       : (running.stopped ??
         (state.status === "failed" ? `the shell failed: ${state.error}` : state.status === "ended" ? SHELL_ENDED : NO_EXIT))
     entry.noExit = stopped
     running.end = { exit: state.exit, stopped, duration }
-    this.audit({ outcome, tool: "terminal_run", text, shell: entry.name, exit: state.exit, duration, why, stopped })
     running.ended.resolve()
     if (running.told) this.tell(entry, running)
   }
@@ -630,15 +593,6 @@ export class Terminal {
         entry.untold = null
         this.tell(entry, untold)
       }
-    }
-  }
-
-  /** Gives `row` to the host's audit, which never fails a call. */
-  private audit(row: TerminalAudit): void {
-    try {
-      this.host.audit?.(row)
-    } catch {
-      // The host's audit failed; the call's own result stands.
     }
   }
 

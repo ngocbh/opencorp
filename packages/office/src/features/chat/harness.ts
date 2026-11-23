@@ -393,7 +393,6 @@ export class ChatHarness implements SessionHarness {
       person: session.person,
       folder: this.office.paths.sessionDir(session.id),
       instruments: this.office.instruments,
-      store,
       mode: () => store.getSession(session.id)?.mode ?? session.mode,
     })
     const listed = repo.people.get(session.person)?.tools ?? []

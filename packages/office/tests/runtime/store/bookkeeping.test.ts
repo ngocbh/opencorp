@@ -1,33 +1,6 @@
-/** Audit, usage, and worker rows (office bookkeeping, no events). */
+/** Usage and worker rows (office bookkeeping, no events). */
 import { expect, test } from "bun:test"
 import { openStore, recordEvents } from "./helpers.ts"
-
-test("audit rows", () => {
-  const store = openStore()
-  const events = recordEvents(store)
-  const a = store.recordAudit({
-    person: "minh",
-    kind: "asset",
-    tool: "cluster_a__ssh",
-    args: { host: "x" },
-    outcome: "ok",
-    sessionId: "s1",
-    runId: "r1",
-  })
-  const b = store.recordAudit({
-    person: "minh",
-    kind: "workspace",
-    tool: "shell",
-    args: { cmd: "ls" },
-    outcome: "denied",
-    sessionId: "s2",
-    detail: "where",
-  })
-  expect(store.listAudit()).toEqual([a, b])
-  expect(store.listAudit({ sessionId: "s2" })).toEqual([b])
-  expect(store.listAudit({ person: "lan" })).toEqual([])
-  expect(events).toEqual([])
-})
 
 test("usage rows and total", () => {
   const store = openStore()

@@ -9,16 +9,12 @@ import { stringify } from "yaml"
 import type { Instrument, ToolPart } from "@opencorp/protocol"
 import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { EmployeeTerminal } from "../../../src/features/chat/terminal.ts"
-import { decidedFor } from "../../../src/tools/terminal/terminal.ts"
 import { sessionOption } from "../../../src/runtime/questions/approval.ts"
-import { Instruments } from "../../../src/runtime/sessions/instruments.ts"
 import { readRecord } from "../../../src/tools/terminal/record.ts"
 import { CEO } from "../../server/helpers.ts"
-import { tempDir, waitFor } from "../../helpers.ts"
+import { waitFor } from "../../helpers.ts"
 import { ended, ownSleepers, sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
-import { openStore } from "../../runtime/store/helpers.ts"
-import { fakePipes, json, permissions } from "../../tools/terminal/helpers.ts"
-import { fakeLlm, type HarnessOffice, makeHarness, noWorkersLeft, running, status, texts } from "./helpers.ts"
+import { fakeLlm, type HarnessOffice, makeHarness, noWorkersLeft, running, status, texts, toolResults } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)
@@ -131,10 +127,10 @@ sandboxed("an employee's command runs in a pipes shell listed as the session's i
   const events = h.lives.filter((e) => e.session_id === id)
   expect(events.some((e) => e.type === "instrument.updated" && (e.data as Instrument).id === shell!.id)).toBe(true)
   expect(events.some((e) => e.type === "instrument.output")).toBe(true)
-  // Its audit row names the tool the model called.
-  expect(h.store.listAudit({ sessionId: id }).map((r) => [r.kind, r.tool, r.outcome, r.args])).toEqual([
-    ["workspace", "terminal_run", "ok", { summary: "command='echo hello-there'", shell: "shell 1" }],
-  ])
+  // The run's log keeps the call, the gate's note on why it ran, and the reply.
+  const [call] = await toolResults(h, id)
+  expect(call).toMatchObject({ name: "terminal_run", arguments: { command: "echo hello-there" }, closed: null })
+  expect(call!.note).toBeString()
 })
 
 sandboxed("the approver's Ctrl-C in the shell stops its command, and the agent reads that it ended", async () => {
@@ -180,54 +176,10 @@ sandboxed("Esc stops the agent and the command its call waited on", async () => 
   expect(JSON.parse(String(tool!.output))).toMatchObject({ shell: "shell 1", status: "idle", exit: null })
   expect(listed(h, id).map((s) => s.status)).toEqual(["idle"])
   expect(fake.requests()).toHaveLength(1)
-  // Its row says it ended with no exit, and why.
-  const rows = h.store.listAudit({ sessionId: id })
-  expect(rows.map((r) => r.outcome)).toEqual(["error"])
-  expect(rows[0]!.detail).toMatch(/^exit=None duration=[\d.]+s by an allow rule: its call was cut off$/)
-})
-
-test("a command that ends after the agent's next turn has begun keeps the run it started in", async () => {
-  const store = openStore()
-  const dir = tempDir()
-  const pipes = fakePipes(dir)
-  const terminal = new EmployeeTerminal({
-    shells: pipes.shells,
-    sessionId: "S1",
-    person: "minh",
-    folder: path.join(dir, "session"),
-    instruments: new Instruments(() => {}),
-    store,
-    mode: () => "auto",
-  })
-  // Each run's gate let its commands run, as an allow rule does, and held `rm x`.
-  const { perms } = permissions({ mode: "ask" })
-  const allowed = (command: string) => {
-    const plan = terminal.plan("run", { command, why: "x" })
-    if (!plan.decide) throw new Error("the terminal has nothing to decide")
-    return decidedFor(plan, "by an allow rule", false)
-  }
-  const ledger = new Map([
-    ["r1/n/1/0", allowed("make long")],
-    ["r2/n/1/0", allowed("echo next")],
-  ])
-  const gated = { ...perms, decided: (callId: string | undefined) => ledger.get(callId ?? "") ?? null }
-  terminal.bind("r1", gated)
-  const run = terminal.tools().run
-  expect(json(await run.call({ command: "make long", why: "x", wait: 0 }, { callId: "r1/n/1/0" }))).toMatchObject({
-    status: "running",
-  })
-  // The next turn's run is built while the command goes on: what it runs and holds is its own.
-  terminal.bind("r2", gated)
-  expect(json(await run.call({ command: "echo next", why: "x" }, { callId: "r2/n/1/0" }))).toMatchObject({ exit: 0 })
-  terminal.audited(terminal.plan("run", { command: "rm x", why: "x" }), "held", "Ask mode")
-  pipes.end("make long", 0)
-  await waitFor(() => store.listAudit().length === 3, { what: "the long command's row" })
-  expect(store.listAudit().map((r) => [r.args, r.outcome, r.runId])).toEqual([
-    [{ summary: "command='echo next'", shell: "shell 2" }, "ok", "r2"],
-    [{ summary: "command='rm x'", shell: null }, "held", "r2"],
-    [{ summary: "command='make long'", shell: "shell 1" }, "ok", "r1"],
-  ])
-  await terminal.close()
+  // Its record keeps it with no exit; the run's log, what let it run.
+  const shell = listed(h, id)[0]!
+  expect(readRecord(recordOf(h, id, shell.id))!.commands).toMatchObject([{ exit: null }])
+  expect((await toolResults(h, id))[0]!.note).toBe("an allow rule")
 })
 
 sandboxed("a command the agent was told is running goes on after Esc, and the agent reads it later", async () => {
@@ -280,10 +232,8 @@ sandboxed("a command the agent was told is running goes on after Esc, and the ag
   const later = result(fake, "call_later")!
   expect(later).toMatchObject({ shell: "shell 1", status: "idle", exit: 0 })
   expect(later.output).toContain("finished")
-  // Its row was written when it ended, after the agent's wait.
-  const rows = h.store.listAudit({ sessionId: id })
-  expect(rows.map((r) => [r.outcome, r.args])).toEqual([["ok", { summary: `command='${command}'`, shell: "shell 1" }]])
-  expect(rows[0]!.detail).toMatch(/^exit=0 duration=[\d.]+s by an allow rule$/)
+  // Its record got its exit when it ended, after the agent's wait.
+  expect(readRecord(recordOf(h, id, listed(h, id)[0]!.id))!.commands).toMatchObject([{ command, exit: 0 }])
 })
 
 sandboxed("End closes the session's shells and removes their listings", async () => {
@@ -322,18 +272,19 @@ sandboxed("the approvals' re-check reads the terminal's where, and a shell's sta
   // The reply's later call waits behind the open card, as yian holds it.
   await waitFor(() => open().length === 1 && status(h, id) === "waiting", { what: "the first card" })
   // Auto's check was told the shell runs on the workspace profile, in the session's folder.
-  const checks = h.store.listAudit({ sessionId: id }).filter((r) => r.kind === "check")
-  expect(checks.map((r) => r.args)).toMatchObject([{ profile: "workspace", cwd: h.folder }])
+  const asked = fake.requests().map((r) => JSON.stringify(r.messages)).filter((text) => text.includes("<command>"))
+  expect(asked).toHaveLength(1)
+  expect(asked[0]).toContain("<profile>workspace</profile>")
+  expect(asked[0]).toContain(`<folder>${h.folder}</folder>`)
   const first = open().find((q) => q.approval!.action === a)!
   await h.harness.answer(first.id, sessionOption(["make"]), "option", { by: CEO })
   await replied(h, id, "Built both.")
   // With make allowed, b's touch is a file operation in the workspace the terminal's sandbox writes, so the gate let
   // it run once a's card was answered: on the SSH-only reading, which writes nothing, it would have asked.
   expect([fs.existsSync(path.join(h.folder, "a.txt")), fs.existsSync(path.join(h.folder, "b.txt"))]).toEqual([true, true])
-  const ran = h.store.listAudit({ sessionId: id }).filter((r) => r.kind === "workspace" && r.outcome === "ok")
-  const credit = (summary: string) =>
-    ran.find((r) => (r.args as { summary: string }).summary === summary)!.detail!.replace(/^exit=0 duration=[\d.]+s /, "")
-  expect([credit(`command='${a}'`), credit(`command='${b}'`)]).toEqual(["approved by @ngocbh", "by an allow rule"])
+  const results = await toolResults(h, id)
+  const of = (command: string) => results.find((r) => r.arguments?.command === command)!
+  expect([of(a).releaseNote, of(b).note]).toEqual([`approved by @${CEO}`, "an allow rule"])
 })
 
 sandboxed("terminal_type into the workspace shell is refused", async () => {

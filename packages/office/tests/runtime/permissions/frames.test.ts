@@ -20,9 +20,9 @@ test("no frame or model text holds a secret", async () => {
     { who: "minh", can: ["submit_job"], where: { partition: ["gpu-small"] } },
     { who: "minh", can: ["broken"] },
   ]
-  const { monitor, store: audit } = await makeMonitor({ "assets/cluster-a.yaml": cluster(grants) })
+  const { monitor } = await makeMonitor({ "assets/cluster-a.yaml": cluster(grants) })
   const frames = recordFrames()
-  const toolbox = monitor.tools("minh", { runId: "r1", sessionId: "s1" })
+  const toolbox = monitor.tools("minh")
   const where = base()
   const fake = await fakeLlm()
   fake.script({ tool_calls: CALLS }, { content: "done" })
@@ -43,8 +43,9 @@ test("no frame or model text holds a secret", async () => {
   // ...and the secret is nowhere a worker or the model could see it.
   expect(frames.filter((f) => f.includes(TOKEN))).toEqual([])
   expect(modelText).not.toContain(TOKEN)
-  expect(fs.readFileSync(job.log, "utf8")).not.toContain(TOKEN)
-  const rows = audit.listAudit()
-  expect(rows.map((r) => r.outcome).sort()).toEqual(["denied", "error", "ok"])
-  expect(rows.filter((r) => (encode(r.args) + (r.detail ?? "")).includes(TOKEN))).toEqual([])
+  // The run's log keeps each call's result, redacted as the model read it.
+  const log = fs.readFileSync(job.log, "utf8")
+  expect(log).not.toContain(TOKEN)
+  expect(log).toContain("ran train on gpu-small with [redacted]")
+  expect(log).toContain("error: RuntimeError: cannot reach host (token [redacted])")
 })

@@ -214,7 +214,7 @@ async function office() {
   })
   const git = new CompanyGit(root, path.join(dir, "worktrees"))
   const store = openStore()
-  const monitor = new Monitor(root, store, new SecretStore(path.join(dir, "secrets")))
+  const monitor = new Monitor(root, new SecretStore(path.join(dir, "secrets")))
   const repo = loadRepo(root)
   const head = await git.head()
   const asker = store.createSession(session({ repo_commit: head }))
@@ -293,7 +293,7 @@ async function curl(spec: RunSpec, session: SessionRecord, url: string): Promise
   const plan = spec.terminal!.plan("run", { command, why: "checks the network" })
   if (!plan.decide) throw new Error("the side chat's terminal has nothing to decide")
   const decided = (callId: string | undefined) =>
-    callId === "run-1/n/1/0" ? decidedFor(plan, "by Auto's check: checks the network", false) : null
+    callId === "run-1/n/1/0" ? decidedFor(plan, false) : null
   const run = spec.groups({ session, runId: "run-1", permissions: { ...perms, decided } }).terminal!.run!
   const reply = JSON.parse(String(await run.call({ command, why: "checks the network" }, { callId: "run-1/n/1/0" })))
   return String(reply.output).split("\n")[1]!

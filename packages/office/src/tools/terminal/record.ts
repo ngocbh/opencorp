@@ -286,13 +286,13 @@ export function clearTold(dir: string, key: string): void {
   replaceFile(dir, META, metaText(file))
 }
 
-/** Marks each record in `dir`'s folders that is still running as interrupted: its host stopped while the shell ran.
- *  Each, once marked, goes to `interrupted`, so the host can account for the commands it cut off (those with no
- *  `exit`); a record is marked, and handed on, once. Run at the host's start, before any shell. Returns a line for
+/** Marks each record in `dir`'s folders that is still running as interrupted: its host stopped while the shell ran,
+ *  and a command with no `exit` is one it cut off. A record is marked once. Run at the host's start, before any
+ *  shell. Returns a line for
  *  each folder whose meta.json isn't a record's (`readRecord`'s `RecordError`, a meta.json over `META_MAX` among
  *  them), which it leaves as it is, for the host to log. Folders with no meta.json, and files, hold no record; a
  *  missing `dir` holds none. Throws when `dir` can't be read, or a record's meta.json can't be rewritten. */
-export function recoverRecords(dir: string, interrupted?: (file: RecordFile) => void): string[] {
+export function recoverRecords(dir: string): string[] {
   let names: string[]
   try {
     names = fs.readdirSync(dir)
@@ -314,7 +314,6 @@ export function recoverRecords(dir: string, interrupted?: (file: RecordFile) => 
     if (file === null || file.state !== "running") continue
     file.state = "interrupted"
     replaceFile(folder, META, metaText(file))
-    interrupted?.(file)
   }
   return problems
 }

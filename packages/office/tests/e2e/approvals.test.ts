@@ -2,9 +2,9 @@
  *  closes a card with nothing run, and in auto Auto's check runs in a classify worker of the office. */
 import fs from "node:fs"
 import path from "node:path"
-import { Database } from "bun:sqlite"
 import { expect, test } from "bun:test"
-import type { Question } from "@opencorp/protocol"
+import { agentCall, agentCalls, type AgentToolResult } from "@ngocbh/yian/run"
+import type { Question, Session } from "@opencorp/protocol"
 import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { waitFor } from "../helpers.ts"
 import { sandboxAvailable } from "../runtime/sandbox/helpers.ts"
@@ -23,19 +23,14 @@ function shell(command: string): ScriptedReply {
 /** What a request holds once a command's reply, exit 0, reached it: the reply's JSON, escaped in the tool's result. */
 const EXITED = JSON.stringify('"exit":0').slice(1, -1)
 
-/** An audit row as the office's store holds it. */
-type Row = { kind: string; tool: string; outcome: string; detail: string | null; run_id: string | null; args: string }
-
-/** Session `sid`'s audit rows, read from the office's store while it runs. */
-function audit(office: RunningOffice, sid: string): Row[] {
-  const db = new Database(office.paths.store, { readonly: true })
-  try {
-    return db
-      .prepare("SELECT kind, tool, outcome, detail, run_id, args FROM audit WHERE session_id = ? ORDER BY id")
-      .all(sid) as Row[]
-  } finally {
-    db.close()
-  }
+/** Each tool call session `sid`'s last run made, with its result, the gate's note, whether it was held and the note
+ *  it was released with, as yian reads them back from the run's log. */
+async function calls(office: RunningOffice, sid: string): Promise<AgentToolResult[]> {
+  const session = (await office.session(sid)) as Session
+  const log = path.join(office.paths.runs, session.run_ids!.at(-1)!, "log.jsonl")
+  const found: AgentToolResult[] = []
+  for (const call of agentCalls(log)) found.push(...(await agentCall(log, call, { env: () => undefined })).toolResults)
+  return found
 }
 
 /** Session `sid`'s cards. */
@@ -73,9 +68,10 @@ test.skipIf(!sandboxAvailable())(
     await office.settled(sid, ["Recorded."])
     expect(fs.readFileSync(path.join(workspace, "runs.txt"), "utf8")).toBe("ran\n")
     expect(((await office.get(`/questions/${card.id}`)) as Question).status).toBe("consumed")
-    const rows = audit(office, sid).filter((row) => row.kind === "workspace")
-    expect(rows.map((row) => row.outcome)).toEqual(["held", "ok"])
-    expect(rows[1]!.detail).toEndWith(" approved by @ngocbh")
+    // The run's log, read after the restart: the call was held, then released by the approver.
+    expect(await calls(office, sid)).toMatchObject([
+      { name: "terminal_run", held: true, releaseNote: "approved by @ngocbh", closed: null },
+    ])
   },
   TIMEOUT,
 )
@@ -91,13 +87,13 @@ test.skipIf(!sandboxAvailable())(
     const closed: Question = await office.get(`/questions/${card.id}`)
     expect([closed.status, closed.answer_kind]).toEqual(["consumed", "interrupted"])
     expect(fs.existsSync(path.join(workspace, "runs.txt"))).toBe(false)
-    expect(audit(office, sid).map((row) => [row.kind, row.outcome])).toEqual([["workspace", "held"]])
+    expect(await calls(office, sid)).toMatchObject([{ name: "terminal_run", held: true, releaseNote: null }])
   },
   TIMEOUT,
 )
 
 test.skipIf(!sandboxAvailable())(
-  "in auto a command runs after Auto's check in a classify worker of the real office, and the check's audit row names it",
+  "in auto a command runs after Auto's check in a classify worker of the real office, and its release cites the check's run",
   async () => {
     const office = await openOffice()
     const workspace = folder(path.join(office.root, "project"))
@@ -115,13 +111,16 @@ test.skipIf(!sandboxAvailable())(
     await office.prompt(sid, "Build it")
     await office.settled(sid, ["Built."])
     expect(fs.existsSync(path.join(workspace, "built.txt"))).toBe(true)
-    const [check, ran] = audit(office, sid)
-    expect(check).toMatchObject({ kind: "check", tool: "classify_command", outcome: "run", detail: "builds the project" })
-    expect(JSON.parse(check!.args)).toMatchObject({ command: "make", profile: "workspace", cwd: workspace })
-    expect(ran).toMatchObject({ kind: "workspace", tool: "terminal_run", outcome: "ok" })
-    expect(ran!.detail).toEndWith(" by Auto's check: builds the project")
-    // The check ran as its own yian run, its log in the session's folder.
-    expect(fs.existsSync(path.join(office.paths.sessionDir(sid), "checks", `${check!.run_id}.jsonl`))).toBe(true)
+    const [ran] = await calls(office, sid)
+    expect(ran).toMatchObject({ name: "terminal_run", held: true, closed: null })
+    const run = /^Auto's check: builds the project \(run ([0-9a-f-]{36})\)$/.exec(ran!.releaseNote ?? "")?.[1]
+    expect(run).toBeString()
+    // The check ran as its own yian run, its log in the session's folder, and it was told where the command runs.
+    expect(fs.existsSync(path.join(office.paths.sessionDir(sid), "checks", `${run}.jsonl`))).toBe(true)
+    const asked = office.llm.requests().map((r) => JSON.stringify(r.messages)).filter((text) => text.includes("<command>"))
+    expect(asked).toHaveLength(1)
+    expect(asked[0]).toContain("<profile>workspace</profile>")
+    expect(asked[0]).toContain(`<folder>${workspace}</folder>`)
   },
   TIMEOUT,
 )

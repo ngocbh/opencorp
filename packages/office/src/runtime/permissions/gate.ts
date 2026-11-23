@@ -153,9 +153,13 @@ export function resent(decision: CallDecision, released: boolean): CallDecision 
 }
 
 /** What Auto's check's `verdict` decides for a call it held, with `rules` for its card, in `mode` now: a run runs,
- *  noting the check's reason; anything else asks, or is refused once the session doesn't ask. */
+ *  noting the check's reason and the run whose log holds it (`(run <id>)`); anything else asks, or is refused once
+ *  the session doesn't ask. */
 export function afterCheck(verdict: Verdict, rules: readonly string[], mode: Mode): CallDecision {
-  if (verdict.verdict === "run" && !verdict.failed) return { verdict: "run", note: `Auto's check: ${verdict.reason}` }
+  if (verdict.verdict === "run" && !verdict.failed) {
+    const run = verdict.run === undefined ? "" : ` (run ${verdict.run})`
+    return { verdict: "run", note: `Auto's check: ${verdict.reason}${run}` }
+  }
   const reason = verdict.failed
     ? `Auto asks: its check couldn't judge this: ${verdict.reason}`
     : `Auto's check: ${verdict.reason}`

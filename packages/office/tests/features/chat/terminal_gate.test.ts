@@ -11,7 +11,7 @@ import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { Terminal } from "../../../src/tools/terminal/terminal.ts"
 import { CEO } from "../../server/helpers.ts"
 import { waitFor } from "../../helpers.ts"
-import { card, chatOffice, fakeLlm, makeActor, newSession, noWorkersLeft, status, texts } from "./helpers.ts"
+import { card, chatOffice, fakeLlm, makeActor, newSession, noWorkersLeft, status, texts, toolResults } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)
@@ -54,11 +54,10 @@ async function chat(fake: Awaited<ReturnType<typeof fakeLlm>>, mode: "auto" | "d
   await actor.start()
   await waitFor(() => status(o, sid) === "idle", { what: "the first turn" })
   o.office.store.updateSession(sid, { mode })
-  const rows = () => o.office.store.listAudit({ sessionId: sid }).map((r) => [r.outcome, r.detail])
-  return { o, sid, actor, rows }
+  return { o, sid, actor }
 }
 
-test("an ask-mode command waits on its card; Yes runs it once, where yian held it, and its row names who approved", async () => {
+test("an ask-mode command waits on its card; Yes runs it once, where yian held it, and its release names who approved", async () => {
   const fake = await fakeLlm()
   // An integer argument, which yian reads as a bigint, plans as the number the tool gets.
   fake.script(shellCall("ls", 5), { content: "Listed." })
@@ -71,10 +70,7 @@ test("an ask-mode command waits on its card; Yes runs it once, where yian held i
   await c.actor.answer(q.id, YES, "option", { by: CEO })
   await waitFor(() => texts(c.o, c.sid).includes("Listed.") && status(c.o, c.sid) === "idle", { what: "the reply" })
   expect(c.o.pipes.commands).toEqual(["ls"])
-  expect(c.rows()).toEqual([
-    ["held", "Ask mode"],
-    ["ok", expect.stringMatching(new RegExp(`^exit=0 duration=[\\d.]+s approved by @${CEO}$`))],
-  ])
+  expect(await toolResults(c.o, c.sid)).toMatchObject([{ name: "terminal_run", held: true, releaseNote: `approved by @${CEO}` }])
 })
 
 test("No runs nothing, and the employee reads the approver's words", async () => {
@@ -164,9 +160,8 @@ test("Auto's check on a command holds it; its run releases the command, and a sw
   check.finish("run")
   await waitFor(() => texts(c.o, c.sid).includes("Built.") && status(c.o, c.sid) === "idle", { what: "the reply" })
   expect(c.o.pipes.commands).toEqual(["make"])
-  expect(c.rows().at(-1)).toEqual([
-    "ok", expect.stringMatching(/^exit=0 duration=[\d.]+s by Auto's check: builds the project$/),
-  ])
+  const [released] = await toolResults(c.o, c.sid)
+  expect(released!.releaseNote).toMatch(/^Auto's check: builds the project \(run [0-9a-f-]{36}\)$/)
   // A switch to ask while the check runs wins over its verdict.
   await c.actor.prompt("deploy it")
   await waitFor(() => check.judged.length === 2, { what: "the second check" })

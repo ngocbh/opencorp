@@ -38,7 +38,7 @@ type Workspace = Pick<WorkspaceTools, "call" | "interrupt">
 /** What the session actor and the approvals use of a main chat's terminal. */
 type Shells = Pick<
   EmployeeTerminal,
-  "tools" | "bind" | "plan" | "audited" | "where" | "interruptWaits" | "close" | "onEnded" | "delivered"
+  "tools" | "bind" | "plan" | "where" | "interruptWaits" | "close" | "onEnded" | "delivered"
 >
 /** What the session actor uses of a main chat's Codex or Claude Code instrument. */
 type Harnessed = Pick<EmployeeInstrument, "tools" | "cutCalls" | "close" | "suspend">
@@ -144,7 +144,7 @@ export function mainSpec({
       max_turns: defaults.max_turns,
     },
     groups: ({ session, runId, onQuestion, permissions }) => {
-      if (permissions !== undefined) terminal.bind(runId, permissions)
+      if (permissions !== undefined) terminal.bind(permissions)
       const ctx = { store, repo, session, runId, onQuestion, carried, monitor, workspace, terminal, codex, claude }
       return build(["toolbox", "workspace", "terminal", "codex", "claude", "company"], ctx)
     },

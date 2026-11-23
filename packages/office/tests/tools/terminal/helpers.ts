@@ -18,7 +18,7 @@ import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../../src
 import { InstrumentRecord, readRecord, type RecordFile } from "../../../src/tools/terminal/record.ts"
 import type { ShellState } from "../../../src/tools/terminal/shell.ts"
 import {
-  type CommandEnded, decidedFor, Terminal, type TerminalAudit, type TerminalHost, type TerminalShells,
+  type CommandEnded, decidedFor, Terminal, type TerminalHost, type TerminalShells,
 } from "../../../src/tools/terminal/terminal.ts"
 import { goldenPolicy, goldenSshPolicy } from "../../runtime/sandbox/helpers.ts"
 
@@ -39,8 +39,8 @@ export interface TestGate {
   /** Decides call `callId` of terminal `terminal`'s tool `name` with `args`: null lets it act, anything else is what
    *  the call returns (a refusal, or `pending()` for a held call). */
   decide(terminal: Terminal, name: string, args: Record<string, unknown>, callId: string, signal?: AbortSignal): Promise<unknown>
-  /** The owner's Yes to held call `callId`, credited as `credit`: the call it held, to make again under its id. */
-  approve(callId: string, credit: string): GatedCallOf
+  /** The owner's Yes to held call `callId`: the call it held, to make again under its id. */
+  approve(callId: string): GatedCallOf
 }
 
 /** Permissions under a gate that decides each terminal call as the office's does (`decideCommand` on the terminal's
@@ -70,22 +70,20 @@ export function permissions(
       }
       switch (decision.verdict) {
         case "run":
-          ledger.set(callId, decidedFor(plan, `by ${decision.note}`, false))
+          ledger.set(callId, decidedFor(plan, false))
           return null
         case "refuse":
-          terminal.audited(plan, "denied", decision.reason)
           return decision.reason
         case "ask":
           held.push({ card: commandCard(plan, decision), callId })
           plans.set(callId, { plan, call: { name, args } })
-          terminal.audited(plan, "held", decision.reason)
           return pending()
       }
     },
-    approve(callId, credit) {
+    approve(callId) {
       const found = plans.get(callId)
       if (found === undefined) throw new Error(`no held call ${callId}`)
-      ledger.set(callId, decidedFor(found.plan, credit, true))
+      ledger.set(callId, decidedFor(found.plan, true))
       return found.call
     },
   }
@@ -133,19 +131,16 @@ export function plainShells(dir: string, fake?: FakeSsh, cwd = dir): Extract<Ter
 }
 
 /** A terminal driven by `@minh` in a fresh folder, its shells' records in `<dir>/record-<id>`, over plain PTYs there
- *  unless `shells` says otherwise; with `audit`, its host keeps each audit row in `audits`; with `notes`, it keeps
- *  each note of a command that ended in `notes`. The test's end closes it, then removes the folder. */
+ *  unless `shells` says otherwise; with `notes`, it keeps each note of a command that ended in `notes`. The test's end closes it, then removes the folder. */
 export function openTerminal(o: {
   perms: Permissions
   fake?: FakeSsh
   shells?: (dir: string) => TerminalShells
-  audit?: boolean
   notes?: boolean
 }) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-term-")))
   const live = new Map<string, Uint8Array[]>()
   const states = new Map<string, ShellState[]>()
-  const audits: TerminalAudit[] = []
   const notes: CommandEnded[] = []
   let made = 0
   let calls = 0
@@ -153,7 +148,6 @@ export function openTerminal(o: {
     shells: o.shells?.(dir) ?? plainShells(dir, o.fake),
     driver: "@minh",
     permissions: o.perms,
-    ...(o.audit ? { audit: (row: TerminalAudit) => void audits.push(row) } : {}),
     ...(o.notes ? { ended: (note: CommandEnded) => void notes.push(note) } : {}),
     shellHost: (name, profile) => {
       const id = `sh_${++made}`
@@ -175,8 +169,6 @@ export function openTerminal(o: {
   return {
     terminal,
     dir,
-    /** The rows the host's audit got, in order. */
-    audits,
     /** The notes the host got of commands that ended, in order. */
     notes,
     /** Calls tool `name` with `args`, as yian would: with a fresh call id unless given, its signal and the agent's
@@ -192,11 +184,10 @@ export function openTerminal(o: {
       const out = gate === undefined ? null : await gate.decide(terminal, name, args, callId, options.signal)
       return out !== null ? out : tools[name].call(args, { callId, ...signal, ...interrupted })
     },
-    /** The owner's Yes to held call `callId` (credited as `credit`, by default "approved"): yian releases it, and the
-     *  call is made again under its id. */
-    approve: (callId: string, o: { credit?: string; signal?: AbortSignal } = {}) => {
+    /** The owner's Yes to held call `callId`: yian releases it, and the call is made again under its id. */
+    approve: (callId: string, o: { signal?: AbortSignal } = {}) => {
       if (gate === undefined) throw new Error("these permissions have no gate")
-      const call = gate.approve(callId, o.credit ?? "approved")
+      const call = gate.approve(callId)
       return tools[call.name as keyof typeof tools].call(call.args, { callId, ...(o.signal ? { signal: o.signal } : {}) })
     },
     /** The owner's live view of shell `id` so far, decoded. */

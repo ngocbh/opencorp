@@ -1,19 +1,15 @@
-/** The reference monitor: asset tools checked against the company repo, run with office secrets, audited; and each
- *  workspace file call audited. */
+/** The reference monitor: asset tools checked against the company repo and run with office secrets, their results
+ *  redacted. The run log keeps each call and the result its model read. */
 import type { Asset as AssetSchema, Grant as GrantSchema } from "@opencorp/protocol"
 import type { z } from "zod"
 import { builtinKinds, type KindTool, type Kinds } from "./assets.ts"
 import { type CompanyRepo, loadRepo } from "../../company/loader.ts"
 import { assetToolName, shownAssetToolName, TOOL_NAME } from "../../company/naming.ts"
 import { type SecretStore, SecretNotSetError } from "../secrets.ts"
-import type { Store } from "../store/store.ts"
-import { auditArgs, DETAIL_CHARS, pyJson, redact, repr, splitLines, strip } from "../../util/redact.ts"
+import { pyJson, redact, repr } from "../../util/redact.ts"
 
 type Asset = z.output<typeof AssetSchema>
 type Grant = z.output<typeof GrantSchema>
-
-/** Characters of a killed workspace call's reason kept in its audit row. */
-export const REASON_CHARS = 200
 
 /** A failure the monitor words itself, shown to the model as `error: <message>`. */
 class MonitorError extends Error {
@@ -27,52 +23,14 @@ export interface ToolboxTool {
   call(args: Record<string, unknown>): Promise<unknown>
 }
 
-/** How one workspace call runs: `signal` stops it; `callId` is the yian call's. */
-export interface WorkspaceCallOptions {
-  readonly signal?: AbortSignal
-  readonly callId?: string
-}
-
-/** Forwards one workspace call (`WorkspaceTools.call`'s output, or anything shaped like it); a held one returns
- *  yian's `pending()`. */
-export type WorkspaceCall = (
-  name: string,
-  args: Record<string, unknown>,
-  options?: WorkspaceCallOptions,
-) => Promise<unknown>
-
-/** What one workspace call did, for the audit log.
- *
- *  `exit` is the call's exit status, or `null` when it was killed (timeout or interrupt); `duration` is in
- *  seconds. */
-export interface AuditRecord {
-  tool: string
-  argsSummary: string
-  exit: number | null
-  duration: number
-}
-
-/** A workspace call's model-visible output and its audit record. */
-export interface ToolOutcome {
-  output: string
-  audit: AuditRecord
-}
-
-/** What `workspace` audits: a workspace tool call by name that resolves to its output and audit record, as
- *  `WorkspaceTools.call` does. */
-export interface AuditedTools {
-  call(name: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<ToolOutcome>
-}
-
 /**
- * The only holder of asset credentials: every asset-tool call is checked, run, and audited here.
+ * The only holder of asset credentials: every asset-tool call is checked and run here.
  *
  * Grants are read from the company repo at `root` on every call, so a revocation applies to the next call.
  * `kinds` maps `Asset.kind` to its tools (default: the built-in kinds).
  */
 export class Monitor {
   readonly root: string
-  readonly store: Store
   readonly secrets: SecretStore
   readonly kinds: Kinds
   readonly #log: (line: string) => void
@@ -80,26 +38,21 @@ export class Monitor {
   /** `log` (default: `console.error`) gets a line for each tool left out of a listing for its name. */
   constructor(
     root: string,
-    store: Store,
     secrets: SecretStore,
     kinds: Kinds = builtinKinds(),
     { log = console.error }: { log?: (line: string) => void } = {},
   ) {
     this.root = root
-    this.store = store
     this.secrets = secrets
     this.kinds = kinds
     this.#log = log
   }
 
   /** The asset tools `person` holds grants for, as `{name: tool}`: the `toolbox` group. Pass it to `groupSpecs`
-   *  for `Job.groups`. Each tool's `call` calls `call` with `runId` and `sessionId`. Gated tools, tools of unknown
-   *  kinds, and tools whose name a model would see past yian's limit (yian would refuse every run granted them;
-   *  lint says so too) are never listed. */
-  tools(
-    person: string,
-    { runId = null, sessionId = null }: { runId?: string | null; sessionId?: string | null } = {},
-  ): Record<string, ToolboxTool> {
+   *  for `Job.groups`. Each tool's `call` calls `call`. Gated tools, tools of unknown kinds, and tools whose name a
+   *  model would see past yian's limit (yian would refuse every run granted them; lint says so too) are never
+   *  listed. */
+  tools(person: string): Record<string, ToolboxTool> {
     const repo = loadRepo(this.root)
     const covering = subjects(repo, person)
     const found: Record<string, ToolboxTool> = {}
@@ -120,26 +73,23 @@ export class Monitor {
         const description = impl.description || name
         // The description joins the schema, as langchain's tool_call_schema does for a dict schema.
         const parameters = { ...(impl.parameters ?? { type: "object", properties: {} }), description }
-        found[name] = { description, parameters, call: (args) => this.call(person, runId, name, args, { sessionId }) }
+        found[name] = { description, parameters, call: (args) => this.call(person, name, args) }
       }
     }
     return found
   }
 
   /**
-   * Checks, runs, and audits one asset-tool call; returns its result.
+   * Checks and runs one asset-tool call; returns its result.
    *
    * A denial is the result `permission denied: <reason>` and a failure is `error: <reason>`, so the model sees them
-   * and the run goes on. An `AbortError` is audited, then thrown again as a fresh `AbortError` holding only the
-   * redacted reason. Secret values are redacted from the result, the audit row and every reason, and so are
-   * arguments named after the asset's secrets.
+   * and the run goes on. An `AbortError` is thrown again as a fresh `AbortError` holding only the redacted reason.
+   * Secret values are redacted from the result and every reason.
    */
   async call(
     person: string,
-    runId: string | null,
     name: string,
     args: Record<string, unknown>,
-    options: { sessionId?: string | null } = {},
   ): Promise<unknown> {
     args = { ...args }
     const repo = loadRepo(this.root)
@@ -147,26 +97,9 @@ export class Monitor {
     const keys = new Set(asset?.secrets ?? [])
     const values: string[] = []
 
-    const audit = (outcome: string, detail: string) => {
-      this.store.recordAudit({
-        person,
-        kind: "asset",
-        tool: name,
-        args: storable(auditArgs(toJson(args) as Record<string, unknown>, keys, values)) as Record<string, unknown>,
-        outcome,
-        sessionId: options.sessionId ?? null,
-        runId,
-        detail: redact(detail, keys, values).slice(0, DETAIL_CHARS),
-      })
-    }
-
     const denied = denial(repo, person, asset, tool, name, args)
-    if (denied !== null) {
-      audit("denied", denied)
-      return `permission denied: ${denied}`
-    }
+    if (denied !== null) return `permission denied: ${denied}`
     let result: unknown
-    let detail: string
     try {
       // A null denial means a grant on this asset allows this tool.
       const impl = kindTool(this.kinds, asset!.kind, tool!)
@@ -179,48 +112,13 @@ export class Monitor {
       }
       // Plain JSON first, so a set, bytes, or an object's text is scrubbed too.
       result = redact(toJson(await impl.run(asset!, args, secrets)), keys, values)
-      detail = typeof result === "string" ? result : pyJson(result)
     } catch (error) {
       const reason = redact(reasonOf(error), keys, values)
-      audit("error", reason)
       // The kind's own error, whose message may hold a secret, never leaves.
       if (isAbort(error)) throw new DOMException(reason, "AbortError")
       return `error: ${reason}`
     }
-    audit("ok", detail)
     return result
-  }
-
-  /**
-   * A `call(name, args)` for `workspaceToolFunctions` that audits each workspace file call.
-   *
-   * The row's outcome is `ok` for exit 0 and `error` otherwise. A call with no exit status (timed out,
-   * interrupted, or bad arguments) has the reason from its output in the detail. A call that rejects is recorded
-   * as `error` and its error thrown again. The file tools are never gated; the terminal gates and audits commands.
-   */
-  workspace(
-    tools: AuditedTools,
-    person: string,
-    runId: string | null,
-    { sessionId = null }: { sessionId?: string | null } = {},
-  ): WorkspaceCall {
-    const record = (tool: string, args: Record<string, unknown>, outcome: string, detail: string) =>
-      this.store.recordAudit({ person, kind: "workspace", tool, args, outcome, sessionId, runId, detail })
-    return async (name, args, options = {}) => {
-      let outcome: ToolOutcome
-      try {
-        outcome = await tools.call(name, args, options.signal === undefined ? {} : { signal: options.signal })
-      } catch (error) {
-        record(name, {}, "error", reasonOf(error).slice(0, DETAIL_CHARS))
-        throw error
-      }
-      const audit = outcome.audit
-      let detail = `exit=${audit.exit ?? "None"} duration=${audit.duration.toFixed(3)}s`
-      if (audit.exit === null) detail += `: ${[...lastLine(outcome.output)].slice(0, REASON_CHARS).join("")}`
-      const ended = audit.exit === 0 ? "ok" : "error"
-      record(audit.tool, { summary: audit.argsSummary }, ended, detail.slice(0, DETAIL_CHARS))
-      return outcome.output
-    }
   }
 
   /** The value of every secret an asset of the company names that is set, each once: what no model may read, so the
@@ -340,7 +238,7 @@ function denial(
   return `${name}: ${reasons[0]}`
 }
 
-/** A value (a kind tool's result, or a call's args for the audit) as JSON data, as Python's
+/** A value (a kind tool's result) as JSON data, as Python's
  *  `json.dumps(value, default=str)` reads back: `undefined` is null, a set an array, a map an object, bytes their
  *  UTF-8 text, a function `"[function]"`, anything else its text.
  *  Throws `TypeError` on a cycle. */
@@ -372,26 +270,6 @@ function toJson(value: unknown, path: Set<object> = new Set()): unknown {
   } finally {
     path.delete(value)
   }
-}
-
-/** The last line of `text` that isn't blank, stripped, or "". */
-export function lastLine(text: string): string {
-  // A killed file call's output is "[interrupted]"; a timed-out one's or a bad-arguments reply is one line.
-  for (const line of splitLines(text).reverse()) if (strip(line)) return strip(line)
-  return ""
-}
-
-/** Audit args the store can write as JSON: a bigint (a frame's int) is a number when it is a safe integer, else
- *  its digits. */
-function storable(value: unknown): unknown {
-  if (typeof value === "bigint") return Number.isSafeInteger(Number(value)) ? Number(value) : String(value)
-  if (Array.isArray(value)) {
-    const out: unknown[] = []
-    for (let i = 0; i < value.length; i++) out.push(storable(value[i]))
-    return out
-  }
-  if (isPlain(value)) return Object.fromEntries(Object.keys(value).map((k) => [k, storable(value[k])]))
-  return value
 }
 
 /** Why a call failed. The monitor's own failures read as plain sentences; anything else, a kind's own error

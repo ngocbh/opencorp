@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer"
 import { createHash } from "node:crypto"
 import { expect, test } from "bun:test"
 import {
-  auditArgs, casefold, DETAIL_CHARS, jsonDumps, pyJson, quote, quotePlus, redact, redactUrls, repr, splitLines, strip,
+  casefold, jsonDumps, pyJson, quote, quotePlus, redact, redactUrls, repr, splitLines, strip,
 } from "../../src/util/redact.ts"
 import { KINDS, makeMonitor, RuntimeError, TOKEN } from "../runtime/permissions/helpers.ts"
 
@@ -145,55 +145,46 @@ function leaked(text: string): boolean {
   return [TOKEN, PADDED, PIN, "AAAABBBBCCCCDDDD", "EEEEFFFFGGGGHHHH", ...ESCAPED_FORMS].some((s) => text.includes(s))
 }
 
-test.each(Object.keys(LEAKS).sort())("no form of a secret reaches the result or the audit [%s]", async (mode) => {
-  const { monitor, store } = await leakyMonitor()
-  const got = await monitor.call("minh", "r1", "vault__leak", { mode })
+test.each(Object.keys(LEAKS).sort())("no form of a secret reaches the result [%s]", async (mode) => {
+  const { monitor } = await leakyMonitor()
+  const got = await monitor.call("minh", "vault__leak", { mode })
   const text = JSON.stringify(got)
   expect(text).toContain("[redacted]")
   expect(leaked(text)).toBe(false)
   // As Python also checks str(got): the raw string holds forms that JSON.stringify would escape.
   if (typeof got === "string") expect(leaked(got)).toBe(false)
-  const rows = store.listAudit()
-  expect(rows).toHaveLength(1)
-  expect(leaked(JSON.stringify(rows[0]))).toBe(false)
 })
 
 test("a non json result comes back as plain json", async () => {
   const { monitor } = await leakyMonitor()
-  expect(await monitor.call("minh", "r1", "vault__leak", { mode: "set" })).toEqual(["[redacted]"])
-  expect(await monitor.call("minh", "r1", "vault__leak", { mode: "dict_key" })).toEqual({ "[redacted]": 1 })
+  expect(await monitor.call("minh", "vault__leak", { mode: "set" })).toEqual(["[redacted]"])
+  expect(await monitor.call("minh", "vault__leak", { mode: "dict_key" })).toEqual({ "[redacted]": 1 })
 })
 
-test("a result that is not json is an audited error", async () => {
-  const { monitor, store } = await leakyMonitor()
-  const got = await monitor.call("minh", "r1", "vault__leak", { mode: "circular" })
+test("a result that is not json is an error result", async () => {
+  const { monitor } = await leakyMonitor()
+  const got = await monitor.call("minh", "vault__leak", { mode: "circular" })
   expect(got).toBe("error: TypeError: Circular reference detected")
-  expect(store.listAudit().map((r) => r.outcome)).toEqual(["error"])
 })
 
 test("a kinds own key error is named by its type", async () => {
   const { monitor } = await leakyMonitor()
-  expect(await monitor.call("minh", "r1", "vault__leak", { mode: "raise_repr" })).toBe("error: KeyError: '[redacted]'")
+  expect(await monitor.call("minh", "vault__leak", { mode: "raise_repr" })).toBe("error: KeyError: '[redacted]'")
 })
 
-test("an interrupt inside a kind is audited then raised", async () => {
-  const { monitor, store } = await leakyMonitor()
-  await expect(monitor.call("minh", "r1", "vault__leak", { mode: "interrupt" })).rejects.toMatchObject({ name: "AbortError" })
-  const rows = store.listAudit()
-  expect(rows).toHaveLength(1)
-  expect([rows[0]!.outcome, rows[0]!.detail]).toEqual(["error", "AbortError"])
+test("an interrupt inside a kind is raised", async () => {
+  const { monitor } = await leakyMonitor()
+  await expect(monitor.call("minh", "vault__leak", { mode: "interrupt" })).rejects.toMatchObject({ name: "AbortError" })
 })
 
 test("an interrupt message is scrubbed before it is rethrown", async () => {
-  const { monitor, store } = await leakyMonitor()
-  const error = (await monitor.call("minh", "r1", "vault__leak", { mode: "interrupt_secret" }).catch((e: unknown) => e)) as DOMException
+  const { monitor } = await leakyMonitor()
+  const error = (await monitor.call("minh", "vault__leak", { mode: "interrupt_secret" }).catch((e: unknown) => e)) as DOMException
   expect(error).toBeInstanceOf(DOMException)
   expect(error.name).toBe("AbortError")
   expect(error.message).toContain("[redacted]")
   expect(error.message).not.toContain(TOKEN)
-  const rows = store.listAudit()
-  expect(rows).toHaveLength(1)
-  expect(leaked(JSON.stringify(rows))).toBe(false)
+  expect(leaked(error.message)).toBe(false)
 })
 
 /** [label, text, a piece of the secret's form that must be gone]. */
@@ -306,27 +297,6 @@ test("a key named __proto__ stays a plain key", () => {
   expect(Object.getPrototypeOf(got)).toBe(Object.prototype)
   expect(Object.getOwnPropertyDescriptor(got, "__proto__")?.value).toBe("[redacted] x")
   expect(Object.keys(got)).toEqual(["__proto__", "b"])
-})
-
-test("audit args longer than the cap are cut to it", () => {
-  // Python's synthetic test token.
-  const TOKEN = "s3cr3t-t0ken-value"
-  const cut = auditArgs({ job: "x".repeat(3000) + TOKEN }, ["vault_token"], [TOKEN])
-  expect(Object.keys(cut)).toEqual(["truncated"])
-  const truncated = cut.truncated as string
-  expect(truncated.length).toBe(DETAIL_CHARS)
-  expect(truncated.startsWith('{"job": "xxx')).toBe(true)
-  expect(JSON.stringify(cut).includes(TOKEN)).toBe(false)
-  expect(auditArgs({ job: "small", vault_token: TOKEN }, ["vault_token"], [TOKEN]))
-    .toEqual({ job: "small", vault_token: "[redacted]" })
-  expect(auditArgs({ n: 12345678901234567890n, x: NaN, y: [1.5, true, null] }, [], []))
-    .toEqual({ n: 12345678901234567890n, x: NaN, y: [1.5, true, null] })
-  // Python 3.12's output: the secret inside the kept part is redacted before the cut.
-  const front = auditArgs({ job: TOKEN + "x".repeat(3000) }, ["vault_token"], [TOKEN]).truncated as string
-  expect(front.startsWith('{"job": "[redacted]xxx')).toBe(true)
-  const kinds = auditArgs({ x: NaN, n: 12345678901234567890n, y: [1.5, true, null], s: "x".repeat(3000) }, [], [])
-  expect((kinds.truncated as string)
-    .startsWith('{"x": NaN, "n": 12345678901234567890, "y": [1.5, true, null], "s": "xxx')).toBe(true)
 })
 
 test("a secret holding regex characters is scrubbed only as written", () => {

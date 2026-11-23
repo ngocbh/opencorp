@@ -3,7 +3,6 @@
  *  checking first that the shell is still where the decision was made. */
 import { expect, setDefaultTimeout, test } from "bun:test"
 import type { Decided, Permissions } from "../../../src/runtime/permissions/policy.ts"
-import { waitFor } from "../../helpers.ts"
 import { fakePipes, json, openTerminal, permissions } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -11,8 +10,8 @@ setDefaultTimeout(30_000)
 const NO_DECISION = "no permission check decided this call"
 
 /** What the gate decided for `command` in a new shell, run in `cwd`. */
-const ran = (command: string, cwd: string | null, why: string, approved = false): Decided => ({
-  why, basis: { cwd }, approved, tool: "terminal_run", text: command, partial: false, shell: null,
+const ran = (command: string, cwd: string | null, approved = false): Decided => ({
+  basis: { cwd }, approved, tool: "terminal_run", text: command, partial: false, shell: null,
 })
 
 /** Permissions under the gate: what it decided for each call id, taken once by the call that acts on it. */
@@ -28,11 +27,11 @@ function gated(): { perms: Permissions; ledger: Map<string, Decided>; held: unkn
   return { perms: { ...perms, decided: taken }, ledger, held }
 }
 
-/** A terminal of fake pipes under the gate, with its audit. */
+/** A terminal of fake pipes under the gate. */
 function hooked() {
   let fake!: ReturnType<typeof fakePipes>
   const g = gated()
-  const t = openTerminal({ perms: g.perms, shells: (dir) => (fake = fakePipes(dir)).shells, audit: true })
+  const t = openTerminal({ perms: g.perms, shells: (dir) => (fake = fakePipes(dir)).shells })
   return { ...t, ...g, fake }
 }
 
@@ -56,12 +55,11 @@ test("a plan reads what a command would be from the terminal's live state: its a
   expect(t.terminal.plan("type", { shell: "shell 1", text: "y", why: "x" })).toEqual({ decide: false })
 })
 
-test("a call the gate decided runs, its row saying why; one it didn't decide runs nothing", async () => {
+test("a call the gate decided runs, and its shell's record keeps it with its exit; one it didn't decide runs nothing", async () => {
   const t = hooked()
-  t.ledger.set("r/n/1/0", ran("echo hi", t.dir, "by read-only"))
+  t.ledger.set("r/n/1/0", ran("echo hi", t.dir))
   expect(json(await t.call("run", { command: "echo hi", why: "x" }, { callId: "r/n/1/0" }))).toMatchObject({ exit: 0 })
-  await waitFor(() => t.audits.length === 1, { what: "the row" })
-  expect(t.audits[0]).toMatchObject({ outcome: "ok", tool: "terminal_run", text: "echo hi", why: "by read-only" })
+  expect(t.record("sh_1").commands).toMatchObject([{ command: "echo hi", by: "@minh", exit: 0 }])
   // Its decision is taken by the call: a second call under the id has none.
   expect(json(await t.call("run", { command: "echo hi", why: "x" }, { callId: "r/n/1/0" }))).toEqual({
     refused: NO_DECISION,
@@ -74,17 +72,16 @@ test("a call the gate decided runs, its row saying why; one it didn't decide run
   expect(t.held).toEqual([])
 })
 
-test("an approved command runs, its row naming who approved it", async () => {
+test("an approved command runs", async () => {
   const t = hooked()
-  t.ledger.set("r/n/1/0", ran("echo ok", t.dir, "approved by @ngocbh", true))
+  t.ledger.set("r/n/1/0", ran("echo ok", t.dir, true))
   expect(json(await t.call("run", { command: "echo ok", why: "x" }, { callId: "r/n/1/0" }))).toMatchObject({ exit: 0 })
-  await waitFor(() => t.audits.length === 1, { what: "the row" })
-  expect(t.audits[0]).toMatchObject({ outcome: "ok", why: "approved by @ngocbh" })
+  expect(t.fake.commands).toEqual(["echo ok"])
 })
 
 test("a shell in another folder than its decision was made in runs nothing: the call is to be checked again", async () => {
   const t = hooked()
-  t.ledger.set("r/n/1/0", ran("echo moved", "/elsewhere", "approved by @ngocbh", true))
+  t.ledger.set("r/n/1/0", ran("echo moved", "/elsewhere", true))
   const reply = json(await t.call("run", { command: "echo moved", why: "x" }, { callId: "r/n/1/0" }))
   expect(reply.refused).toBe(
     `the shell is in another folder than when this command was approved (/elsewhere, now ${t.dir}); run it again to ` +
@@ -95,10 +92,10 @@ test("a shell in another folder than its decision was made in runs nothing: the 
 
 test("a call that isn't what the gate decided runs nothing: another command, or another shell, under its call id", async () => {
   const t = hooked()
-  t.ledger.set("r/n/1/0", ran("ls", t.dir, "approved by @ngocbh", true))
+  t.ledger.set("r/n/1/0", ran("ls", t.dir, true))
   const other = json(await t.call("run", { command: "echo DIFFERENT", why: "x" }, { callId: "r/n/1/0" }))
   expect(other.refused).toBe("this call isn't the one that was decided; run it again to have it checked")
-  t.ledger.set("r/n/2/0", { ...ran("echo a", t.dir, "by read-only"), shell: "shell 1" })
+  t.ledger.set("r/n/2/0", { ...ran("echo a", t.dir), shell: "shell 1" })
   const elsewhere = json(await t.call("run", { command: "echo a", why: "x" }, { callId: "r/n/2/0" }))
   expect(elsewhere.refused).toBe("this call isn't the one that was decided; run it again to have it checked")
   expect(t.fake.commands).toEqual([])
@@ -106,20 +103,9 @@ test("a call that isn't what the gate decided runs nothing: another command, or 
 
 test("a call takes what the gate decided for it as it starts, even when it is refused for its own reasons", async () => {
   const t = hooked()
-  t.ledger.set("r/n/1/0", ran("echo hi", t.dir, "by read-only"))
+  t.ledger.set("r/n/1/0", ran("echo hi", t.dir))
   expect(json(await t.call("run", { why: "no command" }, { callId: "r/n/1/0" })).refused).toBeString()
-  t.ledger.set("r/n/2/0", ran("echo hi", t.dir, "by read-only"))
+  t.ledger.set("r/n/2/0", ran("echo hi", t.dir))
   expect(json(await t.call("read", { shell: "shell 9" }, { callId: "r/n/2/0" })).refused).toBeString()
   expect(t.ledger.size).toBe(0)
-})
-
-test("the gate's held and refused calls are the terminal's audit rows, as its own gate wrote them", () => {
-  const t = hooked()
-  const plan = t.terminal.plan("run", { command: "rm -rf build", why: "x" })
-  t.terminal.audited(plan, "held", "Ask mode")
-  t.terminal.audited(plan, "denied", "Not run: a deny rule: rm *.")
-  expect(t.audits).toEqual([
-    { outcome: "held", tool: "terminal_run", text: "rm -rf build", shell: null, reason: "Ask mode" },
-    { outcome: "denied", tool: "terminal_run", text: "rm -rf build", shell: null, reason: "Not run: a deny rule: rm *." },
-  ])
 })

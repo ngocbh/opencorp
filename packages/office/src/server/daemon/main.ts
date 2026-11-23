@@ -8,7 +8,6 @@ import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform
 import { oneReplyProblem } from "../../models/check.ts"
 import { ChatHarness } from "../../features/chat/harness.ts"
 import { Hooks } from "../../runtime/sessions/hooks.ts"
-import { auditInterrupted } from "../../features/chat/terminal.ts"
 import { Transcript } from "../../features/chat/transcript.ts"
 import { CompanyGit } from "../../company/git.ts"
 import { HeadWatcher } from "../../company/watch.ts"
@@ -28,7 +27,7 @@ import { storeProblem } from "../../runtime/store/problem.ts"
 import { Store } from "../../runtime/store/store.ts"
 import { OfficePaths } from "../../util/home.ts"
 import { reap } from "../../runtime/worker/reaper.ts"
-import { type RecordFile, recoverRecords } from "../../tools/terminal/record.ts"
+import { recoverRecords } from "../../tools/terminal/record.ts"
 import { WorkerRegistry } from "../../runtime/worker/spawn.ts"
 import { Bus } from "../../runtime/bus.ts"
 import {
@@ -279,10 +278,10 @@ async function sweepOnStart(office: Office, log: ReturnType<typeof officeLogger>
 }
 
 /** Marks each terminal record an earlier office left running as interrupted, in every session's `terminal/` folder:
- *  a shell an office stop cut off is never run again. Each command one cut off gets its `interrupted` audit row
- *  (`auditInterrupted`), since its end, which writes a command's row, never came. A folder whose meta.json isn't a
- *  record's is logged and left as it is; a failure is logged by its type, and never stops the start. */
-function recoverTerminals(paths: OfficePaths, store: Store, log: ReturnType<typeof officeLogger>): void {
+ *  a shell an office stop cut off is never run again, and a command with no exit in it is one the stop cut off. A
+ *  folder whose meta.json isn't a record's is logged and left as it is; a failure is logged by its type, and never
+ *  stops the start. */
+function recoverTerminals(paths: OfficePaths, log: ReturnType<typeof officeLogger>): void {
   let folders: fs.Dirent[]
   try {
     folders = fs.readdirSync(paths.sessions, { withFileTypes: true })
@@ -295,14 +294,7 @@ function recoverTerminals(paths: OfficePaths, store: Store, log: ReturnType<type
   for (const folder of folders) {
     if (!folder.isDirectory()) continue
     try {
-      const audit = (file: RecordFile) => {
-        try {
-          auditInterrupted(store, folder.name, file)
-        } catch (error) {
-          log("ERROR", "opencorp.daemon.main")(`a cut-off command's audit row wasn't written: ${errorType(error)}`)
-        }
-      }
-      for (const problem of recoverRecords(path.join(paths.sessions, folder.name, "terminal"), audit)) {
+      for (const problem of recoverRecords(path.join(paths.sessions, folder.name, "terminal"))) {
         log("WARNING", "opencorp.daemon.main")(`a terminal record was left as it is: ${problem}`)
       }
     } catch (error) {
@@ -386,7 +378,7 @@ export function buildOffice(
     const hooks = new Hooks({ log: log("ERROR", "opencorp.chat.hooks") })
     office.codex = new CodexSessions(office, hooks, { log: log("WARNING", "opencorp.harness.session") })
     office.claude = new ClaudeSessions(office, { log: log("WARNING", "opencorp.harness.claude") })
-    const monitor = new Monitor(paths.company, store, office.secrets, undefined, {
+    const monitor = new Monitor(paths.company, office.secrets, undefined, {
       log: log("WARNING", "opencorp.perm.monitor"),
     })
     // After the transcript and the relay, which its actors share.
@@ -395,7 +387,7 @@ export function buildOffice(
     office.workers = harness
     office.harness = harness
     // First, before any shell starts: a restored session may open new ones beside the records it cut off.
-    office.onStart.push(() => recoverTerminals(paths, office.store, log))
+    office.onStart.push(() => recoverTerminals(paths, log))
     // Before the restore, as Python's restore swept first: the sweep must never end a run a restore resumes or starts.
     office.onStart.push(() => sweepOnStart(office, log))
     // Before loadExtensions adds the cards' sweep, so the sweep sees the statuses restore settled.

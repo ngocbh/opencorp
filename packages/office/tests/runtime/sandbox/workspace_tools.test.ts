@@ -4,7 +4,6 @@ import fs from "node:fs"
 import path from "node:path"
 import { ToolSet } from "@ngocbh/yian/tools"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
-import type { WorkspaceCall } from "../../../src/runtime/permissions/monitor.ts"
 import { helperCommand } from "../../../src/platform.ts"
 import {
   TOOL_NAMES,
@@ -32,7 +31,7 @@ function tools({ policy, ...over }: { policy?: MakeOptions } & Partial<Workspace
 }
 
 /** The tool functions over `call`, offered through a worker's `remoteTool`s as a yian `ToolSet`. */
-async function workerToolSet(call: WorkspaceCall): Promise<ToolSet> {
+async function workerToolSet(call: Parameters<typeof workspaceToolFunctions>[0]): Promise<ToolSet> {
   const fns = workspaceToolFunctions(call)
   const rpc = await officeEnd(new BaseHandlers({ tools: { workspace: fns } }))
   return new ToolSet({ workspace: TOOL_NAMES.map((n) => remoteTool(rpc, "workspace", toolSpec(n, fns[n]!))) })
@@ -40,29 +39,28 @@ async function workerToolSet(call: WorkspaceCall): Promise<ToolSet> {
 
 test.skipIf(!sandboxAvailable())("file tools round trip", async () => {
   const { tools: t, ws } = tools()
-  expect((await t.call("write_file", { path: "pkg/a.py", content: "x = 1\n" })).output).toBe(
+  expect((await t.call("write_file", { path: "pkg/a.py", content: "x = 1\n" }))).toBe(
     "wrote 6 bytes to pkg/a.py",
   )
   expect(fs.readFileSync(path.join(ws, "pkg/a.py"), "utf8")).toBe("x = 1\n")
-  expect((await t.call("read_file", { path: "pkg/a.py" })).output).toBe("x = 1\n")
-  expect((await t.call("edit_file", { path: "pkg/a.py", old: "x = 1", new: "x = 2" })).output).toBe(
+  expect((await t.call("read_file", { path: "pkg/a.py" }))).toBe("x = 1\n")
+  expect((await t.call("edit_file", { path: "pkg/a.py", old: "x = 1", new: "x = 2" }))).toBe(
     "replaced 1 occurrence in pkg/a.py at line 1",
   )
-  expect((await t.call("list", { path: "." })).output).toBe(listing("pkg/"))
-  expect((await t.call("search", { pattern: "x = 2" })).output).toBe("pkg/a.py:1:x = 2")
+  expect((await t.call("list", { path: "." }))).toBe(listing("pkg/"))
+  expect((await t.call("search", { pattern: "x = 2" }))).toBe("pkg/a.py:1:x = 2")
 })
 
 test.skipIf(!sandboxAvailable())("errors come back as text", async () => {
   const out = await tools().tools.call("read_file", { path: "missing.txt" })
-  expect(out.output.startsWith("error: No such file")).toBe(true)
-  expect(out.audit.exit).toBe(1)
+  expect(out.startsWith("error: No such file")).toBe(true)
 })
 
 test.skipIf(!sandboxAvailable())("large non ascii read", async () => {
   // 200k characters of "é" are 1.2 MB as \u00e9 escapes; the reply must still fit.
   const { tools: t, ws } = tools()
   fs.writeFileSync(path.join(ws, "big.txt"), "é".repeat(300_000))
-  const out = (await t.call("read_file", { path: "big.txt" })).output
+  const out = (await t.call("read_file", { path: "big.txt" }))
   expect(out.startsWith("é".repeat(200_000) + "\n[truncated at 200000 characters")).toBe(true)
 })
 
@@ -70,7 +68,7 @@ test.skipIf(!sandboxAvailable())("oversized reply is an explicit error", async (
   const { tools: t, ws } = tools({ fileOutputCap: 1000 })
   fs.writeFileSync(path.join(ws, "f.txt"), "x".repeat(5000))
   const out = await t.call("read_file", { path: "f.txt" })
-  expect(out.output.startsWith("error: read_file output too large (over 1000 bytes); ask for less")).toBe(true)
+  expect(out.startsWith("error: read_file output too large (over 1000 bytes); ask for less")).toBe(true)
 })
 
 test.skipIf(!sandboxAvailable())("interrupt kills the file calls running now, and the next call is unaffected", async () => {
@@ -79,21 +77,20 @@ test.skipIf(!sandboxAvailable())("interrupt kills the file calls running now, an
   const running = t.call("read_file", { path: "f.txt" })
   t.interrupt()
   const out = await running
-  expect(out.output).toBe("[interrupted]")
-  expect(out.audit.exit).toBeNull()
-  expect((await t.call("read_file", { path: "f.txt" })).output).toBe("x")
+  expect(out).toBe("[interrupted]")
+  expect((await t.call("read_file", { path: "f.txt" }))).toBe("x")
 })
 
 test.skipIf(!sandboxAvailable())("read only workspace", async () => {
   const { tools: t, ws } = tools({ policy: { writable: false } })
   fs.writeFileSync(path.join(ws, "f.txt"), "keep")
-  expect((await t.call("read_file", { path: "f.txt" })).output).toBe("keep")
-  expect((await t.call("write_file", { path: "f.txt", content: "x" })).output.startsWith("error:")).toBe(true)
-  expect((await t.call("edit_file", { path: "f.txt", old: "keep", new: "x" })).output.startsWith("error:")).toBe(true)
+  expect((await t.call("read_file", { path: "f.txt" }))).toBe("keep")
+  expect((await t.call("write_file", { path: "f.txt", content: "x" })).startsWith("error:")).toBe(true)
+  expect((await t.call("edit_file", { path: "f.txt", old: "keep", new: "x" })).startsWith("error:")).toBe(true)
   expect(fs.readFileSync(path.join(ws, "f.txt"), "utf8")).toBe("keep")
 })
 
-test.skipIf(!sandboxAvailable())("every tool returns an audit record", async () => {
+test.skipIf(!sandboxAvailable())("every tool returns its output as the model reads it", async () => {
   const { tools: t } = tools()
   const calls: Record<string, Record<string, unknown>> = {
     write_file: { path: "f.txt", content: "y".repeat(500) },
@@ -105,13 +102,8 @@ test.skipIf(!sandboxAvailable())("every tool returns an audit record", async () 
   expect(new Set(Object.keys(calls))).toEqual(new Set(TOOL_NAMES))
   for (const [name, args] of Object.entries(calls)) {
     const out = await t.call(name, args)
-    expect(typeof out.output).toBe("string")
-    expect(out.audit.tool).toBe(name)
-    expect(out.audit.exit).toBe(0)
-    expect(out.audit.duration).toBeGreaterThan(0)
+    expect([name, typeof out, out.startsWith("error:")]).toEqual([name, "string", false])
   }
-  const summary = (await t.call("write_file", calls.write_file!)).audit.argsSummary
-  expect(summary).toBe("path='f.txt' content=<500 chars>")
 })
 
 test("unknown tool", async () => {
@@ -126,15 +118,12 @@ test.each([
   ["unexpected mode", { path: "f.txt", mode: "x" }, "got an unexpected keyword argument 'mode'"],
 ])("bad arguments come back as text [%s]", async (_shown, args, message) => {
   const out = await tools().tools.call("read_file", args)
-  expect(out.output).toBe(`error: read_file: ${message}`)
-  expect(out.audit.tool).toBe("read_file")
-  expect(out.audit.exit).toBeNull()
-  expect(out.audit.duration).toBe(0)
+  expect(out).toBe(`error: read_file: ${message}`)
 })
 
 test("composer accepts the tool functions", async () => {
   const seen: [string, Record<string, unknown>][] = []
-  const call: WorkspaceCall = async (n, a) => {
+  const call: Parameters<typeof workspaceToolFunctions>[0] = async (n, a) => {
     seen.push([n, a])
     return "ok"
   }
@@ -163,7 +152,7 @@ test("composer accepts the tool functions", async () => {
 
 test.skipIf(!sandboxAvailable())("tool functions drive workspace tools", async () => {
   const { tools: t } = tools()
-  const toolset = await workerToolSet(async (n, a, o) => (await t.call(n, a, o)).output)
+  const toolset = await workerToolSet(async (n, a, o) => (await t.call(n, a, o)))
   expect(await toolset.invoke("write_file", { path: "n.txt", content: "hi" }, { callId: "r1/n/1/0" })).toBe(
     "wrote 2 bytes to n.txt",
   )
@@ -172,8 +161,7 @@ test.skipIf(!sandboxAvailable())("tool functions drive workspace tools", async (
 
 test.skipIf(!sandboxAvailable())("a call aborted by its signal ends as interrupted", async () => {
   const out = await tools().tools.call("list", { path: "." }, { signal: AbortSignal.abort() })
-  expect(out.output).toBe("[interrupted]")
-  expect(out.audit.exit).toBeNull()
+  expect(out).toBe("[interrupted]")
 })
 
 test.skipIf(!sandboxAvailable())("the pipes run without the helper profile and env", async () => {
@@ -195,8 +183,7 @@ test.skipIf(!sandboxAvailable())("the pipes run without the helper profile and e
   }
   // A file op still runs the helper under its own profile.
   const listed = await t.call("list", { path: "." })
-  expect(listed.output).toBe(listing())
-  expect(listed.audit.exit).toBe(0)
+  expect(listed).toBe(listing())
 })
 
 test("building the tools walks no guard entry", () => {

@@ -140,7 +140,11 @@ test("Auto's check is a hold: its run verdict releases the call with its reason,
   await replied(host, "Wrote it.")
   expect(fs.readFileSync(path.join(work, "k"), "utf8")).toBe(key)
   const runId = host.session()!.run_ids[0]!
-  expect(releases(folder, runId).map((r) => r.note)).toEqual(["Auto's check: it writes one file"])
+  const [note] = releases(folder, runId).map((r) => r.note)
+  // The note cites the check's own run, whose log is in the session's checks/ folder.
+  const run = /^Auto's check: it writes one file \(run ([0-9a-f-]{36})\)$/.exec(note ?? "")?.[1]
+  expect(run).toBeString()
+  expect(fs.existsSync(path.join(folder, "checks", `${run}.jsonl`))).toBe(true)
   // The check's model read the command with the key redacted, and so does its record.
   const checks = fake.requests().filter((r) => JSON.stringify(r).includes(CHECK))
   expect(checks).toHaveLength(1)
