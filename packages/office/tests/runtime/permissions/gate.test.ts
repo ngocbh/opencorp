@@ -79,7 +79,8 @@ test("an MCP or module tool goes to Auto's check in auto, asks in default and as
     const reason = `Default mode asks before ${what}`
     expect(decide(source, "default")).toEqual({ verdict: "ask", reason, rules: [words] })
     expect(decide(source, "ask")).toEqual({ verdict: "ask", reason: "Ask mode", rules: [words] })
-    expect(decide(source, "dontAsk")).toEqual(DONT(`Default mode asks before ${what}`))
+    // dontAsk asks nothing: only an allow rule could let such a call run there.
+    expect(decide(source, "dontAsk")).toEqual(DONT(`no allow rule covers ${what}`))
   }
 })
 

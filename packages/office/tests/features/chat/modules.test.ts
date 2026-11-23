@@ -69,7 +69,7 @@ test("in ask a model call of a module tool holds on a card; Yes runs it once, wi
 
 test("in dontAsk a model call of a module tool is refused, and the module never runs", async () => {
   const fake = await fakeLlm()
-  const refused = "Not run: this session doesn't ask (dontAsk mode): Default mode asks before a tool module's tool."
+  const refused = "Not run: this session doesn't ask (dontAsk mode): no allow rule covers a tool module's tool."
   fake.script(QUOTE, { match: refused, content: "Refused." })
   const m = await moduled(fake, "dontAsk")
   await m.actor.prompt("quote it")

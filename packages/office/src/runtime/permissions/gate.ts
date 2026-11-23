@@ -14,7 +14,11 @@
  * The terminal's `run` and `type` are decided by the command reader instead (`decideCommand`), on what the
  * terminal's plan reads from its shells: the same mode, rules, reader and Auto's check its own gate used.
  * A flow's own steps that call a tool (a TOOL, `call`, `map` or `loop` node) never reach the gate: only agents' calls
- * are gated by the session's mode.
+ * are gated by the session's mode. So a flow granted to an agent is a way around the row of what it calls: the agent's
+ * call of the flow runs in every mode, with arguments its model chose, and the flow's own call of a tool module's tool
+ * then runs ungated, even where a direct call would be refused or a deny rule names it. Whether a granted flow should
+ * take its module tools' row is the owner's to decide; until then, grant an agent only flows whose own tool calls you
+ * would let it make.
  */
 import type { ToolSource } from "@ngocbh/yian/tools"
 import type { Approval } from "@opencorp/protocol"
@@ -116,6 +120,8 @@ function row(
   if (source.kind === "memory" || source.kind === "flow") return { verdict: "run", note: null }
   const what = source.kind === "mcp" ? "an MCP tool" : "a tool module's tool"
   if (mode === "ask") return asks("Ask mode", exact)
+  // dontAsk asks nothing, and no check judges there: only an allow rule lets such a call run.
+  if (mode === "dontAsk") return asks(`no allow rule covers ${what}`, exact)
   if (mode !== "auto") return asks(`Default mode asks before ${what}`, exact)
   const command = `${exact[0]} ${jsonText(call.arguments)}`
   if (new TextEncoder().encode(command).length > MAX_CHECK_BYTES) return asks(TOO_LONG, exact)
