@@ -7,6 +7,7 @@ import {
   createTimelineAnchors,
   entryRef,
   messageRef,
+  SCROLL_MEMORY_SIZE,
   scrollMemory,
   type AnchorTarget,
 } from "../../../src/routes/session/anchors"
@@ -109,4 +110,17 @@ test("keeps parent and child scroll anchors independent", () => {
   expect(memory.scrollAnchor("child")).toEqual(child)
   memory.setScrollAnchor("root", undefined)
   expect(memory.scrollAnchor("child")).toEqual(child)
+})
+
+test("keeps only the sessions left most recently, up to a cap", () => {
+  const memory = scrollMemory({})
+  const at = (id: string) => ({ target: { type: "part" as const, ref: messageRef(id) }, screenY: -1 })
+  for (let index = 0; index < SCROLL_MEMORY_SIZE; index++) memory.setScrollAnchor(`s${index}`, at(`m${index}`))
+  // Leaving the first again makes it the most recent, so the second goes first.
+  memory.setScrollAnchor("s0", at("again"))
+  memory.setScrollAnchor("new", at("new"))
+  expect(memory.scrollAnchor("s1")).toBeUndefined()
+  expect(memory.scrollAnchor("s0")).toEqual(at("again"))
+  expect(memory.scrollAnchor("s2")).toEqual(at("m2"))
+  expect(memory.scrollAnchor("new")).toEqual(at("new"))
 })

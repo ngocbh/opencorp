@@ -86,12 +86,16 @@ export function createTimelineAnchors() {
   }
 }
 
+/** How many sessions' scroll anchors a TUI keeps: those left most recently. */
+export const SCROLL_MEMORY_SIZE = 50
+
 const memories = new WeakMap<object, Map<string, ScrollAnchor>>()
 
 /**
  * Where the reader left each session's transcript, by session id, kept in memory as long as the TUI runs, as
  * upstream's session tabs keep it: the session route remounts on navigation, and a session opens where it was left.
- * None while the reader is at the bottom. One store per renderer, so two TUIs in one process keep their own.
+ * None while the reader is at the bottom; upstream drops a session's anchor with its tab, and ours, with no tabs, keeps
+ * the most recent `SCROLL_MEMORY_SIZE`. One store per renderer, so two TUIs in one process keep their own.
  */
 export function scrollMemory(renderer: object) {
   let anchors = memories.get(renderer)
@@ -106,7 +110,10 @@ export function scrollMemory(renderer: object) {
       const current = saved.get(sessionID)
       if (current && anchorKey(current.target) === anchorKey(anchor.target) && current.screenY === anchor.screenY)
         return
+      // A map keeps insertion order: setting it anew makes it the most recent.
+      saved.delete(sessionID)
       saved.set(sessionID, anchor)
+      if (saved.size > SCROLL_MEMORY_SIZE) saved.delete(saved.keys().next().value!)
     },
   }
 }

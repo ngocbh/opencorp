@@ -143,6 +143,30 @@ function hasText(message: Message) {
   return message.parts.some((part) => part.type === "text" && part.text.trim())
 }
 
+/** The ids of `message`'s calls that wait on an approval card, by `waiting`, which takes a call's yian id. */
+function waitingCalls(message: Message, waiting: (callID: string) => boolean) {
+  return new Set(
+    message.parts.flatMap((part) =>
+      part.type === "tool" && part.yian_call_id && waiting(part.yian_call_id) ? [part.id] : [],
+    ),
+  )
+}
+
+/**
+ * A reply's rows as it renders them, for a reactive scope to read: each run of tool calls grouped as `verbosity`
+ * says, the calls waiting on an approval card (`waiting`, by a call's yian id) kept out of their group's summary, and
+ * each part's blankness in a memo of its own, so a streamed delta rebuilds the rows only when a text stops being blank.
+ */
+function replyRows(message: () => Message, verbosity: () => Verbosity, waiting: (callID: string) => boolean) {
+  const blanks = createMemo(mapArray(() => message().parts, (part) => createMemo(() => blankText(part))))
+  return () => {
+    const blank = blanks()
+    const reply = message()
+    const pending = waitingCalls(reply, waiting)
+    return reduceMessageRows(reply, verbosity(), toolName, pending, (_, index) => !!blank[index]?.())
+  }
+}
+
 /** The ids of a transcript's assistant messages. */
 function assistantIds(list: Message[]): Record<string, true> {
   return Object.fromEntries(list.flatMap((m) => (m.role === "assistant" ? [[m.id, true]] : [])))
@@ -473,6 +497,8 @@ export function Session(props: SessionProps) {
   const toast = useToast()
   const costCap = useCostCap()
 
+  // Whether the session's first read has settled, loaded or not.
+  const [settled, setSettled] = createSignal(false)
   createEffect(
     on(
       () => props.sessionID,
@@ -481,11 +507,7 @@ export function Session(props: SessionProps) {
           .syncSession(sessionID)
           .then(() => {
             if (props.sessionID !== sessionID) return
-            if (!restored && scroll && !scroll.isDestroyed) {
-              restored = true
-              // Initial synchronization can finish after the reader has already navigated.
-              if (!isAwayFromBottom()) restoreScrollPosition()
-            }
+            setSettled(true)
             // A turn may have started before this view opened (the first message is sent from home): it
             // began at the last user message, or begins after what is here now.
             if (turnStart() || viewID() !== sessionID) return
@@ -494,8 +516,10 @@ export function Session(props: SessionProps) {
             setTurnStart(assistantIds(interruptible(viewStatus()) ? list.slice(0, last) : list))
           })
           .catch((error) => {
+            if (props.sessionID !== sessionID) return
+            setSettled(true)
             // An office that is down loads the session when it comes back.
-            if (props.sessionID !== sessionID || error instanceof OfficeUnavailable) return
+            if (error instanceof OfficeUnavailable) return
             const missing = error instanceof OfficeError && error.code === "not_found"
             toast.show({
               message: missing ? `Session not found: ${sessionID}` : errorMessage(error),
@@ -512,6 +536,7 @@ export function Session(props: SessionProps) {
   let seeded = false
   let restored = false
   let scroll: ScrollBoxRenderable
+  const [scrollbox, setScrollbox] = createSignal<ScrollBoxRenderable>()
   // Each side has its own prompt ref: the pane's session sits in a provider of its own.
   const bind = (r: PromptRef | undefined) => {
     promptRef.set(r)
@@ -551,26 +576,26 @@ export function Session(props: SessionProps) {
   }
 
   // A mounted entry is a message, as upstream's is a row. Its rows, as the budget and the scroll anchor read them: a
-  // reply's as it folds them, or a user message or a note whole, as one entry.
-  const messageRows = mapArray(shown, (message) =>
-    createMemo(
-      (): SessionRow[] =>
-        message.role === "assistant"
-          ? reduceMessageRows(message, verbosity(), toolName, new Set())
-          : [{ type: "part", ref: messageRef(message.id) }],
-    ),
-  )
+  // reply's as it folds them, or a user message or a note whole, as one entry. A message costs what it renders: a
+  // reply the weight of its rows, where a folded group costs one. Each is kept per message, so a streamed delta
+  // weighs only its own message again.
+  const messageViews = mapArray(shown, (message) => {
+    const reply =
+      message.role === "assistant"
+        ? replyRows(() => message, verbosity, (id) => permission.waiting(props.sessionID, id))
+        : undefined
+    const rows = createMemo((): SessionRow[] => reply?.() ?? [{ type: "part", ref: messageRef(message.id) }])
+    const weight = createMemo(() =>
+      rows().reduce((total, row) => total + rowWeight(row, { expanded: groupExpanded, grouped: groupedKind }), 0),
+    )
+    return { rows, weight }
+  })
   // Tail-first transcript mounting: only the newest messages mount when the session opens. Older ones mount on demand
   // near the top. While the reader stays at the bottom the hidden span follows appends; leaving the bottom pins it to
   // preserve the viewport.
   const [hiddenRows, setHiddenRows] = createSignal<number>()
   const [visibleRowsEnd, setVisibleRowsEnd] = createSignal<number>()
-  // A message costs what it renders: a reply the weight of its rows, where a folded group costs one.
-  const weights = createMemo(() =>
-    messageRows().map((rows) =>
-      rows().reduce((total, row) => total + rowWeight(row, { expanded: groupExpanded, grouped: groupedKind }), 0),
-    ),
-  )
+  const weights = createMemo(() => messageViews().map((view) => view.weight()))
   const hidden = createMemo(() =>
     Math.min(hiddenRows() ?? Infinity, rowsBefore(weights(), shown().length, TRANSCRIPT_TAIL_ROWS)),
   )
@@ -698,7 +723,7 @@ export function Session(props: SessionProps) {
   function restoreScrollPosition() {
     const anchor = memory.scrollAnchor(props.sessionID)
     const index = anchor
-      ? messageRows().findIndex((rows) => rows().some((row) => containsAnchor(row, anchor.target)))
+      ? messageViews().findIndex((view) => view.rows().some((row) => containsAnchor(row, anchor.target)))
       : -1
     if (!anchor || index === -1) {
       scroll.scrollTo(scroll.scrollHeight)
@@ -731,6 +756,17 @@ export function Session(props: SessionProps) {
       })
     restore()
   }
+  // Once the session's first read settles, loaded or not, the transcript opens where the reader left it, and from
+  // then on where they are is saved.
+  createEffect(() => {
+    const box = scrollbox()
+    if (restored || !settled() || !box || box.isDestroyed) return
+    restored = true
+    untrack(() => {
+      // Initial synchronization can finish after the reader has already navigated.
+      if (!isAwayFromBottom()) restoreScrollPosition()
+    })
+  })
 
   /** The id of the next or previous message with text, relative to the scroll position. */
   const findNextVisibleMessage = (direction: "next" | "prev"): string | null => {
@@ -759,6 +795,7 @@ export function Session(props: SessionProps) {
     })
 
   function toBottom() {
+    ensureAllRowsPending?.splice(0)
     ensureAllRowsPending = undefined
     if (awayTimer) clearTimeout(awayTimer)
     awayTimer = undefined
@@ -1191,6 +1228,7 @@ export function Session(props: SessionProps) {
               <scrollbox
                 ref={(r) => {
                   scroll = r
+                  setScrollbox(r)
                   props.scrollRef?.(r)
                   scroll.verticalScrollBar.on("change", updateAwayFromBottom)
                 }}
@@ -1480,19 +1518,9 @@ function AssistantMessage(props: { message: Message; last: boolean }) {
   const office = useOffice()
   const permission = usePermission()
   const [rows, setRows] = createStore<(SessionRow & { key: string })[]>([])
-  // Each part's blankness in a memo of its own: a streamed delta rebuilds the rows only when a text stops being blank.
-  const blanks = createMemo(mapArray(() => props.message.parts, (part) => createMemo(() => blankText(part))))
+  const next = replyRows(() => props.message, ctx.verbosity, (id) => permission.waiting(ctx.sessionID, id))
   createComputed(() => {
-    const blank = blanks()
-    const waiting = new Set(
-      props.message.parts.flatMap((part) =>
-        part.type === "tool" && part.yian_call_id && permission.waiting(ctx.sessionID, part.yian_call_id)
-          ? [part.id]
-          : [],
-      ),
-    )
-    const next = reduceMessageRows(props.message, ctx.verbosity(), toolName, waiting, (_, index) => !!blank[index]?.())
-    setRows(reconcile(next.map((row) => ({ ...row, key: rowKey(row) })), { key: "key" }))
+    setRows(reconcile(next().map((row) => ({ ...row, key: rowKey(row) })), { key: "key" }))
   })
   const part = (id: string) => props.message.parts.find((p) => p.id === id)
   // A harness call runs while its session does, as upstream's subagent call runs while its subagent works.
