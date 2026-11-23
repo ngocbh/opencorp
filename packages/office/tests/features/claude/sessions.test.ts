@@ -5,6 +5,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import type { Part } from "@opencorp/protocol"
 import { ClaudeSessions } from "../../../src/features/claude/sessions.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
 import { ClaudeProcess } from "../../../src/tools/claude/claude.ts"
@@ -183,6 +184,27 @@ test("each message goes inside its author's label as next, and a message mid-tur
   expect(h.events.some((e) => e.type === "message.updated" && e.session_id === id)).toBe(true)
   expect(h.store.getSession(id)!.harness_usage).not.toBeNull()
   expect(h.sessions.messages(id).map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"])
+})
+
+test("a command Claude Code refuses, with nobody to ask, shows to the employee and in the owner's pane as one line after it, naming it and why", async () => {
+  const command = "OUT=results/eval make eval"
+  const h = makeClaude({ script: { turns: [[{ tool: "Bash", input: { command } }, { say: "I'll split it." }]] } })
+  const { heard, id } = await started(h)
+  await h.sessions.prompt(id, "Run the eval.", { by: "minh" })
+  await waitFor(() => heard.said().some((text) => text.endsWith("I'll split it.")), { what: "Claude Code's words" })
+  await waitFor(() => status(h, id) === "idle", { what: "the turn's end" })
+  const denied = h.fake.log().find((e) => e.dir === "out" && e.msg?.subtype === "permission_denied")!.msg!
+  expect(denied.message).toEndWith("What required approval: Bash, as the fake's rules read it.")
+  const line = `Claude Code refused \`${command}\`: Bash, as the fake's rules read it.`
+  // The employee's instrument hears it after the call, in Claude Code's message.
+  const [turn] = h.sessions.messages(id).filter((m) => m.role === "assistant")
+  expect(turn!.parts.map((p) => (p.type === "text" ? p.text : p.type))).toEqual(["tool", line, "I'll split it."])
+  expect(heard.events.some((e) => e.type === "part" && e.part.type === "text" && e.part.text === line)).toBe(true)
+  // The owner's pane gets it live, and the turn didn't fail.
+  const live = h.events.flatMap((e) => (e.type === "part.updated" && e.session_id === id ? [e.data.part as Part] : []))
+  expect(live).toContainEqual(expect.objectContaining({ type: "text", text: line }))
+  expect(live.some((part) => part.type === "error")).toBe(false)
+  expect(status(h, id)).toBe("idle")
 })
 
 test("Esc interrupts the running turn, which ends marked interrupted", async () => {
