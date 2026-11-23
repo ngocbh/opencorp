@@ -88,12 +88,22 @@ Each other tool call your employee's model makes also goes through the chat's mo
   calls wait. An open card survives an office restart, and is decided again by the rules then. A call a stop or crash
   cut off before you approved it isn't run when your employee's work resumes.
 - **Only your employee's calls.** A company flow's own steps that call a tool directly (`call:`, `map`, `loop`), a
-  tool module's tool included, skip the mode and the rules: only the calls your employee's model makes are gated.
+  tool module's tool included, skip the mode and the rules: only the calls your employee's model makes are gated. So a
+  flow you grant your employee is a way around them. Their call of the flow runs in every mode, with arguments their
+  model chose, and the flow's own call of a module's tool then runs even where a direct call would be refused or a
+  deny rule names it. Grant only flows whose tool calls you would let your employee make.
 - **Tool modules.** A company flow may grant its agent a tool module's tools (`uses: {crm: ./crm.ts}`, then
-  `tools: [crm]`), its file inside the company repo. A module runs on a worker thread, unsandboxed, as the office's
-  user, so review it as you would any code the company runs. Its tools get no office context (`ctx.context` is
-  `undefined`), so they reach no office tool, secret or session. A module tool that returns `pending()` fails: nothing
-  in the office answers it.
+  `tools: [crm]`); the file must be inside the company repo. A module gets nothing from the office through `ctx`
+  (`ctx.context` is `undefined`), but it runs with your full power: on a worker thread, with no sandbox, as you. It can
+  read the model connection's environment, the worker's channel to the office and everything in `~/.opencorp`. Grant
+  only code you would run yourself.
+  - Its top-level code runs at every run start and resume. A tool's argument validator, if it has one, reads the
+    model's arguments before the mode and rules decide the call.
+  - The company's lint reports an error for a module, or a repo file it imports, whose import resolves outside the
+    repo: a path that leaves it, an absolute path, a symlink out of it, or a package. It reads only imports written as
+    literal paths, never one computed at run time;
+    [yian#1811](https://github.com/ngocbh/yian/issues/1811) tracks confining them.
+  - A module tool that returns `pending()` fails: nothing in the office answers it.
 
 ## Codex and Claude Code
 
