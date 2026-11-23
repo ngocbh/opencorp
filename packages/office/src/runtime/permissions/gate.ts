@@ -14,8 +14,10 @@
  * A granted flow runs with no card or check: granting it approved what it does. The calls its agents' models make are
  * gated on their own, but its own steps' calls (a TOOL, `call`, `map` or `loop` node, in it and in the flows it calls)
  * never reach the gate, so the module tools they call (`ToolCall.wraps`, read from the flow by the worker) are weighed
- * here: a deny rule on one refuses the flow in every mode, and in `dontAsk` each must be covered by an allow rule. A
- * flow whose module tools can't be read counts as calling every one. A flow that calls none runs in every mode.
+ * here: a deny rule on one refuses the flow in every mode, and in `dontAsk` each must be covered by an allow rule; an
+ * ask rule on one doesn't ask, as granting the flow approved it. A flow whose module tools can't be read counts as
+ * calling every one; one that calls none runs in every mode. Rules name a module by its `uses:` alias, which the
+ * company's lint keeps to one per module file. A CODE step that calls a module in its own code isn't seen.
  *
  * The terminal's `run` and `type` are decided by the command reader instead (`decideCommand`), on what the
  * terminal's plan reads from its shells: the same mode, rules, reader and Auto's check its own gate used.
