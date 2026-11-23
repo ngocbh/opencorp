@@ -1249,8 +1249,10 @@ export function toolView(
   if (harness) {
     // A start names its session only in its reply; the other calls name it in their input.
     const kind = harness[1]!
-    const session = stringValue(input[kind]) ?? stringValue(terminalReply(output)?.[kind])
-    return { view: "harness", input: { harness: kind, call: harness[2], session, message: stringValue(input.message) } }
+    const reply = terminalReply(output)
+    const session = stringValue(input[kind]) ?? stringValue(reply?.[kind])
+    const message = stringValue(input.message)
+    return { view: "harness", input: { harness: kind, call: harness[2], session, message, refused: reply?.refused } }
   }
   return { view: "generic", input }
 }
@@ -1644,7 +1646,8 @@ function exitNote(input: Record<string, unknown>) {
   return typeof code === "number" && code !== 0 ? ` (exit ${code})` : ""
 }
 
-/** What a terminal tool's reply says the owner should read: why nothing was done, or why the shell failed. */
+/** What a terminal or harness tool's reply says the owner should read: why nothing was done, or why the shell
+ *  failed. */
 function shellNote(input: Record<string, unknown>) {
   const refused = stringValue(input.refused)
   if (refused) return `refused: ${display(refused)}`
@@ -1986,9 +1989,10 @@ function Question(props: ToolProps) {
 
 /**
  * An employee's call to a Codex or Claude Code session, as upstream's subagent row: the session by the picker's name
- * (`Codex: codex 1`) and the message, or the call (`interrupt`); `✓` once a start is done and `↳` for a call to a
- * session already started, or a spinner while the call or the session runs. A click opens the session in the right
- * pane; a call to a session the chat doesn't list (a start that hasn't replied, or one its host removed) opens nothing.
+ * (`Codex: codex 1`) and the message, or the call (`interrupt`), then why it was refused, as a terminal call says;
+ * `✓` once a start is done and `↳` for a call to a session already started, or a spinner while the call or the
+ * session runs. A click opens the session in the right pane; a call to a session the chat doesn't list (a start that
+ * hasn't replied, or one its host removed) opens nothing.
  */
 function HarnessCall(props: ToolProps) {
   const ctx = use()
@@ -2014,6 +2018,7 @@ function HarnessCall(props: ToolProps) {
     const who = named === undefined ? HARNESS_TITLE[harness()] : `${HARNESS_TITLE[harness()]}: ${display(named)}`
     return what() ? `${who} — ${what()}` : who
   }
+  const note = createMemo(() => shellNote(props.input))
   const open = createMemo(() => {
     const id = child()?.id
     const onOpen = ctx.onOpen
@@ -2031,6 +2036,7 @@ function HarnessCall(props: ToolProps) {
       onClick={open()}
     >
       {label()}
+      {note() ? ` · ${note()}` : ""}
     </InlineTool>
   )
 }

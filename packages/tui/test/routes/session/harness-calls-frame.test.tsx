@@ -177,6 +177,32 @@ test("a click on a call opens its session in the right pane; a call to a session
   }
 })
 
+test("a refused call says why after its label, as a terminal call does", async () => {
+  const { office, app } = await boot(
+    [
+      call(
+        "codex_send",
+        { codex: "codex 1", message: "Use the other API" },
+        JSON.stringify({ refused: "a turn the owner started runs" }),
+      ),
+      call("codex_send", { codex: "codex 1", message: "Go on" }, reply("codex", "codex 1")),
+    ],
+    (office, chat) => {
+      child(office, chat, "codex", "codex 1", "idle")
+    },
+  )
+  try {
+    const f = await app.until((f) => f.includes("Codex: codex 1 — Go on"))
+    expect(row(f, "Use the other API").text).toBe(
+      "↳ Codex: codex 1 — Use the other API · refused: a turn the owner started runs",
+    )
+    expect(row(f, "Codex: codex 1 — Go on").text).toBe("↳ Codex: codex 1 — Go on")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("with tool details hidden, a completed call folds away as any tool does, and a running one stays", async () => {
   const { office, app } = await boot(
     [

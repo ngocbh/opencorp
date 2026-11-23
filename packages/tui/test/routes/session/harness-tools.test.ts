@@ -35,7 +35,12 @@ test("toolView reads an employee's Codex or Claude Code call: the harness, the c
   // While it runs there is no reply yet, and a refusal names no session.
   expect(toolView("codex_start", { message: "Fix the parser" }, "{}").input.session).toBeUndefined()
   const refused = JSON.stringify({ refused: "four sessions run" })
-  expect(toolView("claude_start", { message: "x" }, refused).input.session).toBeUndefined()
+  expect(toolView("claude_start", { message: "x" }, refused).input).toEqual({
+    harness: "claude",
+    call: "start",
+    message: "x",
+    refused: "four sessions run",
+  })
   // The other calls name it in their input.
   expect(toolView("claude_send", { claude: "claude 2", message: "Go on" }, "{}")).toEqual({
     view: "harness",
