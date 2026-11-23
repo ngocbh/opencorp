@@ -6,7 +6,7 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { type FileLock, FileLockError, lockFile } from "@ngocbh/yian/platform"
-import { pending } from "@ngocbh/yian/tools"
+import { type GatedCall, pending } from "@ngocbh/yian/tools"
 import {
   type Event,
   type Message,
@@ -20,27 +20,20 @@ import {
   validationMessage,
 } from "@opencorp/protocol"
 import { MAIN_CHAT } from "../../company/chat_flow.ts"
+import { CallGate, releasedIn } from "../../features/chat/gate.ts"
 import { LiveRelay } from "../../features/chat/live.ts"
 import { sentUnread, Transcript, userMessage } from "../../features/chat/transcript.ts"
+import { runSecrets } from "../../models/connections.ts"
 import { Bus } from "../../runtime/bus.ts"
 import { Check, type CheckRecord, type CheckWorkers, inWorker } from "../../runtime/permissions/classifier.ts"
-import {
-  type ApprovalCard,
-  decide,
-  dontAskRefusal,
-  type Mode,
-  type Permissions,
-  RuleBook,
-  type Where,
-} from "../../runtime/permissions/policy.ts"
-import { approvalResult, holdApproval, readAnswer, YES } from "../../runtime/questions/approval.ts"
+import { dontAskRefusal, type Mode, type Permissions, RuleBook, type Where } from "../../runtime/permissions/policy.ts"
+import { approvalResult, holdApproval, readAnswer } from "../../runtime/questions/approval.ts"
 import { makeAskUser } from "../../runtime/questions/ask.ts"
 import { checkAnswer, InvalidAnswer } from "../../runtime/questions/checker.ts"
 import { formatAnswer, INTERRUPTED } from "../../runtime/questions/format.ts"
 import type {
   BuiltinSession,
   BuiltinTools,
-  CardAct,
   QuestionAct,
   QuestionCard,
   SessionBinding,
@@ -172,13 +165,11 @@ class HostWorkers implements CheckWorkers {
   }
 }
 
-/** One held card: its question as it is now, what its Yes runs (approval cards), whether the session's permissions
- *  held it (`gated`), so a new session rule may decide it again, and, for a feature's question card, what its answer
- *  runs and why it asks. A card a feature holds itself (`hold`, `ask`) is the owner's to answer, always. */
+/** One held card: its question as it is now, and, for a feature's question card, what its answer runs and why it
+ *  asks. An approval card is the gate's (`CallGate`); a feature's question card (`ask`) is the owner's to answer,
+ *  always: no rule answers it. */
 interface Held {
   question: QuestionRecord
-  readonly act?: CardAct
-  readonly gated: boolean
   readonly answered?: QuestionAct
   readonly reason?: string
 }
@@ -196,19 +187,26 @@ export class SessionsBusy extends Error {
  * delivery: a `deliver` frame while the worker runs a job, else an `advance` job to the parked worker. A result that
  * isn't kept ends the session. There is one run: no restart or resume.
  *
+ * **The gate.** Every tool call the agent makes goes through the session's gate (`CallGate`, yian's
+ * `beforeToolCall`), as a chat session's does: by the session's mode and its rules, the command reader for the
+ * terminal's commands and typed lines, Auto's check in `auto`. A call it holds waits in yian; its card is made once
+ * yian holds it. A Yes releases the call where yian holds it, which then runs once, noting who approved it; a terminal
+ * call acts only on what was decided. A No completes it with the owner's words, answers the run's other open cards
+ * the same way and settles the reply's later calls that would ask; "don't ask again" adds session rules and releases
+ * the held calls they now allow. There is no "always": rules last for the session.
+ *
  * **Cards.** A held call (an approval, an `ask_user`, a feature's question card) is a question in memory, published as
- * the store would publish it, and the call waits in yian. The owner's answer makes the call's output, which goes back
- * by `complete`: a Yes runs the card's act, a No is the owner's words and answers the run's other open cards the same
- * way, and "don't ask again" adds session rules and runs the other open cards they now allow. There is no "always":
- * rules last for the session. A feature's question card asks in every mode but `dontAsk`, which refuses it, and its
- * answer, whatever it is, goes to the feature's act.
+ * the store would publish it. An `ask_user` card's answer completes its call. A feature's question card asks in every
+ * mode but `dontAsk`, which refuses it, and its answer, whatever it is, goes to the feature's act, whose output
+ * completes the call.
  *
  * **One host per sessions folder.** The host holds `<sessions>/lock` (the parent of its session's folder) while it
  * runs, so no other host starts on that folder meanwhile and marks this one's live shells interrupted.
  *
  * **Permissions.** The session's mode, starting in `auto`; its rules, the session's own only; where shells run, as the
  * terminal says; Auto's check, a `classify` worker job on the spec's model, each verdict a line of
- * `<folder>/checks/verdicts.jsonl`, unpriced. A switch to `dontAsk` refuses the open cards.
+ * `<folder>/checks/verdicts.jsonl`, unpriced, the model's key redacted from what it reads. A switch to `dontAsk`
+ * refuses the open cards.
  *
  * **Instruments.** Each terminal shell is listed as it is made; a feature may list its own. The session's end closes
  * the terminal and removes every listing, but never closes a feature's instrument.
@@ -244,8 +242,12 @@ export class LocalHost {
   readonly #listed = new Set<string>()
   /** The tool calls running now, each stopped by its controller: Esc and End stop them. */
   readonly #calls = new Set<AbortController>()
-  /** The approved actions running now, by card id. */
+  /** The feature acts running now, by card id: what a feature's question card's answer runs. */
   readonly #approved = new Map<string, AbortController>()
+  /** The session's gate on its tool calls. */
+  readonly #gate: CallGate
+  /** The gate's steps, one after another. */
+  #steps: Promise<void> = Promise.resolve()
   /** What each delivery's reply does, by delivery id. */
   readonly #replies = new Map<string, (frame: Frame) => void>()
   /** Deliveries that wait for the worker to park, for its next `advance` job. */
@@ -295,6 +297,36 @@ export class LocalHost {
       run: inWorker(this.#workers, async () => spec.model, { logDir: this.#checks }),
       record: async (entry) => this.#recordCheck(entry),
       ...(options.checkTimeoutMs === undefined ? {} : { timeoutMs: options.checkTimeoutMs }),
+    })
+    this.#gate = new CallGate({
+      liveRun: () => (this.#finished ? null : this.#runId),
+      policy: () => ({ mode: this.#record.mode, rules: this.#book.list(), blocked: null }),
+      judge: (input, signal) => this.#check.judge(input, signal),
+      post: (label, job) => this.#post(label, job),
+      settle: () => this.#settle(),
+      planCommand: (tool, args) => {
+        const terminal = this.#tools.terminal
+        return args === null || terminal === undefined ? { decide: false } : terminal.plan(tool, { ...args })
+      },
+      audited: (plan, outcome, reason) => this.#tools.terminal?.audited(plan, outcome, reason),
+      release: (callId, note, card) => this.#release(callId, note, card),
+      completeCall: (callId, output) => this.#completeCall(callId, output),
+      completeWithAnswer: (card) => this.#complete(card, approvalResult(card)),
+      released: (runId, callId) => releasedIn(path.join(spec.folder, "runs", runId, "log.jsonl"), callId),
+      secretValues: async () => runSecrets(spec.model),
+      remember: async (card) => this.#remember(card),
+      cards: {
+        byCall: (callId) => this.#byCall(callId)?.question,
+        answer: (card, value, kind, by) => {
+          const held = this.#held.get(card.id)
+          return held === undefined || held.question.status !== "open" ? null : this.#answer(held, value, kind, by)
+        },
+        open: () => this.#open().filter((held) => held.question.source === "approval").map((held) => held.question),
+        hold: (card, runId, callId) => {
+          holdApproval(this.#record, runId, (question) => this.#keep(question), { always: false })(card, callId)
+        },
+      },
+      log: (line) => this.#log(`session ${this.id}: ${line}`),
     })
     this.ended = new Promise((resolve) => (this.#resolveEnded = resolve))
     const at = now()
@@ -412,13 +444,11 @@ export class LocalHost {
       mode: () => this.#record.mode,
       rules: () => this.#book.list(),
       where: () => ({ ...NO_FOLDER }),
-      hold: (card, callId) => this.#hold(card, callId, (signal) => this.#runApproved(card, signal), true),
-      check: (input, signal) => this.#check.judge(input, signal),
+      decided: (callId) => this.#gate.take(callId),
     }
     return {
       sessionId: this.id,
       permissions,
-      hold: (card, callId, act) => this.#hold(card, callId, act, false),
       ask: (card, callId, act) => this.#ask(card, callId, act),
       onShell: (id, name) => {
         const terminal = this.#tools.terminal
@@ -456,13 +486,6 @@ export class LocalHost {
     if (this.#finished) return
     this.instruments.add(this.id, instrument)
     this.#listed.add(instrument.id)
-  }
-
-  /** The approved run of a terminal call held on `card`. */
-  #runApproved(card: ApprovalCard, signal: AbortSignal): Promise<string> {
-    const terminal = this.#tools.terminal
-    if (terminal === undefined) return Promise.reject(new RangeError("this session has no terminal"))
-    return terminal.runApproved(card.tool, { ...card.args }, signal)
   }
 
   // --- what the routes call ------------------------------------------------------------
@@ -511,13 +534,17 @@ export class LocalHost {
     return this.prompt(text, by)
   }
 
-  /** Esc: stops the running reply, its calls, Auto's checks in their gates and the approved actions still running;
-   *  its held calls close, their cards answered interrupted. The session stays open. */
+  /** Esc: stops the running reply, its calls, Auto's checks on held calls and the feature acts still running; its
+   *  held calls close, their cards answered interrupted. The session stays open. */
   async interrupt(): Promise<void> {
     this.#live()
     this.#stopCalls()
     await this.#deliver({ id: newId(), op: "interrupt", inbox: MAIN_CHAT.inbox }, (frame) => {
-      if (Array.isArray(frame.closed)) for (const callId of frame.closed) this.#closedCall(String(callId), "interrupted")
+      if (!Array.isArray(frame.closed)) return
+      for (const callId of frame.closed) {
+        this.#closedCall(String(callId), "interrupted")
+        this.#gate.closed(String(callId))
+      }
     })
   }
 
@@ -543,9 +570,7 @@ export class LocalHost {
     if (by !== OWNER) throw new HarnessError(403, "forbidden", `only @${OWNER} may switch this session's mode`)
     if (this.#record.mode !== mode) this.#write({ mode })
     if (mode === "dontAsk") {
-      const refusal = (card: QuestionRecord) =>
-        `this session is now in dontAsk mode, which doesn't ask: ${card.approval?.reason ?? ""}`
-      this.#answerOpen(refusal, by, null)
+      this.#post("a switch to dontAsk", () => this.#gate.refuseOpen(by))
       // A feature's question card is refused as it would have been, had it come now; its act never runs.
       for (const held of this.#open()) {
         if (held.answered === undefined) continue
@@ -707,7 +732,10 @@ export class LocalHost {
         const data = (typeof frame.data === "object" && frame.data !== null ? frame.data : {}) as Frame
         if (frame.name === "CallClosed" && typeof data.call_id === "string" && typeof data.reason === "string") {
           host.#closedCall(data.call_id, data.reason)
+          host.#gate.closed(data.call_id)
         }
+        // Only now: an agent interrupted while the gate decided writes no hold, and its call gets no card.
+        if (frame.name === "CallHeld" && typeof data.call_id === "string") host.#gate.held(host.#runId, data.call_id)
       }
 
       override stream(worker: Worker, frame: Frame): void {
@@ -729,6 +757,7 @@ export class LocalHost {
 
       override result(_worker: unknown, frame: Frame): void {
         host.#resulted = true
+        host.#gate.jobEnded(host.#runId)
         if (frame.kept === true) {
           const waits = Array.isArray(frame.waits) ? (frame.waits as Frame[]) : []
           host.#waits = JSON.stringify(waits)
@@ -772,6 +801,11 @@ export class LocalHost {
         return ask(request, callId)
       }
 
+      override gateCall(_worker: unknown, call: GatedCall): unknown {
+        if (host.#finished) throw new Error("the session has ended")
+        return host.#gate.gate(host.#runId, call)
+      }
+
       override async toolCall(
         _worker: unknown,
         group: string,
@@ -795,9 +829,10 @@ export class LocalHost {
     })()
   }
 
-  /** Stops the tool calls running now, Auto's checks in their gates and the approved actions. */
+  /** Stops the tool calls running now, Auto's checks on held calls and the feature acts. */
   #stopCalls(): void {
     this.#tools.terminal?.interruptWaits()
+    this.#gate.stop()
     for (const stop of this.#calls) stop.abort()
     for (const stop of this.#approved.values()) stop.abort()
   }
@@ -831,14 +866,6 @@ export class LocalHost {
 
   // --- cards --------------------------------------------------------------------------
 
-  /** Holds `callId` on approval card `card`, whose Yes runs `act`: `pending()`, or in `dontAsk` the refusal. `gated`
-   *  when the session's permissions hold it. */
-  #hold(card: ApprovalCard, callId: string, act: CardAct, gated: boolean): unknown {
-    if (this.#record.mode === "dontAsk") return dontAskRefusal(card.reason)
-    const keep = (question: QuestionRecord) => this.#keep(question, { act, gated })
-    return holdApproval(this.#record, this.#runId, keep, { always: false })(card, callId)
-  }
-
   /** Holds `callId` on a feature's question card `card`, whose answer runs `act`: `pending()`, or in `dontAsk` the
    *  refusal. */
   #ask(card: QuestionCard, callId: string, act: QuestionAct): unknown {
@@ -863,17 +890,14 @@ export class LocalHost {
     const parsed = Question.safeParse(data)
     // Only validationMessage's text leaves: the error's issues can quote the card's values.
     if (!parsed.success) throw new TypeError(validationMessage(Question, parsed.error, data))
-    // Never gated: no session rule answers it.
-    const kept = this.#keep(parsed.data, { gated: false, answered: act, reason: card.reason })
+    // No session rule answers it.
+    const kept = this.#keep(parsed.data, { answered: act, reason: card.reason })
     if (kept.status === "open") return pending()
     throw new Error(`question ${kept.id} was answered before; its result went with it`)
   }
 
   /** Keeps `question` and publishes it, unless one is kept for its call: then that one, consumed if answered. */
-  #keep(
-    question: QuestionRecord,
-    how: { act?: CardAct; gated: boolean; answered?: QuestionAct; reason?: string } = { gated: false },
-  ): QuestionRecord {
+  #keep(question: QuestionRecord, how: { answered?: QuestionAct; reason?: string } = {}): QuestionRecord {
     const kept = [...this.#held.values()].find((held) => held.question.call_id === question.call_id)
     if (kept !== undefined) {
       if (kept.question.status === "answered") this.#update(kept, { status: "consumed" })
@@ -886,6 +910,11 @@ export class LocalHost {
     return { ...question }
   }
 
+  /** The card held for call `callId`, if any. */
+  #byCall(callId: string): Held | undefined {
+    return [...this.#held.values()].find((held) => held.question.call_id === callId)
+  }
+
   /** The session's open questions, oldest first. */
   #open(): Held[] {
     return [...this.#held.values()].filter((held) => held.question.status === "open")
@@ -896,9 +925,9 @@ export class LocalHost {
     return this.#update(held, { status: "answered", answer: value, answer_kind: kind, answered_by: by })
   }
 
-  /** Acts on answered `question`. An approval card's Yes runs its act; "don't ask again" adds its rules first and then
-   *  runs the other open cards they allow. A No completes its call with the owner's words, and answers every other open
-   *  card the same way. A question's answer completes its call. */
+  /** Acts on answered `question`. An approval card's answer goes to the gate (`CallGate.answered`): a Yes releases its
+   *  call, a No completes it. A feature's question card's answer runs its act. Any other question's answer completes
+   *  its call. */
   #acted(question: QuestionRecord): void {
     const answered = this.#held.get(question.id)?.answered
     if (answered !== undefined) {
@@ -910,15 +939,7 @@ export class LocalHost {
       void this.#complete(question, formatAnswer(question))
       return
     }
-    const read = readAnswer(question)
-    if (read.answer === "yes" || read.answer === "session" || read.answer === "always") {
-      const added = this.#remember(question)
-      this.#approve(question)
-      if (added) this.#recheck(question.answered_by)
-      return
-    }
-    void this.#complete(question, approvalResult(question))
-    if (read.answer === "no") this.#answerOpen(() => question.answer, question.answered_by, question.answer_kind)
+    this.#post("an answered card", () => this.#gate.answered(question))
   }
 
   /** Adds the rules an answered card's "don't ask again" chose to the session's own; whether it added any. */
@@ -929,20 +950,13 @@ export class LocalHost {
     return true
   }
 
-  /** Runs approved card `question`'s act while the session reads busy; its output (or `error: <its type>`)
-   *  completes the call. Esc and End stop it. */
-  #approve(question: QuestionRecord): void {
-    this.#run(question, this.#held.get(question.id)?.act)
-  }
-
-  /** Runs `act` for answered card `question` while the session reads busy; its output (or `error: <its type>`)
-   *  completes the call. Esc and End stop it. */
-  #run(question: QuestionRecord, act: CardAct | undefined): void {
+  /** Runs feature act `act` for answered card `question` while the session reads busy; its output (or `error: <its
+   *  type>`) completes the call. Esc and End stop it. */
+  #run(question: QuestionRecord, act: (signal: AbortSignal) => Promise<unknown>): void {
     const stop = new AbortController()
     this.#approved.set(question.id, stop)
     this.#settle()
-    const ran = act === undefined ? Promise.reject(new RangeError("this card runs nothing")) : act(stop.signal)
-    void ran
+    void act(stop.signal)
       .then(
         (output) => output,
         (error: unknown) => `error: ${errorName(error)}`,
@@ -954,31 +968,6 @@ export class LocalHost {
       })
   }
 
-  /** After "don't ask again" added rules: each open card the session's permissions held that its mode and rules now
-   *  allow is answered Yes as `by` and its act run; the others, and every card a feature held, stay open. */
-  #recheck(by: string | null): void {
-    for (const held of this.#open()) {
-      const card = held.question.approval
-      if (card === null || card.kind === "tool" || held.question.source !== "approval" || !held.gated) continue
-      const into = card.into === null ? {} : { into: card.into }
-      const action = { kind: card.kind, text: card.action, partial: card.partial, ...into }
-      const shell = typeof card.args.shell === "string" ? card.args.shell : undefined
-      const where = this.#tools.terminal?.where(shell) ?? NO_FOLDER
-      if (decide(action, this.#record.mode, this.#book.list(), where).verdict !== "allow") continue
-      this.#approve(this.#answer(held, YES, "option", by))
-    }
-  }
-
-  /** Answers every open approval card with `value(card)` as `by` (as text, unless `kind` says), and completes each
-   *  call with what it says. Nothing runs. */
-  #answerOpen(value: (card: QuestionRecord) => unknown, by: string | null, kind: AnswerKind | null): void {
-    for (const held of this.#open()) {
-      if (held.question.source !== "approval") continue
-      const answered = this.#answer(held, value(held.question), kind ?? "text", by)
-      void this.#complete(answered, approvalResult(answered))
-    }
-  }
-
   /** Completes `question`'s call with `output`: consumed once the run takes it, stale when it can't. */
   async #complete(question: QuestionRecord, output: unknown): Promise<void> {
     if (this.#finished || question.call_id === null) return
@@ -988,6 +977,36 @@ export class LocalHost {
       if (held === undefined || held.question.status !== "answered") return
       this.#update(held, { status: typeof frame.seq === "number" ? "consumed" : "stale" })
     }).catch((error: unknown) => this.#log(`session ${this.id}: an answer can't be sent (${errorName(error)})`))
+  }
+
+  /** Releases held call `callId` (`release`), `note` kept in the run log: `card`, the answered card behind it, is
+   *  consumed once the run takes it, stale when it can't. */
+  async #release(callId: string, note: string | null, card: QuestionRecord | null): Promise<void> {
+    if (this.#finished) return
+    const delivery: Delivery = { id: newId(), op: "release", call_id: callId, ...(note === null ? {} : { note }) }
+    await this.#deliver(delivery, (frame) => {
+      const held = card === null ? undefined : this.#held.get(card.id)
+      if (held === undefined || held.question.status !== "answered") return
+      this.#update(held, { status: typeof frame.seq === "number" ? "consumed" : "stale" })
+    }).catch((error: unknown) => this.#log(`session ${this.id}: a release can't be sent (${errorName(error)})`))
+  }
+
+  /** Completes held call `callId` with `output`, which the model reads; its tool never runs. */
+  async #completeCall(callId: string, output: string): Promise<void> {
+    if (this.#finished) return
+    const delivery: Delivery = { id: newId(), op: "complete", call_id: callId, result: { output } }
+    await this.#deliver(delivery).catch((error: unknown) =>
+      this.#log(`session ${this.id}: a call's refusal can't be sent (${errorName(error)})`),
+    )
+  }
+
+  /** Runs `job`, a step of the gate, after the steps before it; skipped once the session has ended. */
+  #post(label: string, job: () => unknown): void {
+    this.#steps = this.#steps
+      .then(async () => {
+        if (!this.#finished) await job()
+      })
+      .catch((error: unknown) => this.#log(`session ${this.id}: ${label} failed (${errorName(error)})`))
   }
 
   /** The call `callId` closed for `reason` before its answer: an interrupted card is answered interrupted and
@@ -1023,7 +1042,7 @@ export class LocalHost {
         ? "waiting"
         : !this.#started
           ? "starting"
-          : this.#job === "running" || this.#approved.size > 0
+          : this.#job === "running" || this.#approved.size > 0 || this.#gate.busy
             ? "busy"
             : "idle"
     const waitingOn = status === "waiting" ? [OWNER] : []

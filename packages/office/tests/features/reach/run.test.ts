@@ -68,6 +68,7 @@ import { fakeLlm } from "../chat/helpers.ts"
 import { DEVICE_CODE, DEVICE_URL, fakeSubscription } from "../setup/helpers.ts"
 import { ps, waitFor } from "../../helpers.ts"
 import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
+import { permissions } from "../../tools/terminal/helpers.ts"
 import {
   approved,
   fakeHome,
@@ -830,16 +831,14 @@ async function unlearnedHome({ provider = true, behavior = {} }: { provider?: bo
 function binding(answers: CardAnswer[] = []) {
   const listed: string[] = []
   const shells: string[] = []
+  // A gate in auto whose check says run, deciding each terminal call as the host's does.
+  const gated = permissions({
+    where: { profile: "ssh", cwd: null, writable: [] },
+    check: async () => ({ verdict: "run", reason: "fine" }),
+  })
   const bound: SessionBinding = {
     sessionId: "01JDSESSION000000000000000",
-    permissions: {
-      mode: () => "auto",
-      rules: () => [],
-      where: () => ({ profile: "ssh", cwd: null, writable: [] }),
-      hold: () => "Not run: no card here",
-      check: async () => ({ verdict: "run", reason: "fine" }),
-    },
-    hold: () => "Not run: no card here",
+    permissions: gated.perms,
     ask: (_card, _callId, act) => {
       const answer = answers.shift()
       if (answer === undefined) throw new Error("no answer left for the card")
@@ -856,7 +855,7 @@ function binding(answers: CardAnswer[] = []) {
       remove: () => {},
     },
   }
-  return { bound, listed, shells }
+  return { bound, listed, shells, gate: gated.perms.gate }
 }
 
 /** A `learnChat` that plays the session as `play` says, given its spec and tools bound by `binding`'s; it ends as
@@ -869,7 +868,15 @@ function chat(
   const b = binding(answers)
   const learnChat: BuiltinChat<Terminal> = async (spec) => {
     specs.push(spec)
-    const tools = await spec.tools(b.bound)
+    const bound = await spec.tools(b.bound)
+    // The terminal's calls go through the gate first, as the host's worker sends them.
+    const terminal = Object.entries(bound.groups.terminal ?? {}).map(([name, tool]) => [name, {
+      ...tool,
+      call: async (args: Record<string, unknown>, options: { callId?: string } = {}) =>
+        (await b.gate.decide(bound.terminal!, name, args, options.callId!)) ?? tool.call(args, options),
+    }])
+    const groups = bound.groups.terminal ? { ...bound.groups, terminal: Object.fromEntries(terminal) } : bound.groups
+    const tools = { ...bound, groups }
     try {
       await play(spec, tools)
     } finally {
@@ -880,9 +887,10 @@ function chat(
   return { learnChat, specs, ...b }
 }
 
-/** The agent's call of `tool` in the session's tools, as the model makes it. */
+let calls = 0
+/** The agent's call of `tool` in the session's tools, as the model makes it, each with a call id of its own. */
 function callTool(tools: BuiltinTools<Terminal>, group: string, tool: string, args: Record<string, unknown>) {
-  return Promise.resolve(tools.groups[group]![tool]!.call(args, { callId: `r/learn/${tool}/0` })) as Promise<string>
+  return Promise.resolve(tools.groups[group]![tool]!.call(args, { callId: `r/learn/${++calls}/0` })) as Promise<string>
 }
 
 const SAVE_IT = { value: SAVE, typed: false }

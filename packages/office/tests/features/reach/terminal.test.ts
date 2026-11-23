@@ -21,7 +21,7 @@ import { type FakeSshBehavior, fakeControlName, installFakeSsh } from "../../../
 import { readRecord } from "../../../src/tools/terminal/record.ts"
 import { waitFor } from "../../helpers.ts"
 import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
-import { json, permissions, rule } from "../../tools/terminal/helpers.ts"
+import { json, permissions, rule, type TestGate } from "../../tools/terminal/helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -101,6 +101,7 @@ async function learning(o: {
     fs.rmSync(root, { recursive: true, force: true })
   })
   const tools = terminal.tools()
+  const gate = (o.perms as Partial<{ gate: TestGate }>).gate
   let calls = 0
   return {
     root,
@@ -113,8 +114,18 @@ async function learning(o: {
     asked,
     /** Sets the fake's behavior, keeping the user's config. */
     behave: (b: FakeSshBehavior) => fake.set({ ...b, userConfig: userConfig(ssh) }),
-    call: (name: keyof typeof tools, args: Record<string, unknown>) =>
-      tools[name].call(args, { callId: `r/n/${++calls}/0` }),
+    /** Calls tool `name` with `args` as yian would, through the permissions' gate, when they have one, first. */
+    call: async (name: keyof typeof tools, args: Record<string, unknown>) => {
+      const callId = `r/n/${++calls}/0`
+      const out = gate === undefined ? null : await gate.decide(terminal, name, args, callId)
+      return out !== null ? out : tools[name].call(args, { callId })
+    },
+    /** The owner's Yes to held call `callId`: yian releases it, and the call is made again under its id. */
+    approve: (callId: string, o: { credit?: string; signal?: AbortSignal } = {}) => {
+      if (gate === undefined) throw new Error("these permissions have no gate")
+      const call = gate.approve(callId, o.credit ?? "approved")
+      return tools[call.name as keyof typeof tools].call(call.args, { callId, ...(o.signal ? { signal: o.signal } : {}) })
+    },
     /** The id of the `n`th shell made. */
     id: (n = 0) => terminal.shells()[n]!.id,
     /** The owner's live view of shell `id`, decoded. */
@@ -220,7 +231,7 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
       }
       // The owner lets a PATH change run: the system's ssh it then finds is the wrapper still.
       expect(isPending(await t.call("run", { command: "PATH=/usr/bin:/bin", why: "x", shell: "shell 1" }))).toBe(true)
-      await t.terminal.runApproved("terminal_run", held[0]!.card.args, new AbortController().signal, "approved by @ngocbh")
+      await t.approve(held[0]!.callId, { credit: "approved by @ngocbh" })
       const printed = json(await t.call("run", { command: "command -v ssh; ssh -G h", why: "x", shell: "shell 1" }))
       expect(printed.output).toBe(`$ command -v ssh; ssh -G h\n/usr/bin/ssh\n${config}`)
     },
@@ -235,7 +246,7 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
       const command = "ssh -o ControlMaster=auto -G h"
       expect(isPending(await t.call("run", { command, why: "x", shell: "shell 1" }))).toBe(true)
       const signal = new AbortController().signal
-      const approved = json(await t.terminal.runApproved("terminal_run", held[0]!.card.args, signal, "approved by @ngocbh"))
+      const approved = json(await t.approve(held[0]!.callId, { signal: signal, credit: "approved by @ngocbh" }))
       expect(approved.output).toStartWith(`$ ${command}\ncontrolmaster no\n`)
       await t.call("run", { command: "scp h:/etc/hostname copied; true", why: "copy a file", shell: "shell 1" })
       const call = t.fake.calls().find((argv) => argv.includes("h"))!
@@ -353,7 +364,7 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
     // The reader asks before a command that names them: here the owner says Yes, and the sandbox still holds.
     expect(isPending(await t.call("run", { command, why: "look" }))).toBe(true)
     expect(held[0]!.card.reason).toBe(`it names a credential path: ${provider}`)
-    const reply = json(await t.terminal.runApproved("terminal_run", held[0]!.card.args, new AbortController().signal))
+    const reply = json(await t.approve(held[0]!.callId))
     const output = reply.output as string
     expect(output).not.toContain("decoy")
     expect(output).toContain("[cat 1]")

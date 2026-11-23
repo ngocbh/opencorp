@@ -235,44 +235,6 @@ test("the check is told the shell's profile, its folder and the ssh host of a ty
   expect(json(await t.call("read", { shell: "shell 1", wait: 10 }))).toMatchObject({ status: "idle", exit: 0 })
 })
 
-test("a check still running when the call stops types nothing", async () => {
-  const check = (_input: unknown, signal: AbortSignal) =>
-    new Promise<Verdict>((_, reject) => signal.addEventListener("abort", () => reject(new Error("stopped"))))
-  const { perms, held, checked } = permissions({ check })
-  const t = openTerminal({ perms })
-  await t.call("run", { command: "cat", why: "x", wait: 0 })
-  const stop = new AbortController()
-  const typing = t.call("type", { shell: "shell 1", text: "make install", why: "x" }, { signal: stop.signal })
-  await waitFor(() => checked.length === 1, { what: "the check" })
-  stop.abort()
-  expect(await typing).toBe("Not run: stopped before Auto's check finished.")
-  const stopRun = new AbortController()
-  const running = t.call("run", { command: "printf a > f", why: "x" }, { signal: stopRun.signal })
-  await waitFor(() => checked.length === 2, { what: "the check" })
-  stopRun.abort()
-  expect(await running).toBe("Not run: stopped before Auto's check finished.")
-  expect(held).toEqual([])
-  expect(t.terminal.shell("sh_1")!.pendingLine()).toBe("")
-  expect(t.live("sh_1")).not.toContain("make install")
-  expect(t.terminal.shells()).toHaveLength(1)
-  expect(fs.existsSync(path.join(t.dir, "f"))).toBe(false)
-})
-
-test("interruptWaits while Auto's check runs types nothing and holds nothing, even when the check then says run", async () => {
-  let answer: ((verdict: Verdict) => void) | undefined
-  const check = () => new Promise<Verdict>((resolve) => (answer = resolve))
-  const { perms, held, checked } = permissions({ check })
-  const t = openTerminal({ perms })
-  const running = t.call("run", { command: "printf a > f", why: "x" })
-  await waitFor(() => checked.length === 1, { what: "the check" })
-  t.terminal.interruptWaits()
-  answer!({ verdict: "run", reason: "fine" })
-  expect(await running).toBe("Not run: stopped before Auto's check finished.")
-  expect(held).toEqual([])
-  expect(t.terminal.shells()).toEqual([])
-  expect(fs.existsSync(path.join(t.dir, "f"))).toBe(false)
-})
-
 test("in dontAsk a reply waiting on a secret prompt tells the agent to close the shell, since nobody will answer", async () => {
   const fake = fakeSsh({ login: "tty" })
   const { perms, state } = permissions({ mode: "dontAsk", rules: [rule("allow", "command", "ssh h true")] })
@@ -307,7 +269,7 @@ test("type is gated on the agent's whole unfinished line", async () => {
     args: { shell: "shell 1", text: "sca", enter: false, why: "start a line", wait: 0, line: "sca", into: "cat" },
   })
   expect(checked).toEqual([])
-  const approved = json(await t.terminal.runApproved("terminal_type", held[0]!.card.args, new AbortController().signal))
+  const approved = json(await t.approve(held[0]!.callId))
   expect(approved.refused).toBeUndefined()
   expect(t.terminal.shell("sh_1")!.pendingLine()).toBe("sca")
   const finished = json(await t.call("type", { shell: "shell 1", text: "ncel 42", why: "finish it", wait: 1 }))
@@ -326,7 +288,7 @@ test("an approved line is refused once the shell's unfinished line has changed",
   expect(held[0]!.card.action).toBe("echo hi")
   // The owner's Enter sends the agent's unfinished line: the approved "hi" would now be a line of its own.
   t.terminal.shell("sh_1")!.ownerKeys("\r")
-  expect(json(await t.terminal.runApproved("terminal_type", held[0]!.card.args, new AbortController().signal)).refused).toBe(
+  expect(json(await t.approve(held[0]!.callId)).refused).toBe(
     "the shell has moved on since this line was approved: its unfinished line or its running command changed; read " +
       "it, then type again",
   )
@@ -460,7 +422,7 @@ test("a command too long to check asks in every mode, and dontAsk refuses it, wi
   expect(held.map((h) => h.card.reason)).toEqual([reason, reason, reason])
   expect(checked).toEqual([])
   // Approved, it runs whole: each of its lines is within what a terminal takes.
-  const ran = json(await t.terminal.runApproved("terminal_run", held[0]!.card.args, new AbortController().signal))
+  const ran = json(await t.approve(held[0]!.callId))
   expect(ran).toMatchObject({ status: "idle", exit: 0 })
   expect((ran.output as string).trimEnd().split("\n").slice(-12)).toEqual(
     Array.from({ length: 12 }, (_, i) => String(i).padStart(95, "a")),
@@ -503,22 +465,19 @@ test("a call whose run stops ends its wait, and the command it waited on", async
   expect(json(await t.call("interrupt", { shell: "shell 1" })).refused).toBe("nothing is running")
 })
 
-test("an approved call runs once through runApproved, and is refused if its shell ended meanwhile", async () => {
+test("an approved call runs once, and is refused if its shell ended meanwhile", async () => {
   const { perms, held, checked } = permissions({ mode: "ask" })
   const t = openTerminal({ perms })
   expect(isPending(await t.call("run", { command: "echo approved-once", why: "x" }))).toBe(true)
-  const ran = json(await t.terminal.runApproved("terminal_run", held[0]!.card.args, new AbortController().signal))
+  const ran = json(await t.approve(held[0]!.callId))
   expect(ran).toMatchObject({ shell: "shell 1", status: "idle", exit: 0, output: "$ echo approved-once\napproved-once\n" })
   expect(t.record("sh_1").commands.map((c) => c.command)).toEqual(["echo approved-once"])
   expect(held).toHaveLength(1)
   expect(checked).toEqual([])
   expect(isPending(await t.call("run", { command: "echo later", why: "x", shell: "shell 1" }))).toBe(true)
   expect(json(await t.call("close", { shell: "shell 1" }))).toMatchObject({ shell: "shell 1", status: "ended" })
-  expect(json(await t.terminal.runApproved("terminal_run", held[1]!.card.args, new AbortController().signal))).toMatchObject({
+  expect(json(await t.approve(held[1]!.callId))).toMatchObject({
     shell: "shell 1", status: "ended", refused: "the shell has ended; start a new one",
   })
   expect(t.record("sh_1").commands.map((c) => c.command)).toEqual(["echo approved-once"])
-  expect(json(await t.terminal.runApproved("read", { shell: "shell 1" }, new AbortController().signal))).toEqual({
-    refused: "read never waits for the owner's approval; only terminal_run and terminal_type do",
-  })
 })

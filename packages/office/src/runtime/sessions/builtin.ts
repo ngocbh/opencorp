@@ -2,7 +2,7 @@
  *  host gives the feature's tools (`SessionBinding`), and the chat that runs it with the TUI on it (`BuiltinChat`),
  *  which the CLI gives the feature. The host runs the session's flow in a kept worker and serves it
  *  as the office serves its sessions: its cards, its four modes, Auto's check and its instruments. */
-import type { ApprovalCard, Permissions, Where } from "../permissions/policy.ts"
+import type { Permissions } from "../permissions/policy.ts"
 import type { OfficeTool } from "../worker/rpc.ts"
 import type { LiveInstrument } from "./instruments.ts"
 
@@ -18,11 +18,9 @@ export interface BuiltinModel {
   readonly env: Readonly<Record<string, string>>
 }
 
-/** What the host uses of the terminal the session's tools drive: where a new shell starts, a held call run once its
- *  card says Yes, Esc, and the session's end. `Terminal` fits. */
+/** What every host uses of the terminal the session's tools drive: Esc, and the session's end. `Terminal` fits, and
+ *  the no-office host, whose gate reads what a call would act on from it, takes a `Terminal`. */
 export interface BuiltinTerminal {
-  where(): Where
-  runApproved(tool: string, args: Record<string, unknown>, signal: AbortSignal): Promise<string>
   interruptWaits(): void
   close(): Promise<void>
 }
@@ -61,9 +59,6 @@ export interface ChatEnd {
   readonly error: string | null
 }
 
-/** What a card's Yes runs: the held call's output, stopped by `signal` (Esc, End). */
-export type CardAct = (signal: AbortSignal) => Promise<unknown>
-
 /** A question card a feature's call holds for the owner: its title, the text they read whole before the choices, and
  *  the choices; they may type an answer instead. `reason` says why it asks, which `dontAsk`'s refusal names. */
 export interface QuestionCard {
@@ -91,13 +86,9 @@ export interface ShellListener {
 /** What the host binds for a session's tools; the model sets none of it. */
 export interface SessionBinding {
   readonly sessionId: string
-  /** The session's mode, its session rules, Auto's check and its cards. Where a shell runs is its terminal's to say:
-   *  this `where` is only the start of shells with no sandbox, a folder it doesn't know. */
+  /** The session's mode, its session rules and what its gate decided for each terminal call. Where a shell runs is
+   *  its terminal's to say: this `where` is only the start of shells with no sandbox, a folder it doesn't know. */
   readonly permissions: Permissions
-  /** Holds yian call `callId` on approval card `card` for the session's owner and returns what the call returns now:
-   *  yian's `pending()`, or, in `dontAsk`, the refusal. On Yes `act` makes the call's output; a No's is the owner's
-   *  words. */
-  hold(card: ApprovalCard, callId: string, act: CardAct): unknown
   /** Holds yian call `callId` on question card `card` for the session's owner and returns what the call returns now:
    *  yian's `pending()`, or, in `dontAsk`, the refusal. It asks in every other mode: no rule or check answers it. The
    *  owner's answer goes to `act`, whose output completes the call; Esc answers it interrupted. */

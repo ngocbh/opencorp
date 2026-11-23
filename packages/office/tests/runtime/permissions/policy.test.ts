@@ -1,10 +1,10 @@
-/** Modes and rules: what runs, what asks the owner, what goes to Auto's check, what is refused, and what a gated
- *  tool returns. */
+/** Modes and rules: what runs, what asks the owner, what goes to Auto's check, what is refused, and what the gate
+ *  makes of a command once Auto's check has judged it. */
 import { expect, test } from "bun:test"
-import { isPending, pending } from "@ngocbh/yian/tools"
+import { afterCheck, type CallDecision, decideCommand } from "../../../src/runtime/permissions/gate.ts"
 import {
-  type Action, type ApprovalCard, type CheckInput, decide, type Decision, gate, matches, type Mode, MODES,
-  type Permissions, type Rule, RuleBook, suggest, type Verdict, type Where,
+  type Action, type CheckInput, decide, type Decision, judged, matches, type Mode, MODES, type Rule, RuleBook, suggest,
+  type Verdict, type Where,
 } from "../../../src/runtime/permissions/policy.ts"
 import { readCommand } from "../../../src/runtime/permissions/commands.ts"
 
@@ -25,23 +25,23 @@ const table = (mode: Mode, rows: Row[]) => {
     expect([action.text, decide(action, mode, rules, where)]).toEqual([action.text, decision])
 }
 
-/** Permissions that record each card they hold and each check they make; `check` answers as the test says. */
-function holding(mode: Mode, o: { book?: RuleBook; where?: Where; check?: (i: CheckInput) => Promise<Verdict> } = {}) {
-  const book = o.book ?? new RuleBook()
-  const held: { card: ApprovalCard; callId: string }[] = []
+/** What the session's gate makes of `action` in `mode`, as the office's does: the command reader's decision
+ *  (`decideCommand`, by `rules` and `blocked`, run `where`), and, for one it hands to Auto's check, what the check's
+ *  verdict on it decides (`judged`, `afterCheck`); `checked` is what the check was told. */
+async function gated(
+  mode: Mode,
+  action: Action,
+  o: { rules?: readonly Rule[]; where?: Where; blocked?: string; check?: (i: CheckInput) => Promise<Verdict> } = {},
+): Promise<{ decision: CallDecision; checked: CheckInput[] }> {
   const checked: CheckInput[] = []
-  const perms: Permissions = {
-    mode: () => mode,
-    rules: () => book.list(),
-    where: () => o.where ?? W,
-    hold: (card, callId) => (held.push({ card, callId }), pending()),
-    ...(o.check ? { check: (i: CheckInput) => (checked.push(i), o.check!(i)) } : {}),
-  }
-  return { perms, held, checked, book }
+  const policy = { mode, rules: o.rules ?? [], blocked: o.blocked ?? null }
+  const decision = decideCommand({ action, where: o.where ?? W }, policy)
+  if (decision.verdict !== "check") return { decision, checked }
+  const check = o.check && ((i: CheckInput) => (checked.push(i), o.check!(i)))
+  const verdict = await judged(check, decision.input, new AbortController().signal)
+  return { decision: afterCheck(verdict, decision.rules, mode), checked }
 }
-const call = (o: { why?: string; callId?: string; signal?: AbortSignal } = {}) =>
-  ({ tool: "shell", why: o.why ?? "", args: {}, callId: "callId" in o ? o.callId : "r/n/1/0",
-    signal: o.signal ?? new AbortController().signal })
+const RUNS = async (): Promise<Verdict> => ({ verdict: "run", reason: "fine" })
 
 const READ_ONLY = { verdict: "allow", by: "read-only" } as const
 const FILE_OP = { verdict: "allow", by: "a file operation in the workspace" } as const
@@ -179,38 +179,25 @@ test("in every mode a never-automated action asks and no allow rule skips it, an
   }
 })
 
-test("a blocked permissions makes every action ask in every mode and offers no rule, dontAsk refuses it, and a deny rule still refuses first", async () => {
+test("a blocked session makes every action ask in every mode and offers no rule, dontAsk refuses it, and a deny rule still refuses first", async () => {
   const why = "rules.yaml doesn't load: line 3: isn't valid YAML"
   const actions = [cmd("ls"), cmd("rm -rf build"), cmd("git push origin feature"), input("y")]
+  const rules = [allow("ls *"), allow("git push *"), deny("make *")]
   for (const mode of MODES) {
-    const checked: CheckInput[] = []
-    const held: ApprovalCard[] = []
-    const perms: Permissions = {
-      mode: () => mode,
-      rules: () => [allow("ls *"), allow("git push *"), deny("make *")],
-      where: () => W,
-      hold: (card) => (held.push(card), pending()),
-      check: async (i) => (checked.push(i), { verdict: "run", reason: "fine" }),
-      blocked: () => why,
-    }
     for (const action of actions) {
-      const gated = await gate(perms, action, call())
-      const want: unknown = mode === "dontAsk"
-        ? { run: false, result: `Not run: ${DONT}${why}.` }
-        : { run: false, reason: why, rules: [] }
-      const card = "held" in gated ? gated.held : undefined
-      const got: unknown = mode === "dontAsk" ? gated : { run: gated.run, reason: card?.reason, rules: card?.rules }
-      expect([action.text, got]).toEqual([action.text, want])
+      const { decision, checked } = await gated(mode, action, { rules, blocked: why, check: RUNS })
+      const want: CallDecision = mode === "dontAsk"
+        ? { verdict: "refuse", reason: `Not run: ${DONT}${why}.` }
+        : { verdict: "ask", reason: why, rules: [] }
+      expect([action.text, decision, checked]).toEqual([action.text, want, []])
     }
-    expect(await gate(perms, cmd("make all"), call())).toEqual({ run: false, result: "Not run: a deny rule: make *." })
-    expect(held).toHaveLength(mode === "dontAsk" ? 0 : actions.length)
-    expect(checked).toEqual([])
+    expect((await gated(mode, cmd("make all"), { rules, blocked: why })).decision).toEqual({
+      verdict: "refuse", reason: "Not run: a deny rule: make *.",
+    })
   }
-  // Unblocked, the same permissions decide as usual.
-  const { perms } = holding("auto")
-  expect(await gate({ ...perms, blocked: () => null }, cmd("ls"), call())).toEqual({ run: true, by: "read-only" })
+  // Unblocked, the same rules decide as usual.
+  expect((await gated("auto", cmd("ls"), { rules })).decision).toEqual({ verdict: "run", note: "an allow rule" })
 })
-
 test("a pattern that isn't words with one space between each matches nothing, and no card offers one", () => {
   const odd: [string, string[]][] = [
     ["rm  -rf *", ["rm", "", "-rf", "x"]],
@@ -332,20 +319,10 @@ test("a command over 1000 bytes asks in every mode, too long to check, and dontA
       table(mode, [[action, rules, W, { verdict: "ask", reason: why, rules: [] }]])
     }
     table("dontAsk", [[action, rules, W, { verdict: "deny", reason: DONT + why }]])
-    const { perms, held, checked } = holding("auto", { check: async () => ({ verdict: "run", reason: "fine" }) })
-    const gated = await gate(perms, action, call())
-    expect(!gated.run && isPending(gated.result)).toBe(true)
-    expect(checked).toEqual([])
-    expect(held.map((h) => [h.card.reason, h.card.rules])).toEqual([[why, []]])
+    const { decision, checked } = await gated("auto", action, { check: RUNS })
+    expect([decision, checked]).toEqual([{ verdict: "ask", reason: why, rules: [] }, []])
   }
 })
-
-/** Permissions in `mode` whose only rule denies `rm *`, with a check that says run and records each call. */
-function denying(mode: Mode) {
-  const book = new RuleBook()
-  book.add(deny("rm *"))
-  return holding(mode, { book, check: async () => ({ verdict: "run", reason: "fine" }) })
-}
 
 test("with a deny rule in force, a line the reader can't read asks in every mode and dontAsk refuses it; Auto's check never judges it", async () => {
   // A deny rule can't be matched against commands the reader can't see, so a line that may hide one must not reach a
@@ -366,11 +343,11 @@ test("with a deny rule in force, a line the reader can't read asks in every mode
       table(mode, [[cmd(text), [deny("rm *"), allow("*")], W, { verdict: "ask", reason: why, rules: [] }]])
     table("dontAsk", [[cmd(text), [deny("rm *")], W, { verdict: "deny", reason: DONT + why }]])
     for (const mode of MODES) {
-      const { perms, held, checked } = denying(mode)
-      const gated = await gate(perms, cmd(text), call())
-      expect([text, mode, gated.run, checked]).toEqual([text, mode, false, []])
-      expect(held.map((h) => h.card.reason)).toEqual(mode === "dontAsk" ? [] : [why])
-      if (mode === "dontAsk") expect(gated).toEqual({ run: false, result: `Not run: ${DONT}${why}.` })
+      const { decision, checked } = await gated(mode, cmd(text), { rules: [deny("rm *")], check: RUNS })
+      const want: CallDecision = mode === "dontAsk"
+        ? { verdict: "refuse", reason: `Not run: ${DONT}${why}.` }
+        : { verdict: "ask", reason: why, rules: [] }
+      expect([text, mode, decision, checked]).toEqual([text, mode, want, []])
     }
   }
   // What the reader does see in an unreadable line, a deny rule still refuses first.
@@ -379,9 +356,8 @@ test("with a deny rule in force, a line the reader can't read asks in every mode
       [cmd('eval "r""m -rf x"'), [deny("rm *")], W, { verdict: "deny", reason: "a deny rule: rm *" }],
       [cmd("echo $(rm -rf x)"), [deny("rm *")], W, { verdict: "deny", reason: "a deny rule: rm *" }],
     ])
-  const { perms, checked } = denying("auto")
-  expect(await gate(perms, cmd('eval "r""m -rf x"'), call())).toEqual({ run: false, result: "Not run: a deny rule: rm *." })
-  expect(checked).toEqual([])
+  const { decision, checked } = await gated("auto", cmd('eval "r""m -rf x"'), { rules: [deny("rm *")], check: RUNS })
+  expect([decision, checked]).toEqual([{ verdict: "refuse", reason: "Not run: a deny rule: rm *." }, []])
 })
 
 test("a {name[subscript]} redirect is never read-only: bash evaluates the subscript before the command runs", () => {
@@ -659,18 +635,14 @@ test("a line of many relative cds decides at once, its folder lost, and asks whe
 
 test("the check is told an unknown folder as empty", async () => {
   const where: Where = { profile: "ssh", cwd: null, writable: [] }
-  const { perms, checked } = holding("auto", { where, check: async () => ({ verdict: "run", reason: "ok" }) })
-  await gate(perms, cmd("make"), call())
+  const { checked } = await gated("auto", cmd("make"), { where, check: RUNS })
   expect(checked).toEqual([{ kind: "command", command: "make", profile: "ssh", cwd: "", host: "" }])
 })
-
 test("the check is told the host of a mosh session a line is typed into, as of an ssh one", async () => {
-  const { perms, checked } = holding("auto", { check: async () => ({ verdict: "run", reason: "ok" }) })
-  await gate(perms, { kind: "input", text: "scancel 42", into: "mosh --ssh 'ssh -J login' u@node" }, call())
-  await gate(perms, cmd("mosh -p 60001 u@b -- top"), call())
-  expect(checked.map((input) => input.host)).toEqual(["u@node", "u@b"])
+  const typed = await gated("auto", { kind: "input", text: "scancel 42", into: "mosh --ssh 'ssh -J login' u@node" }, { check: RUNS })
+  const ran = await gated("auto", cmd("mosh -p 60001 u@b -- top"), { check: RUNS })
+  expect([...typed.checked, ...ran.checked].map((input) => input.host)).toEqual(["u@node", "u@b"])
 })
-
 test("the card offers no rule for what it holds for the owner", () => {
   table("ask", [[cmd("ls && git push origin main"), [], W,
     { verdict: "ask", reason: "it pushes to the default branch", rules: [] }]])
@@ -808,62 +780,38 @@ test("a pattern's last * matches any further words, and nothing else is a wildca
 })
 
 test("the gate runs an allowed action, refuses a denied one, and holds one that asks", async () => {
-  expect(await gate(holding("auto").perms, cmd("ls"), call())).toEqual({ run: true, by: "read-only" })
-  const book = new RuleBook()
-  book.add(deny("rm *"))
-  const denied = holding("auto", { book })
-  expect(await gate(denied.perms, cmd("rm x"), call())).toEqual({ run: false, result: "Not run: a deny rule: rm *." })
-  expect(denied.held).toEqual([])
-  const { perms, held } = holding("ask")
-  const gated = await gate(perms, cmd("ls"), call())
-  expect(gated.run).toBe(false)
-  expect(!gated.run && isPending(gated.result)).toBe(true)
-  expect(held).toEqual([{
-    card: { kind: "command", tool: "shell", action: "ls", why: "", reason: "Ask mode", rules: ["ls *"], args: {},
-      partial: false, into: null },
-    callId: "r/n/1/0",
-  }])
-  // A typed line's card keeps what it was decided with, so it can be decided again from the card alone.
-  await gate(perms, { kind: "input", text: "y", partial: true, into: "ssh u@node" }, call({ callId: "r/n/2/0" }))
-  expect(held[1]!.card).toMatchObject({ kind: "input", action: "y", partial: true, into: "ssh u@node" })
+  expect((await gated("auto", cmd("ls"))).decision).toEqual({ verdict: "run", note: "read-only" })
+  expect((await gated("auto", cmd("rm x"), { rules: [deny("rm *")] })).decision).toEqual({
+    verdict: "refuse", reason: "Not run: a deny rule: rm *.",
+  })
+  expect((await gated("ask", cmd("ls"))).decision).toEqual({ verdict: "ask", reason: "Ask mode", rules: ["ls *"] })
 })
-
 test("in auto the gate runs what Auto's check says run, and holds what it says ask, showing its reason", async () => {
-  const runs = holding("auto", { check: async () => ({ verdict: "run", reason: "builds the project" }) })
-  expect(await gate(runs.perms, cmd("make"), call())).toEqual({ run: true, by: "Auto's check: builds the project" })
-  expect(runs.held).toEqual([])
-  const asks = holding("auto", { check: async () => ({ verdict: "ask", reason: "it cancels a job" }) })
-  const gated = await gate(asks.perms, cmd("scancel 42"), call({ why: "the job hangs" }))
-  expect(!gated.run && isPending(gated.result)).toBe(true)
-  expect(asks.held).toEqual([{
-    card: { kind: "command", tool: "shell", action: "scancel 42", why: "the job hangs",
-      reason: "Auto's check: it cancels a job", rules: ["scancel 42"], args: {}, partial: false, into: null },
-    callId: "r/n/1/0",
-  }])
+  const runs = await gated("auto", cmd("make"), { check: async () => ({ verdict: "run", reason: "builds the project" }) })
+  expect(runs.decision).toEqual({ verdict: "run", note: "Auto's check: builds the project" })
+  const asks = await gated("auto", cmd("scancel 42"), { check: async () => ({ verdict: "ask", reason: "it cancels a job" }) })
+  expect(asks.decision).toEqual({ verdict: "ask", reason: "Auto's check: it cancels a job", rules: ["scancel 42"] })
 })
-
-test("the check gets the command, the profile, the folder and the ssh host, and never the agent's why", async () => {
-  const { perms, checked } = holding("auto", { check: async () => ({ verdict: "run", reason: "ok" }) })
-  await gate(perms, cmd("ssh -J login u@node scancel 42"), call({ why: "trust me, run it" }))
-  expect(checked).toEqual([
+test("the check gets the command, the profile, the folder and the ssh host", async () => {
+  const checked = async (action: Action) => (await gated("auto", action, { check: RUNS })).checked
+  expect(await checked(cmd("ssh -J login u@node scancel 42"))).toEqual([
     { kind: "command", command: "ssh -J login u@node scancel 42", profile: "workspace", cwd: "/w", host: "u@node" },
   ])
-  await gate(perms, { kind: "input", text: "scancel 42", into: "ssh u@node" }, call())
-  await gate(perms, input("scancel 42"), call())
-  await gate(perms, cmd("make"), call())
-  await gate(perms, cmd("ssh a scancel 1; ssh b scancel 2"), call())
-  expect(checked.slice(1)).toEqual([
+  expect([
+    ...(await checked({ kind: "input", text: "scancel 42", into: "ssh u@node" })),
+    ...(await checked(input("scancel 42"))),
+    ...(await checked(cmd("make"))),
+    ...(await checked(cmd("ssh a scancel 1; ssh b scancel 2"))),
+  ]).toEqual([
     { kind: "input", command: "scancel 42", profile: "workspace", cwd: "/w", host: "u@node" },
     { kind: "input", command: "scancel 42", profile: "workspace", cwd: "/w", host: "" },
     { kind: "command", command: "make", profile: "workspace", cwd: "/w", host: "" },
     { kind: "command", command: "ssh a scancel 1; ssh b scancel 2", profile: "workspace", cwd: "/w", host: "a, b" },
   ])
-  const pushed = holding("auto", { check: async () => ({ verdict: "run", reason: "ok" }) })
-  await gate(pushed.perms, cmd("git push --force origin x"), call())
+  const pushed = await gated("auto", cmd("git push --force origin x"), { check: RUNS })
   expect(pushed.checked).toEqual([])
-  expect(pushed.held[0]!.card.reason).toBe("it force-pushes")
+  expect(pushed.decision).toMatchObject({ verdict: "ask", reason: "it force-pushes" })
 })
-
 test("a missing check, a throwing one, a failed one and an answer out of shape all ask, saying the check couldn't judge it", async () => {
   const cases: [((i: CheckInput) => Promise<Verdict>) | undefined, string][] = [
     [undefined, "no check is bound here"],
@@ -875,89 +823,39 @@ test("a missing check, a throwing one, a failed one and an answer out of shape a
     [async () => ({ verdict: "run", reason: "it timed out", failed: true }), "it timed out"],
   ]
   for (const [check, why] of cases) {
-    const { perms, held } = holding("auto", check ? { check } : {})
-    const gated = await gate(perms, cmd("make"), call())
-    expect(gated.run).toBe(false)
-    expect(held.map((h) => h.card.reason)).toEqual([`Auto asks: its check couldn't judge this: ${why}`])
+    const { decision } = await gated("auto", cmd("make"), check ? { check } : {})
+    expect(decision).toEqual({ verdict: "ask", reason: `Auto asks: its check couldn't judge this: ${why}`, rules: ["make"] })
   }
 })
 
 test("the check's reason shows as one line of at most 200 characters", async () => {
-  const { perms, held } = holding("auto", {
+  const { decision } = await gated("auto", cmd("make"), {
     check: async () => ({ verdict: "ask", reason: "a\nb\x1b[2Jc" + "x".repeat(300) }),
   })
-  await gate(perms, cmd("make"), call())
-  const shown = held[0]!.card.reason.slice("Auto's check: ".length)
+  const shown = (decision as { reason: string }).reason.slice("Auto's check: ".length)
   expect(shown).toBe("a b [2Jc" + "x".repeat(191) + "…")
   expect(shown.length).toBe(200)
-  const spaced = holding("auto", { check: async () => ({ verdict: "run", reason: "  a \t\r\n  b \u2028 " }) })
-  expect(await gate(spaced.perms, cmd("make"), call())).toEqual({ run: true, by: "Auto's check: a b" })
+  const spaced = await gated("auto", cmd("make"), { check: async () => ({ verdict: "run", reason: "  a \t\r\n  b \u2028 " }) })
+  expect(spaced.decision).toEqual({ verdict: "run", note: "Auto's check: a b" })
 })
-
-test("in dontAsk what would ask is refused, and no card is held", async () => {
-  const asks = holding("dontAsk", { check: async () => ({ verdict: "ask", reason: "it cancels a job" }) })
-  expect(await gate(asks.perms, cmd("scancel 42"), call())).toEqual({
-    run: false, result: "Not run: this session doesn't ask (dontAsk mode): Auto's check: it cancels a job.",
+test("in dontAsk what would ask is refused, and nothing asks", async () => {
+  const asks = await gated("dontAsk", cmd("scancel 42"), { check: async () => ({ verdict: "ask", reason: "it cancels a job" }) })
+  expect(asks.decision).toEqual({
+    verdict: "refuse", reason: "Not run: this session doesn't ask (dontAsk mode): Auto's check: it cancels a job.",
   })
-  const failed = holding("dontAsk", { check: async () => ({ verdict: "ask", reason: "it timed out", failed: true }) })
-  expect(await gate(failed.perms, cmd("scancel 42"), call())).toEqual({
-    run: false,
-    result: "Not run: this session doesn't ask (dontAsk mode): Auto asks: its check couldn't judge this: it timed out.",
+  const failed = await gated("dontAsk", cmd("scancel 42"), {
+    check: async () => ({ verdict: "ask", reason: "it timed out", failed: true }),
   })
-  const runs = holding("dontAsk", { check: async () => ({ verdict: "run", reason: "builds" }) })
-  expect(await gate(runs.perms, cmd("make"), call())).toEqual({ run: true, by: "Auto's check: builds" })
-  const pushed = holding("dontAsk")
-  expect(await gate(pushed.perms, cmd("git push origin main"), call())).toEqual({
-    run: false, result: "Not run: this session doesn't ask (dontAsk mode): it pushes to the default branch.",
+  expect(failed.decision).toEqual({
+    verdict: "refuse",
+    reason: "Not run: this session doesn't ask (dontAsk mode): Auto asks: its check couldn't judge this: it timed out.",
   })
-  expect([...asks.held, ...failed.held, ...runs.held, ...pushed.held]).toEqual([])
-})
-
-test("a call stopped while its check runs runs nothing and holds nothing", async () => {
-  const stop = new AbortController()
-  const { perms, held } = holding("auto", {
-    check: () => new Promise((_, reject) => stop.signal.addEventListener("abort", () => reject(new Error("aborted")))),
-  })
-  const gated = gate(perms, cmd("make"), call({ signal: stop.signal }))
-  stop.abort()
-  expect(await gated).toEqual({ run: false, result: "Not run: stopped before Auto's check finished." })
-  const late = holding("auto", { check: async () => (stop.signal.aborted, { verdict: "run", reason: "ok" }) })
-  expect(await gate(late.perms, cmd("make"), call({ signal: stop.signal }))).toEqual({
-    run: false, result: "Not run: stopped before Auto's check finished.",
-  })
-  expect([...held, ...late.held]).toEqual([])
-})
-
-test("a switch to dontAsk while Auto's check runs refuses the call rather than hold a card nobody answers", async () => {
-  let mode: Mode = "auto"
-  const held: ApprovalCard[] = []
-  const perms: Permissions = {
-    mode: () => mode,
-    rules: () => [],
-    where: () => W,
-    hold: (card) => (held.push(card), pending()),
-    check: async () => {
-      mode = "dontAsk"
-      return { verdict: "ask", reason: "it cancels a job" }
-    },
-  }
-  expect(await gate(perms, cmd("scancel 42"), call())).toEqual({
-    run: false, result: "Not run: this session doesn't ask (dontAsk mode): Auto's check: it cancels a job.",
-  })
-  expect(held).toEqual([])
-})
-
-test("a call with no call id can't wait for the owner", async () => {
-  const { perms, held } = holding("ask")
-  expect(await gate(perms, cmd("ls"), call({ callId: undefined }))).toEqual({
-    run: false, result: "Not run: this call can't wait for the owner's approval.",
-  })
-  expect(held).toEqual([])
-  expect(await gate(holding("ask").perms, cmd("rm x"), call({ callId: undefined }))).toEqual({
-    run: false, result: "Not run: this call can't wait for the owner's approval.",
+  const runs = await gated("dontAsk", cmd("make"), { check: async () => ({ verdict: "run", reason: "builds" }) })
+  expect(runs.decision).toEqual({ verdict: "run", note: "Auto's check: builds" })
+  expect((await gated("dontAsk", cmd("git push origin main"))).decision).toEqual({
+    verdict: "refuse", reason: "Not run: this session doesn't ask (dontAsk mode): it pushes to the default branch.",
   })
 })
-
 test("the session's rule book adds a rule once and removes it", async () => {
   const book = new RuleBook()
   book.add(allow("ls *"))
@@ -970,8 +868,7 @@ test("the session's rule book adds a rule once and removes it", async () => {
   const listed = book.list() as Rule[]
   listed.push(deny("ls *"))
   expect(book.list()).toEqual([allow("ls *")])
-  const { perms } = holding("ask", { book })
-  expect(await gate(perms, cmd("ls -l"), call())).toEqual({ run: true, by: "an allow rule" })
+  expect((await gated("ask", cmd("ls -l"), { rules: book.list() })).decision).toEqual({ verdict: "run", note: "an allow rule" })
   book.remove(allow("ls *"))
-  expect((await gate(perms, cmd("ls -l"), call())).run).toBe(false)
+  expect((await gated("ask", cmd("ls -l"), { rules: book.list() })).decision).toMatchObject({ verdict: "ask" })
 })

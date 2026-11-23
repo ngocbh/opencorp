@@ -153,10 +153,8 @@ export function cardBinding(answers: (CardAnswer | "dontAsk")[]): SessionBinding
       mode: () => "auto",
       rules: () => [],
       where: () => ({ profile: "ssh", cwd: null, writable: [] }),
-      hold: () => "Not run: no card here",
-      check: async () => ({ verdict: "run", reason: "fine" }),
+      decided: () => null,
     },
-    hold: () => "Not run: no card here",
     ask: (card, _callId, act) => {
       const answer = answers.shift()
       if (answer === undefined) throw new Error("no answer left for the card")

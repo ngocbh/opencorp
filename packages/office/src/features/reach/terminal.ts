@@ -8,12 +8,14 @@ import os from "node:os"
 import path from "node:path"
 import { now } from "@opencorp/protocol"
 import { spawnPty } from "../../platform.ts"
-import type { ApprovalCard, CheckInput, Permissions } from "../../runtime/permissions/policy.ts"
+import type { Permissions } from "../../runtime/permissions/policy.ts"
 import { SAFE_PATH, SandboxUnavailable, scrubbedEnv, startOnTerminal } from "../../runtime/sandbox/run.ts"
 import type { SshPolicy } from "../../runtime/sandbox/ssh_policy.ts"
 import { InstrumentRecord } from "../../tools/terminal/record.ts"
 import type { ShellHost, ShellState } from "../../tools/terminal/shell.ts"
-import { Terminal, type TerminalHost, type TerminalShells, type TerminalTool } from "../../tools/terminal/terminal.ts"
+import {
+  type CommandPlan, Terminal, type TerminalHost, type TerminalShells, type TerminalTool,
+} from "../../tools/terminal/terminal.ts"
 import { refusalText, type ToolName } from "../../tools/terminal/tools.ts"
 import { newId } from "../../util/ids.ts"
 import { checkFolder, makePrivateFolder } from "../../util/private_files.ts"
@@ -130,7 +132,8 @@ class LearningTerminal extends Terminal {
   }
 }
 
-/** Learning's terminal once the owner chose Stop: every call is refused with `why`, before any gate or shell. */
+/** Learning's terminal once the owner chose Stop: every call is refused with `why`, with nothing for the gate to
+ *  decide or hold, and no shell. */
 class StoppedTerminal extends Terminal {
   constructor(
     host: TerminalHost,
@@ -139,14 +142,14 @@ class StoppedTerminal extends Terminal {
     super(host)
   }
 
+  override plan(): CommandPlan {
+    return { decide: false }
+  }
+
   override tools(): Record<ToolName, TerminalTool> {
     const refuse = async () => refusalText(this.why)
     const tools = Object.entries(super.tools()).map(([name, tool]) => [name, { ...tool, call: refuse }])
     return Object.fromEntries(tools) as Record<ToolName, TerminalTool>
-  }
-
-  override async runApproved(): Promise<string> {
-    return refusalText(this.why)
   }
 }
 
@@ -238,7 +241,6 @@ function host(o: LearningTerminalOptions, shells: TerminalShells, tmpdir: string
  *  and everything in the office's connections and secrets folders, are credentials beside those `base` marks: the
  *  reader's own patterns know them only under `~/.opencorp`. */
 function startingIn(base: Permissions, paths: ReachPaths, tmpdir: string): Permissions {
-  const { check, blocked } = base
   const office = ["connections", "secrets"].map((name) => `${path.join(paths.home, "office", name)}/**`)
   return {
     mode: () => base.mode(),
@@ -248,9 +250,7 @@ function startingIn(base: Permissions, paths: ReachPaths, tmpdir: string): Permi
       const credentials = [...(where.credentials ?? []), paths.provider, paths.auth, ...office]
       return { ...where, profile: "ssh", cwd: tmpdir, writable: [], credentials }
     },
-    ...(base.hold ? { hold: (card: ApprovalCard, callId: string) => base.hold!(card, callId) } : {}),
-    ...(check ? { check: (input: CheckInput, signal: AbortSignal) => check.call(base, input, signal) } : {}),
-    ...(blocked ? { blocked: () => blocked.call(base) } : {}),
+    decided: (callId) => base.decided(callId),
   }
 }
 

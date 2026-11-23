@@ -18,7 +18,8 @@ const ran = (command: string, cwd: string | null, why: string, approved = false)
 /** Permissions under the gate: what it decided for each call id, taken once by the call that acts on it. */
 function gated(): { perms: Permissions; ledger: Map<string, Decided>; held: unknown[] } {
   const ledger = new Map<string, Decided>()
-  const { perms, held } = permissions()
+  // The test is the gate here: it records each decision itself.
+  const { perms: { gate: _gate, ...perms }, held } = permissions()
   const taken = (callId: string | undefined) => {
     const decided = callId === undefined ? undefined : ledger.get(callId)
     if (callId !== undefined) ledger.delete(callId)
