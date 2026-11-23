@@ -78,11 +78,10 @@ test("an unread message has a grey border and says so with what Esc does, and lo
 test("an unread message names no key while Esc can't stop anything: over the cost cap it waits for a raise", async () => {
   const { office, app } = await boot("waiting", { capped: true })
   try {
-    const alone = (f: string) => {
-      const rows = f.split("\n")
-      return /┃\s+unread\s*$/.test(rows[rows.findIndex((r) => r.includes("Also mention Rome.")) + 1] ?? "")
-    }
-    const f = await app.until(alone)
+    // The header's status proves the capped session reached the view: before it, no hint names a key either.
+    const f = await app.until((f) => f.includes("cost cap reached") && f.includes("Also mention Rome."))
+    const rows = f.split("\n")
+    expect(rows[rows.findIndex((r) => r.includes("Also mention Rome.")) + 1]).toMatch(/┃\s+unread\s*$/)
     expect(f).not.toContain("esc to interrupt so")
     expect(border(app.setup.captureSpans().lines, "Also mention Rome.")).toEqual(theme.border)
   } finally {
