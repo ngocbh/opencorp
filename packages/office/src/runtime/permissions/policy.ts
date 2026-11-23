@@ -73,9 +73,11 @@ export interface Action {
   readonly partial?: boolean
   readonly into?: string
 }
+/** A rule on commands (`command`), typed lines (`input`) or tool calls (`tool`, by `toolWords`); `decide` reads
+ *  only the first two. */
 export interface Rule {
   readonly effect: Effect
-  readonly kind: Action["kind"]
+  readonly kind: Action["kind"] | "tool"
   readonly pattern: string
 }
 /** `allow` says `by` what: "an allow rule", "read-only", "a file operation in the workspace", "a push to a feature
@@ -174,7 +176,7 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
   // A finished typed line may run as a command wherever it goes (a shell, a login, a launcher the reader doesn't
   // know), so command deny rules refuse it too.
   const finished = action.kind === "input" && !action.partial
-  const own = rules.filter((r) => r.kind === action.kind || (finished && r.effect === "deny"))
+  const own = rules.filter((r) => r.kind === action.kind || (finished && r.effect === "deny" && r.kind === "command"))
   const everything = parts.flatMap(withInner)
   const first = (effect: Effect) =>
     own.find((r) => r.effect === effect && everything.some((p) => fits(r.pattern, p, false)))

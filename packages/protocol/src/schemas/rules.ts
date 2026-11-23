@@ -6,13 +6,15 @@ import { Handle, Timestamp } from "./common"
 export const RulePattern = z.string().regex(/^\S+(?: \S+)*$/u)
 export type RulePattern = z.input<typeof RulePattern>
 
-/** A rule for an agent's commands or typed input: allow, ask or deny, on a `RulePattern`. `source`: `session` rules
- *  last while the session runs; `agent` rules are the agent's file (`people/<handle>/rules.yaml`); `company` rules
- *  are `rules.yaml` at the company repo's root, for every agent. `note`: for a session rule an "always" couldn't save
- *  to the agent's file, why. */
+/** A rule for an agent's commands, typed input or tool calls: allow, ask or deny, on a `RulePattern`. `kind`:
+ *  `command` and `input` match a command's or a typed line's words; `tool` matches a tool call's words, its source's
+ *  kind then the names its source gives it (`host codex start`, `module crm quote`, `mcp github *`). `source`:
+ *  `session` rules last while the session runs; `agent` rules are the agent's file (`people/<handle>/rules.yaml`);
+ *  `company` rules are `rules.yaml` at the company repo's root, for every agent. `note`: for a session rule an
+ *  "always" couldn't save to the agent's file, why. */
 export const Rule = z.strictObject({
   effect: z.enum(["allow", "ask", "deny"]),
-  kind: z.enum(["command", "input"]),
+  kind: z.enum(["command", "input", "tool"]),
   pattern: RulePattern,
   source: z.enum(["session", "agent", "company"]),
   by: Handle.nullable().default(null),

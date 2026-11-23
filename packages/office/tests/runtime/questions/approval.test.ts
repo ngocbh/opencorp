@@ -51,6 +51,21 @@ test("an approval card offers Yes, then don't ask again this session and always,
   expect(NO_TYPED).toBe("No, and tell the agent what to do instead")
 })
 
+test("a tool card asks to call a tool, shows its action and offers its tool rules", () => {
+  const { store, hold } = setup({ always: true })
+  const rules = ["module crm quote"]
+  const action = 'crm_quote {"amount":5}'
+  const tool: Approval = { kind: "tool", tool: "crm_quote", action, args: { amount: 5 }, reason: "Ask mode", rules }
+  hold(tool, call())
+  const card = store.getQuestionByCall(call())!
+  expect([card.title, card.question, card.options]).toEqual([
+    "@minh wants to call a tool",
+    action,
+    approvalOptions(rules, true),
+  ])
+  expect(card.approval).toMatchObject({ kind: "tool", tool: "crm_quote", rules })
+})
+
 test("a card with no rules to add offers only Yes", () => {
   expect(approvalOptions([], true)).toEqual([YES])
   expect(approvalOptions([], false)).toEqual([YES])
@@ -98,7 +113,7 @@ test("a hold is what a session's permissions hold a gated call with", () => {
   const { store, hold } = setup()
   // The policy's card, read-only rules and all, is one a hold takes.
   const bound: Permissions["hold"] = hold
-  bound({ ...CARD, args: {}, why: "", rules: RULES, partial: false, into: null }, call())
+  bound({ ...CARD, kind: "command", args: {}, why: "", rules: RULES, partial: false, into: null }, call())
   expect(store.getQuestionByCall(call())!.approval!.action).toBe("ls -la")
 })
 

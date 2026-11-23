@@ -953,7 +953,7 @@ export class LocalHost {
   #recheck(by: string | null): void {
     for (const held of this.#open()) {
       const card = held.question.approval
-      if (card === null || held.question.source !== "approval" || !held.gated) continue
+      if (card === null || card.kind === "tool" || held.question.source !== "approval" || !held.gated) continue
       const into = card.into === null ? {} : { into: card.into }
       const action = { kind: card.kind, text: card.action, partial: card.partial, ...into }
       const shell = typeof card.args.shell === "string" ? card.args.shell : undefined

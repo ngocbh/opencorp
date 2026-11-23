@@ -10,7 +10,7 @@ import { readCommand } from "../../../src/runtime/permissions/commands.ts"
 
 const cmd = (text: string, never?: string): Action => ({ kind: "command", text, ...(never ? { never } : {}) })
 const input = (text: string, partial = false): Action => ({ kind: "input", text, ...(partial ? { partial } : {}) })
-const rule = (effect: Rule["effect"]) => (pattern: string, kind: Action["kind"] = "command"): Rule =>
+const rule = (effect: Rule["effect"]) => (pattern: string, kind: Rule["kind"] = "command"): Rule =>
   ({ effect, kind, pattern })
 const [allow, ask, deny] = [rule("allow"), rule("ask"), rule("deny")]
 const W: Where = { profile: "workspace", cwd: "/w", writable: ["/w"] }
@@ -776,6 +776,18 @@ test("input rules match typed input; command rules don't, but a finished line's 
     [input("rm x"), [deny("rm *", "input")], S, { verdict: "deny", reason: "a deny rule: rm *" }],
     [cmd("rm x"), [deny("rm *", "input")], S, { verdict: "check", rules: ["rm x"] }],
   ])
+})
+
+test("a tool rule never decides a command or a typed line, nor makes a line it can't read ask", () => {
+  for (const mode of MODES) {
+    const plain = decide(cmd("rm x"), mode, [], S)
+    const typed = decide(input("rm x"), mode, [], S)
+    for (const effect of [allow, ask, deny]) {
+      expect(decide(cmd("rm x"), mode, [effect("rm *", "tool")], S)).toEqual(plain)
+      expect(decide(input("rm x"), mode, [effect("rm *", "tool")], S)).toEqual(typed)
+    }
+    expect(decide(cmd('eval "$X"'), mode, [deny("host *", "tool")], S)).toEqual(decide(cmd('eval "$X"'), mode, [], S))
+  }
 })
 
 test("a pattern's last * matches any further words, and nothing else is a wildcard", () => {

@@ -8,7 +8,7 @@ import { CompanyGit } from "../../src/company/git.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import {
-  addRules, COMPANY_RULES, MAX_RULES_BYTES, readRules, removeRule, RulesRefused, rulesPath,
+  addRules, COMPANY_RULES, MAX_RULES_BYTES, readRules, removeRule, RulesRefused, rulesPath, toolWords,
 } from "../../src/company/rules.ts"
 import { tempDir } from "../helpers.ts"
 import { git, makeCompany, person } from "./helpers.ts"
@@ -84,6 +84,38 @@ test("adding rules commits the agent's file with who added them", async () => {
   expect(subject(root)).toBe('Rules: allow "make *", "ls *" for @minh (from @ngocbh\'s approval)')
   expect((await readRules(g, "minh")).rules.map((r) => r.pattern)).toEqual(["git status *", "make *", "ls *"])
   expect(git(root, "status", "--porcelain")).toBe("")
+})
+
+test("tool rules read from either file, and adding one commits it as a tool rule", async () => {
+  const { root, g } = setup({
+    [COMPANY_RULES]: file({ effect: "deny", kind: "tool", pattern: "mcp github delete_repo" }),
+    [MINH]: file({ effect: "ask", kind: "tool", pattern: "module crm *" }),
+  })
+  const read = { by: null, at: null, note: null }
+  expect((await readRules(g, "minh")).rules).toEqual([
+    { effect: "ask", kind: "tool", pattern: "module crm *", source: "agent", ...read },
+    { effect: "deny", kind: "tool", pattern: "mcp github delete_repo", source: "company", ...read },
+  ])
+  await addRules(g, "minh", [{ effect: "allow", kind: "tool", pattern: "host codex start" }], "ngocbh")
+  expect(subject(root)).toBe('Rules: allow tool "host codex start" for @minh (from @ngocbh\'s approval)')
+  expect(atHead(root, MINH)).toContain("tool calls")
+  expect((await readRules(g, "minh")).rules.map((r) => [r.kind, r.pattern])).toEqual([
+    ["tool", "module crm *"],
+    ["tool", "host codex start"],
+    ["tool", "mcp github delete_repo"],
+  ])
+})
+
+test("a tool call's words for rules are its source's kind, then the names its source gives it", () => {
+  expect(toolWords({ kind: "host", group: "codex", tool: "start" })).toEqual(["host", "codex", "start"])
+  expect(toolWords({ kind: "host", group: null, tool: "propose_company" })).toEqual(["host", "propose_company"])
+  expect(toolWords({ kind: "mcp", server: "github", tool: "create_issue" })).toEqual(["mcp", "github", "create_issue"])
+  // A module's tool goes by its alias and export; the ref the alias names is the flow's own.
+  const quote = { kind: "module", alias: "crm", ref: "./crm.ts", export: "quote" } as const
+  expect(toolWords(quote)).toEqual(["module", "crm", "quote"])
+  expect(toolWords({ kind: "memory", input: "profile", tool: "read" })).toEqual(["memory", "profile", "read"])
+  expect(toolWords({ kind: "flow", flow: "drive_harness", library: null })).toEqual(["flow", "drive_harness"])
+  expect(toolWords({ kind: "flow", flow: "quote", library: "billing" })).toEqual(["flow", "billing", "quote"])
 })
 
 test("removing a rule commits the agent's file without it", async () => {

@@ -364,7 +364,8 @@ export class ChatApprovals {
    *  does. */
   allowedBy(question: QuestionRecord): string | null {
     const card = question.approval
-    if (card === null) return null
+    // A tool card holds no command or typed line for the reader to decide again.
+    if (card === null || card.kind === "tool") return null
     const into = card.into === null ? {} : { into: card.into }
     const never = this.#blocked()
     const blocked = never === null ? {} : { never }

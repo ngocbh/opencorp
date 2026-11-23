@@ -42,9 +42,11 @@ export type DiscussionEntry = z.input<typeof DiscussionEntry>
  *  that run it, the agent's own reason (untrusted), why policy asks, and the allow rules "don't ask again" adds
  *  (empty: it may add none). The card's `call_id` is the yian call it holds. */
 export const Approval = z.strictObject({
-  /** `command`: a command to run; `input`: a line to type into a running command. */
-  kind: z.enum(["command", "input"]),
-  /** The tool that would act: `shell`, `terminal_run`, `terminal_type`. */
+  /** `command`: a command to run; `input`: a line to type into a running command; `tool`: a call of any other tool,
+   *  whose `rules` are tool rules. */
+  kind: z.enum(["command", "input", "tool"]),
+  /** The tool that would act: `shell`, `terminal_run`, `terminal_type`, or a tool card's tool by the name the model
+   *  sees. */
   tool: z.string(),
   action: z.string(),
   args: z.record(z.string(), z.unknown()).default(() => ({})),

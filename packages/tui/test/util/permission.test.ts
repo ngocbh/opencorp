@@ -28,6 +28,16 @@ test("each tool's approval has its title and body: a shell command, a typed line
   })
 })
 
+test("a tool card is a tool call whatever its tool's name, its action shown whole", () => {
+  for (const tool of ["crm_quote", "shell", "terminal_type"])
+    expect(permissionPresentation({ kind: "tool", tool }, `${tool} {"amount":5}`)).toEqual({
+      icon: "⚙",
+      title: `Call tool ${tool}`,
+      lines: [`${tool} {"amount":5}`],
+    })
+  expect(permissionPresentation({ kind: "tool", tool: "x‮" }, "").title).toBe("Call tool x<U+202E>")
+})
+
 test("a command of several lines shows numbered, as the office shows it", () => {
   const shown = shownAction("cd build\nmake ‮all")
   expect(shown).toBe("  1  cd build\n  2  make <U+202E>all")
