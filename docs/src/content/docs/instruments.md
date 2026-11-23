@@ -19,7 +19,7 @@ them.
 | ctrl+x ← and ctrl+x →, or a click | Move your keys between the chat and the pane, or show a pane that waits |
 | ctrl+x ↑ | Close the pane; Esc does too when it takes no typing |
 | ctrl+x ↓ | Open the picker again |
-| ctrl+x o | Show the pane full screen, or beside the chat again; the next pane opens the same way. On a card for a command in a shell, with no pane open, open that shell beside the card |
+| ctrl+x f | Show the pane full screen, or beside the chat again; the next pane opens the same way. On a card for a command in a shell, with no pane open, open that shell beside the card |
 
 Drag the line between the chat and the pane to resize it, or double-click it to go back to half. One width, kept,
 serves every pane. Under 108 columns the pane is full screen while it has your keys; without them it waits rather

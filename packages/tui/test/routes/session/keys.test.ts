@@ -9,7 +9,7 @@ import { leaderKey, registerOpenCorpKeymap } from "../../../src/keymap"
 import { keyBatch, lineEffect, routeShellKeys } from "../../../src/routes/session/keys"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 
-/** A keymap as the app registers it, with the TUI's own bindings on Esc, Ctrl-C, ctrl+o and `<leader>o`; a terminal
+/** A keymap as the app registers it, with the TUI's own bindings on Esc, Ctrl-C, ctrl+o and `<leader>f`; a terminal
  *  whose keys route through `routeShellKeys`, and what it sent and which binding ran. */
 async function mount() {
   const setup = await createTestRenderer({ width: 40, height: 10 })
@@ -23,7 +23,7 @@ async function mount() {
       { key: "escape", cmd: () => void ran.push("close") },
       { key: "ctrl+c", cmd: () => void ran.push("exit") },
       { key: "ctrl+o", cmd: () => void ran.push("ctrl+o") },
-      { key: "<leader>o", cmd: () => void ran.push("cycle") },
+      { key: "<leader>f", cmd: () => void ran.push("full") },
     ],
   })
   const sent: string[] = []
@@ -103,8 +103,8 @@ test("the leader and its next key stay with the TUI, and the leader twice sends 
   try {
     const keys = setup.mockInput
     keys.pressKey("x", { ctrl: true })
-    keys.pressKey("o")
-    expect(ran).toEqual(["cycle"])
+    keys.pressKey("f")
+    expect(ran).toEqual(["full"])
     expect(sent).toEqual([])
     // A key after the leader that runs nothing goes nowhere.
     keys.pressKey("x", { ctrl: true })
@@ -113,10 +113,10 @@ test("the leader and its next key stay with the TUI, and the leader twice sends 
     // The leader twice is ^X, as nano reads it; the key after it is the shell's again.
     keys.pressKey("x", { ctrl: true })
     keys.pressKey("x", { ctrl: true })
-    keys.pressKey("o")
+    keys.pressKey("f")
     await Bun.sleep(50)
-    expect(sent).toEqual(["\x18", "o"])
-    expect(ran).toEqual(["cycle"])
+    expect(sent).toEqual(["\x18", "f"])
+    expect(ran).toEqual(["full"])
   } finally {
     stop()
   }

@@ -173,8 +173,8 @@ license, the upstream paths and commit, and our paths.
 
   Our own: a Codex or Claude Code session as a panel, the session route given its id; the box around the pane in its
   driver's colour, bright with the keys and dim without, and the header saying who drives it; a pipes shell's `$`
-  lines in the employee's colour; `<leader>o` for full screen, which the diff's `f` can't be in a pane that takes
-  typing; under 108 columns, a pane without the keys waiting behind a line in the chat rather than covering a draft
+  lines in the employee's colour; full screen on `<leader>f`, the diff's `f` behind the leader, since a pane that
+  takes typing would take a bare `f`; under 108 columns, a pane without the keys waiting behind a line in the chat rather than covering a draft
   or a card; the leader twice sending the leader key; the keys gathered a frame at a time for the office's keys
   route; a waiting shell opening itself, and the keys dropped until Enter when a pane closes mid-line.
 - **Upstream:** `packages/tui/src/component/session-frame.tsx`, `packages/tui/src/context/panel.tsx`,

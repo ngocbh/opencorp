@@ -231,7 +231,7 @@ describe.skipIf(!TMUX)("an employee's approval cards on a real office, in the TU
   })
 
   // Its command must run, so it needs the sandbox.
-  test.skipIf(!sandboxRuns())("the approver opens the employee's shell from the picker, ctrl+x o shows it full screen, and Ctrl-C stops its command", async () => {
+  test.skipIf(!sandboxRuns())("the approver opens the employee's shell from the picker, ctrl+x f shows it full screen, and Ctrl-C stops its command", async () => {
     const { t, sid, client } = await chat()
     office.llm.script(
       shell("call_sleep", "sleep 31.41", 1),
@@ -250,11 +250,11 @@ describe.skipIf(!TMUX)("an employee's approval cards on a real office, in the TU
     await t.see("shell 1 · sleep 31.41")
     t.keys("Enter")
     await t.see("@minh is driving")
-    await t.see("ctrl+x o full screen")
-    // The leader, then o, shows it full screen.
+    await t.see("ctrl+x f full screen")
+    // The leader, then f, shows it full screen.
     t.keys("C-x")
-    t.keys("o")
-    await t.see("ctrl+x o split")
+    t.keys("f")
+    await t.see("ctrl+x f split")
     t.keys("C-c")
     await until(async () => (await client.sessions.instruments(sid))[0]?.status === "idle", "the shell idle")
     await until(() => sleeping("31.41").length === 0, "the command's end", 10_000)

@@ -2,7 +2,7 @@
 // Claude Code session there, split by default. The divider drags its width, which a double click puts back to half and
 // one setting on disk keeps for every pane; it keeps 24 columns and leaves the chat 44. Below 108 columns it is full
 // screen. ctrl+x ←/→ move the keys between the chat and the pane, a click in either side focuses it, ctrl+x ↑ closes
-// it, and ctrl+x o shows it full screen or split. Unlike upstream's, it sits in a box in its driver's colour, bright
+// it, and ctrl+x f shows it full screen or split. Unlike upstream's, it sits in a box in its driver's colour, bright
 // with the keys and dim without; its header says who drives it.
 import type { Instrument, Message, Session } from "@opencorp/protocol"
 import type { CapturedLine, RGBA } from "@opentui/core"
@@ -319,18 +319,18 @@ test("ctrl+x ↑ closes the pane and the chat gets the keys; ctrl+x ↓ opens th
   }
 })
 
-test("ctrl+x o shows the pane full screen with the chat hidden, and back; the choice holds for the next pane", async () => {
+test("ctrl+x f shows the pane full screen with the chat hidden, and back; the choice holds for the next pane", async () => {
   const { office, sid, app } = await boot()
   try {
     const sh = shell(office, sid)
     await app.until((f) => f.includes("↓ 1 shell"))
     await openFirst(app)
-    await app.until((f) => f.includes("ctrl+x o full screen"))
-    await leader(app, "o")
+    await app.until((f) => f.includes("ctrl+x f full screen"))
+    await leader(app, "f")
     let f = await app.until((f) => corner(f)?.x === 0)
     expect(f).not.toContain("@minh · idle")
     expect(f).toContain("ctrl+x ↑ close")
-    expect(f).toContain("ctrl+x o split")
+    expect(f).toContain("ctrl+x f split")
     await until(() => kv().pane_fullscreen === true)
     // No chat to give the keys to: they stay with the shell.
     await leader(app, "left")
@@ -338,13 +338,13 @@ test("ctrl+x o shows the pane full screen with the chat hidden, and back; the ch
     app.input.pressEnter()
     await until(() => typed(office, sh.id) === "a\r")
 
-    await leader(app, "o")
+    await leader(app, "f")
     f = await app.until((f) => corner(f)?.x === 60)
     expect(rows(f)[1]).toContain("@minh · idle")
     await until(() => kv().pane_fullscreen === false)
 
     // Chosen full, the next pane opens full.
-    await leader(app, "o")
+    await leader(app, "f")
     await app.until((f) => corner(f)?.x === 0)
     await leader(app, "up")
     await app.until((f) => corner(f) === undefined && f.includes("@minh · idle"))
@@ -356,7 +356,7 @@ test("ctrl+x o shows the pane full screen with the chat hidden, and back; the ch
   }
 })
 
-test("below 108 columns a pane is full screen and ctrl+x o does nothing; wider, it splits again", async () => {
+test("below 108 columns a pane is full screen and ctrl+x f does nothing; wider, it splits again", async () => {
   const office = createFakeOffice()
   const { sid, app } = await boot(office, 100)
   try {
@@ -365,8 +365,8 @@ test("below 108 columns a pane is full screen and ctrl+x o does nothing; wider, 
     let f = await openFirst(app)
     expect(corner(f)?.x).toBe(0)
     expect(f).not.toContain("@minh · idle")
-    expect(f).not.toContain("ctrl+x o")
-    await leader(app, "o")
+    expect(f).not.toContain("ctrl+x f")
+    await leader(app, "f")
     await Bun.sleep(100)
     f = await app.until(() => true)
     expect(corner(f)?.x).toBe(0)
@@ -829,7 +829,7 @@ test("a card that closes under the owner's typing in a full-screen pane says the
     await app.until((f) => f.includes("↓ 1 Codex session"))
     await openFirst(app)
     await app.until((f) => f.includes("Codex says hello."))
-    await leader(app, "o")
+    await leader(app, "f")
     await app.until((f) => corner(f)?.x === 0)
     const secret = office.addQuestion(secretCard(child.id, "1"))
     await typeHalfSecret(app)
@@ -1209,7 +1209,7 @@ test("below 108 columns a pane that opens itself over a draft or a card waits, a
   }
 })
 
-test("below 108 columns ctrl+x o on a card for a shell's command leaves the card in view, the shell waiting in the pane", async () => {
+test("below 108 columns ctrl+x f on a card for a shell's command leaves the card in view, the shell waiting in the pane", async () => {
   const office = createFakeOffice()
   const { sid, app } = await boot(office, 100)
   try {
@@ -1224,7 +1224,7 @@ test("below 108 columns ctrl+x o on a card for a shell's command leaves the card
       rules: [],
     })
     await app.until((f) => f.includes("make deploy") && f.includes("enter confirm"))
-    await leader(app, "o")
+    await leader(app, "f")
     const f = await app.until((f) => f.includes("shell 1 is open in the pane"))
     expect(corner(f)).toBeUndefined()
     expect(f).toContain("enter confirm")
