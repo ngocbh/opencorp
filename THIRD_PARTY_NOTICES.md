@@ -78,6 +78,14 @@ license, the upstream paths and commit, and our paths.
   (2026-11-16).
 - **Ours:** `packages/office/src/tools/terminal/terminal.ts`, `packages/office/src/tools/terminal/tools.ts`,
   `packages/office/src/features/chat/session_actor.ts` (`note`), `packages/tui/src/routes/session/note-line.tsx`.
+- **What:** a background subagent's result, as a design: a call that hands work to another agent returns once the
+  work is under way, the parent is told once each time the child's round of work ends, with its state (completed,
+  error or cancelled) and its last words, and a follow-up to a running child joins its run; and its wording that the
+  model must not sleep, poll or check on the child's progress, but work on other tasks or end its response. The
+  harness instruments' notes, short waits and descriptions follow these; the code is our own.
+- **Upstream:** `packages/core/src/tool/plugin/subagent.ts` (`description`, `backgroundResult`) and
+  `packages/core/src/session/subagent-completion.ts` (`deliver`), read at commit `4332e24f` (2026-11-22).
+- **Ours:** `packages/office/src/tools/harness/tools.ts`, `packages/office/src/tools/harness/instrument.ts`.
 - **What:** the line under the prompt keeps the fork's layout: the spinner and `esc interrupt` (or the folder) on the
   left, the shortcuts on the right. What the chat has running follows the left side (the picker's count, below), and
   what waits for the owner takes the shortcuts' place in the warning colour, as the fork's session footer showed its
