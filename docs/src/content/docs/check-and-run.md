@@ -7,6 +7,16 @@ description: "Check the office with opencorp doctor, and start or restart it."
 and the web app, and says how to fix what it finds. `opencorp start` starts the office if it isn't running;
 `opencorp restart` restarts it.
 
+Doctor prints one line per check: ✓ when it passes, ⚠ for a warning and ✗ for a failure. It exits 1
+when any check fails. On a terminal the marks are coloured, unless `NO_COLOR` is set or `TERM` is
+`dumb`. With an office home but no company yet, its report starts like this:
+
+```plaintext
+✓ home         /home/you/.opencorp
+✗ company      no company repo at /home/you/.opencorp/company; run `opencorp init` to create one, or `opencorp onboard --from URL` to join one
+⚠ provider     no /home/you/.opencorp/office/connections/office.json; runs use the login `yian auth` saved. `opencorp onboard` asks for one
+```
+
 OpenCorp needs Codex 0.167.0 or later. For an older one doctor fails and says to update Codex:
 `npm install -g @openai/codex@latest` (or `brew upgrade codex`), then `opencorp doctor`. With Codex
 signed in, doctor also starts a thread under an employee's permission, checks that Codex can use

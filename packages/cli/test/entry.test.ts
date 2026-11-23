@@ -1087,10 +1087,10 @@ describe("the built binary", () => {
     )
     expect(fs.readdirSync(tmpdir)).toEqual([])
     const doctor = await runBuilt([bare, "doctor"])
-    const noFolder = `fail  tui assets   no readable folder at ${path.join(built, "bare/assets")}: `
+    const noFolder = `✗ tui assets   no readable folder at ${path.join(built, "bare/assets")}: `
     expect(doctor.stdout, doctor.stderr).toContain(noFolder)
     const full = await runBuilt([bin, "doctor"])
-    expect(full.stdout, full.stderr).toContain(`ok    tui assets   found at ${path.join(npmOut, PLATFORM, "assets")}`)
+    expect(full.stdout, full.stderr).toContain(`✓ tui assets   found at ${path.join(npmOut, PLATFORM, "assets")}`)
   }, 150_000)
 
   test("with an empty assets folder OpenTUI refuses and extracts nothing to TMPDIR", async () => {

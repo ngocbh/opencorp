@@ -22,7 +22,7 @@ import { repr } from "../../util/redact.ts"
 import { hqChecks, hqPortChecks, hqStatus } from "../hq/checks.ts"
 import type { Env } from "../../util/env.ts"
 import { strerror } from "../../util/errors.ts"
-import { type CheckOptions, checks, exitCode, report } from "../../features/doctor/doctor.ts"
+import { type CheckOptions, checks, colour, exitCode, report } from "../../features/doctor/doctor.ts"
 import * as fallback from "../../runtime/service/fallback.ts"
 import { type InitOptions, init } from "../../features/setup/init.ts"
 import { defaultHost, type Host, type Launch, launch, ServiceError, wantedHome } from "../../runtime/service/launch.ts"
@@ -490,7 +490,7 @@ async function offboardCommand(args: Args, s: Setup): Promise<number> {
 
 async function doctorCommand(args: Args, s: Setup): Promise<number> {
   const found = await checks(home(args.home, s), { hq: hqStatus, hqChecks, ...s.doctor, host: s.host, environ: s.environ })
-  s.stdout.write(report(found))
+  s.stdout.write(report(found, colour(isTTY(s.stdout), s.environ)))
   return exitCode(found)
 }
 

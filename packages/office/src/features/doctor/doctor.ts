@@ -1561,10 +1561,28 @@ export function exitCode(found: Iterable<Check>): number {
   return 0
 }
 
-/** The checks as aligned lines: status, name, detail. Each check stays one row, whatever its detail holds. */
-export function report(found: Iterable<Check>): string {
+/** Each status's icon and its ANSI colour, as the installer prints them. */
+const ICONS: Record<Check["status"], { icon: string; ansi: string }> = {
+  ok: { icon: "✓", ansi: "\x1b[32m" },
+  warn: { icon: "⚠", ansi: "\x1b[33m" },
+  fail: { icon: "✗", ansi: "\x1b[31m" },
+}
+
+/** Whether the report's icons get colour, as the installer decides: on a terminal (`tty`), without `NO_COLOR`, and
+ *  with a `TERM` that is set and isn't `dumb`. */
+export function colour(tty: boolean, environ: Env): boolean {
+  return tty && !environ.NO_COLOR && (environ.TERM || "dumb") !== "dumb"
+}
+
+/** The checks as aligned lines: the status's icon (coloured when `coloured`), name, detail. Each check stays one row,
+ *  whatever its detail holds. */
+export function report(found: Iterable<Check>, coloured = false): string {
   let out = ""
-  // Spaces are kept (a path may hold two in a row); only escapes and control characters go.
-  for (const c of found) out += `${c.status.padEnd(4)}  ${c.name.padEnd(11)}  ${clean(c.detail.replace(ESCAPE, ""))}\n`
+  for (const c of found) {
+    const { icon, ansi } = ICONS[c.status]
+    const mark = coloured ? `${ansi}${icon}\x1b[0m` : icon
+    // Spaces are kept (a path may hold two in a row); only escapes and control characters go.
+    out += `${mark} ${c.name.padEnd(11)}  ${clean(c.detail.replace(ESCAPE, ""))}\n`
+  }
   return out
 }
