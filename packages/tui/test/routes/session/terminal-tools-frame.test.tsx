@@ -4,12 +4,18 @@
 // left running or waiting spins only while the shell still runs it.
 import type { Instrument, Message, ToolPart } from "@opencorp/protocol"
 import type { CapturedLine } from "@opentui/core"
-import { expect, test } from "bun:test"
+import { afterAll, beforeEach, expect, test } from "bun:test"
 import { DEFAULT_THEME, DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
 import { createFakeOffice, createStub, type FakeOffice } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
+import { writeKV } from "../../fixture/kv"
 
 type App = Awaited<ReturnType<typeof bootFrame>>
+
+// These tests read each call's own row, so the transcript shows every call (High), as upstream's tests of its tool
+// rows pin it; later test files expect the default.
+beforeEach(() => writeKV({ session_verbosity: "high" }))
+afterAll(() => writeKV({ session_verbosity: undefined }))
 
 const AT = "2026-11-17T10:00:00.000Z"
 const theme = resolveTheme(DEFAULT_THEMES[DEFAULT_THEME]!, "dark")

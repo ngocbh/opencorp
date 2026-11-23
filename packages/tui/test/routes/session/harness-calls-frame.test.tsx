@@ -2,16 +2,22 @@
 // session and the message, `✓` once a start is done, `↳` for a call to a session already started, and a spinner while
 // the call or the session runs. A click opens the session in the right pane, unless the chat doesn't list it.
 import type { Instrument, Message, Session, ToolPart } from "@opencorp/protocol"
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { afterAll, beforeEach, expect, setDefaultTimeout, test } from "bun:test"
 import { SPINNER_FRAMES } from "../../../src/component/spinner"
 import { DEFAULT_THEME, DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
 import { createFakeOffice, createStub, type FakeOffice } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
+import { writeKV } from "../../fixture/kv"
 
 type App = Awaited<ReturnType<typeof bootFrame>>
 
 // A test here waits on several frames in turn, each up to 3 s.
 setDefaultTimeout(20_000)
+
+// These tests read each call's own row, so the transcript shows every call (High) unless a test says otherwise; later
+// test files expect the default.
+beforeEach(() => writeKV({ session_verbosity: "high" }))
+afterAll(() => writeKV({ session_verbosity: undefined }))
 
 const AT = "2026-11-22T10:00:00.000Z"
 const theme = resolveTheme(DEFAULT_THEMES[DEFAULT_THEME]!, "dark")
@@ -250,7 +256,8 @@ test("an errored call's error waits while its session runs, and shows once the s
   }
 })
 
-test("with tool details hidden, a completed call folds away as any tool does, and a running one stays", async () => {
+test("at Low, the calls fold into their run's line as upstream's subagent calls do, counted as tools", async () => {
+  writeKV({ session_verbosity: "low" })
   const { office, app } = await boot(
     [
       call("codex_send", { codex: "codex 1", message: "Use the other API" }, reply("codex", "codex 1")),
@@ -261,15 +268,13 @@ test("with tool details hidden, a completed call folds away as any tool does, an
     },
   )
   try {
-    await app.until((f) => f.includes("Codex: codex 1 — Use the other API"))
-    app.input.pressKey("p", { ctrl: true })
-    await app.until((f) => f.includes("Commands"))
-    // The search box takes focus a moment after it renders.
-    await Bun.sleep(50)
-    app.input.typeText("Hide tool details")
-    await app.until((f) => f.split("Hide tool details").length > 2)
-    app.input.pressEnter()
-    const f = await app.until((f) => !f.includes("Use the other API"))
+    let f = await app.until((f) => f.includes("1 tool"))
+    // The start still runs: the line spins.
+    expect(spins(f, "1 tool")).toBe(true)
+    expect(f).not.toContain("Use the other API")
+    expect(f).not.toContain("Write the docs")
+    await click(app, "1 tool")
+    f = await app.until((f) => f.includes("− 1 tool") && f.includes("Codex: codex 1 — Use the other API"))
     expect(f).toContain("Codex — Write the docs")
   } finally {
     await app.stop()
