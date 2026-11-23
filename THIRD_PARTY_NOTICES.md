@@ -247,6 +247,16 @@ license, the upstream paths and commit, and our paths.
 - **Ours:** `packages/tui/src/routes/session/composer/tabs.ts` (`familyQuestions`),
   `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/component/session-frame.tsx`,
   `packages/tui/test/routes/session/pane-frame.test.tsx`.
+- **What:** ported from current upstream: the reconnecting overlay, a dimmed full screen with a raised box holding a
+  spinner line and a muted line, and the app's timer that shows it once the connection has been down past a grace
+  and hides it when the connection is back: one second after a drop, five before the first connection. Adapted: home
+  shows none before the first connection, since it says the office isn't running; while the office's state can't
+  be read, the muted line says why, as home words it; its text names the office, and there is no service-restart
+  variant.
+- **Upstream:** `packages/tui/src/component/reconnecting.tsx` and `packages/tui/src/app.tsx` (`showReconnecting` and
+  its timer), read at commit `4332e24f` (2026-11-21).
+- **Ours:** `packages/tui/src/component/reconnecting.tsx`, `packages/tui/src/app.tsx`,
+  `packages/tui/test/component/reconnecting-frame.test.tsx`.
 - **What:** the check before a terminal starts that its folder is a directory, since a PTY's library may start the
   shell in the home instead, ported for learning's shells.
 - **Upstream:** `packages/core/src/persistent-pty/index.ts` (`create`), read at commit `df46f69` (2026-11-16).

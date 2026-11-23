@@ -43,6 +43,7 @@ import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
 import { Profile, useProfileCommands } from "./routes/profile"
 import { SessionFrame } from "./component/session-frame"
+import { Reconnecting } from "./component/reconnecting"
 import { PanelProvider, usePanel } from "./context/panel"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
@@ -711,6 +712,39 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     bindings: leaveBindings(tuiConfig.keybinds.gather("app_exit", ["app.exit"])),
   }))
 
+  // Suppress the full-screen overlay for transient startup and event-stream retry states: the first connection gets
+  // a longer grace, and home none, since its own notes say why the TUI waits; a drop surfaces more quickly.
+  const [showReconnecting, setShowReconnecting] = createSignal(false)
+  const onHome = createMemo(() => route.data.type === "home")
+  let wasOnline = false
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  createEffect(() => {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = undefined
+    }
+    const status = office.status()
+    if (status === "online") {
+      wasOnline = true
+      setShowReconnecting(false)
+      return
+    }
+    if (!wasOnline && onHome()) {
+      setShowReconnecting(false)
+      return
+    }
+    reconnectTimer = setTimeout(
+      () => {
+        reconnectTimer = undefined
+        setShowReconnecting(true)
+      },
+      wasOnline ? 1000 : 5000,
+    ).unref()
+  })
+  onCleanup(() => {
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+  })
+
   return (
     <box
       width={dimensions().width}
@@ -751,6 +785,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           </Match>
         </Switch>
       </box>
+      <Show when={showReconnecting()}>
+        <Reconnecting error={office.status() === "error" ? office.error() : undefined} />
+      </Show>
     </box>
   )
 }
