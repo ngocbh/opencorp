@@ -1383,6 +1383,27 @@ export function toolView(
   return { view: "generic", input }
 }
 
+/**
+ * The upstream tool a call stands for, by its view, which decides how a run of calls groups and how its summary counts
+ * it: `shell` for a command, typed line or shell call; a harness call by its harness (`Codex`), as upstream's subagent
+ * call; any other tool by its title or name.
+ */
+export function toolName(part: ToolPart): string {
+  const view = toolView(part.tool, part.input ?? {})
+  switch (view.view) {
+    case "shell":
+    case "typed":
+    case "terminal":
+      return "shell"
+    case "harness":
+      return HARNESS_TITLE[view.input.harness as "codex" | "claude"]
+    case "generic":
+      return view.title ?? part.tool
+    default:
+      return view.view
+  }
+}
+
 /** The line edit_file's reply says a single-place edit starts on, if it says one. */
 export function editStartLine(output: string | undefined): number | undefined {
   const match = output?.match(/^replaced 1 occurrence in .* at line (\d+)$/s)
