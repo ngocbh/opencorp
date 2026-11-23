@@ -819,6 +819,27 @@ test("Esc on a Codex card with text on another page stops the turn and drops non
   }
 })
 
+test("a card that closes under the owner's typing in a full-screen pane says there that the keys are dropped", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    await openFirst(app)
+    await app.until((f) => f.includes("Codex says hello."))
+    await leader(app, "o")
+    await app.until((f) => corner(f)?.x === 0)
+    const secret = office.addQuestion(secretCard(child.id, "1"))
+    await typeHalfSecret(app)
+    office.expire(secret.id)
+    await app.until((f) => corner(f)?.x === 0 && f.includes("The card closed: keys are dropped until Enter"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a card from an older Codex session waits behind a younger one's that has the keys, then takes them", async () => {
   const office = createFakeOffice()
   const chat = office.state.sessions[0]!

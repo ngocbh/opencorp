@@ -536,6 +536,8 @@ export function SessionFrame(props: { sessionID: string }) {
                                   pane={{ close: closePanel, leave: leavePane }}
                                   width={(fullscreen() ? availableWidth() : paneResize.size()) - 2}
                                   onOpen={openInstrument}
+                                  // Full screen, the chat that says it is hidden.
+                                  keysDropped={fullscreen() ? dropping() : undefined}
                                   onCardLost={() => setDropping("card")}
                                 />
                               </PromptRefProvider>
