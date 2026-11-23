@@ -601,12 +601,18 @@ function scriptedCodex() {
     end: async (id) => threads.get(id)?.events.state("ended"),
   }
   const busy = () => [...threads.values()].some((thread) => thread.busy)
+  /** The instruments made, the latest last. */
+  const made: EmployeeCodex[] = []
   /** The chat's Codex instrument over these sessions, for chatOffice's spec. */
   const make = async (session: SessionRecord, folder: string, office: ChatOffice["office"]) => {
     const repo = loadRepo(await office.git.pin(session.repo_commit))
-    return new EmployeeCodex({ chat: session, sessions, folder, instruments: office.instruments, speakers: speakers(repo, session) })
+    const instrument = new EmployeeCodex({
+      chat: session, sessions, folder, instruments: office.instruments, speakers: speakers(repo, session),
+    })
+    made.push(instrument)
+    return instrument
   }
-  return { threads, answer, busy, make }
+  return { threads, answer, busy, make, made }
 }
 
 /** An office whose minh may run `make *` (`notesOffice`'s), and drives scripted Codex sessions. */
@@ -805,4 +811,25 @@ test("Esc holds a Codex note already in the inbox, and it goes with the owner's 
   await waitFor(() => texts(o, sid).includes("Codex fixed it.") && status(o, sid) === "idle", { what: "the reply" })
   expect(asked(fake, 3, CODEX_DONE) && asked(fake, 3, 'author="codex 1"')).toBe(true)
   expect(notes(o, sid).map((note) => note.split("\n")[0])).toEqual([CODEX_DONE])
+})
+
+test("one message ends a terminal wait and a Codex wait together; the command and the turn go on", async () => {
+  const fake = await fakeLlm()
+  fake.script(startCodex("Fix the build.", 0), run("make all", 120), { match: "Look here.", content: "Looking." })
+  const { o, codex } = await codexOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("hand the build to Codex, and build")
+  await waitFor(() => o.pipes.commands.length === 1 && codex.busy(), { what: "make all, with Codex at work" })
+  // Another wait on Codex at the same time, on the chat's instrument: the model's calls run one at a time.
+  const reading = codex.made.at(-1)!.tools().history.call({ codex: "codex 1", wait: 120 })
+  await Bun.sleep(50)
+  const at = performance.now()
+  await actor.prompt("Look here.")
+  const history = JSON.parse(String(await reading)) as Record<string, string>
+  await waitFor(() => fake.requests().length === 3, { what: "the next model call" })
+  expect(performance.now() - at).toBeLessThan(1_500)
+  expect(history.note).toContain("Your wait ended early")
+  expect(asked(fake, 3, "Your wait ended early") && asked(fake, 3, "Look here.")).toBe(true)
+  await waitFor(() => texts(o, sid).includes("Looking.") && status(o, sid) === "idle", { what: "the reply" })
+  expect([o.pipes.commands, codex.busy()]).toEqual([["make all"], true])
 })
