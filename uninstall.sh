@@ -1,9 +1,9 @@
 #!/bin/sh
 # Takes out what `install.sh` put in. While an office is set up, it first runs `opencorp offboard`
 # on the terminal, which asks before it removes anything and keeps company work that isn't pushed;
-# if that doesn't finish, nothing else changes. Then it removes the `opencorp` wrapper, the PATH
-# lines in the shell rc files, and the clone, if install.sh made it and it holds no work that isn't
-# pushed. It leaves Bun and the office home (~/.opencorp) in place.
+# if that doesn't finish, nothing else changes. Then it removes the `opencorp` wrapper and the binary
+# install.sh built, the PATH lines in the shell rc files, and the clone, if install.sh made it and it
+# holds no work that isn't pushed. It leaves Bun and the office home (~/.opencorp) in place.
 #
 #   curl -fsSL https://raw.githubusercontent.com/ngocbh/opencorp/main/uninstall.sh | bash
 #   ./uninstall.sh [--dir DIR]
@@ -109,6 +109,17 @@ wrapper_checkout() {
   printf '%s\n' "${wc_to%/packages/cli/bin/opencorp}"
 }
 
+# The folder of the binary install.sh's wrapper $1 runs, from its fourth line, when it is the build in the wrapper's
+# checkout $2 (`packages/cli/dist/npm/opencorp-<os>-<cpu>/bin/opencorp`).
+wrapper_binary() {
+  wb_to=$(LC_ALL=C sed -n '4{p;q;}' "$1")
+  case $wb_to in "# compiled, as $2/packages/cli/dist/npm/opencorp-"*"/bin/opencorp, which uninstall.sh also removes;") ;; *) return 1 ;; esac
+  wb_to=${wb_to#"# compiled, as $2/packages/cli/dist/npm/"}
+  wb_to=${wb_to%"/bin/opencorp, which uninstall.sh also removes;"}
+  case $wb_to in opencorp-*/* | opencorp-) return 1 ;; esac
+  printf '%s\n' "$2/packages/cli/dist/npm/$wb_to"
+}
+
 # Whether $1 and $2 are the same folder, both there.
 same_dir() {
   sd_a=$(cd -P "$1" 2>/dev/null && pwd -P) && sd_b=$(cd -P "$2" 2>/dev/null && pwd -P) &&
@@ -189,8 +200,8 @@ repo_work() {
 
 # Why the clone at $1 holds work found nowhere else, in it or any of its submodules; nothing when it holds none.
 local_work() {
-  # The node_modules folders of the root and of each workspace package, and HQ's build.
-  lw_why=$(repo_work "$1" 'node_modules/|packages/[^/"]+/node_modules/|packages/app/dist/')
+  # The node_modules folders of the root and of each workspace package, HQ's build and the CLI's.
+  lw_why=$(repo_work "$1" 'node_modules/|packages/[^/"]+/node_modules/|packages/app/dist/|packages/cli/dist/')
   [ -z "$lw_why" ] || { echo "$lw_why"; return; }
   W_DIR=$1
   # shellcheck disable=SC2016
@@ -288,10 +299,17 @@ main() {
     if [ -z "$CLONE" ]; then CLONE=$OTHER OTHER=; elif same_dir "$CLONE" "$OTHER"; then OTHER=; fi
   fi
 
+  BUILD=
   if is_wrapper "$TARGET"; then
+    if WCO=$(wrapper_checkout "$TARGET"); then BUILD=$(wrapper_binary "$TARGET" "$WCO") || BUILD=; fi
     if rm -f "$TARGET"; then ok "Removed $TARGET"; else fail "Couldn't remove $TARGET."; fi
   elif [ -e "$TARGET" ]; then
     ok "Left $TARGET in place: install.sh did not write it."
+  fi
+
+  # The binary install.sh built, in a checkout that may stay.
+  if [ -n "$BUILD" ] && { [ -e "$BUILD" ] || [ -L "$BUILD" ]; }; then
+    if rm -rf "$BUILD"; then ok "Removed $BUILD"; else fail "Couldn't remove all of $BUILD."; fi
   fi
 
   path_lines

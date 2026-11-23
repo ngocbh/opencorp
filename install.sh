@@ -2,9 +2,10 @@
 # Installs OpenCorp. Piped from the web, it clones OpenCorp with its yian submodule into
 # ~/.local/share/opencorp (or updates a clean earlier clone there); run from a checkout, it installs
 # that checkout. Then it finds Bun (installing the version OpenCorp pins when there is none), installs
-# the dependencies, builds HQ's web app, writes an `opencorp` wrapper into ~/.local/bin, puts that
-# folder on PATH in the login shell's rc files, and, on a terminal, offers to create the company.
-# Running it again updates the install; `uninstall.sh` takes it back out.
+# the dependencies, builds HQ's web app and the `opencorp` binary, writes an `opencorp` wrapper that runs
+# that binary into ~/.local/bin, puts that folder on PATH in the login shell's rc files, and, on a
+# terminal, offers to create the company. Running it again updates the install and builds it again;
+# `uninstall.sh` takes it back out.
 #
 #   curl -fsSL https://raw.githubusercontent.com/ngocbh/opencorp/main/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/ngocbh/opencorp/main/install.sh | bash -s -- --skip-setup
@@ -451,6 +452,21 @@ main() {
   step "Building HQ's web app (bun run build)"
   (cd "$ROOT" && quietly "$BUN" run build) || die "bun run build failed in $ROOT. Run it there to see why."
   ok "Installed dependencies and built HQ's web app"
+  # The binary starts in a tenth of the time the source takes, which Bun transpiles on every start. A failed build
+  # leaves the last one in place, and opencorp on the source, which still runs.
+  step "Building the opencorp binary (bun run build in packages/cli)"
+  BINARY=
+  if HOST=$(cd "$ROOT" && "$BUN" --no-install --no-env-file --config=/dev/null --print 'process.platform + "-" + process.arch' </dev/null) &&
+    (cd "$ROOT/packages/cli" && quietly "$BUN" run build </dev/null); then
+    BUILD_BIN=$ROOT/packages/cli/dist/npm/opencorp-$HOST/bin/opencorp
+    # One that won't start counts as no build.
+    if [ -f "$BUILD_BIN" ] && [ -x "$BUILD_BIN" ] && "$BUILD_BIN" --version </dev/null >/dev/null 2>&1; then BINARY=$BUILD_BIN; fi
+  fi
+  if [ -n "$BINARY" ]; then
+    ok "Built $BINARY"
+  else
+    warn "Couldn't build the opencorp binary, so opencorp runs from the source, which takes about a second longer to start. To see why, run bun run build in $ROOT/packages/cli; then run this again."
+  fi
 
   if [ "$SWITCHING" = 1 ]; then
     step "Stopping the office with the opencorp that runs $OLD"
@@ -461,7 +477,20 @@ main() {
   if [ -L "$TARGET" ]; then WAS_LINK=$(readlink "$TARGET"); fi
   mkdir -p "$BIN_DIR"
   TMP=$TARGET.tmp.$$
-  cat >"$TMP" <<EOF
+  if [ -n "$BINARY" ]; then
+    # The fourth line names the binary, which uninstall.sh removes with the wrapper.
+    cat >"$TMP" <<EOF
+#!/bin/sh
+$WRAPPER_MARK
+# Runs $ROOT/packages/cli/bin/opencorp
+# compiled, as $BINARY, which uninstall.sh also removes;
+# while that is missing, with the Bun install.sh found (a Bun set in OPENCORP_BUN wins).
+if [ -f $(quote "$BINARY") ] && [ -x $(quote "$BINARY") ]; then exec $(quote "$BINARY") "\$@"; fi
+if [ -z "\${OPENCORP_BUN:-}" ]; then OPENCORP_BUN=$(quote "$BUN"); export OPENCORP_BUN; fi
+exec $(quote "$ROOT/packages/cli/bin/opencorp") "\$@"
+EOF
+  else
+    cat >"$TMP" <<EOF
 #!/bin/sh
 $WRAPPER_MARK
 # Runs $ROOT/packages/cli/bin/opencorp
@@ -469,6 +498,7 @@ $WRAPPER_MARK
 if [ -z "\${OPENCORP_BUN:-}" ]; then OPENCORP_BUN=$(quote "$BUN"); export OPENCORP_BUN; fi
 exec $(quote "$ROOT/packages/cli/bin/opencorp") "\$@"
 EOF
+  fi
   chmod 755 "$TMP"
   mv -f "$TMP" "$TARGET"
   if [ -n "$WAS_LINK" ]; then
