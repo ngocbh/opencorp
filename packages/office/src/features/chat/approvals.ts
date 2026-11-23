@@ -14,19 +14,23 @@ import {
   Check, type CheckRecord, type CheckRunner, type CheckWorkers, inWorker,
 } from "../../runtime/permissions/classifier.ts"
 import {
-  afterCheck, type CallDecision, type CallPolicy, decideCall, resent, type ToolCall, toolCard,
+  afterCheck, type CallDecision, type CallPolicy, decideCall, decideCommand, resent, type ToolCall, toolCard,
 } from "../../runtime/permissions/gate.ts"
 import {
-  type CheckInput, decide, dontAskRefusal, judged, type Permissions, type Rule, RuleBook, type Where,
+  type ApprovalCard, type Basis, type CheckInput, type Decided, judged, type Permissions, type Rule, RuleBook,
+  type Where,
 } from "../../runtime/permissions/policy.ts"
-import { holdApproval, readAnswer, YES } from "../../runtime/questions/approval.ts"
+import { approvalResult, holdApproval, readAnswer, YES } from "../../runtime/questions/approval.ts"
+import { type CommandPlan, decidedFor } from "../../tools/terminal/terminal.ts"
 import type { OnQuestion } from "../../runtime/questions/ask.ts"
 import type { AnswerKind } from "../../runtime/sessions/harness.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store } from "../../runtime/store/store.ts"
 import type { OfficePaths } from "../../util/home.ts"
 import { DETAIL_CHARS, redact } from "../../util/redact.ts"
 import { errorName } from "../../runtime/worker/rpc.ts"
-import type { RunSpec } from "./run_spec.ts"
+
+/** What a terminal call is refused with when the gate can't read what it would act on. */
+const CANT_READ = "Not run: the shell this command was for can't be read now; run it again."
 
 /** The flow Auto's check runs, which its audit rows name. */
 const CHECK_TOOL = "classify_command"
@@ -38,18 +42,17 @@ export interface ApprovalHost {
   liveRun(): string | null
   /** Completes `card`'s call with what its answer says (`approvalResult`). */
   completeWithAnswer(card: QuestionRecord): Promise<void>
-  /** Completes `card`'s call with its action's `output`; the card is consumed once the run takes it. */
-  completeWithOutput(card: QuestionRecord, output: string): Promise<void>
-  /** Marks answered `card` stale: its answer can never reach its call. */
-  loseAnswer(card: QuestionRecord): void
   /** Shows `text` in the chat as the office's notice to the people watching it. */
   notice(text: string): void
   /** Runs `job` on the actor's serial queue after the jobs before it; skipped once the actor closed. */
   post(label: string, job: () => unknown): void
   /** Writes the session's run state again; `when` names the step for the log. */
   settle(when: string): void
-  /** The session's spec's `runApproved`, if it has one. */
-  runner(): Promise<RunSpec["runApproved"]>
+  /** What the session's terminal would act on for its tool `tool` (`run`, `type`) with `args`, read from its shells
+   *  now (`Terminal.plan`); nothing to decide when it has no terminal or the arguments weren't recorded. */
+  planCommand(tool: string, args: Readonly<Record<string, unknown>> | null): CommandPlan
+  /** The terminal's audit row of a command the gate held or refused (`Terminal.audited`). */
+  audited(plan: CommandPlan, outcome: "held" | "denied", reason: string): void
   /** Runs held call `callId` once (`release`), `note` kept in the run log; `card`'s answer is consumed once the run
    *  takes it. */
   release(callId: string, note: string | null, card: QuestionRecord | null): Promise<void>
@@ -64,12 +67,19 @@ export interface ApprovalHost {
   secretValues(runId: string): Promise<string[]>
 }
 
-/** A call the gate held, by its call id: its run, the call as the gate decided it, whether yian holds it yet
- *  (`CallHeld`), and Auto's check on it while that runs. */
+/** A terminal command or typed line the gate decides: what the terminal would act on. */
+type Planned = CommandPlan & { decide: true }
+
+/** A call the gate held, by its call id: its run, the call as the gate decided it (and, for a terminal command or
+ *  typed line, what the terminal would act on), whether yian holds it yet (`CallHeld`), and Auto's check on it while
+ *  that runs. */
 interface Hold {
   readonly runId: string
   readonly callId: string
   readonly call: ToolCall
+  /** Whether it is a terminal command or typed line, which only the command reader decides. */
+  readonly terminal: boolean
+  readonly command: Planned | null
   held: boolean
   check: AbortController | null
 }
@@ -91,15 +101,19 @@ interface Hold {
  * prices. The session's own rules and the check's verdicts live in memory with its actor, so an office restart starts
  * them fresh: the next check asks the model again, and a "don't ask again" from before asks again.
  *
- * A Yes runs the held action in the terminal with no gate, outside the terminal's waits, and its output completes the
- * call. A No completes it with the approver's words, and answers the run's other open cards the same way, as one No
- * settles the reply's held calls. A "don't ask again" or an "always" re-checks the run's other open cards and runs
- * those the session's mode and rules now allow. An "always" commits its rules to the agent's file, as its approver's.
+ * A No completes a held call with the approver's words, and answers the run's other open cards the same way, as one
+ * No settles the reply's held calls; the reply's later calls, which yian checks only once the card is answered, are
+ * refused with the same words where they would ask. A "don't ask again" or an "always" decides the run's other held
+ * calls again and releases those the session's mode and rules now allow. An "always" commits its rules to the
+ * agent's file, as its approver's.
  *
- * Every other tool call goes through the gate (`gate`, yian's `beforeToolCall`, `decideCall`): it runs, is refused,
- * or is held. A held call's card is made only once yian says it holds the call (`held`), since an agent interrupted
- * while the gate decided writes no hold; in `auto` a call of a tool no reader can judge goes to Auto's check then,
- * whose run releases it and whose ask makes its card. A Yes on a tool card releases the call (`release`), noting who
+ * Every tool call goes through the gate (`gate`, yian's `beforeToolCall`): a terminal command or typed line by the
+ * command reader (`decideCommand`, on what the terminal's plan reads from its shells), every other call by its
+ * source (`decideCall`). It runs, is refused, or is held. What the gate let a terminal call do (`Decided`), the call
+ * takes when it acts (`Permissions.decided`): from the gate's ledger, or, for a call its approver said Yes to, from
+ * the card, as after a restart. A held call's card is made only once yian says it holds the call (`held`), since an
+ * agent interrupted while the gate decided writes no hold; in `auto` a call no reader can fully judge goes to Auto's
+ * check then, whose run releases it and whose ask makes its card. A Yes releases the call (`release`), noting who
  * approved it; a No completes it with the approver's words. Each held call is decided again (`#recheckHolds`) after
  * a rule is added, when a worker starts on the run (the rules files read again first), and at a restart, from the
  * holds yian recorded (`settleHolds`): one with no card is decided anew, and one whose card the session's mode and
@@ -129,8 +143,12 @@ export class ChatApprovals {
   readonly #unsaved = new Map<string, string>()
   /** What the last check's usage counts at toward the cost cap: the office connection's `capPrices`. */
   #pricing: { prices: Readonly<Record<string, Price>>; subscription: boolean } = { prices: {}, subscription: false }
-  /** The approved actions the office runs now, by card id, each stopped by its controller. */
-  readonly #running = new Map<string, AbortController>()
+  /** What the gate let each terminal call it decided do, by call id, until the call takes it, and whether it decided
+   *  it as the call was gated (then the call starts in that run's job, or never) rather than released it later. */
+  readonly #decided = new Map<string, { decided: Decided; runId: string; gated: boolean }>()
+  /** The approver's No to a card, by the reply whose call it held (`<run>/<node>/<n>`): yian checks that reply's later
+   *  calls only once the card is answered, and one No settles all of the reply's calls that would ask. */
+  readonly #refusedReplies = new Map<string, string>()
   /** The calls the gate held, by call id, until each is answered, released, completed or closed. */
   readonly #holds = new Map<string, Hold>()
   /** The calls this office released, by call id: a call yian sends again after a stop or crash runs only if it was. */
@@ -187,21 +205,43 @@ export class ChatApprovals {
     })
   }
 
-  /** The permissions run `runId`'s tools get, the rules files read again first: its cards are held through
-   *  `onQuestion`, offering "always", unless the session no longer asks (`dontAsk`), when the call is refused. */
-  async permissions(runId: string, onQuestion: OnQuestion): Promise<Permissions> {
+  /** The permissions run `runId`'s tools get, the rules files read again first. Its terminal decides nothing itself:
+   *  each of its calls takes what the gate decided for it (`decided`). */
+  async permissions(_runId: string, _onQuestion: OnQuestion): Promise<Permissions> {
     await this.reload()
     return {
       mode: () => this.#session().mode,
       rules: () => this.#rules(),
       where: () => this.#where(),
-      hold: (card, callId) => {
-        const session = this.#session()
-        if (session.mode === "dontAsk") return dontAskRefusal(card.reason)
-        return holdApproval(session, runId, onQuestion, { always: true })(card, callId)
-      },
-      check: (input, signal) => this.#check.judge(input, signal),
       blocked: () => this.#blocked(),
+      decided: (callId) => (callId === undefined ? null : this.#take(callId)),
+    }
+  }
+
+  /** What the gate let terminal call `callId` do, taken once: from the ledger, or, for a call its approver said Yes
+   *  to on its card, from the card (its tool, command or line, shell, and folder or command typed into); null when
+   *  nothing did. Only a Yes by a person approves: one no approver stands behind approves nothing. */
+  #take(callId: string): Decided | null {
+    const entry = this.#decided.get(callId)
+    if (entry !== undefined) {
+      this.#decided.delete(callId)
+      return entry.decided
+    }
+    const card = this.#store.getQuestionByCall(callId)
+    const approval = card?.approval
+    if (card === undefined || approval == null || approval.kind === "tool" || card.answered_by === null) return null
+    if (card.status !== "answered" && card.status !== "consumed") return null
+    const read = readAnswer(card).answer
+    if (read !== "yes" && read !== "session" && read !== "always") return null
+    if (approval.tool !== "terminal_run" && approval.tool !== "terminal_type") return null
+    const text = (value: unknown) => (typeof value === "string" ? value : null)
+    const basis: Basis =
+      approval.kind === "command"
+        ? { cwd: text(approval.args.cwd) }
+        : { line: text(approval.args.line) ?? "", into: text(approval.args.into) }
+    return {
+      why: `approved by @${card.answered_by}`, basis, approved: true, tool: approval.tool, text: approval.action,
+      partial: approval.partial, shell: text(approval.args.shell),
     }
   }
 
@@ -264,20 +304,13 @@ export class ChatApprovals {
     return first === undefined ? null : `${first.path} doesn't load: ${first.message}`
   }
 
-  /** Whether card `cardId`'s approved action runs now: its own output completes its call. */
-  running(cardId: string): boolean {
-    return this.#running.has(cardId)
-  }
-
-  /** Whether an approved action, or a check on a held call, runs now: the session reads busy. */
+  /** Whether a check on a held call runs now: the session reads busy. */
   get busy(): boolean {
-    return this.#running.size > 0 || [...this.#holds.values()].some((hold) => hold.check !== null)
+    return [...this.#holds.values()].some((hold) => hold.check !== null)
   }
 
-  /** Stops the approved actions running now, whose commands then stop, and the checks on held calls: Esc, End and the
-   *  office stop end them, as they cut off the terminal's own calls. */
+  /** Stops the checks on held calls: Esc, End and the office stop end them. */
   stop(): void {
-    for (const controller of this.#running.values()) controller.abort()
     for (const hold of this.#holds.values()) hold.check?.abort()
   }
 
@@ -285,18 +318,57 @@ export class ChatApprovals {
    *  yian takes it: a run, with its note; a refusal; or `pending()`, holding the call until it is decided again once
    *  yian holds it (`held`). */
   gate(runId: string, call: GatedCall): GateDecision {
-    let decision = decideCall(call, this.#policy())
+    const { tool, source, arguments: args, attempt } = call
+    const command = this.#planned(call)
+    if (command === "passes") return undefined
+    let decision = command === null ? decideCall(call, this.#policy()) : decideCommand(command, this.#policy())
     // Sent again after a stop or crash, which may have cut it off as the gate decided: yian can't hold it.
-    if (call.attempt > 1) {
+    if (attempt > 1) {
       const released = this.#released.has(call.callId) || this.#host.released(runId, call.callId)
       decision = resent(decision, released)
     }
-    if (decision.verdict === "run") return decision.note === null ? undefined : { run: true, note: decision.note }
-    if (decision.verdict === "refuse") return { refuse: decision.reason }
-    const { tool, source, arguments: args, attempt } = call
+    if (decision.verdict === "run") {
+      if (command !== null) {
+        const decided = decidedFor(command, `by ${decision.note}`, false)
+        this.#decided.set(call.callId, { decided, runId, gated: true })
+      }
+      return decision.note === null ? undefined : { run: true, note: decision.note }
+    }
+    // A later call of a reply the approver said No to: the same No, where it would ask.
+    const refused = this.#refusedReplies.get(replyOf(call.callId))
+    if (refused !== undefined && decision.verdict !== "refuse") decision = { verdict: "refuse", reason: refused }
+    if (decision.verdict === "refuse") {
+      if (command !== null) this.#host.audited(command, "denied", decision.reason)
+      return { refuse: decision.reason }
+    }
     const held = { tool, source, arguments: args, attempt }
-    this.#holds.set(call.callId, { runId, callId: call.callId, call: held, held: false, check: null })
+    const terminal = command !== null
+    const hold = { runId, callId: call.callId, call: held, terminal, command, held: false, check: null }
+    this.#holds.set(call.callId, hold)
     return pending()
+  }
+
+  /** For a terminal command or typed line, what the terminal would act on, or `passes` when there's nothing to decide
+   *  (the call's own refusal stops it when it acts); null for any other call. */
+  #planned(call: {
+    source: GatedCall["source"]
+    arguments: Readonly<Record<string, unknown>> | null
+  }): Planned | "passes" | null {
+    const { source } = call
+    if (source.kind !== "host" || source.group !== "terminal" || (source.tool !== "run" && source.tool !== "type")) {
+      return null
+    }
+    // Yian reads the model's integers as bigints; the tool gets them as numbers.
+    const args = call.arguments === null ? null : (numbers(call.arguments) as Record<string, unknown>)
+    const plan = this.#host.planCommand(source.tool, args)
+    return plan.decide ? plan : "passes"
+  }
+
+  /** What the gate decides for `hold` by the session's mode and rules now. */
+  #decide(hold: Hold): CallDecision {
+    if (hold.command !== null) return decideCommand(hold.command, this.#policy())
+    // A terminal call is never decided by its source: with nothing to read, it is refused.
+    return hold.terminal ? { verdict: "refuse", reason: CANT_READ } : decideCall(hold.call, this.#policy())
   }
 
   /** Yian holds call `callId` of run `runId` (`CallHeld`): marked held at once, so the end of the job that held it
@@ -319,12 +391,18 @@ export class ChatApprovals {
   closed(callId: string): void {
     this.#holds.get(callId)?.check?.abort()
     this.#holds.delete(callId)
+    this.#decided.delete(callId)
   }
 
   /** Run `runId`'s job ended: a call the gate held that yian never held (its agent was interrupted as the gate
    *  decided) has no hold to answer. */
   jobEnded(runId: string): void {
     for (const [callId, hold] of this.#holds) if (hold.runId === runId && !hold.held) this.#holds.delete(callId)
+    // A call the gate let run as it was gated starts in that job, or never.
+    for (const [callId, entry] of this.#decided) if (entry.runId === runId && entry.gated) this.#decided.delete(callId)
+    for (const reply of this.#refusedReplies.keys()) {
+      if (!reply.startsWith(`${runId}/`)) this.#refusedReplies.delete(reply)
+    }
   }
 
   /** The holds yian recorded for run `runId` (`pendingCalls`), as at a restart: each is known again and decided again
@@ -335,7 +413,12 @@ export class ChatApprovals {
       if (this.#holds.has(call.callId)) continue
       // Arguments it didn't record are none the gate can judge: it asks.
       const known = { tool: call.tool, source: call.source, arguments: call.arguments, attempt: 1 }
-      this.#holds.set(call.callId, { runId, callId: call.callId, call: known, held: true, check: null })
+      // A terminal call's plan is read from the shells as they are now; one that can't be read is decided by nobody.
+      const planned = this.#planned({ source: call.source, arguments: call.arguments })
+      const terminal = planned !== null
+      const command = planned === "passes" ? null : planned
+      const hold = { runId, callId: call.callId, call: known, terminal, command, held: true, check: null }
+      this.#holds.set(call.callId, hold)
     }
     // After the restart's own step: what it releases or completes goes to the run as any later delivery does.
     this.#host.post("the held calls", () => this.#recheckHolds(runId, null))
@@ -373,19 +456,31 @@ export class ChatApprovals {
       this.#holds.delete(hold.callId)
       return
     }
-    const decision = decideCall(hold.call, this.#policy())
+    if (hold.terminal && hold.command === null) {
+      // Nothing the terminal would act on can be read now (its arguments weren't recorded, or its shell is gone): its
+      // open card waits for the owner, and with none the call is refused.
+      if (card !== undefined) return
+      this.#holds.delete(hold.callId)
+      return this.#host.completeCall(hold.callId, CANT_READ)
+    }
+    const decision = this.#decide(hold)
     if (card === undefined) return this.#act(hold, decision)
     if (decision.verdict !== "run") return
     const answered = this.#answer(card, YES, "option", by)
     if (answered === null) return
     this.#holds.delete(hold.callId)
-    await this.#release(hold.callId, decision.note, answered)
+    await this.#release(hold, decision.note, answered, true)
   }
 
-  /** Releases call `callId` (`ApprovalHost.release`), remembering that it did. */
-  #release(callId: string, note: string | null, card: QuestionRecord | null): Promise<void> {
-    this.#released.add(callId)
-    return this.#host.release(callId, note, card)
+  /** Releases held call `hold` (`ApprovalHost.release`), remembering that it did, `note` kept in the run log; a
+   *  terminal call takes what let it run when it acts (`by <note>`, `approved` when a card's Yes stands behind it). */
+  #release(hold: Hold, note: string | null, card: QuestionRecord | null, approved: boolean): Promise<void> {
+    this.#released.add(hold.callId)
+    if (hold.command !== null) {
+      const decided = decidedFor(hold.command, `by ${note}`, approved)
+      this.#decided.set(hold.callId, { decided, runId: hold.runId, gated: false })
+    }
+    return this.#host.release(hold.callId, note, card)
   }
 
   /** Acts on `decision` for held call `hold`, which has no card: releases it, completes it with its refusal, makes its
@@ -394,9 +489,10 @@ export class ChatApprovals {
     switch (decision.verdict) {
       case "run":
         this.#holds.delete(hold.callId)
-        return this.#release(hold.callId, decision.note, null)
+        return this.#release(hold, decision.note, null, false)
       case "refuse":
         this.#holds.delete(hold.callId)
+        if (hold.command !== null) this.#host.audited(hold.command, "denied", decision.reason)
         return this.#host.completeCall(hold.callId, decision.reason)
       case "check":
         this.#judge(hold, decision.input, decision.rules)
@@ -404,8 +500,9 @@ export class ChatApprovals {
       case "ask": {
         const session = this.#session()
         try {
-          const card = toolCard(hold.call, decision)
+          const card = hold.command === null ? toolCard(hold.call, decision) : commandCard(hold.command, decision)
           holdApproval(session, hold.runId, this.#host.onQuestion, { always: true })(card, hold.callId)
+          if (hold.command !== null) this.#host.audited(hold.command, "held", decision.reason)
         } catch (error) {
           // A card that can't be stored would leave the call waiting for nobody.
           this.#log(`session ${session.id}: a held call's card can't be made (${errorName(error)})`)
@@ -435,7 +532,7 @@ export class ChatApprovals {
       if (stop.signal.aborted || this.#holds.get(hold.callId) !== hold) return
       this.#host.post("a check's verdict", async () => {
         if (this.#holds.get(hold.callId) !== hold || this.#host.liveRun() !== hold.runId) return
-        const now = decideCall(hold.call, this.#policy())
+        const now = this.#decide(hold)
         await this.#act(hold, now.verdict === "check" ? afterCheck(verdict, rules, this.#session().mode) : now)
         this.#host.settle("after a check")
       })
@@ -444,28 +541,26 @@ export class ChatApprovals {
 
   /**
    * Acts on approval card `card`'s answer, stored on a call of the run that can still take it. A Yes (or don't ask
-   * again, or always) runs the held action, which completes the call once it ends. Any other answer completes the
-   * call now with what it says (`approvalResult`); a No answers every other open card of the run the same way, by the
-   * same approver.
+   * again, or always) releases the call where yian holds it, its rules added first, noting who approved it; a terminal
+   * call then takes its approval from the card. Any other answer completes the call now with what it says
+   * (`approvalResult`); a No answers every other open card of the run the same way, by the same approver.
    */
   async answered(card: QuestionRecord): Promise<void> {
     const read = readAnswer(card)
-    const yes = read.answer === "yes" || read.answer === "session" || read.answer === "always"
-    const credit = card.answered_by ? `approved by @${card.answered_by}` : "approved"
-    if (yes && card.approval?.kind === "tool") {
-      // A tool card's call runs where yian holds it: released, its rules added first.
+    if (read.answer === "yes" || read.answer === "session" || read.answer === "always") {
+      const credit = card.answered_by ? `approved by @${card.answered_by}` : "approved"
       this.#holds.delete(card.call_id!)
       const added = await this.remember(card)
-      await this.#release(card.call_id!, credit, card)
+      this.#released.add(card.call_id!)
+      await this.#host.release(card.call_id!, credit, card)
       if (added) await this.#recheck(card.answered_by)
       return
     }
-    if (yes) {
-      await this.#approve(card, credit)
-      return
-    }
+    // Before the answer goes: a call of the reply gated meanwhile gets the No, not a card.
+    if (read.answer === "no") this.#refusedReplies.set(replyOf(card.call_id!), approvalResult(card))
     await this.#host.completeWithAnswer(card)
-    if (read.answer === "no") await this.#answerOpen(() => card.answer, card.answer_kind ?? "text", card.answered_by)
+    if (read.answer !== "no") return
+    await this.#answerOpen(() => card.answer, card.answer_kind ?? "text", card.answered_by)
   }
 
   /** A switch to `dontAsk` by `by`, which never asks: each open card of the run is answered No with "this session is
@@ -476,56 +571,11 @@ export class ChatApprovals {
     await this.#answerOpen(refusal, "text", by)
   }
 
-  /**
-   * Runs approval card `card`'s held action, approved as `credit` says (its audit row ends with it). Its "don't ask
-   * again" rules are added first, and then each other open card of the run those rules now allow runs too
-   * (`#recheck`). The action runs with no gate, outside the terminal's waits (no worker waits on it), while the
-   * session reads busy; `stop` ends it. Once it ends, its output (or `error: <its type>`) completes the
-   * held call, unless the session finished or the call is no longer of its run (its answer is then lost).
-   */
-  async #approve(card: QuestionRecord, credit: string): Promise<void> {
-    const added = await this.remember(card)
-    const approval = card.approval!
-    const runApproved = await this.#host.runner()
-    const stop = new AbortController()
-    this.#running.set(card.id, stop)
-    const ran = runApproved
-      ? runApproved(approval.tool, approval.args, {
-          session: this.#session(),
-          runId: card.run_id,
-          signal: stop.signal,
-          credit,
-        })
-      : Promise.reject(new RangeError("this chat runs no approved calls"))
-    void ran
-      .then(
-        (output) => output,
-        (error: unknown) => `error: ${errorName(error)}`,
-      )
-      .then((output) =>
-        this.#host.post("an approved call", async () => {
-          this.#running.delete(card.id)
-          if (this.#host.liveRun() !== card.run_id) this.#host.loseAnswer(card)
-          else await this.#host.completeWithOutput(card, output)
-          this.#host.settle("after an approved call")
-        }),
-      )
-    if (added) await this.#recheck(card.answered_by)
-  }
-
-  /** After a "don't ask again" added rules: each open card of the run that the session's mode and rules now allow is
-   *  answered Yes as `by` and its action run, its audit row crediting what allows it, and each held call decided
-   *  again (`#recheckHolds`); the others stay open. */
+  /** After a "don't ask again" added rules: each held call of the run is decided again (`#recheckHolds`), and one
+   *  whose card the session's mode and rules now allow is answered Yes as `by` and released. */
   async #recheck(by: string | null): Promise<void> {
     const runId = this.#host.liveRun()
-    if (runId === null) return
-    for (const open of this.#store.listQuestions({ runId, status: "open", source: "approval" })) {
-      const allowed = open.call_id === null ? null : this.allowedBy(open)
-      if (allowed === null) continue
-      const answered = this.#answer(open, YES, "option", by)
-      if (answered !== null) await this.#approve(answered, `by ${allowed}`)
-    }
-    await this.#recheckHolds(runId, by)
+    if (runId !== null) await this.#recheckHolds(runId, by)
   }
 
   /** Answers every open card of the run with `value(card)` (of `kind`) as `by`, and completes each call with what it
@@ -583,21 +633,6 @@ export class ChatApprovals {
     return true
   }
 
-  /** What now lets open card `question`'s action run with no card ("an allow rule", "read-only", …), decided again
-   *  from what the card holds with the session's mode and rules, Auto's check not asked again; null when nothing
-   *  does. */
-  allowedBy(question: QuestionRecord): string | null {
-    const card = question.approval
-    // A tool card holds no command or typed line for the reader to decide again.
-    if (card === null || card.kind === "tool") return null
-    const into = card.into === null ? {} : { into: card.into }
-    const never = this.#blocked()
-    const blocked = never === null ? {} : { never }
-    const action = { kind: card.kind, text: card.action, partial: card.partial, ...into, ...blocked }
-    const decision = decide(action, this.#session().mode, this.#rules(), this.#where())
-    return decision.verdict === "allow" ? decision.by : null
-  }
-
   /** Records one check: its audit row, then, for a check that called the model, its cost as the session's. */
   #record(entry: CheckRecord): void {
     const session = this.#session()
@@ -616,6 +651,32 @@ export class ChatApprovals {
     const { prices, subscription } = this.#pricing
     this.#charge(entry.runId, entry.model, callUsd(prices, entry.model, entry.usage), subscription)
   }
+}
+
+/** The approval card a terminal command or typed line is held on, as the terminal's own gate made it: the command or
+ *  whole line, the card's arguments (the folder, or the line and the command typed into), the agent's reason, why it
+ *  asks and what "don't ask again" may add. */
+function commandCard(plan: Planned, asked: { reason: string; rules: readonly string[] }): ApprovalCard {
+  const { action } = plan
+  return {
+    kind: action.kind, tool: plan.tool, action: action.text, args: plan.args, why: plan.why, reason: asked.reason,
+    rules: [...asked.rules], partial: action.partial ?? false, into: action.into ?? null,
+  }
+}
+
+/** The reply a model's call `callId` (`<run>/<node>/<n>/<index>`) is a call of: `<run>/<node>/<n>`. */
+function replyOf(callId: string): string {
+  return callId.slice(0, callId.lastIndexOf("/"))
+}
+
+/** `value` with each bigint a number can hold as a number, as a tool's arguments reach it. */
+function numbers(value: unknown): unknown {
+  if (typeof value === "bigint") return Number.isSafeInteger(Number(value)) ? Number(value) : value
+  if (Array.isArray(value)) return value.map(numbers)
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, numbers(v)]))
+  }
+  return value
 }
 
 /** `input` with each of `secrets` redacted from its command, which a model reads. */

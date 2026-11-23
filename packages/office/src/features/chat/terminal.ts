@@ -1,22 +1,24 @@
 /** An employee's terminal: the pipes shell a main chat's commands run in, in its workspace's sandbox. Each shell is
  *  listed as the session's instrument, which the owner watches and stops, with its record in the session's
- *  `terminal/` folder; every command goes through the permissions of the run whose tools were last built (its mode,
- *  rules, Auto's check and cards); and each command the gate holds or refuses, and each one that ran, once it ends, is
- *  an audit row of the session's, of the run it started in. A command an office crash cut off gets its row at the
- *  next start (`auditInterrupted`). The note of a command the agent was told runs on, once it ends, goes to the
- *  session's actor (`onEnded`), and after a restart the actor holds a note of each one still owed (`restoreNotes`). */
+ *  `terminal/` folder; every command goes through the office's gate of the run whose tools were last built (its mode,
+ *  rules, Auto's check and cards), and acts on what that gate decided for it; and each command the gate holds or
+ *  refuses, and each one that ran, once it ends, is an audit row of the session's, of the run it started in. A
+ *  command an office crash cut off gets its row at the next start (`auditInterrupted`). The note of a command the
+ *  agent was told runs on, once it ends, goes to the session's actor (`onEnded`), and after a restart the actor holds
+ *  a note of each one still owed (`restoreNotes`). */
 import fs from "node:fs"
 import path from "node:path"
 import { now } from "@opencorp/protocol"
 import { REASON_CHARS } from "../../runtime/permissions/monitor.ts"
-import type { ApprovalCard, CheckInput, Mode, Permissions, Where } from "../../runtime/permissions/policy.ts"
+import type { CheckInput, Mode, Permissions, Where } from "../../runtime/permissions/policy.ts"
 import type { Instruments } from "../../runtime/sessions/instruments.ts"
 import type { Store } from "../../runtime/store/store.ts"
 import { shellInstrument } from "../../tools/terminal/instrument.ts"
 import { clearTold, InstrumentRecord, readRecord, RecordError, type RecordFile } from "../../tools/terminal/record.ts"
 import type { ShellState } from "../../tools/terminal/shell.ts"
 import {
-  type CommandEnded, restoredNote, Terminal, type TerminalAudit, type TerminalProfile, type TerminalShells,
+  type CommandEnded, type CommandPlan, restoredNote, Terminal, type TerminalAudit, type TerminalProfile,
+  type TerminalShells,
 } from "../../tools/terminal/terminal.ts"
 import { newId } from "../../util/ids.ts"
 import { checkFolder, makePrivateFolder } from "../../util/private_files.ts"
@@ -173,15 +175,15 @@ export class EmployeeTerminal {
     this.#permissions = permissions
   }
 
-  /** Runs held call `tool` of run `runId` once its card said Yes, approved as `credit` says (`approved by @<who>`, or
-   *  what rule allows it): no gate, and only `signal` ends its wait, which then stops its command. */
-  runApproved(
-    tool: string,
-    args: Record<string, unknown>,
-    o: { runId: string; signal: AbortSignal; credit: string },
-  ): Promise<string> {
-    this.#runId = o.runId
-    return this.#terminal.runApproved(tool, args, o.signal, o.credit)
+  /** What the office's gate decides for the terminal's tool `tool` with `args`, read from its shells now
+   *  (`Terminal.plan`). */
+  plan(tool: string, args: Record<string, unknown>): CommandPlan {
+    return this.#terminal.plan(tool, args)
+  }
+
+  /** The gate held or refused the call `plan` says: its audit row, in the bound run (`Terminal.audited`). */
+  audited(plan: CommandPlan, outcome: "held" | "denied", reason: string): void {
+    this.#terminal.audited(plan, outcome, reason)
   }
 
   /** Where a new shell's commands run, as the gate reads it: what the approvals decide a held card again by. */
@@ -216,7 +218,8 @@ export class EmployeeTerminal {
       mode: () => bound()?.mode() ?? this.#o.mode(),
       rules: () => bound()?.rules() ?? [],
       where: () => ({ ...BASE }),
-      hold: (card: ApprovalCard, callId: string) => bound()?.hold(card, callId) ?? `Not run: ${UNBOUND}.`,
+      // The run's gate decides each command before it starts; with no run bound, nothing was decided.
+      decided: (callId: string | undefined) => bound()?.decided?.(callId) ?? null,
       check: (input: CheckInput, signal: AbortSignal) => {
         const permissions = bound()
         return permissions?.check ? permissions.check(input, signal) : Promise.reject(new Error(UNBOUND))

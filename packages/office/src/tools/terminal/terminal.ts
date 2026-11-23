@@ -16,8 +16,14 @@
  *  command or line a shell can't take, a shell not ready for it, a secret prompt, the owner part-way through a line,
  *  and typed text in a pipes shell.
  *
+ *  **Under the office's gate.** A host whose gate decides each call before it starts (`Permissions.decided`, yian's
+ *  `beforeToolCall`) decides nothing here: the gate reads what a command or typed line would be from `plan`, decides
+ *  it with the same reader, rules and check, holds what asks itself, and records its held and refused calls through
+ *  `audited`; the call then acts only on what the gate decided for it, and only while the shell is still where it was
+ *  decided (its folder, or its line and the command typed into), else it is refused, to be run again and checked again.
+ *
  *  **No authority from the agent.** No argument approves a call or widens what it may do; only the host's
- *  `runApproved` runs a held call, and the agent's `why` reaches the card, never Auto's check.
+ *  `runApproved`, or its gate, runs a held call, and the agent's `why` reaches the card, never Auto's check.
  *
  *  **Waits.** A reply waits at most two minutes; a held call waits for its card instead. Each call's wait and gate
  *  end with the call's signal, with its interrupt (the agent's, as yian passes it, which reaches a call that came after
@@ -38,7 +44,8 @@
  *  end, or once the terminal has closed. A note leaves the agent's place in the view where it was. The shell's record
  *  keeps the key of each note owed (`told`), so the host can send a note of it after a restart (`restoredNote`). */
 import {
-  type Action, type CheckInput, type Gate, gate, type Permissions, type Where,
+  type Action, type ApprovalCard, type Basis, type CheckInput, type Decided, type Gate, gate, type Permissions,
+  type Where,
 } from "../../runtime/permissions/policy.ts"
 import fs from "node:fs"
 import { SandboxPolicy } from "../../runtime/sandbox/policy.ts"
@@ -128,6 +135,29 @@ export interface TerminalHost {
   ended?(note: CommandEnded): void
 }
 
+/** What the office's gate needs to decide a terminal call (`Terminal.plan`): nothing (`decide: false`, for a read, an
+ *  interrupt, a close, or a call its own refusal stops), or the command or typed line it would act on, where it runs,
+ *  the agent's reason, the card's arguments, the state it is decided on, and its shell's name (null for a new one). */
+export type CommandPlan =
+  | { readonly decide: false }
+  | {
+      readonly decide: true
+      readonly tool: "terminal_run" | "terminal_type"
+      readonly action: Action
+      readonly where: Where
+      readonly why: string
+      readonly args: Record<string, unknown>
+      readonly basis: Basis
+      readonly shell: string | null
+    }
+
+/** What the gate decided for the call `plan` says, letting it run as `why` says (`approved` when its approver said
+ *  Yes on a card): `Permissions.decided`'s answer for it. */
+export function decidedFor(plan: CommandPlan & { decide: true }, why: string, approved: boolean): Decided {
+  const { tool, action, basis, shell } = plan
+  return { why, basis, approved, tool, text: action.text, partial: action.partial ?? false, shell }
+}
+
 /** One of a terminal's shells: a PTY shell, or the workspace's pipes shell. */
 export type TerminalShell = PtyShell | PipeShell
 
@@ -145,6 +175,9 @@ export interface TerminalTool {
 /** What a call returns when its stop came after its gate let it run, before it started. */
 const STOPPED = "Not run: stopped before it started."
 const CLOSED = "this terminal has closed"
+/** What a call under the office's gate is refused with when the gate decided nothing for it, or something else. */
+const NO_DECISION = "no permission check decided this call"
+const NOT_DECIDED = "this call isn't the one that was decided; run it again to have it checked"
 /** What a typed line is refused with when the shell moved on while it was checked, or since it was approved. */
 const MOVED =
   "the shell moved on while this line was checked: its unfinished line or its running command changed; read it, " +
@@ -227,13 +260,16 @@ interface Running {
 }
 
 /** How one call runs: the yian call's id, its signal, and whether the owner approved it (no gate). An approved
- *  command carries the folder its card was decided in (`folder`) and what approved it (`credit`). */
+ *  command carries the folder its card was decided in (`folder`) and what approved it (`credit`). Under the office's
+ *  gate, `decided` is what it decided for the call (null: nothing), taken as the call started; undefined for a host
+ *  with no such gate. */
 interface Call {
   readonly callId: string | undefined
   readonly signal: AbortSignal
   readonly approved: boolean
   readonly folder?: string | null
   readonly credit?: string
+  readonly decided?: Decided | null
 }
 
 /** The profile of the sandbox `shells` run in. */
@@ -297,6 +333,54 @@ export class Terminal {
     const home = this.home
     const homed = folder !== null && home !== null && (folder === home || folder.startsWith(`${home}/`))
     return { ...start, cwd: homed ? `~${folder!.slice(home!.length)}` : folder }
+  }
+
+  /**
+   * What the office's gate decides for tool call `tool` with `args`, read from the shells' live state now: the command
+   * or the whole typed line, where it runs, the card's arguments and the state it is decided on. Nothing to decide for
+   * a read, an interrupt, a close, or a call the tool's own refusals stop (bad arguments, a closed terminal, a shell
+   * that isn't there or can't take it, a secret prompt, the owner typing), which the call then refuses itself.
+   */
+  plan(tool: string, args: Record<string, unknown>): CommandPlan {
+    const none = { decide: false } as const
+    if (this.closed || (tool !== "run" && tool !== "type")) return none
+    const parsed = parseArgs(tool, args)
+    if (typeof parsed === "string" || (parsed.tool !== "run" && parsed.tool !== "type")) return none
+    const entry = parsed.shell === null ? undefined : this.find(parsed.shell)
+    if (parsed.shell !== null && entry?.shell == null) return none
+    const shell = entry?.shell ?? null
+    if (parsed.tool === "run") {
+      const { command, why } = parsed
+      const { shells } = this.host
+      const problem = shell !== null
+        ? shell.runProblem(command)
+        : shells.kind === "pty"
+          ? PtyShell.commandProblem(command, shellKind(shells.shell))
+          : PipeShell.commandProblem(command)
+      if (problem !== null) return none
+      const where = this.where(entry?.id)
+      const action: Action = { kind: "command", text: command }
+      const card = { ...cardArgs(parsed), cwd: where.cwd }
+      const name = entry?.name ?? null
+      const basis = { cwd: where.cwd }
+      return { decide: true, tool: "terminal_run", action, where, why, args: card, basis, shell: name }
+    }
+    if (shell === null || shell.typeProblem(parsed.text) !== null) return none
+    const line = shell.pendingLine() + parsed.text
+    const into = shell.state().command
+    const action: Action = { kind: "input", text: line, partial: !parsed.enter, ...(into === null ? {} : { into }) }
+    const card = { ...cardArgs(parsed), line, into }
+    const where = this.where(entry!.id)
+    const basis = { line, into }
+    const shellName = entry!.name
+    return { decide: true, tool: "terminal_type", action, where, why: parsed.why, args: card, basis, shell: shellName }
+  }
+
+  /** The office's gate held (`held`, with its card's reason) or refused (`denied`, with the refusal) the call `plan`
+   *  says: the host's audit gets its row, as the terminal's own gate wrote one. */
+  audited(plan: CommandPlan, outcome: "held" | "denied", reason: string): void {
+    if (!plan.decide) return
+    this.audit({ outcome, tool: plan.tool, text: plan.action.text, shell: plan.shell, reason })
   }
 
   /** Where a shell starts. */
@@ -388,6 +472,9 @@ export class Terminal {
     args: Record<string, unknown>,
     options: { readonly callId?: string; readonly signal?: AbortSignal; readonly interrupted?: AbortSignal },
   ): Promise<unknown> {
+    // Taken first, whatever the call does next: a refused call leaves no decision behind.
+    const gate = this.host.permissions.decided
+    const decided = gate === undefined ? undefined : gate.call(this.host.permissions, options.callId)
     if (this.closed) return refusalText(CLOSED)
     const parsed = parseArgs(tool, args)
     if (typeof parsed === "string") return refusalText(parsed)
@@ -398,7 +485,8 @@ export class Terminal {
     const stops = [own.signal, options.signal, options.interrupted].filter((s) => s !== undefined)
     const signal = AbortSignal.any(stops)
     try {
-      const call: Call = { callId: options.callId, signal, approved: false }
+      const taken = decided === undefined ? {} : { decided }
+      const call: Call = { callId: options.callId, signal, approved: false, ...taken }
       if (parsed.tool === "run") return await this.run(parsed, call)
       const entry = this.find(parsed.shell)
       if (entry === undefined) return refusalText(this.unknown(parsed.shell))
@@ -449,11 +537,18 @@ export class Terminal {
         if (call.approved && call.folder !== folder) {
           return this.text(entry, shell, shell.refusal(MOVED_FOLDER(call.folder ?? null, folder)))
         }
+        const decided = call.decided
+        if (decided !== undefined) {
+          const moved = this.movedRun(decided, parsed, entry.name, folder)
+          if (moved !== null) return this.text(entry, shell, shell.refusal(moved))
+          if (call.signal.aborted) return STOPPED
+          return await this.runIn(entry, shell, parsed, call, decided!.why)
+        }
         const args = { ...cardArgs(parsed), cwd: folder }
         const gated = await this.gated(action, "terminal_run", why, args, call, entry.id)
         if (!gated.run) return gated.result
         if (call.signal.aborted) return STOPPED
-        return await this.runIn(entry, shell, parsed, call, gated.by)
+        return await this.runIn(entry, shell, parsed, call, call.approved ? gated.by : `by ${gated.by}`)
       })
     }
     const { shells } = this.host
@@ -463,28 +558,53 @@ export class Terminal {
     if (problem !== null) return refusalText(problem)
     const folder = this.where().cwd
     if (call.approved && call.folder !== folder) return refusalText(MOVED_FOLDER(call.folder ?? null, folder))
-    const gated = await this.gated(action, "terminal_run", why, { ...cardArgs(parsed), cwd: folder }, call)
-    if (!gated.run) return gated.result
+    const decided = call.decided
+    let ran: string
+    if (decided !== undefined) {
+      const moved = this.movedRun(decided, parsed, null, folder)
+      if (moved !== null) return refusalText(moved)
+      if (call.signal.aborted) return STOPPED
+      ran = decided!.why
+    } else {
+      const gated = await this.gated(action, "terminal_run", why, { ...cardArgs(parsed), cwd: folder }, call)
+      if (!gated.run) return gated.result
+      ran = call.approved ? gated.by : `by ${gated.by}`
+    }
     const entry = this.create()
     if (typeof entry === "string") return refusalText(entry)
     return await this.queue(entry, async (shell) => {
       if (call.signal.aborted) return STOPPED
-      return await this.runIn(entry, shell, parsed, call, gated.by)
+      return await this.runIn(entry, shell, parsed, call, ran)
     })
   }
 
-  /** Runs the command in `shell`, which the gate (saying `by` what) or an approval (`by` its credit) let run, and
-   *  replies. Its end, whenever it comes, goes to the host's audit, and, when this reply said it runs on, to the host's
-   *  notes. A call cut off before its reply stops the command, as the owner's Ctrl-C does, and replies once it has
-   *  ended, or after `STOP_WAIT_MS`. */
+  /** Why the command `parsed` asks for, in shell `shell` (its name; null for a new one), can't run in `folder` under
+   *  the gate's decision `decided` (null: none): no decision, a decision for another tool, command or shell, or its
+   *  shell is in another folder than the gate decided it in; null when it can. */
+  private movedRun(
+    decided: Decided | null,
+    parsed: Parsed & { tool: "run" },
+    shell: string | null,
+    folder: string | null,
+  ): string | null {
+    if (decided === null) return NO_DECISION
+    const same = decided.tool === "terminal_run" && decided.text === parsed.command && decided.shell === shell
+    if (!same) return NOT_DECIDED
+    const was = "cwd" in decided.basis ? decided.basis.cwd : undefined
+    return was === folder ? null : MOVED_FOLDER(was ?? null, folder)
+  }
+
+  /** Runs the command in `shell`, which the gate or an approval let run (`why`, for its audit row), and replies. Its
+   *  end, whenever it comes, goes to the host's audit, and, when this reply said it runs on, to the host's notes. A
+   *  call cut off before its reply stops the command, as the owner's Ctrl-C does, and replies once it has ended, or
+   *  after `STOP_WAIT_MS`. */
   private async runIn(
     entry: Entry,
     shell: TerminalShell,
     parsed: Parsed & { tool: "run" },
     call: Call,
-    by: string,
+    why: string,
   ): Promise<string> {
-    const why = call.approved ? by : `by ${by}`
     const running: Running = {
       command: parsed.command, why, started: performance.now(), from: shell.viewEnd(), n: ++entry.commands,
       seen: false, stopped: null, told: false, end: null, ended: Promise.withResolvers<void>(),
@@ -614,6 +734,18 @@ export class Terminal {
     if (approved !== null && (approved.line !== line || approved.into !== into)) {
       return this.text(entry, shell, shell.refusal(MOVED_SINCE))
     }
+    const decided = call.decided
+    if (decided !== undefined) {
+      if (decided === null) return this.text(entry, shell, shell.refusal(NO_DECISION))
+      const same = decided.tool === "terminal_type" && decided.text === line && decided.partial === !enter
+      if (!same || decided.shell !== entry.name) return this.text(entry, shell, shell.refusal(NOT_DECIDED))
+      const was = "line" in decided.basis ? decided.basis : null
+      if (was === null || was.line !== line || was.into !== into) {
+        return this.text(entry, shell, shell.refusal(decided.approved ? MOVED_SINCE : MOVED))
+      }
+      if (call.signal.aborted) return STOPPED
+      return this.text(entry, shell, await shell.type(text, { enter, waitMs, signal: call.signal }))
+    }
     const action: Action = { kind: "input", text: line, partial: !enter, ...(into === null ? {} : { into }) }
     const gated = await this.gated(action, "terminal_type", why, { ...cardArgs(parsed), line, into }, call, entry.id)
     if (!gated.run) return gated.result
@@ -641,7 +773,7 @@ export class Terminal {
       mode: () => base.mode(),
       rules: () => base.rules(),
       where: () => this.where(id),
-      hold: (card, callId) => base.hold(card, callId),
+      ...(base.hold ? { hold: (card: ApprovalCard, callId: string) => base.hold!(card, callId) } : {}),
       ...(check ? { check: (input: CheckInput, signal: AbortSignal) => check.call(base, input, signal) } : {}),
       ...(blocked ? { blocked: () => blocked.call(base) } : {}),
     }

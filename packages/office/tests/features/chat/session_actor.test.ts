@@ -1047,16 +1047,16 @@ test("Esc doesn't answer a terminal call early: it stops itself", async () => {
   expect(ran).not.toBe(INTERRUPTED_CALL)
   expect(JSON.parse(String(ran))).toMatchObject({ shell: "shell 1", status: "idle", exit: null })
   await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "the turn's end" })
-  // A command in Auto's check: Esc stops the check, and the call answers that nothing ran.
+  // A command in Auto's check is held before its call starts: Esc closes the hold, and the call never runs.
   await actor.prompt("configure it")
-  await waitFor(() => fake.requests().some((r) => JSON.stringify(r.messages).includes("<command>")) && replies.length === 2, {
+  await waitFor(() => fake.requests().some((r) => JSON.stringify(r.messages).includes("<command>")), {
     what: "the check",
   })
   await actor.interrupt()
-  expect(await replies[1]).toBe("Not run: stopped before Auto's check finished.")
   fake.release()
   await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "the second turn's end" })
   expect(o.pipes.commands).toEqual(["make all"])
+  expect(replies).toHaveLength(1)
 })
 
 test("Esc doesn't answer a Codex call early: the call hears the interrupt and its own reply is the result", async () => {

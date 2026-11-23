@@ -261,6 +261,8 @@ export interface Wait {
   inbox: string | null
   deadline: string | null
   settled: boolean
+  /** A call the office's gate held: it waits on its card, or on Auto's check. */
+  held?: boolean
 }
 
 /** What the session's pinned commit says about it, which never changes. */
@@ -558,15 +560,12 @@ export class SessionActor implements LiveCalls {
       host: {
         liveRun: () => (this.#finished ? null : this.#runId),
         completeWithAnswer: (card) => this.#deliver(this.#complete(card, undefined)),
-        completeWithOutput: (card, output) => {
-          const delivery: Delivery = { id: newId(), op: "complete", call_id: card.call_id!, result: { output } }
-          return this.#deliver(new Pending(delivery, undefined, { questionId: card.id }))
-        },
-        loseAnswer: (card) => this.#loseAnswer(card.id),
         notice: (text) => this.#notice(text),
         post: (label, job) => this.#post(label, job),
         settle: (when) => this.#trySettle(when),
-        runner: async () => (await this.#specOf(this.#session())).runApproved,
+        planCommand: (tool, args) =>
+          args === null ? { decide: false } : (this.#spec?.terminal?.plan(tool, { ...args }) ?? { decide: false }),
+        audited: (plan, outcome, reason) => this.#spec?.terminal?.audited(plan, outcome, reason),
         release: (callId, note, card) => {
           const delivery: Delivery = {
             id: newId(), op: "release", call_id: callId, ...(note === null ? {} : { note }),
@@ -793,8 +792,8 @@ export class SessionActor implements LiveCalls {
    *  the `send` `fallback`. */
   #complete(question: QuestionRecord, acked: unknown, fallback: Delivery | null = null): Pending {
     const read = question.source === "approval" ? readAnswer(question).answer : null
-    if (question.approval?.kind === "tool" && (read === "yes" || read === "session" || read === "always")) {
-      // A tool card's Yes runs the call where yian holds it.
+    if (question.approval != null && (read === "yes" || read === "session" || read === "always")) {
+      // A card's Yes runs the call where yian holds it, at most once.
       const note = question.answered_by ? `approved by @${question.answered_by}` : "approved"
       const delivery: Delivery = { id: newId(), op: "release", call_id: question.call_id!, note }
       return new Pending(delivery, acked, { questionId: question.id, fallback })
@@ -1058,7 +1057,8 @@ export class SessionActor implements LiveCalls {
     const { store } = this.#ctx
     const asked = store.listQuestions({ runId: this.#runId!, status: "open" })
     if (asked.some((q) => q.source === "ask_user" || q.source === "ask_manager" || q.source === "approval")) return true
-    const held = (w: Wait) => store.getQuestionByCall(w.call_id)?.source === "approval"
+    // A call the gate held waits on its card, or on Auto's check before it has one.
+    const held = (w: Wait) => w.held === true || store.getQuestionByCall(w.call_id)?.source === "approval"
     return (this.#waits ?? []).some((w) => !w.settled && (w.tool === "ask_user" || isAskManagerCall(w.tool) || held(w)))
   }
 
@@ -1381,6 +1381,7 @@ export class SessionActor implements LiveCalls {
         inbox: wait.inbox,
         deadline: wait.deadline,
         settled: wait.settled,
+        held: wait.held,
       }))
       this.#rested = true
     }
@@ -2283,7 +2284,7 @@ export class SessionActor implements LiveCalls {
     )
     return this.#ctx.store
       .listQuestions({ runId: this.#runId!, status: "answered" })
-      .filter((q) => q.call_id !== null && !delivered.has(q.call_id) && !this.#approvals.running(q.id))
+      .filter((q) => q.call_id !== null && !delivered.has(q.call_id))
   }
 
   /** Stores a question of the run's calls through `Answers.ask`; a newly stored one fires `questionStored` and

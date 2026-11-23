@@ -6,6 +6,7 @@ import { stringify } from "yaml"
 import { personInputs, talkingTo } from "../../../src/features/chat/identity.ts"
 import { chatJob, managerSpec, mainSpec, sideSpec } from "../../../src/features/chat/run_spec.ts"
 import { EmployeeTerminal } from "../../../src/features/chat/terminal.ts"
+import { decidedFor } from "../../../src/tools/terminal/terminal.ts"
 import { Instruments } from "../../../src/runtime/sessions/instruments.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
 import { MAIN_CHAT } from "../../../src/company/chat_flow.ts"
@@ -159,33 +160,38 @@ test("the main spec runs the persons main flow with their tools memory and skill
   expect(refusal(ownerSpec)).toEqual([422, "not_an_agent"])
 })
 
-test("a main run's build binds its permissions to the terminal, whose commands they gate, and an approved terminal_run runs there", async () => {
+test("a main run's build binds its permissions to the terminal, whose commands act on what the run's gate decided", async () => {
   const o = await office()
   const { terminal, pipes } = shellsOf(o)
   const spec = main(o, terminal)
   expect(spec.terminal).toBe(terminal)
-  const { perms, held } = permissions({ mode: "ask" })
-  const groups = spec.groups({ session: o.session, runId: "r1", permissions: perms })
-  expect(Object.keys(groups.terminal!)).toEqual(["run", "type", "read", "interrupt", "close"])
   const callId = "r1/chat#0/reply/0/0"
-  await groups.terminal!.run!.call({ command: "make", why: "builds it" }, { callId })
-  expect(held.map((h) => [h.card.tool, h.card.action, h.callId])).toEqual([["terminal_run", "make", callId]])
-  const signal = new AbortController().signal
-  const credit = "approved by @ngocbh"
-  const ran = spec.runApproved!("terminal_run", held[0]!.card.args, { session: o.session, runId: "r1", signal, credit })
+  const { perms, held } = permissions({ mode: "ask" })
+  // The run's gate held the command, and its approver said Yes: what it decided is the call's to take.
+  const plan = terminal.plan("run", { command: "make", why: "builds it" })
+  expect(plan).toMatchObject({ decide: true, tool: "terminal_run", action: { kind: "command", text: "make" } })
+  if (!plan.decide) throw new Error("the terminal has nothing to decide")
+  const decided = (id: string | undefined) => (id === callId ? decidedFor(plan, "approved by @ngocbh", true) : null)
+  const groups = spec.groups({ session: o.session, runId: "r1", permissions: { ...perms, decided } })
+  expect(Object.keys(groups.terminal!)).toEqual(["run", "type", "read", "interrupt", "close"])
+  terminal.audited(plan, "held", "Ask mode")
+  const ran = groups.terminal!.run!.call({ command: "make", why: "builds it" }, { callId })
   await waitFor(() => pipes.running().length === 1, { what: "the approved command" })
   pipes.end("make", 0)
   expect(json(await ran)).toMatchObject({ shell: "shell 1", status: "idle", exit: 0 })
   expect(pipes.commands).toEqual(["make"])
+  // The terminal holds nothing itself.
+  expect(held).toEqual([])
   const rows = o.store.listAudit({ sessionId: o.session.id })
   expect(rows.map((r) => [r.kind, r.tool, r.outcome, r.runId, r.args])).toEqual([
     ["workspace", "terminal_run", "held", "r1", { summary: "command='make'", shell: null }],
     ["workspace", "terminal_run", "ok", "r1", { summary: "command='make'", shell: "shell 1" }],
   ])
   expect(rows[1]!.detail).toMatch(/^exit=0 duration=[\d.]+s approved by @ngocbh$/)
-  await expect(spec.runApproved!("shell", { command: "ls" }, { session: o.session, runId: "r1", signal, credit })).rejects.toThrow(
-    RangeError,
-  )
+  // A command the gate decided nothing for runs nothing.
+  const refused = await groups.terminal!.run!.call({ command: "ls", why: "x" }, { callId: "r1/chat#0/reply/0/1" })
+  expect(json(refused)).toEqual({ refused: "no permission check decided this call" })
+  expect(pipes.commands).toEqual(["make"])
   await terminal.close()
 })
 

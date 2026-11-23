@@ -38,7 +38,7 @@ type Workspace = Pick<WorkspaceTools, "call" | "interrupt">
 /** What the session actor and the approvals use of a main chat's terminal. */
 type Shells = Pick<
   EmployeeTerminal,
-  "tools" | "bind" | "runApproved" | "where" | "interruptWaits" | "close" | "onEnded" | "delivered"
+  "tools" | "bind" | "plan" | "audited" | "where" | "interruptWaits" | "close" | "onEnded" | "delivered"
 >
 /** What the session actor uses of a main chat's Codex or Claude Code instrument. */
 type Harnessed = Pick<EmployeeInstrument, "tools" | "cutCalls" | "close" | "suspend">
@@ -62,8 +62,7 @@ export interface GroupContext {
  * `workspace` is the workspace the run's workspace tools call, if it has one; `terminal` the shells its commands run
  * in, if it has them; `codex` and `claude` the Codex and Claude Code sessions its employee drives, if it has them.
  * `parent` is the run (and node) the session's fresh runs nest under in yian's run index, if any.
- * `runApproved` runs a held call its approver said Yes to, if the spec's tools can be held. Python's `learnable` is
- * dropped: learning is deferred.
+ * Python's `learnable` is dropped: learning is deferred.
  */
 export interface RunSpec {
   readonly flow: string
@@ -78,14 +77,6 @@ export interface RunSpec {
   readonly codex?: Harnessed
   readonly claude?: Harnessed
   readonly parent?: Parent | null
-  /** Runs `tool` with `args` for run `runId` of `session`, approved as `credit` says (`approved by @<who>`, or what
-   *  rule allows it): no gate, its audit row ending with `credit`, and outside the terminal's waits, so only `signal`
-   *  stops it; its output. Throws `RangeError` for a tool it can't run. */
-  runApproved?(
-    tool: string,
-    args: Record<string, unknown>,
-    o: { session: SessionRecord; runId: string; signal: AbortSignal; credit: string },
-  ): Promise<string>
 }
 
 /** The company defaults of `repo`; the schema's defaults without any. */
@@ -164,10 +155,6 @@ export function mainSpec({
     terminal,
     ...(codex === undefined ? {} : { codex }),
     ...(claude === undefined ? {} : { claude }),
-    runApproved: async (tool, args, { runId, signal, credit }) => {
-      if (tool !== "terminal_run") throw new RangeError("only a terminal command can run once approved")
-      return await terminal.runApproved(tool, args, { runId, signal, credit })
-    },
   }
 }
 

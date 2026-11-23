@@ -11,14 +11,17 @@
  * the calls a granted flow's agents make are gated on their own. A tool module's or an MCP server's tool, which no
  * reader can judge, goes to Auto's check in `auto`, asks in `default` and `ask`, and is refused in `dontAsk`.
  *
- * The terminal's `run` and `type` pass here: the terminal still decides its own commands with the command reader.
+ * The terminal's `run` and `type` are decided by the command reader instead (`decideCommand`), on what the
+ * terminal's plan reads from its shells: the same mode, rules, reader and Auto's check its own gate used.
  * A flow's own steps that call a tool (a TOOL, `call`, `map` or `loop` node) never reach the gate: only agents' calls
  * are gated by the session's mode.
  */
 import type { ToolSource } from "@ngocbh/yian/tools"
 import type { Approval } from "@opencorp/protocol"
 import { toolRuleMatches, toolWords } from "../../company/rules.ts"
-import { type CheckInput, dontAskRefusal, type Mode, type Rule, type Verdict } from "./policy.ts"
+import {
+  type Action, type CheckInput, checkInput, decide, dontAskRefusal, type Mode, type Rule, type Verdict, type Where,
+} from "./policy.ts"
 
 /** A model's tool call as the gate decides it: the name the model sees, where the tool comes from, the model's
  *  arguments (null when a restored hold recorded none), and 1, or more for a call sent again after a stop or crash
@@ -56,6 +59,7 @@ const BY_RULE = "an allow rule"
 const RELEASED = "released before a stop or crash cut it off"
 const UNNAMED = "its name can't be written in a rule, so no rule covers it"
 const UNREAD = "its arguments couldn't be read"
+const UNREAD_COMMAND = "Not run: the command reader couldn't read what this terminal call would act on."
 /** What the model reads for a call sent again that would ask, whose first try was never released: a stop or crash
  *  may have cut it off while the gate decided, so nobody approved it, and yian can't hold a call that may have run. */
 export const CUT_OFF = "Not run: it was cut off before it was approved."
@@ -69,8 +73,9 @@ const READS = new Set([
 /** What the gate decides for `call` under `policy` (see the module's note). */
 export function decideCall(call: ToolCall, policy: CallPolicy): CallDecision {
   const { source } = call
+  // The command reader decides these on what the terminal would act on (`decideCommand`): never their source.
   if (source.kind === "host" && source.group === "terminal" && (source.tool === "run" || source.tool === "type")) {
-    return { verdict: "run", note: null }
+    return { verdict: "refuse", reason: UNREAD_COMMAND }
   }
   const asks = (reason: string, rules: readonly string[] = []): CallDecision =>
     policy.mode === "dontAsk"
@@ -115,6 +120,28 @@ function row(
   const command = `${exact[0]} ${jsonText(call.arguments)}`
   if (new TextEncoder().encode(command).length > MAX_CHECK_BYTES) return asks(TOO_LONG, exact)
   return { verdict: "check", input: { kind: "tool", command, profile: "none", cwd: "", host: "" }, rules: exact }
+}
+
+/** What the gate decides for a terminal command or typed line (`action`, run `where`), by the command reader
+ *  (`decide`), as the terminal's own gate did: while a rules file doesn't load, the action is one never automated. A
+ *  run notes what allows it; a refusal reads `Not run: <why>.`; one Auto's check judges is told the action and where
+ *  it runs. */
+export function decideCommand(plan: { action: Action; where: Where }, policy: CallPolicy): CallDecision {
+  const { where } = plan
+  const action = policy.blocked === null || plan.action.never !== undefined
+    ? plan.action
+    : { ...plan.action, never: policy.blocked }
+  const decision = decide(action, policy.mode, policy.rules, where)
+  switch (decision.verdict) {
+    case "allow":
+      return { verdict: "run", note: decision.by }
+    case "deny":
+      return { verdict: "refuse", reason: `Not run: ${decision.reason}.` }
+    case "ask":
+      return { verdict: "ask", reason: decision.reason, rules: decision.rules }
+    case "check":
+      return { verdict: "check", input: checkInput(plan.action, where), rules: decision.rules }
+  }
 }
 
 /** What `decision` becomes for a call yian sent again after a stop or crash (`attempt` over 1), which yian can't hold
