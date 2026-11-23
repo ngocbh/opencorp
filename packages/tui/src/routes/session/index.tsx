@@ -161,8 +161,10 @@ export type SessionProps = {
   onOpen?: (id: string) => void
   /** Takes what opens the picker on its busiest tab, for the pane's key that goes back to it. */
   onPicker?: (show: (() => void) | undefined) => void
-  /** Whether the owner's keys are dropped until Enter, after a shell they were typing into closed. */
-  keysDropped?: boolean
+  /** What closed while the owner was typing into it, a shell or a card, when their keys are dropped until Enter. */
+  keysDropped?: "shell" | "card"
+  /** Called when a card closes under the owner's typing without their answer from here, to drop their keys. */
+  onCardLost?: () => void
   /** A line saying the pane holds an instrument it can't show beside the chat, and how to show it. */
   paneNote?: string
 }
@@ -958,7 +960,7 @@ export function Session(props: SessionProps) {
               </Show>
               <Show when={props.keysDropped}>
                 <text fg={theme.warning} flexShrink={0} wrapMode="word">
-                  The shell closed: keys are dropped until Enter
+                  The {props.keysDropped} closed: keys are dropped until Enter
                 </text>
               </Show>
               {/* A card may shrink to what the chat leaves it: its body scrolls in what remains. */}
@@ -1000,6 +1002,7 @@ export function Session(props: SessionProps) {
                               active={id === active()?.id}
                               waiting={i() > 0 || !stackOpen()}
                               focusLabel={ownNext() && `answer ${personLabel(office.state.people, ownNext()!.asker)}`}
+                              onLost={props.onCardLost}
                               // Esc on a Codex session's card in its chat stops that session's turn, not the chat's.
                               onInterrupt={q().session_id === props.sessionID ? interrupt : undefined}
                             />
@@ -1034,6 +1037,7 @@ export function Session(props: SessionProps) {
                             <>
                               <QuestionCard
                                 question={question()}
+                                onLost={props.onCardLost}
                                 hidden={!!sideOf()}
                                 onChat={() => setSideOf(question()?.id)}
                               />

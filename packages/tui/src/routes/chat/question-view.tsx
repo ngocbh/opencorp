@@ -73,6 +73,9 @@ export function QuestionView(
     hidden?: boolean
     /** Gets the view's handle once, as it mounts. */
     ref?: (view: QuestionViewHandle) => void
+    /** Called as it goes while it has the keys and a page holds typed text: its caller says whether that leaves the
+     *  owner mid-line, as when its card closed unanswered. */
+    onGoneTyping?: () => void
   }>,
 ) {
   const { theme } = useTheme()
@@ -157,6 +160,15 @@ export function QuestionView(
       }),
     )
   }
+
+  /** Whether a page holds text the owner typed: the box's, whose change event comes late, or a page's answer. */
+  function typedText() {
+    const el = box()
+    return (!!el && !el.isDestroyed && el.plainText !== "") || store.answers.some((a) => !!a?.text)
+  }
+  onCleanup(() => {
+    if (active() && typedText()) props.onGoneTyping?.()
+  })
 
   /** Copies the box's text into this page's answer; its change event comes late, so read it now. */
   function sync() {

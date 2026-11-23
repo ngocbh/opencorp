@@ -747,6 +747,41 @@ test("a question the chat opens while a Codex secret card has the keys waits as 
   }
 })
 
+test("a Codex secret card that goes stale mid-entry drops the rest of the line; the chat's waiting question gets the keys after Enter", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    const secret = office.addQuestion(secretCard(child.id, "1"))
+    await typeHalfSecret(app)
+    const own = office.addQuestion({ session_id: chat.id, question: "Which branch?" })
+    await app.until((f) => f.includes("@minh asks: Which branch? · ctrl+t to answer"))
+    // Codex stops waiting: the card closes under the owner's typing, unanswered.
+    office.expire(secret.id)
+    const frames = [await app.until((f) => f.includes("The card closed: keys are dropped until Enter"))]
+    app.input.typeText("er2")
+    await Bun.sleep(100)
+    frames.push(await app.until(() => true))
+    app.input.pressEnter()
+    frames.push(await app.until((f) => !f.includes("keys are dropped")))
+    expect(frames.some((f) => f.includes("er2"))).toBe(false)
+    expect(sent(office, `/questions/${own.id}/answer`)).toEqual([])
+    expect(sent(office, `/sessions/${chat.id}/prompt`)).toEqual([])
+    // A fresh line goes to the chat's question, which has the keys now.
+    await app.until((f) => f.includes("Which branch?") && !f.includes("to answer"))
+    app.input.typeText("main")
+    await app.until((f) => f.includes("main"))
+    app.input.pressEnter()
+    await until(() => office.state.questions[own.id]!.status !== "open")
+    expect(sent(office, `/questions/${own.id}/answer`)).toEqual([{ answer: "main", answer_kind: "text" }])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a card from an older Codex session waits behind a younger one's that has the keys, then takes them", async () => {
   const office = createFakeOffice()
   const chat = office.state.sessions[0]!

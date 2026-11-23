@@ -20,7 +20,14 @@ import { display } from "../../util/printable"
  * expired one shows that discussion, which can be dismissed. It stays mounted, `hidden`, while its side chat shows,
  * so page answers survive the chat.
  */
-export function QuestionCard(props: { question: Question | undefined; hidden?: boolean; onChat: () => void }) {
+export function QuestionCard(props: {
+  question: Question | undefined
+  hidden?: boolean
+  onChat: () => void
+  /** Called when the card closes under the owner's typing without their answer or stop from here (the run restarted,
+   *  or it was answered elsewhere): the rest of their line must go nowhere. */
+  onLost?: () => void
+}) {
   const office = useOffice()
   const toast = useToast()
   const { theme } = useTheme()
@@ -75,6 +82,8 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
   // One office call at a time: a second pick, stop, send back, or dismiss while one is in flight
   // would race it.
   let sending = false
+  // Whether the owner's answer or stop from here is out or taken: the card closing after it is their doing.
+  let answered = false
 
   function call(run: () => Promise<unknown>) {
     if (sending) return toast.show({ message: "Busy: the last action is still sending", variant: "info" })
@@ -84,18 +93,20 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
 
   function send(req: AnswerRequest) {
     const id = question().id
-    call(() =>
-      office.client.questions
+    call(() => {
+      answered = true
+      return office.client.questions
         .answer(id, req)
         .then((q) => office.putQuestion(q))
         .catch((error) => {
+          answered = false
           if (error instanceof OfficeError && error.status === 409) {
             toast.show({ message: "This question was already answered", variant: "warning" })
             return office.refreshQuestion(id).catch(() => {})
           }
           toast.show({ title: "Answering failed", message: errorMessage(error), variant: "error" })
-        }),
-    )
+        })
+    })
   }
 
   function sendBack() {
@@ -131,16 +142,18 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
 
   function stop() {
     setConfirming(false)
-    call(() =>
-      office.client.questions
+    call(() => {
+      answered = true
+      return office.client.questions
         .stop(question().id)
         .then((q) => office.putQuestion(q))
         .catch((error) => {
+          answered = false
           if (isNotImplemented(error))
             return toast.show({ message: "Stopping a question is not available yet", variant: "warning" })
           toast.show({ title: "Stopping failed", message: errorMessage(error), variant: "error" })
-        }),
-    )
+        })
+    })
   }
 
   onCleanup(() => {
@@ -188,6 +201,9 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
       enabled={!confirming() && dialog.stack.length === 0}
       hidden={props.hidden}
       ref={(v) => (view = v)}
+      onGoneTyping={() => {
+        if (!answered && office.state.questions[question().id]?.status !== "open") props.onLost?.()
+      }}
       onSubmit={(answers) => {
         const m = model()
         const req = m && buildAnswer(m, answers)

@@ -152,8 +152,8 @@ export function SessionFrame(props: { sessionID: string }) {
   const [itself, setItself] = createSignal(false)
   // A pane that goes while the owner is mid-line in its shell, however it goes, leaves the rest of that line (a
   // password's, perhaps) going nowhere: the keys are dropped until its Enter, Ctrl-C or Ctrl-D, and only then does
-  // the chat get them.
-  const [dropping, setDropping] = createSignal(false)
+  // the chat get them. So does a card that closes under their typing without their answer: what closed, while they are.
+  const [dropping, setDropping] = createSignal<"shell" | "card">()
 
   const focusSession = () => {
     // Full screen leaves no chat, unless it is a narrow screen's, which waits once the chat has the keys.
@@ -202,15 +202,17 @@ export function SessionFrame(props: { sessionID: string }) {
         if (!dropping()) return
         consume()
         if (!endsLine(event)) return
-        setDropping(false)
-        prompt.current?.focus()
+        const what = dropping()
+        setDropping(undefined)
+        // After a card, the card or prompt with the keys has focus already.
+        if (what === "shell") prompt.current?.focus()
       },
       { priority: 200 },
     ),
   )
   /** Starts dropping the owner's keys when the open pane goes while they are mid-line in its shell. */
   function leaving() {
-    if (untrack(midLine)) setDropping(true)
+    if (untrack(midLine)) setDropping("shell")
   }
 
   /** Opens instrument `id` in the pane, with the keys and in the presentation last chosen; or, with `keys` false,
@@ -461,6 +463,7 @@ export function SessionFrame(props: { sessionID: string }) {
             onOpen={openInstrument}
             onPicker={(show) => (showPicker = show)}
             keysDropped={dropping()}
+            onCardLost={() => setDropping("card")}
             paneNote={paneNote()}
           />
         </InteractivityProvider>
@@ -533,6 +536,7 @@ export function SessionFrame(props: { sessionID: string }) {
                                   pane={{ close: closePanel, leave: leavePane }}
                                   width={(fullscreen() ? availableWidth() : paneResize.size()) - 2}
                                   onOpen={openInstrument}
+                                  onCardLost={() => setDropping("card")}
                                 />
                               </PromptRefProvider>
                             }

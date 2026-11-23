@@ -28,6 +28,9 @@ export function HarnessCard(props: {
   onInterrupt?: () => void
   /** Where ctrl+t gives the keys, for its hint: the prompt unless given. */
   focusLabel?: string
+  /** Called when the card closes under the owner's typing without their answer from here (Codex stopped waiting, or
+   *  it was answered elsewhere): the rest of their line must go nowhere. */
+  onLost?: () => void
 }) {
   const office = useOffice()
   const toast = useToast()
@@ -43,6 +46,8 @@ export function HarnessCard(props: {
   )
   // One answer call at a time: a second pick while one is in flight would race it.
   let sending = false
+  // Whether the owner's answer from here is out or taken: the card closing after it is their doing.
+  let answered = false
 
   /** Says the answer never reached Codex, which stopped waiting for the card. */
   function unused() {
@@ -52,6 +57,7 @@ export function HarnessCard(props: {
   function send(req: AnswerRequest) {
     if (sending) return
     sending = true
+    answered = true
     const id = props.question.id
     office.client.questions
       .answer(id, req)
@@ -61,6 +67,7 @@ export function HarnessCard(props: {
         office.putQuestion(q)
       })
       .catch((error) => {
+        answered = false
         if (error instanceof OfficeError && error.status === 409)
           return office
             .refreshQuestion(id)
@@ -107,6 +114,9 @@ export function HarnessCard(props: {
           const m = model()
           const req = m && buildAnswer(m, answers)
           if (req) send(req)
+        }}
+        onGoneTyping={() => {
+          if (!answered && office.state.questions[props.question.id]?.status !== "open") props.onLost?.()
         }}
       >
         <Show when={props.question.title}>
