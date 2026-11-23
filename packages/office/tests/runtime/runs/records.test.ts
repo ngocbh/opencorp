@@ -72,7 +72,7 @@ function indexRow(runId: string, over: Partial<RunIndexRow> = {}): RunIndexRow {
 }
 
 function wait(node: string): WaitInfo {
-  return { node, callId: "c1", tool: "take", inbox: "messages", deadline: null, settled: false }
+  return { node, callId: "c1", tool: "take", inbox: "messages", deadline: null, settled: false, held: false }
 }
 
 function inspection(over: Partial<RunInspection> = {}): RunInspection {
