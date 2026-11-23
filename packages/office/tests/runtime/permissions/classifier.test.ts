@@ -204,6 +204,29 @@ test("a command the model judges run comes back run with its reason, and the mod
   expect(JSON.stringify(request)).not.toContain("WHY-3c9e")
 })
 
+test("a tool call is judged from its words and arguments, as a call of a tool that runs outside any sandbox", async () => {
+  const fake = await fakeLlm()
+  fake.script(answer("ask", "opens an issue in a shared repo"))
+  const { check } = checkInProcess(fake)
+  const call: CheckInput = {
+    kind: "tool", command: 'mcp github create_issue {"title":"Fix"}', profile: "none", cwd: "", host: "",
+  }
+  expect(await check.judge(call, live())).toEqual({ verdict: "ask", reason: "opens an issue in a shared repo" })
+  const [request] = fake.requests()
+  expect(userLines(request!)).toEqual([
+    "<input>",
+    "<profile>none</profile>",
+    "<kind>tool</kind>",
+    "<folder></folder>",
+    "<host></host>",
+    "<command>",
+    "mcp github create_issue {\"title\":\"Fix\"}",
+    "</command>",
+    "</input>",
+  ])
+  expect(textOf(request!, "system")).toContain("Kind tool is a call of a tool")
+})
+
 test("the command can't close its own block", async () => {
   const fake = await fakeLlm()
   fake.script(answer("ask", "it deletes the home"))

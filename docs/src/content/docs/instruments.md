@@ -64,6 +64,22 @@ while a command runs), and a missing `.mcp.json` can still be created.
   raise. No note comes for a command your employee stopped, or once the chat has ended. If the office restarts while
   such a command runs, its shell is gone, and your next message tells your employee so.
 
+## Other tools
+
+Each other tool call your employee's model makes also goes through the chat's mode and rules before it runs.
+
+- **What runs.** File tools in the project folder, the company's tools and asset tools run in every mode. Starting a
+  Codex or Claude Code session asks you in `ask` mode. A tool from a tool module or an MCP server goes to Auto's check
+  in `auto`, judged from its name and arguments; it asks you in `default` and `ask`, and `dontAsk` refuses it.
+- **Tool rules.** A rule of kind `tool` in `rules.yaml` names calls by where their tool comes from, such as
+  `host codex start`, `mcp github create_issue`, `module crm *`, `memory profile append` or `flow drive_harness`. A
+  last `*` stands for one or more words. Deny rules refuse in every mode, then ask rules ask, then allow rules run.
+  "Don't ask again" and "Always allow" add the call's exact words.
+- **Cards.** Yes runs the call once; No tells your employee what you wrote. While a card is open, the reply's later
+  calls wait. An open card survives an office restart, and is decided again by the rules then.
+- **Only your employee's calls.** A company flow's own steps that call a tool directly (`call:`, `map`, `loop`) skip
+  the mode and the rules: only the calls your employee's model makes are gated.
+
 ## Codex and Claude Code
 
 An employee's `person.yaml` lists the harnesses they use in `tools`, such as `tools: [yian, codex, claude]`. `yian`
@@ -244,8 +260,9 @@ a harness they use doesn't. Its lint warns about each allowed server.
   caches in your `~/.codex`. Claude Code keeps its sign-in in `~/.claude` (or the Keychain on macOS), and each
   session's transcript in your `~/.claude/projects`, so `/resume` in your own Claude Code lists your employees'
   sessions in that folder.
-- **The mode doesn't apply inside a harness.** In `ask` and `default` too, your employee starts and messages Codex and
-  Claude Code with no card, and the harness runs every command inside their permission without asking.
+- **The mode doesn't apply inside a harness.** Only starting a session asks, and only in `ask` mode. Your employee
+  messages Codex and Claude Code with no card, and the harness runs every command inside their permission without
+  asking.
 - **Claude Code's reads are a deny list.** Its commands can't read your home, `~/.opencorp` or the folders where your
   sockets live, but they can read the rest of the disk, such as `/opt` or another drive. Its own file tools are held
   by Claude Code's permission rules, not by the operating system.
