@@ -7,9 +7,15 @@
  * part of it is covered: by an allow rule; by a form it knows to be read-only (`auto`, `default`, `dontAsk`); by a
  * plain push of a feature branch (`auto`, `dontAsk`); or, inside the workspace sandbox, by a file operation on
  * paths inside the workspace (`auto`, `dontAsk`). A deny rule refuses what it matches wherever the reader sees it:
- * inside substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. The reader reads no line
- * over 1000 bytes: a typed one is refused, and a command asks in every mode (`dontAsk` refuses it), as too long to
- * check; no rule covers it and Auto's check never judges it, since no deny rule could see into it.
+ * inside substitutions, `sh -c` strings, `sudo`, `find -exec` and ssh's remote command too. A literal `sh -c` or
+ * `eval` string it reads whole is judged as the commands it holds, and a `for` or `case` list is data. A finished
+ * typed line may be a command wherever it goes, so command deny rules refuse it as well as input ones. Where the reader
+ * can't see, while any deny rule that applies to the line is in force (the company's `rules.yaml` or the agent's), a
+ * line it can't fully read (a substitution, `eval` or `sh -c` of a variable, an unclosed quote, `[[`, or anything else
+ * it marks unreadable) asks in every mode and `dontAsk` refuses it, saying so; Auto's check never judges it, since a
+ * denied command could hide there. With no deny rule in force, such a line is decided as any uncovered one is. The
+ * reader reads no line over 1000 bytes: a typed one is refused, and a command asks in every mode (`dontAsk` refuses
+ * it), as too long to check, deny rules or not; no rule covers it and Auto's check never judges it.
  * The reader asks, in every mode, before a command that names a credential path anywhere in the line (an operand,
  * an option's value, an assignment, a `for` list, a here-string or a redirect), one the host marks
  * (`Where.credentials`), or a folder that holds them. Where credentials are reachable (the SSH-only profile, a
@@ -28,9 +34,10 @@
  * its config names (`core.fsmonitor`, `core.pager`, `diff.external`); a script does what it contains; a remote host
  * has its own rc files and `PATH`; `~/.ssh/config` can name a `ProxyCommand` for a host. In a persistent shell,
  * earlier lines can define functions, aliases, a `PATH` or a `CDPATH` that change what a read-only line runs or
- * where it runs. No rule sees into
- * a variable's value or a script file, readable line or not. It can't stop a read-only program from reading what
- * the sandbox lets it read; the model then sees it.
+ * where it runs. No rule sees into a variable's value or a script file, readable line or not, nor into what a
+ * program it doesn't know runs from its arguments (`setsid`, `srun`, `flock`) or its code (`python -c`, `awk`): the
+ * line reads as that program, so a deny rule doesn't match what it runs and the line isn't marked unreadable. It can't
+ * stop a read-only program from reading what the sandbox lets it read; the model then sees it.
  *
  * Auto's check can be wrong. It is a model reading text the agent wrote. It sees only the command, the shell's
  * profile, its folder and the ssh host, never the agent's reasoning, and its answer is typed, so a prompt
@@ -46,8 +53,8 @@
  */
 import { ruleWords } from "@opencorp/protocol"
 import {
-  assignmentsOf, classify, EMPTY, fileOp, innerParts, lineCredential, logsIn, ownerOnly, pathChange, programOf, pushOf,
-  readCommand, remoteOf, type SimpleCommand, sshHosts, sshOf, type Where,
+  assignmentsOf, classify, EMPTY, fileOp, innerParts, lineCredential, logsIn, ownerOnly, passesThrough, pathChange,
+  programOf, pushOf, readCommand, remoteOf, type SimpleCommand, sshHosts, sshOf, type Where,
 } from "./commands.ts"
 export type { Where } from "./commands.ts"
 
@@ -108,6 +115,8 @@ const DONT_ASK = "this session doesn't ask (dontAsk mode): "
 const MAX_LINE_BYTES = 1000
 /** Why a command past `MAX_LINE_BYTES` asks: nothing checked it, so the owner must read it whole. */
 const TOO_LONG = `it is too long to check (over ${MAX_LINE_BYTES} bytes): read all of it before you say Yes`
+/** Why a line the reader can't read asks while a deny rule of its kind is in force, before why it can't read it. */
+const UNCHECKED = "deny rules are in force and it can't be read to check them: "
 /** A prompt's short answer: a menu choice, yes or no, quit, or Enter alone. */
 const PROMPT_ANSWER = /^(\d{1,6}|y|n|yes|no|q|)$/
 /** Programs whose second word names what they do; a suggested rule keeps it. */
@@ -161,7 +170,11 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
   }
   const read = readCommand(action.text)
   const parts = read.parts.length > 0 ? read.parts : [EMPTY]
-  const own = rules.filter((r) => r.kind === action.kind)
+  const into = action.kind === "input" ? readCommand(action.into ?? "") : null
+  // A finished typed line may run as a command wherever it goes (a shell, a login, a launcher the reader doesn't
+  // know), so command deny rules refuse it too.
+  const finished = action.kind === "input" && !action.partial
+  const own = rules.filter((r) => r.kind === action.kind || (finished && r.effect === "deny"))
   const everything = parts.flatMap(withInner)
   const first = (effect: Effect) =>
     own.find((r) => r.effect === effect && everything.some((p) => fits(r.pattern, p, false)))
@@ -174,7 +187,7 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
   // Outside the workspace sandbox, over ssh or mosh, or where the host marks credentials, they are reachable, so a
   // content read through an expansion asks; otherwise the sandbox keeps them out, and only a literal credential path
   // asks.
-  const remote = action.kind === "input" && logsIn(readCommand(action.into ?? ""))
+  const remote = into !== null && logsIn(into)
   const strict = where.profile === "ssh" || remote || (where.credentials ?? []).length > 0
   const credential = lineCredential(parts, cwd, where.credentials, strict)
   if (credential) return held(credential)
@@ -186,6 +199,8 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
   if (path) return held(path)
   const asked = first("ask")
   if (asked) return held(`an ask rule: ${asked.pattern}`)
+  // A deny rule can't be matched against the commands the reader couldn't see, so no check may judge such a line.
+  if (read.unreadable !== null && own.some((r) => r.effect === "deny")) return held(UNCHECKED + read.unreadable)
 
   const allows = own.filter((r) => r.effect === "allow")
   const moves = parts.some((p) => MOVES.has(programOf(p)[0] ?? ""))
@@ -198,13 +213,16 @@ export function decide(action: Action, mode: Mode, rules: readonly Rule[], where
     if (pushOf(part)?.asks === null) return PUSH
     return action.kind === "command" && !moves && fileOp(part, where) ? FILE_OP : null
   }
-  const covers = read.unreadable === null ? parts.map(cover) : null
+  // A part another part's commands stand for (an `sh -c` read through, a `for` list) isn't judged on its own.
+  const judged = parts.filter((p) => !passesThrough(p))
+  if (judged.length === 0) judged.push(EMPTY)
+  const covers = read.unreadable === null ? judged.map(cover) : null
   if (covers?.every((by) => by === BY_RULE)) return { verdict: "allow", by: BY_RULE }
   if (action.kind === "input" && mode !== "ask" && PROMPT_ANSWER.test(action.text))
     return { verdict: "allow", by: ANSWER }
   if (covers?.every((by) => by !== null)) return { verdict: "allow", by: WIDEST.find((by) => covers.includes(by))! }
 
-  const uncovered = covers ? parts.filter((_, i) => covers[i] === null) : []
+  const uncovered = covers ? judged.filter((_, i) => covers[i] === null) : []
   const offers = [...new Set(uncovered.flatMap((p) => {
     const offer = suggest(p, action.kind)
     return fits(offer, p, true) ? [offer] : []
