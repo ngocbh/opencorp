@@ -24,8 +24,9 @@
  *
  *  **Waits.** A reply waits at most two minutes; a held call waits in yian for its card instead. Each call's wait ends
  *  with the call's signal, with its interrupt (the agent's, as yian passes it, which reaches a call that came after
- *  `interruptWaits` too) and with `interruptWaits`, and a call stopped before it acts types nothing. Calls on one
- *  shell queue; calls on different shells run together.
+ *  `interruptWaits` too) and with `interruptWaits`, and a call stopped before it acts types nothing. A message for the
+ *  agent (`messageArrived`) ends the agent's waits too, with their commands running on, so the agent reads it at its
+ *  next step. Calls on one shell queue; calls on different shells run together.
  *
  *  **A call cut off stops its command.** A `run` whose signal aborts before its reply
  *  returns stops the command it waits on, as the owner's Ctrl-C does, and replies once it has ended (or after a few
@@ -44,6 +45,7 @@ import fs from "node:fs"
 import { SandboxPolicy } from "../../runtime/sandbox/policy.ts"
 import { type Result, type RunOptions, SandboxUnavailable } from "../../runtime/sandbox/run.ts"
 import { SshPolicy } from "../../runtime/sandbox/ssh_policy.ts"
+import { elapsed, fence, lastLines, oneLine } from "../../util/lines.ts"
 import { PipeShell } from "./pipes.ts"
 import { PtyShell, type Reply, type ShellHost, shellKind, type ShellState } from "./shell.ts"
 import type { InstrumentRecord, RecordedCommand } from "./record.ts"
@@ -228,10 +230,11 @@ interface Running {
 }
 
 /** How one call runs: the yian call's id, its signal, and what the gate decided for it (null: nothing), taken as the
- *  call started. */
+ *  call started. Its reply's wait also ends early on `early`, a message for the agent, with its command running on. */
 interface Call {
   readonly callId: string | undefined
   readonly signal: AbortSignal
+  readonly early: AbortSignal
   readonly decided: Decided | null
 }
 
@@ -253,6 +256,8 @@ export class Terminal {
   private readonly entries: Entry[] = []
   /** The calls running now, each stopped by its controller: `interruptWaits` ends them. */
   private readonly calls = new Set<AbortController>()
+  /** The agent's calls running now, each one's wait ended early by its controller: `messageArrived` ends them. */
+  private readonly early = new Set<AbortController>()
   private made = 0
   private closed = false
 
@@ -277,7 +282,7 @@ export class Terminal {
 
   /** The model-facing tools: description, parameters, `call(args, { callId, signal })`. */
   tools(): Record<ToolName, TerminalTool> {
-    const specs = toolSpecs(this.host.shells.kind, this.host.ended !== undefined)
+    const specs = toolSpecs(this.host.shells.kind, this.notes)
     const tool = (name: ToolName): TerminalTool => ({
       ...specs[name],
       call: (args, options = {}) => this.call(name, args, options),
@@ -307,7 +312,7 @@ export class Terminal {
   plan(tool: string, args: Record<string, unknown>): CommandPlan {
     const none = { decide: false } as const
     if (this.closed || (tool !== "run" && tool !== "type")) return none
-    const parsed = parseArgs(tool, args)
+    const parsed = parseArgs(tool, args, [], this.notes)
     if (typeof parsed === "string" || (parsed.tool !== "run" && parsed.tool !== "type")) return none
     const entry = parsed.shell === null ? undefined : this.find(parsed.shell)
     if (parsed.shell !== null && entry?.shell == null) return none
@@ -371,6 +376,17 @@ export class Terminal {
     for (const call of [...this.calls]) call.abort()
   }
 
+  /** A message for the agent arrived: every reply the agent's calls wait on comes now, so the agent reads the message
+   *  at its next step. Their commands run on, as after the wait, and a call still in its gate or queued goes on. */
+  messageArrived(): void {
+    for (const call of [...this.early]) call.abort()
+  }
+
+  /** Whether the host tells the session when a command whose reply said it runs on ends. */
+  private get notes(): boolean {
+    return this.host.ended !== undefined
+  }
+
   /** Ends every shell; their records stay. Later calls are refused. */
   async close(): Promise<void> {
     this.closed = true
@@ -394,16 +410,18 @@ export class Terminal {
     // Taken first, whatever the call does next: a refused call leaves no decision behind.
     const decided = this.host.permissions.decided(options.callId)
     if (this.closed) return refusalText(CLOSED)
-    const parsed = parseArgs(tool, args)
+    const parsed = parseArgs(tool, args, [], this.notes)
     if (typeof parsed === "string") return refusalText(parsed)
     const own = new AbortController()
     this.calls.add(own)
+    const early = new AbortController()
+    this.early.add(early)
     // The agent's interrupt reaches a call that came after `interruptWaits` cut off the ones it found: Esc, say, while
     // the call was on its way.
     const stops = [own.signal, options.signal, options.interrupted].filter((s) => s !== undefined)
     const signal = AbortSignal.any(stops)
     try {
-      const call: Call = { callId: options.callId, signal, decided }
+      const call: Call = { callId: options.callId, signal, early: early.signal, decided }
       if (parsed.tool === "run") return await this.run(parsed, call)
       const entry = this.find(parsed.shell)
       if (entry === undefined) return refusalText(this.unknown(parsed.shell))
@@ -413,9 +431,10 @@ export class Terminal {
             return await this.waiting(entry, () => this.type(entry, shell, parsed, call))
           case "read": {
             const from = parsed.from === undefined ? {} : { from: parsed.from }
-            return await this.waiting(entry, async () =>
-              this.text(entry, shell, await shell.read({ waitMs: parsed.waitMs, signal, ...from })),
-            )
+            return await this.waiting(entry, async () => {
+              const reply = await shell.read({ waitMs: parsed.waitMs, signal: waitSignal(call), ...from })
+              return this.text(entry, shell, reply, false, endedEarly(call))
+            })
           }
           case "interrupt": {
             const running = entry.running
@@ -435,6 +454,7 @@ export class Terminal {
       })
     } finally {
       this.calls.delete(own)
+      this.early.delete(early)
     }
   }
 
@@ -502,7 +522,7 @@ export class Terminal {
       seen: false, stopped: null, told: false, end: null, ended: Promise.withResolvers<void>(),
     }
     entry.running = running
-    const reply = await shell.run(parsed.command, parsed.waitMs, call.signal, call.callId)
+    const reply = await shell.run(parsed.command, parsed.waitMs, waitSignal(call), call.callId)
     // Refused by the shell itself: it never started.
     if (!running.seen && entry.running === running) entry.running = null
     if (!call.signal.aborted && running.seen && reply.refused === undefined && runsOn(reply)) {
@@ -516,7 +536,7 @@ export class Terminal {
       }
       // It ended between this reply and now: its end came untold.
       if (running.end !== null) this.tell(entry, running)
-      return this.text(entry, shell, reply, running.told)
+      return this.text(entry, shell, reply, running.told, endedEarly(call))
     }
     if (!call.signal.aborted || entry.running !== running) return this.text(entry, shell, reply)
     running.stopped = CUT_OFF
@@ -614,7 +634,8 @@ export class Terminal {
       return this.text(entry, shell, shell.refusal(decided.approved ? MOVED_SINCE : MOVED))
     }
     if (call.signal.aborted) return STOPPED
-    return this.text(entry, shell, await shell.type(text, { enter, waitMs, signal: call.signal }))
+    const reply = await shell.type(text, { enter, waitMs, signal: waitSignal(call) })
+    return this.text(entry, shell, reply, false, endedEarly(call))
   }
 
   /** Makes the next shell and lists it; why not, when the terminal has closed or the host can't bind it. */
@@ -700,17 +721,28 @@ export class Terminal {
     return `no shell is named ${JSON.stringify(name)}: ${listed}; run with no shell starts a new one`
   }
 
-  /** `reply` as the model reads it; with `told`, the note that the agent will be told of its command's end. A reply
-   *  that shows the shell's command has ended carries the end of one whose note waited on it. */
-  private text(entry: Entry, shell: TerminalShell, reply: Reply, told = false): string {
+  /** `reply` as the model reads it; with `told`, the note that the agent will be told of its command's end, and with
+   *  `early`, that a message ended its wait. A reply that shows the shell's command has ended carries the end of one
+   *  whose note waited on it. */
+  private text(entry: Entry, shell: TerminalShell, reply: Reply, told = false, early = false): string {
     if (entry.untold !== null && !runsOn(reply)) {
       this.untell(entry, entry.untold)
       entry.untold = null
     }
     const dontAsk = this.host.permissions.mode() === "dontAsk"
     const note = noExitNote(entry, reply)
-    return replyText(reply, { name: entry.name, error: shell.state().error, dontAsk, runsOn: told, note })
+    return replyText(reply, { name: entry.name, error: shell.state().error, dontAsk, runsOn: told, note, early })
   }
+}
+
+/** What ends `call`'s reply's wait: its signal, and a message for the agent. */
+function waitSignal(call: Call): AbortSignal {
+  return AbortSignal.any([call.signal, call.early])
+}
+
+/** Whether a message for the agent, not the call's own end, ended `call`'s wait. */
+function endedEarly(call: Call): boolean {
+  return call.early.aborted && !call.signal.aborted
 }
 
 /** Why `reply`'s exit is null, for its note: the command still runs, or how the last command the terminal ran ended
@@ -737,7 +769,7 @@ export function restoredNote(shell: string, command: RecordedCommand): string {
     typeof command.exit === "number"
       ? `ended, exit ${command.exit}`
       : "ended with no exit code: it was stopped, maybe when the office stopped"
-  const head = `${shell} (gone): \`${oneLine(command.command)}\` ${ended}`
+  const head = `${shell} (gone): \`${oneLine(command.command, NOTE_COMMAND)}\` ${ended}`
   const gone = "The office has restarted since, so that shell is gone; run the command again in a new shell if you " +
     "need to."
   return `${head}\n${gone}`
@@ -755,53 +787,16 @@ function noteText(entry: Entry, shell: TerminalShell, running: Running): string 
   const { exit, stopped, duration } = running.end!
   const ended = exit !== null ? `ended, exit ${exit}` : `ended with no exit code: ${stopped}`
   const { output, start, cursor } = shell.peek(running.from, NOTE_READ)
-  const lines = lastLines(output, start > running.from)
+  const lines = lastLines(output, { lines: NOTE_LINES, bytes: NOTE_BYTES, cut: start > running.from })
   const shownFrom = start + output.replace(/\n$/, "").length - lines.length
-  const head = `${entry.name}: \`${oneLine(running.command)}\` ${ended}`
+  const head = `${entry.name}: \`${oneLine(running.command, NOTE_COMMAND)}\` ${ended}`
   const ran = `It ran for ${elapsed(duration)}.`
-  const fence = "`".repeat(Math.max(3, ...(lines.match(/`+/g) ?? []).map((run) => run.length + 1)))
-  const body = lines === "" ? [`${ran} It printed nothing.`] : [`${ran} Its last lines:`, fence, lines, fence]
+  const quote = fence(lines)
+  const body = lines === "" ? [`${ran} It printed nothing.`] : [`${ran} Its last lines:`, quote, lines, quote]
   const unread = cursor < shownFrom
     ? [`[You haven't read its output before these lines: call terminal_read on ${entry.name} from ${cursor}.]`]
     : []
   return [head, ...body, ...unread].join("\n")
-}
-
-/** The end of `text` a note shows: its last `NOTE_LINES` lines, trailing line end dropped, in at most `NOTE_BYTES`
- *  bytes, so whole lines from the front go first, then the head of a longer last line. A first line `cut` at its start
- *  goes when another follows it. */
-function lastLines(text: string, cut: boolean): string {
-  let lines = text.replace(/\n$/, "").split("\n")
-  if (cut && lines.length > 1) lines = lines.slice(1)
-  lines = lines.slice(-NOTE_LINES)
-  while (lines.length > 1 && Buffer.byteLength(lines.join("\n")) > NOTE_BYTES) lines.shift()
-  const [only] = lines
-  if (lines.length === 1 && Buffer.byteLength(only!) > NOTE_BYTES) return tailBytes(only!, NOTE_BYTES)
-  return lines.join("\n")
-}
-
-/** The end of `text` in at most `bytes` UTF-8 bytes, never inside a character. */
-function tailBytes(text: string, bytes: number): string {
-  const chars = [...text]
-  let size = 0
-  let at = chars.length
-  while (at > 0 && size + Buffer.byteLength(chars[at - 1]!) <= bytes) size += Buffer.byteLength(chars[--at]!)
-  return chars.slice(at).join("")
-}
-
-/** `command` on one line: each run of white space one space, and its first `NOTE_COMMAND` characters, `…` after. */
-function oneLine(command: string): string {
-  const flat = command.replace(/\s+/g, " ").trim()
-  const chars = [...flat]
-  return chars.length > NOTE_COMMAND ? `${chars.slice(0, NOTE_COMMAND).join("")}…` : flat
-}
-
-/** `seconds` as a note says it: `12s`, `4m12s`, or `1h03m`. */
-function elapsed(seconds: number): string {
-  const s = Math.round(seconds)
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`
-  return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`
 }
 
 /** Resolves once `promise` does, or after `ms`, whichever comes first. */
