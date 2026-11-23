@@ -25,9 +25,11 @@ export function waitingInstrument(instruments: readonly Instrument[] | undefined
   return instruments?.find((i) => i.status === "waiting")
 }
 
-/** After the prompt line's left side: what the session has running, after the picker's key (↓): its shells running a
- *  command and its family's Codex and Claude Code sessions running a turn, a count per kind; then how many of its
- *  instruments failed. Nothing while none runs or failed. A click opens the picker on the first tab with something
+/** After the prompt line's left side: what the picker lists before ctrl+a, after its key (↓): the session's shells
+ *  running a command and its family's live Codex and Claude Code sessions, running or idle, a count per kind; then how
+ *  many of its instruments failed. Nothing while there is none of those. A harness session counts while idle, as the
+ *  owner can open and message it, so this line is how they learn it is there; an idle shell doesn't, as it stays open
+ *  for the chat's life between the employee's commands. A click opens the picker on the first tab with something
  *  running. It takes only the room the line has left, cut in the middle when that is too little, so the rest of the
  *  line stays as it was and a failure still shows. The upstream TUI's prompt footer count. */
 export function InstrumentLine(props: { sessionID: string }) {
@@ -37,14 +39,11 @@ export function InstrumentLine(props: { sessionID: string }) {
   const shortcut = useCommandShortcut("session.child.first")
   const [hovered, setHovered] = createSignal(false)
   const listed = createMemo(() => office.state.instruments[props.sessionID] ?? [])
-  const family = createMemo(() =>
-    harnessFamily(office.state, props.sessionID).filter(
-      (entry) => entry.sessionID !== props.sessionID && entry.state === "running",
-    ),
-  )
+  const family = createMemo(() => harnessFamily(office.state, props.sessionID))
   const counts = createMemo(() => busyCounts({ family: family(), shells: listed(), sessionID: props.sessionID }))
   const live = createMemo(() => {
-    const harness = (kind: string) => family().filter((entry) => entry.harness === kind).length
+    const harness = (kind: string) =>
+      family().filter((e) => e.sessionID !== props.sessionID && e.harness === kind && e.state !== "ended").length
     return [
       [listed().filter((i) => i.kind === "terminal" && shellRunning(i)).length, "{} shell", "{} shells"] as const,
       [harness("codex"), "{} Codex session", "{} Codex sessions"] as const,

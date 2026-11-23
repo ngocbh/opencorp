@@ -3,7 +3,7 @@
 // session, marked Running, Idle or Ended), or Shell, its shells. ←/→ switch tabs, ↑/↓ move, Enter opens the row in the
 // right pane, ↑ on the first row or Esc closes; ctrl+d interrupts a session or sends a shell Ctrl-C. Sessions lists the
 // live sessions, running or idle, and Shell the shells that run; ctrl+a shows the rest. The line under the prompt
-// counts what runs, after ↓, and a click opens the picker. A child whose
+// counts the same, after ↓, and a click opens the picker on the first tab with something running. A child whose
 // session ended has no prompt: the picker sits in its place, and Esc goes back to the chat or closes the pane. An idle
 // or running child keeps its prompt, where the owner writes to the harness. Each session keeps its own unsent draft.
 import type { Instrument, Session } from "@opencorp/protocol"
@@ -236,9 +236,8 @@ test("Sessions lists the live sessions, running or idle, and ctrl+a only the end
   const { fake, chat } = office([{ status: "busy" }, { harness: "claude", status: "idle" }, { status: "ended" }])
   const app = await boot(fake, chat.id)
   try {
-    // The line under the prompt still counts only what runs.
-    await app.until((f) => f.includes("@minh auto ·") && f.includes("↓ 1 Codex session"))
-    expect(app.frame()).not.toContain("Claude Code session")
+    // The line under the prompt counts the same sessions.
+    await app.until((f) => f.includes("@minh auto ·") && f.includes("↓ 1 Codex session · 1 Claude Code session"))
     await press(app, "down")
     let f = await app.until((f) => f.includes("Codex: codex 1") && f.includes("Claude Code: claude 1"))
     expect(row(f, "Codex: codex 1")).toMatch(/Codex: codex 1 +Running$/)
@@ -289,11 +288,10 @@ test("an idle child keeps its prompt in the pane, where the owner's message resu
   const { fake, chat, children } = office([{ status: "idle" }])
   const app = await boot(fake, chat.id)
   try {
-    await app.until((f) => f.includes("@minh auto ·"))
-    // An idle session isn't counted: only what runs.
-    expect(app.frame()).not.toContain("Codex session")
+    // It is live: the line under the prompt counts it, so the owner knows it is there.
+    await app.until((f) => f.includes("@minh auto ·") && f.includes("↓ 1 Codex session"))
     await press(app, "down")
-    // It is live, so the picker lists it as it opens.
+    // The picker lists it as it opens.
     let f = await app.until((f) => f.includes("Codex: codex 1"))
     expect(row(f, "Codex: codex 1")).toMatch(/Idle$/)
     expect(f).not.toContain("interrupt ctrl+d")
@@ -392,12 +390,13 @@ test("a message to a child that ends while it goes out says it failed, and the c
   }
 })
 
-test("the line under the prompt counts what runs after ↓, and a click opens the picker on the busiest tab", async () => {
+test("the line under the prompt counts after ↓, and a click opens the picker on the first tab with something running", async () => {
   const { fake, chat, children } = office([{ status: "idle" }], [{ status: "running" }])
   const app = await boot(fake, chat.id)
   try {
-    let f = await app.until((f) => f.includes("@minh auto ·") && f.includes("↓ 1 shell"))
-    expect(row(f, "↓ 1 shell")).toMatch(/\/tmp\/proj · ↓ 1 shell {2,}shift\+tab mode/)
+    let f = await app.until((f) => f.includes("@minh auto ·") && f.includes("↓ 1 shell · 1 Codex session"))
+    expect(row(f, "↓ 1 shell")).toMatch(/\/tmp\/proj · ↓ 1 shell · 1 Codex session {2,}shift\+tab mode/)
+    // Only the shell runs: the click opens Shell.
     const click = async (text: string) => {
       const rows = app.frame().split("\n")
       const y = rows.findIndex((r) => r.includes(text))
@@ -407,12 +406,44 @@ test("the line under the prompt counts what runs after ↓, and a click opens th
     await app.until((f) => f.includes("shell 1 · make step1") && !f.includes(COMMANDS))
     await escape(app)
     await app.until((f) => f.includes(COMMANDS))
-    // The Codex session runs: it counts, and Sessions comes first.
+    // The Codex session runs: Sessions comes first.
     fake.setStatus(children[0]!.id, "busy")
     fake.addInstrument(chat.id, { ...fake.state.instruments[chat.id]!.find((i) => i.id === children[0]!.id)!, status: "running" })
-    f = await app.until((f) => f.includes("↓ 1 shell · 1 Codex session"))
+    await app.until((f) => f.includes(COMMANDS))
     await click("↓ 1 shell")
     await app.until((f) => f.includes("Codex: codex 1") && f.includes("interrupt ctrl+d"))
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
+
+test("the line under the prompt counts the live Codex and Claude Code sessions, running or idle, never an ended one", async () => {
+  const { fake, chat, children } = office([
+    { status: "busy" },
+    { status: "idle" },
+    { status: "ended" },
+    { harness: "claude", status: "idle" },
+  ])
+  /** Sets child `i`'s session, and its listing in the chat, to `status`. */
+  const set = (i: number, status: Session["status"]) => {
+    const id = children[i]!.id
+    fake.setStatus(id, status)
+    const listing = fake.state.instruments[chat.id]!.find((x) => x.id === id)!
+    fake.addInstrument(chat.id, { ...listing, status: LISTED[status] ?? "ended" })
+  }
+  const app = await boot(fake, chat.id)
+  try {
+    // codex 1 runs and codex 2 is idle, so both count; codex 3 ended. The owner's case: claude 1, idle, counts.
+    await app.until((f) => f.includes("@minh auto ·") && f.includes("↓ 2 Codex sessions · 1 Claude Code session"))
+    // An idle session that ends leaves the count.
+    set(1, "ended")
+    await app.until((f) => f.includes("↓ 1 Codex session · 1 Claude Code session"))
+    // So does a running one.
+    set(0, "ended")
+    await app.until((f) => f.includes("↓ 1 Claude Code session") && !f.includes("Codex session"))
+    set(3, "ended")
+    await app.until((f) => f.includes(COMMANDS) && !f.includes("↓"))
   } finally {
     await app.stop()
     fake.stop()

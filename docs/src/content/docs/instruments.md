@@ -96,10 +96,10 @@ An employee's `person.yaml` lists the harnesses they use in `tools`, such as `to
 is the employee's own chat, on the Yian engine. They hand work to Codex if `tools` lists codex, and to Claude Code if
 it lists claude.
 
-- **Sessions.** The line under the prompt counts their Codex and Claude Code sessions that run a turn. The picker's
-  Sessions tab (↓, or "Open an instrument…" in the command list, ctrl+p) lists them, each marked Running, Idle or
-  Ended; Enter opens one in [the pane](#the-pane), where you watch the harness work and write to it too, and ctrl+d
-  interrupts its turn. A click on your employee's call to a session in the chat, such as
+- **Sessions.** The line under the prompt counts their live Codex and Claude Code sessions, running or idle. The
+  picker's Sessions tab (↓, or "Open an instrument…" in the command list, ctrl+p) lists them, each marked Running,
+  Idle or Ended; Enter opens one in [the pane](#the-pane), where you watch the harness work and write to it too, and
+  ctrl+d interrupts its turn. A click on your employee's call to a session in the chat, such as
   `Codex: codex 1 — Fix the parser`, opens that session in the pane too. ↑ past the oldest entry of the session's
   prompt history, or "Go back to the chat" in the command list, gives the chat the keys. An ended session opens
   read-only: the picker takes its prompt's place, and Esc closes it. The session list still opens a session as a chat
