@@ -695,6 +695,7 @@ test("Claude Code's start turns its sandbox on, fails if it can't start, allows 
         network: { allowedDomains: [], strictAllowlist: true },
       },
       permissions: {
+        additionalDirectories: [tmp],
         blockReadsOutsideWorkingDirectories: true,
         blockWritesOutsideWorkingDirectories: true,
         deny: [...kept.deny, ...claudeReads(home), ...CLOSED],
@@ -712,6 +713,30 @@ test("Claude Code's start turns its sandbox on, fails if it can't start, allows 
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
     },
   })
+})
+
+test("Claude Code's working folders take in the session's own temp folder, from its settings, so a command naming it isn't refused; not /tmp, another session's temp folder, the home or the office's", () => {
+  const { root, home, officeHome, tmp, permission, folder } = layout()
+  // Another session's temp folder, beside this one's as the harness's private folder under /tmp keeps them.
+  const other = path.join(root, "tmp-other")
+  fs.mkdirSync(other, { mode: 0o700 })
+  const listed = folder("data")
+  for (const p of [permission(), permission({ writable: false }), permission({ folders: [{ path: listed, access: "write" }] })]) {
+    const { settings, addDirs, env } = claudeStart(p)
+    const dirs = (settings.permissions as { additionalDirectories: string[] }).additionalDirectories
+    expect(dirs).toEqual([tmp])
+    expect(env.TMPDIR).toBe(tmp)
+    // Not --add-dir, from which Claude Code would load skills, commands and agents a command planted there.
+    expect(addDirs).not.toContain(tmp)
+    for (const outside of [fs.realpathSync("/tmp"), other, home, officeHome]) expect(dirs).not.toContain(outside)
+    // Its commands still can't see /tmp, but their own temp folder.
+    const { filesystem } = settings.sandbox as { filesystem: Record<string, string[]> }
+    expect(filesystem.denyRead).toContain(fs.realpathSync("/tmp"))
+    for (const outside of [fs.realpathSync("/tmp"), other]) {
+      expect(filesystem.allowRead).not.toContain(outside)
+      expect(filesystem.allowWrite).not.toContain(outside)
+    }
+  }
 })
 
 test("Claude Code's commands can't reach the owner's sockets: /tmp, /run and /dev/shm are hidden but the session's own folders, unless a listed folder covers one", () => {

@@ -189,6 +189,26 @@ test("a start's environment is the worker's with the fixed PATH, its own temp fo
   await elsewhere.claude.close(2000)
 })
 
+test("the session's own temp folder is one of Claude Code's working folders, so its file tools read it; another session's, and /tmp, stay outside", async () => {
+  const { root, tmp, fake, permission } = layout()
+  const reads = [path.join(tmp, "eval/out.txt"), path.join(root, "other-session/out.txt"), "/tmp/out.txt"]
+  fake.set({ turns: [reads.map((file_path) => ({ tool: "Read", input: { file_path }, result: "read" }))] })
+  const { claude, start, lines } = proc(root, fake, permission())
+  expect((start.settings.permissions as Obj).additionalDirectories).toEqual([tmp])
+  await claude.start()
+  await claude.send("Read them.")
+  await waitFor(() => lines.some((m) => m.type === "result"), { what: "the turn's result" })
+  const results = lines.flatMap((m) =>
+    m.type === "user" ? (m.message.content as Obj[]).filter((block) => block.type === "tool_result") : [],
+  )
+  expect(results.map((block) => [block.is_error === true, block.content])).toEqual([
+    [false, "read"],
+    [true, expect.any(String)],
+    [true, expect.any(String)],
+  ])
+  await claude.close(2000)
+})
+
 test("a session's start passes the owner's and the project's CLAUDE.md from a file in its own temp folder, removed when Claude Code exits", async () => {
   const { root, home, ws, tmp, fake, permission } = layout()
   const config = path.join(home, ".claude")

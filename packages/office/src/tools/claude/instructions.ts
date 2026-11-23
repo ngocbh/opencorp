@@ -48,8 +48,8 @@ export function claudeInstructions({ configDir, workspace, gitRoot }: Instructio
 }
 
 /** Writes `text` to `<root>/<name>.instructions.md`, made fresh and 0600 (whatever was there, a link included, is
- *  removed first, and never followed), and returns its path. `root` is the harness's private folder, which the
- *  harness's commands can't write. */
+ *  removed first, and never followed), and returns its path. `root` is the session's private temp folder, made fresh
+ *  for each start: its commands may write it, but none has run when Claude Code reads the file at its start. */
 export function writeInstructions(root: string, name: string, text: string): string {
   if (name === "" || name.includes("/") || name.includes("\0") || name.startsWith(".")) {
     throw new Error(`an instructions file is named by one path segment; got ${JSON.stringify(name)}`)

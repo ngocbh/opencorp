@@ -263,8 +263,9 @@ export function mcpServersOff(defined: readonly string[]): Record<string, { enab
 /** Claude Code's flag settings (`--settings`), its `--add-dir` folders, and its environment, for one session.
  *
  *  Its Bash sandbox reads everything but `denyRead` (where `allowRead` re-opens a folder), and can always write its
- *  working folder and each `--add-dir` folder, with `denyWrite` winning over every write allow; its own file tools
- *  are held by its permission rules, not the OS, so its `Read` denies mirror the folders denied by name. Throws as
+ *  working folders (its own, each `--add-dir` folder and the temp folder, `additionalDirectories`), with `denyWrite`
+ *  winning over every write allow; its own file tools are held by its permission rules, not the OS, so its `Read`
+ *  denies mirror the folders denied by name. Throws as
  *  `checkPermission` does, and for the network on: its sandbox takes only a list of allowed hosts, and no setting
  *  that allows every host has been checked against a real Claude Code. */
 export function claudeStart(p: EmployeePermission): {
@@ -313,6 +314,10 @@ export function claudeStart(p: EmployeePermission): {
       network: { allowedDomains: [], strictAllowlist: true },
     },
     permissions: {
+      // The session's own temp folder, which its sandbox already reads and writes, is a working folder too: its
+      // checker refuses, with nobody to ask, a command naming a path outside them. A settings entry grants file
+      // access only, where `--add-dir` would also load skills, commands and agents its commands could plant there.
+      additionalDirectories: [c.tmpdir],
       blockReadsOutsideWorkingDirectories: true,
       // Its file tools run as the owner, outside its sandbox: they write only the working folders.
       blockWritesOutsideWorkingDirectories: true,

@@ -84,6 +84,28 @@ test("a start is the chat's child session, under the employee's permission, told
   expect(fs.existsSync(path.join(h.sessions.mcpRoot(), session.id))).toBe(false)
 })
 
+test("each session's Claude Code has a temp folder of its own as TMPDIR and working folder, outside the office's home, holding nothing of the office's but its instructions, and gone with it", async () => {
+  const h = makeClaude()
+  const first = await started(h)
+  const second = await started(h, "01JA1H0000000000000000CA02")
+  const folders = starts(h).map((start) => {
+    const tmp = start.env!.TMPDIR as string
+    expect(start.flags!.settings.permissions.additionalDirectories).toEqual([tmp])
+    expect(start.flags!["add-dir"] ?? []).not.toContain(tmp)
+    return tmp
+  })
+  expect(folders).toEqual([first.id, second.id].map((id) => path.join(h.sessions.root(), id)))
+  for (const tmp of folders) {
+    expect(fs.statSync(tmp).mode & 0o777).toBe(0o700)
+    expect(tmp.startsWith(h.office.paths.home + path.sep)).toBe(false)
+    // The appended instructions, which Claude Code reads at its start and which it is told anyway.
+    expect(fs.readdirSync(tmp)).toEqual(["opencorp.instructions.md"])
+  }
+  await h.sessions.end(first.id)
+  expect(fs.existsSync(folders[0]!)).toBe(false)
+  expect(fs.existsSync(folders[1]!)).toBe(true)
+})
+
 /** Commits minh's person file `file` to `h`'s company: its head moves on, the session's commit stays. */
 async function commitPerson(h: Claude, file: Record<string, unknown>): Promise<void> {
   fs.writeFileSync(path.join(h.office.paths.company, "people/minh/person.yaml"), JSON.stringify(file))
