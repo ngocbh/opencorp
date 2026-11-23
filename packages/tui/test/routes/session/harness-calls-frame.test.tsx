@@ -4,6 +4,7 @@
 import type { Instrument, Message, Session, ToolPart } from "@opencorp/protocol"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { SPINNER_FRAMES } from "../../../src/component/spinner"
+import { DEFAULT_THEME, DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
 import { createFakeOffice, createStub, type FakeOffice } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
 
@@ -13,6 +14,7 @@ type App = Awaited<ReturnType<typeof bootFrame>>
 setDefaultTimeout(20_000)
 
 const AT = "2026-11-22T10:00:00.000Z"
+const theme = resolveTheme(DEFAULT_THEMES[DEFAULT_THEME]!, "dark")
 
 /** A reply as the office writes it, naming session `name` of `kind`. */
 const reply = (kind: string, name: string, status = "idle") =>
@@ -96,6 +98,14 @@ function row(f: string, needle: string) {
 const spins = (f: string, needle: string) => SPINNER_FRAMES.some((frame) => row(f, needle).text.startsWith(frame))
 /** Whether the right pane is open: its box's top-left corner shows. */
 const paneOpen = (f: string) => f.includes("┌")
+
+/** The foreground of the first span holding `needle`. */
+function fg(app: App, needle: string) {
+  return app.setup
+    .captureSpans()
+    .lines.flatMap((l) => l.spans)
+    .find((s) => s.text.includes(needle))?.fg
+}
 
 /** Clicks the row holding `needle`, a few cells into it. */
 async function click(app: App, needle: string) {
@@ -203,6 +213,37 @@ test("a refused call, or one whose session failed, says why after its label, as 
     )
     expect(row(f, "Codex: codex 1 — Go on").text).toBe("↳ Codex: codex 1 — Go on")
     expect(row(f, "Codex: codex 1 — history").text).toBe("↳ Codex: codex 1 — history · failed: Codex exited")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("an errored call's error waits while its session runs, and shows once the session stops", async () => {
+  let codex!: Session
+  const { office, app } = await boot(
+    [
+      call("codex_send", { codex: "codex 1", message: "Use the other API" }, "{}", {
+        state: "error",
+        error: "cut off",
+      }),
+    ],
+    (office, chat) => {
+      codex = child(office, chat, "codex", "codex 1", "busy")
+    },
+  )
+  try {
+    let f = await app.until((f) => f.includes("Codex: codex 1 — Use the other API"))
+    // While codex 1 runs, the row spins in the colour of a call that is fine.
+    expect(spins(f, "Codex: codex 1 — Use the other API")).toBe(true)
+    expect(fg(app, "Codex: codex 1 — Use the other API")?.equals(theme.error)).toBe(false)
+
+    office.setStatus(codex.id, "idle")
+    f = await app.until((f) => row(f, "Codex: codex 1 — Use the other API").text.startsWith("↳ "))
+    expect(fg(app, "Codex: codex 1 — Use the other API")?.equals(theme.error)).toBe(true)
+    // A click on a failed call opens its error, as on any failed tool.
+    await click(app, "Codex: codex 1 — Use the other API")
+    await app.until((f) => f.includes("cut off"))
   } finally {
     await app.stop()
     office.stop()
