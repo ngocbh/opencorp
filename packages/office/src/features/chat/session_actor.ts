@@ -3604,7 +3604,9 @@ export class SessionActor implements LiveCalls {
   }
 
   /** A message reached the running agent's inbox: the replies its terminal, Codex and Claude Code calls wait on come
-   *  now, their commands and turns going on, so it reads the message at its next step. */
+   *  now, their commands and turns going on, so it reads the message at its next step. A call the model asked for
+   *  while the message came starts after it and waits on, since Yian doesn't yet tell a tool that a steer waits
+   *  unread (yian#1806). */
   #messageArrived(): void {
     const { terminal, codex, claude } = this.#spec ?? {}
     for (const instrument of [terminal, codex, claude]) {

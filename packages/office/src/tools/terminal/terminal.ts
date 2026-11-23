@@ -25,8 +25,8 @@
  *  **Waits.** A reply waits at most two minutes; a held call waits in yian for its card instead. Each call's wait ends
  *  with the call's signal, with its interrupt (the agent's, as yian passes it, which reaches a call that came after
  *  `interruptWaits` too) and with `interruptWaits`, and a call stopped before it acts types nothing. A message for the
- *  agent (`messageArrived`) ends the agent's waits too, with their commands running on, so the agent reads it at its
- *  next step. Calls on one shell queue; calls on different shells run together.
+ *  agent while a call waits (`messageArrived`) ends that wait too, with its command running on, so the agent reads it
+ *  at its next step. Calls on one shell queue; calls on different shells run together.
  *
  *  **A call cut off stops its command.** A `run` whose signal aborts before its reply
  *  returns stops the command it waits on, as the owner's Ctrl-C does, and replies once it has ended (or after a few
@@ -256,7 +256,8 @@ export class Terminal {
   private readonly entries: Entry[] = []
   /** The calls running now, each stopped by its controller: `interruptWaits` ends them. */
   private readonly calls = new Set<AbortController>()
-  /** The agent's calls running now, each one's wait ended early by its controller: `messageArrived` ends them. */
+  /** The agent's calls running now, a held one the owner approved among them, each one's wait ended early by its
+   *  controller: `messageArrived` ends them. */
   private readonly early = new Set<AbortController>()
   private made = 0
   private closed = false
@@ -376,8 +377,10 @@ export class Terminal {
     for (const call of [...this.calls]) call.abort()
   }
 
-  /** A message for the agent arrived: every reply the agent's calls wait on comes now, so the agent reads the message
-   *  at its next step. Their commands run on, as after the wait, and a call still in its gate or queued goes on. */
+  /** A message for the agent arrived: every reply the agent's calls wait on comes now, a held call the owner approved
+   *  included, so the agent reads the message at its next step. Their commands run on, as after the wait, and a call
+   *  queued behind another goes on. A call that starts after it, as one the model asked for while the message came,
+   *  waits on: nothing here knows whether the agent has read it (yian#1806). */
   messageArrived(): void {
     for (const call of [...this.early]) call.abort()
   }

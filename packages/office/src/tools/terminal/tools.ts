@@ -77,7 +77,7 @@ const RUNNING = {
     "long command: keep working on what doesn't need its result, and if you have nothing else to do, end your " +
     "reply; you'll be resumed when it ends. DO NOT poll it with read or sleep: read its output so far only if that " +
     "lets you do useful work now. Pass a longer `wait` only when your next step needs the result and there is " +
-    "nothing else to do. A wait ends early when someone messages you.",
+    "nothing else to do. A message that reaches you while you wait ends the wait early.",
 }
 
 /** What read's description says of its wait, by whether the host tells the session of a command's end. */
@@ -85,8 +85,8 @@ const READ_WAIT = {
   read: "use a long wait, not polling with short ones.",
   notes:
     "you're told when a command whose reply said it runs on ends, so don't poll: read only when its output lets you " +
-    "do useful work now, and pass a longer `wait` only when your next step needs the result. A wait ends early when " +
-    "someone messages you.",
+    "do useful work now, and pass a longer `wait` only when your next step needs the result. A message that reaches " +
+    "you while you wait ends the wait early.",
 }
 
 const runDescription = (shells: string, running: string) =>
