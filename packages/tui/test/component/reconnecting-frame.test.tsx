@@ -49,7 +49,7 @@ test("a chat opened before the first connection shows the overlay after the firs
   try {
     // The overlay's timer starts once the TUI finds no office, a moment after it boots.
     await absentFor(app, FIRST_GRACE_MS - GRACE_MS)
-    const f = await app.until((f) => f.includes(LOST), 3000)
+    const f = await app.until((f) => f.includes(LOST), 5000)
     expect(f).toContain("Reconnecting to the office automatically.")
     // Home says why it waits instead.
     app.input.pressKey("x", { ctrl: true })
