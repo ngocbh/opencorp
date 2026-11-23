@@ -8,6 +8,29 @@ On Linux HQ's web port is off by default, so it prints how to reach HQ instead. 
 the forwarding commands. `opencorp hq NAME` opens the HQ of an office on another machine, which you
 save as a destination (see [Several offices](#several-offices)).
 
+## Run Logs
+
+Run Logs lists the runs of your employees' flows. A run's page shows what ran and who drove it, its Timeline of
+node attempts, and Raw, its log's records as stored; **Download** saves the log. Every signed-in person can read
+every run log.
+
+### Model calls
+
+Click an agent node in the Timeline: its detail lists the node's model calls. Click one to see it rebuilt from
+the run log:
+
+- **Request**: the system prompt, the messages the model read (the history, your messages and tool results,
+  each with who said it), the tools it could call, and the model and its settings. It never holds the model's
+  key, headers or connection.
+- **Reply**: the model's thought, folded, and its text.
+- **Tool calls**: each call's arguments and result, and what the office decided for it: why it let the call
+  run, a call it held for approval and who approved it, or a call it refused.
+- **Attempts**: each try, with its error and the wait before a retry, and its token usage. A reply an
+  interrupt cut says so.
+
+A long text shows its first lines until you click **Show all**. **Back**, or Escape, returns to the node. The
+model calls of a run whose log is over 16 MiB can't be opened here: download the log.
+
 ## HQ from another machine
 
 `opencorp hq NAME` runs destination NAME's `~/.opencorp/hq/NAME/reach.sh` (under `$OPENCORP_HOME` when
