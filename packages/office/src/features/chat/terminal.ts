@@ -182,7 +182,8 @@ export class EmployeeTerminal {
     this.#records.set(id, record)
     const terminal = this.#terminal
     const shell = () => terminal.shell(id)
-    const listing = shellInstrument({ sessionId, id, name, driver: person, profile, interactive: false, shell })
+    const close = (by: string) => terminal.ownerClose(id, by)
+    const listing = shellInstrument({ sessionId, id, name, driver: person, profile, interactive: false, shell, close })
     instruments.add(sessionId, listing)
     this.#listed.add(id)
     return {

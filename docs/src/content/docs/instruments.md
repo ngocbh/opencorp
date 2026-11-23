@@ -94,6 +94,11 @@ while a command runs), and a missing `.mcp.json` can still be created.
 - **The picker.** ← and → switch its tabs (Sessions, Shell), ↑ and ↓ move, Enter opens in the pane, and Esc or ↑ on
   the first row closes it. It opens on the first tab with something running. Sessions lists the live sessions,
   running or idle, and Shell the shells that run; ctrl+a shows the rest, and stays as you set it until you quit.
+- **Closing a shell.** In the Shell tab, ctrl+d on an idle shell closes it, as your employee's own close does; on a
+  running one it stops the command. If the idle shell has output you haven't seen in the pane, OpenCorp asks first.
+  Only the chat's approver may close its shells. The shell's record says you closed it, and your employee is told in
+  a note from the shell, ``↳ shell 2: closed by @you.``, which starts a new turn if they rest. ctrl+d leaves an
+  ended shell alone: it is the record of what ran.
 - **Waits.** A command's reply waits 5 seconds unless your employee asks for longer (at most two minutes): a quick
   command replies with its output, and a longer one runs on while your employee does other work or ends their reply.
   A message that reaches your employee during the wait, yours or a note, ends it at once; the command goes on. One

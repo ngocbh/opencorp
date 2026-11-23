@@ -152,6 +152,33 @@ test("a command that ends while the agent rests starts a new turn with its note"
   expect(message).toMatchObject({ role: "user", author: null, instrument: { id: shell!.id, name: "shell 1" } })
 })
 
+test("the owner's close of an idle shell wakes the resting agent once, with a note signed by the shell", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all", 30), { content: "Built." }, { match: "shell 1: closed by @ngocbh.", content: "Noted." })
+  const { o, end } = await notesOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  // The command ends while the reply waits on it: its reply carries the end, so no note of it comes.
+  await waitFor(() => o.pipes.commands.length === 1, { what: "the command" })
+  end("make all", 0)
+  await waitFor(() => texts(o, sid).includes("Built.") && status(o, sid) === "idle" && !actor.hasWorker, {
+    what: "the first reply",
+  })
+  const [shell] = o.office.instruments.list(sid)
+  expect(shell).toMatchObject({ name: "shell 1", status: "idle" })
+  await o.office.instruments.get(sid, shell!.id)!.close!("ngocbh")
+  await waitFor(() => texts(o, sid).includes("Noted.") && status(o, sid) === "idle", { what: "the woken reply" })
+  expect(fake.requests()).toHaveLength(3)
+  expect(asked(fake, 3, 'author="shell 1"')).toBe(true)
+  expect(notes(o, sid)).toEqual(["shell 1: closed by @ngocbh."])
+  // The chat shows it as the shell's note, and the shell's record says who closed it.
+  const message = o.transcript.messages(sid, session(o, sid).run_ids).find((m) => isInstrumentNote(m))
+  expect(message).toMatchObject({ role: "user", author: null, instrument: { id: shell!.id, name: "shell 1" } })
+  expect(o.office.instruments.list(sid)[0]).toMatchObject({ status: "ended" })
+  const meta = path.join(o.office.paths.sessionDir(sid), "terminal", shell!.id, "meta.json")
+  expect(JSON.parse(fs.readFileSync(meta, "utf8"))).toMatchObject({ state: "ended", closedBy: "ngocbh" })
+})
+
 test("two commands that end together send two notes, which one model call reads", async () => {
   const fake = await fakeLlm()
   const both: ScriptedReply = {

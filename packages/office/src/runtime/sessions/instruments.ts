@@ -35,6 +35,9 @@ export interface LiveInstrument {
   interrupt(): void
   /** The owner's view's size, which its PTY takes. */
   resize(cols: number, rows: number): void
+  /** The owner's close, as `by`: a terminal's shell ends as the agent's close ends it, signed by them. Only a shell
+   *  an agent's terminal works has one. */
+  close?(by: string): Promise<void>
 }
 
 /** What the registry still holds of an instrument's output: the bytes from `offset` to `end`, counted from the

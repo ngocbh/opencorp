@@ -378,6 +378,35 @@ test("no note when a reply carries the end, the agent interrupts or closes, or t
   expect(t.notes).toHaveLength(1)
 })
 
+test("the owner's close ends a shell, its record says who closed it, the agent gets one note, and later calls say so", async () => {
+  const { t, fake } = notedTerminal()
+  // An idle shell: its command has ended.
+  expect(json(await t.call("run", { command: "echo hi", why: "x" }))).toMatchObject({ status: "idle", exit: 0 })
+  await t.terminal.ownerClose("sh_1", "ngocbh")
+  expect(t.terminal.shells()[0]!.state.status).toBe("ended")
+  expect(t.record("sh_1")).toMatchObject({ state: "ended", closedBy: "ngocbh" })
+  await waitFor(() => t.notes.length === 1, { what: "the note" })
+  // Signed by the shell, under a key of its own, so it is never sent twice.
+  expect(t.notes[0]).toEqual({ key: "terminal:sh_1:1:closed", shell: "shell 1", text: "shell 1: closed by @ngocbh." })
+  // A later call on it says who closed it; its output still reads.
+  const refused = "@ngocbh closed this shell; run with no shell to start a new one"
+  expect(json(await t.call("run", { command: "echo again", why: "x", shell: "shell 1" }))).toMatchObject({ refused })
+  expect(json(await t.call("interrupt", { shell: "shell 1" }))).toMatchObject({ refused })
+  expect(json(await t.call("read", { shell: "shell 1" })).refused).toBeUndefined()
+  // A second close does nothing.
+  await t.terminal.ownerClose("sh_1", "ngocbh")
+  // A running command stops with its shell: the close's note names it, and no note of its own comes.
+  expect(json(await t.call("run", { command: "make all", why: "x", wait: 0 }))).toMatchObject({ status: "running" })
+  await t.terminal.ownerClose("sh_2", "ngocbh")
+  expect(fake.running()).toEqual([])
+  await waitFor(() => t.notes.length === 2, { what: "the second note" })
+  expect(t.notes[1]!.text).toBe("shell 2: closed by @ngocbh while `make all` ran; the command was stopped.")
+  expect(t.record("sh_2").commands).toMatchObject([{ command: "make all", exit: null }])
+  expect(t.record("sh_2").commands[0]!.told).toBeUndefined()
+  await Bun.sleep(50)
+  expect(t.notes).toHaveLength(2)
+})
+
 test("a note keeps the last 20 lines, at most 2 KiB of them, and says where the output the agent hasn't read starts", async () => {
   const { t, fake } = notedTerminal()
   const reply = json(await t.call("run", { command: "make many\nmake    more", why: "x", wait: 0 }))

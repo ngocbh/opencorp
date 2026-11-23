@@ -1,6 +1,6 @@
-/** A terminal's shell as one of its session's live instruments: its state as it is now, the owner's keys and Ctrl-C,
- *  and the size the owner's view draws it at. It declares the registry's `LiveInstrument` by its shape, so the terminal
- *  imports nothing of the sessions. The adapter keeps none of the keys it passes on. */
+/** A terminal's shell as one of its session's live instruments: its state as it is now, the owner's keys, Ctrl-C and
+ *  close, and the size the owner's view draws it at. It declares the registry's `LiveInstrument` by its shape, so the
+ *  terminal imports nothing of the sessions. The adapter keeps none of the keys it passes on. */
 import { type Instrument, now } from "@opencorp/protocol"
 import { PtyShell, type ShellState } from "./shell.ts"
 import type { TerminalProfile, TerminalShell } from "./terminal.ts"
@@ -19,10 +19,12 @@ export interface ShellInstrument {
   keys(data: string): void
   interrupt(): void
   resize(cols: number, rows: number): void
+  close?(by: string): Promise<void>
 }
 
 /** What a shell's listing is made from: the session it is listed in, its id and name, who drives it, the sandbox it
- *  runs in, whether it is a PTY, and the shell itself once it is open (undefined while it starts). */
+ *  runs in, whether it is a PTY, the shell itself once it is open (undefined while it starts), and, when its terminal
+ *  takes one, the owner's close (`Terminal.ownerClose`). */
 export interface ShellInstrumentInit {
   readonly sessionId: string
   readonly id: string
@@ -31,6 +33,7 @@ export interface ShellInstrumentInit {
   readonly profile: TerminalProfile
   readonly interactive: boolean
   shell(): TerminalShell | undefined
+  close?(by: string): Promise<void>
 }
 
 /** Shell `o.id` as a live instrument: `starting` until it opens, then its state as the shell has it. The owner's keys
@@ -69,5 +72,6 @@ export function shellInstrument(o: ShellInstrumentInit): ShellInstrument {
       const shell = o.shell()
       if (shell instanceof PtyShell) shell.resize(cols, rows)
     },
+    ...(o.close === undefined ? {} : { close: o.close }),
   }
 }

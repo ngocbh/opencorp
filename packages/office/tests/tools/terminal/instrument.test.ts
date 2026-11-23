@@ -1,5 +1,5 @@
-/** A terminal's shell as a session's live instrument: what the registry lists of it, and the owner's keys, Ctrl-C and
- *  size reaching it. */
+/** A terminal's shell as a session's live instrument: what the registry lists of it, and the owner's keys, Ctrl-C,
+ *  size and close reaching it. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -17,7 +17,7 @@ setDefaultTimeout(30_000)
 
 const SESSION = newId()
 
-test("a shell's state, output and size reach the registry; keys and Ctrl-C go to it as the owner's", async () => {
+test("a shell's state, output and size reach the registry; keys, Ctrl-C and a close go to it as the owner's", async () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-inst-")))
   const events: LiveEvent[] = []
   const registry = new Instruments((event) => events.push(event), { everyMs: 0 })
@@ -38,6 +38,7 @@ test("a shell's state, output and size reach the registry; keys and Ctrl-C go to
         profile,
         interactive: terminal.interactive,
         shell: () => terminal.shell(id),
+        close: (by) => terminal.ownerClose(id, by),
       })
       registry.add(SESSION, listing)
       return {
@@ -94,6 +95,15 @@ test("a shell's state, output and size reach the registry; keys and Ctrl-C go to
   instrument.interrupt()
   await waitFor(() => registry.list(SESSION)[0]!.status === "idle", { what: "the Ctrl-C" })
 
-  await terminal.close()
+  // The owner's close ends it, signed by them.
+  await instrument.close!("ngocbh")
   expect(registry.list(SESSION)[0]!.status).toBe("ended")
+  const record = fs.readFileSync(path.join(dir, "records", id, "meta.json"), "utf8")
+  expect(JSON.parse(record)).toMatchObject({ state: "ended", closedBy: "ngocbh" })
+  // A listing made with no close has none.
+  const bare = shellInstrument({
+    sessionId: SESSION, id: newId(), name: "shell 9", driver: "opencorp", profile: "none", interactive: true,
+    shell: () => undefined,
+  })
+  expect(bare.close).toBeUndefined()
 })

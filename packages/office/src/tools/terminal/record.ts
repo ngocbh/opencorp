@@ -41,13 +41,14 @@ export interface RecordedCommand {
   told?: string
 }
 
-/** What a record's meta.json holds. `error` says why a shell failed or ended; `outputError` says why output.log
- *  stopped short. */
+/** What a record's meta.json holds. `error` says why a shell failed or ended; `closedBy` names the person who closed
+ *  it from their client, the owner; `outputError` says why output.log stopped short. */
 export interface RecordFile extends RecordMeta {
   state: RecordState
   commands: RecordedCommand[]
   ended?: string
   error?: string
+  closedBy?: string
   outputError?: string
 }
 
@@ -92,7 +93,7 @@ function isRecordFile(value: unknown): value is RecordFile {
   return (
     file.kind === "terminal" &&
     ["id", "name", "profile", "driver", "started"].every((key) => isText(file[key])) &&
-    ["ended", "error", "outputError"].every((key) => file[key] === undefined || isText(file[key])) &&
+    ["ended", "error", "closedBy", "outputError"].every((key) => file[key] === undefined || isText(file[key])) &&
     STATES.has(file.state as string) &&
     Array.isArray(file.commands) &&
     file.commands.every(isCommand)
@@ -172,6 +173,13 @@ export class InstrumentRecord {
     const last = this.file.commands.at(-1)
     if (this.file.state !== "running" || last === undefined) return
     last.told = key
+    this.save()
+  }
+
+  /** Records that `by`, a person, closed the shell from their client; its end follows. */
+  closedBy(by: string): void {
+    if (this.file.state !== "running") return
+    this.file.closedBy = by
     this.save()
   }
 
