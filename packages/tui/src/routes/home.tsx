@@ -77,12 +77,12 @@ export function Home() {
       <box width="100%" maxWidth={promptMaxWidth()} zIndex={1000} paddingTop={1} flexShrink={0}>
         <Prompt ref={bind} placeholders={placeholder} />
         <Show when={office.status() === "offline"}>
-          <text fg={theme.textMuted} paddingTop={1}>
+          <text fg={theme.textMuted} paddingBottom={1}>
             Office is not running. Waiting for {abbreviateHome(office.client.socket, paths.home)}
           </text>
         </Show>
         <Show when={office.status() === "error"}>
-          <text fg={theme.error} paddingTop={1}>
+          <text fg={theme.error} paddingBottom={1}>
             The office's state can't be read: {office.error()}. Retrying…
           </text>
         </Show>
