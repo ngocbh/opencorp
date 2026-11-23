@@ -448,6 +448,72 @@ test("a granted flow's call reaches the gate naming the module tools its steps c
   expect(JSON.stringify(fake.requests()[1]!.messages)).toContain("counted 2")
 })
 
+/** A module of four tools, each a flow below reaches another way. */
+const OPS = `const tool = (name, properties, execute) => ({
+  name, description: name, parameters: { type: "object", properties, required: Object.keys(properties) }, execute,
+})
+export const step = tool("step", { n: { type: "integer" } }, async (args) => ({ n: args.n + 1 }))
+export const rate = tool("rate", { x: { type: "integer" } }, async (args) => \`rated \${args.x}\`)
+export const price = tool("price", { amount: { type: "integer" } }, async (args) => \`priced \${args.amount}\`)
+export const tag = tool("tag", { t: { type: "string" } }, async (args) => \`tagged \${args.t}\`)
+`
+
+/** Flows that reach the module's tools through a loop (`looped`), a lifted `call(...)` (`lifted`), a library's def
+ *  (`billing.price`) and a child file (`tagging`), all granted to the agent. */
+const REACHING =
+  "id: reaching\nname: reaching\ninput:\n  message: !str\nuses:\n  ops: ./ops.ts\n  billing: billing\n  tagging: tagging\n" +
+  "defs:\n  looped:\n    description: Count up.\n    input:\n      n: !int\n    nodes:\n      counted:\n        kind: loop\n" +
+  "        call: {ops: step}\n        input:\n          n: ${input.n}\n        while: n < 2\n    output: ${counted.output.n}\n" +
+  "  lifted:\n    description: Rate it.\n    input:\n      x: !int\n    nodes:\n      said:\n        kind: code\n" +
+  "        input:\n          rated: call(ops.rate, x=${input.x})\n        output: !str\n        code: return String(inputs.rated)\n" +
+  "    output: ${said.output}\n" +
+  "nodes:\n  reply:\n    kind: agent\n    tools: [looped, lifted, billing, tagging]\n    input:\n      message: ${input.message}\n" +
+  '    output: !str\n    prompt: "${message}"\noutput: ${reply.output}\n'
+const BILLING =
+  "id: billing\nname: billing\nuses:\n  ops: ./ops.ts\ndefs:\n  price:\n    description: Price it.\n    input:\n" +
+  "      amount: !int\n    nodes:\n      priced:\n        kind: call\n        call: {ops: price}\n        input:\n" +
+  "          amount: ${input.amount}\n    output: ${priced.output}\n"
+const TAGGING =
+  "id: tagging\nname: tagging\ndescription: Tag it.\ninput:\n  t: !str\nuses:\n  ops: ./ops.ts\nnodes:\n  tagged:\n" +
+  "    kind: call\n    call: {ops: tag}\n    input:\n      t: ${input.t}\noutput: ${tagged.output}\n"
+
+// Drift guards. The module tools a granted flow calls are read through yian's static graph with node methods yian
+// doesn't document yet (`toolModules()`, `hostToolCall()`; yian#1823 asks for the documented API). Were a yian change to
+// make them return nothing rather than throw, the gate's rule would fail open: each way a flow reaches a module tool
+// is pinned here as listed.
+test("a granted flow's module tools are listed whether it reaches them by a loop, a lifted call, a library's def or a child file", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    {
+      content: "",
+      tool_calls: [
+        { name: "looped", arguments: { n: 0 } },
+        { name: "lifted", arguments: { x: 1 } },
+        { name: "billing_price", arguments: { amount: 2 } },
+        { name: "tagging", arguments: { t: "a" } },
+      ],
+    },
+    { content: "done" },
+  )
+  const where = base()
+  writeFiles(where.pin, {
+    "flows/reaching.yaml": REACHING, "flows/billing.yaml": BILLING, "flows/tagging.yaml": TAGGING, "flows/ops.ts": OPS,
+  })
+  const rec = new Gating(() => undefined)
+  const job = makeJob(where, "flows/reaching.yaml", {}, rec)
+  await run(job, rec, { env: fake.env() })
+  expect([rec.outcome?.status, rec.outcome?.output], String(rec.outcome?.message)).toEqual(["succeeded", "done"])
+  const seen = Object.fromEntries(rec.gated.map((call) => [call.tool, (call as { wraps?: unknown }).wraps]))
+  expect(seen).toEqual({
+    looped: [{ alias: "ops", export: "step" }],
+    lifted: [{ alias: "ops", export: "rate" }],
+    billing_price: [{ alias: "ops", export: "price" }],
+    tagging: [{ alias: "ops", export: "tag" }],
+  })
+  const read = JSON.stringify(fake.requests()[1]!.messages)
+  for (const text of ["rated 1", "priced 2", "tagged a"]) expect(read).toContain(text)
+})
+
 test("the office's answer runs a call with its note, refuses it, and a gate that fails refuses it", async () => {
   const fake = await fakeLlm()
   fake.script(

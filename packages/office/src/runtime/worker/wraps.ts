@@ -11,7 +11,10 @@ import type { ModuleTool } from "./rpc.ts"
  * tool's nodes aren't found, or yian can't say which tool a step calls.
  *
  * It reads yian's static graph (`staticNodes`): a flow tool's nodes sit under `<agent>/<tool>/`, and a step that calls
- * a module's tool names the module (`toolModules()`) and the tool (`hostToolCall()`).
+ * a module's tool names the module (`toolModules()`) and the tool (`hostToolCall()`). Those two node methods aren't
+ * yian's documented API yet (yian#1823 asks for one); the worker's gate tests pin each way a flow reaches a module
+ * tool as listed, so a yian change that returns nothing where it used to throw fails a test rather than open the gate.
+ * A CODE step that imports a module and calls it in its own code isn't a step that calls a tool, so it isn't seen.
  */
 export function flowModuleTools(flow: ComposedFlow, node: string, tool: string): ModuleTool[] | null {
   try {
