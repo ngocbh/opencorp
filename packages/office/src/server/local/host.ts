@@ -483,10 +483,13 @@ export class LocalHost {
     return [PersonSchema.parse({ handle, name, kind: "agent", title: "Built-in agent", manager: null })]
   }
 
-  /** The session's transcript, read from its run's log, with the calls in flight. */
+  /** The session's transcript, read from its run's log, with the calls in flight. The live relay hears which it shows
+   *  unread, and publishes each again once the run reads it. */
   async messages(): Promise<Message[]> {
     await this.#transcript.refresh([this.#runId])
-    return this.#transcript.messages(this.id, [this.#runId], this.#relay)
+    const messages = this.#transcript.messages(this.id, [this.#runId], this.#relay)
+    for (const message of messages) if (message.unread) this.#relay.unreadShown(this.#runId, message.id)
+    return messages
   }
 
   /** A message from `by`: the next turn, or a steer of the running reply. */

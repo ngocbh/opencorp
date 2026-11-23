@@ -1626,6 +1626,25 @@ test("a message the fresh run of a failed reply takes over replaces its old copy
   expect(heldUsers(read, h.lives.slice(from), id)).toEqual(heldUsers(shown, [], id))
 })
 
+test("a chat read that shows a message unread tells the live relay, so its read is always published", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Working", hold: true }, { content: "Rome." })
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  await h.harness.prompt(id, "Plan the trip.")
+  await fake.waitForRequests(1)
+  await replyRunning(h)
+  expect(await h.harness.prompt(id, "Also mention Rome.")).toBe("steer")
+  const told = spyOn(h.live, "unreadShown")
+  onTestFinished(() => told.mockRestore())
+  const read = await h.harness.messages(id)
+  const unread = read.filter((message) => message.unread).map((message) => message.id)
+  expect(unread).toHaveLength(1)
+  expect(told.mock.calls).toEqual([[h.store.getSession(id)!.run_ids.at(-1)!, unread[0]!]])
+  fake.release()
+  await waitFor(() => same(texts(h, id).slice(-1), ["Rome."]) && status(h, id) === "idle", { what: "the reply" })
+})
+
 test("a failed reply is no longer the running reply", async () => {
   const h = await makeHarness(await fakeLlm())
   const workers = scriptedWorker(h)
