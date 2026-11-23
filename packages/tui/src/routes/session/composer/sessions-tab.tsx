@@ -41,8 +41,10 @@ export function SessionsTab(props: { sessionID: string; visibleID?: string; onOp
         ...entry,
         current: entry.sessionID === props.sessionID || entry.sessionID === props.visibleID,
       }))
-      // The session you're in, or the one the pane shows, always shows, so a child's picker has its own row.
-      .filter((entry) => entry.current || filter().active === (entry.state === "running")),
+      // Active is live, running or idle: a harness session stays open for messages between turns, where the upstream
+      // TUI's subagent is done once idle. The session you're in, or the one the pane shows, always shows, so a child's
+      // picker has its own row.
+      .filter((entry) => entry.current || filter().active === (entry.state !== "ended")),
   )
 
   /** Opens `entry` in the right pane, closing the picker first; the session you're in is open already. */
@@ -155,7 +157,7 @@ export function SessionsTab(props: { sessionID: string; visibleID?: string; onOp
       },
       {
         name: "composer.subagent.toggle-activity",
-        title: "Show the sessions that run, or the rest",
+        title: "Show the live sessions, or the ended ones",
         category: "Composer",
         run() {
           setFilter((value) => ({ active: !value.active }))

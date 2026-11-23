@@ -12,7 +12,9 @@ const rank = (id: string) => {
   return index < 0 ? order.length : index
 }
 
-/** How the picker marks a Codex or Claude Code session: running a turn now, idle between turns, or ended. */
+/** How the picker marks a Codex or Claude Code session: running a turn now, idle between turns, or ended. One that
+ *  hasn't ended is live: it takes the owner's messages, the Sessions tab lists it before ctrl+a, and the line under the
+ *  prompt counts it. */
 export type ChildState = "running" | "idle" | "ended"
 
 /** A harness's name as the picker and the chat's calls say it, before the session's (`Codex: codex 1`). */
@@ -120,8 +122,8 @@ export function filterMemory() {
   }
 }
 
-// What a session has running, for the picker tabs and the line under the prompt: the other sessions of its family
-// running a turn, and its shells running a command.
+// What a session has running, for the tab the picker opens on: the other sessions of its family running a turn, and
+// its shells running a command.
 export function busyCounts(input: {
   family: readonly FamilyEntry[]
   shells: readonly Instrument[]

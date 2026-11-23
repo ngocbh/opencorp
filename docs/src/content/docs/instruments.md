@@ -58,8 +58,8 @@ while a command runs), and a missing `.mcp.json` can still be created.
   wait shows `unread`, its border grey, until they read it before their next step; Esc stops them, and they read it
   next.
 - **The picker.** ← and → switch its tabs (Sessions, Shell), ↑ and ↓ move, Enter opens in the pane, and Esc or ↑ on
-  the first row closes it. It opens on the first tab with something running and lists what runs; ctrl+a shows the
-  rest (idle and ended), and stays as you set it until you quit.
+  the first row closes it. It opens on the first tab with something running. Sessions lists the live sessions,
+  running or idle, and Shell the shells that run; ctrl+a shows the rest, and stays as you set it until you quit.
 - **Waits.** A command's reply waits 5 seconds unless your employee asks for longer (at most two minutes): a quick
   command replies with its output, and a longer one runs on while your employee does other work or ends their reply.
   A message that reaches your employee during the wait, yours or a note, ends it at once; the command goes on. One
@@ -96,10 +96,10 @@ An employee's `person.yaml` lists the harnesses they use in `tools`, such as `to
 is the employee's own chat, on the Yian engine. They hand work to Codex if `tools` lists codex, and to Claude Code if
 it lists claude.
 
-- **Sessions.** The line under the prompt counts their Codex and Claude Code sessions that run a turn. The picker's
-  Sessions tab (↓, or "Open an instrument…" in the command list, ctrl+p) lists them, each marked Running, Idle or
-  Ended; Enter opens one in [the pane](#the-pane), where you watch the harness work and write to it too, and ctrl+d
-  interrupts its turn. A click on your employee's call to a session in the chat, such as
+- **Sessions.** The line under the prompt counts their live Codex and Claude Code sessions, running or idle. The
+  picker's Sessions tab (↓, or "Open an instrument…" in the command list, ctrl+p) lists them, each marked Running,
+  Idle or Ended; Enter opens one in [the pane](#the-pane), where you watch the harness work and write to it too, and
+  ctrl+d interrupts its turn. A click on your employee's call to a session in the chat, such as
   `Codex: codex 1 — Fix the parser`, opens that session in the pane too. ↑ past the oldest entry of the session's
   prompt history, or "Go back to the chat" in the command list, gives the chat the keys. An ended session opens
   read-only: the picker takes its prompt's place, and Esc closes it. The session list still opens a session as a chat

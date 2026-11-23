@@ -1,5 +1,6 @@
 // The line under the prompt: after the cwd, or the spinner and "esc interrupt", the picker's key (↓) and a count per
-// kind of what the chat has running, then how many of its instruments failed; on the right, what waits for the owner,
+// kind of the chat's shells running a command and its live Codex and Claude Code sessions, running or idle, then how
+// many of its instruments failed; on the right, what waits for the owner,
 // in place of the shortcuts. Its layout is the upstream TUI's prompt line, its count the upstream footer's, with the
 // footer's permissions count as the warning.
 import type { Instrument } from "@opencorp/protocol"
@@ -78,7 +79,7 @@ test("with no instruments the line is as before", async () => {
   }
 })
 
-test("the line counts what runs, by kind, after the picker's key", async () => {
+test("the line counts running shells and live sessions, by kind, after the picker's key", async () => {
   const { office, sid, app } = await boot(120)
   try {
     add(office, sid)
@@ -100,10 +101,15 @@ test("the line counts what runs, by kind, after the picker's key", async () => {
     office.updateSession(sid, { status: "busy" })
     f = await app.until((f) => line(f).includes("esc interrupt"))
     expect(line(f)).toMatch(new RegExp(`^   \\S+ esc interrupt · ↓ 1 shell · 1 Codex session${ENDS_WITH_SHORTCUTS}`))
-    // A session between turns leaves the count.
+    // A session between turns stays in the count, as the owner can still open and message it.
     office.addInstrument(sid, { ...codex, status: "idle" })
+    office.updateSession(sid, { status: "idle" })
+    f = await app.until((f) => !line(f).includes("esc interrupt"))
+    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · ↓ 1 shell · 1 Codex session${ENDS_WITH_SHORTCUTS}`))
+    // One that ended leaves it.
+    office.addInstrument(sid, { ...codex, status: "ended" })
     f = await app.until((f) => !line(f).includes("Codex"))
-    expect(line(f)).toMatch(new RegExp(`^   \\S+ esc interrupt · ↓ 1 shell${ENDS_WITH_SHORTCUTS}`))
+    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · ↓ 1 shell${ENDS_WITH_SHORTCUTS}`))
   } finally {
     await app.stop()
     office.stop()
