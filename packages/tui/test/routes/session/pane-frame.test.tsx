@@ -6,7 +6,7 @@
 // with the keys and dim without; its header says who drives it.
 import type { Instrument, Session } from "@opencorp/protocol"
 import type { CapturedLine, RGBA } from "@opentui/core"
-import { beforeEach, expect, setDefaultTimeout, test } from "bun:test"
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { Global } from "../../../src/core/global"
@@ -31,12 +31,15 @@ const AT = "2026-11-22T10:00:00.000Z"
 // The app keeps kv.json under the preload's OPENCORP_HOME, which every test file shares.
 const kvFile = () => path.join(Global.Path.state, "kv.json")
 const kv = (): Record<string, unknown> => (existsSync(kvFile()) ? JSON.parse(readFileSync(kvFile(), "utf8")) : {})
-// Each test starts with no width dragged and split chosen; later test files expect it too.
-beforeEach(() => {
+/** Drops the pane's width and full-screen choice from kv.json. */
+function resetPane() {
   const { pane_width: _w, pane_fullscreen: _f, ...rest } = kv()
   mkdirSync(Global.Path.state, { recursive: true })
   writeFileSync(kvFile(), JSON.stringify(rest))
-})
+}
+// Each test starts with no width dragged and split chosen, and leaves none for later test files.
+beforeEach(resetPane)
+afterEach(resetPane)
 
 let n = 0
 /** Adds a shell to session `sid`, as its host does: a running PTY shell at 80x24 unless `fields` say otherwise. */
@@ -101,11 +104,16 @@ function codex(office: FakeOffice, chat: string, status: Session["status"]) {
   return child
 }
 
-/** Boots session `sid` of `office`, its first unless given, on a `width`x30 screen; 120 is the widest without the
- *  sidebar. */
-async function boot(office = createFakeOffice(), width = 120, sid = office.state.sessions[0]!.id) {
+/** Boots session `sid` of `office`, its first unless given, on a `width`x30 screen (120 is the widest without the
+ *  sidebar), and waits for `ready`, a chat's prompt unless given. */
+async function boot(
+  office = createFakeOffice(),
+  width = 120,
+  sid = office.state.sessions[0]!.id,
+  ready = "@minh auto ·",
+) {
   const app = await bootFrame(createStub(office), { sessionID: sid }, { width, height: 30 })
-  await app.until((f) => f.includes("@minh auto ·"))
+  await app.until((f) => f.includes(ready))
   return { office, sid, app }
 }
 
@@ -299,6 +307,12 @@ test("ctrl+x ↑ closes the pane and the chat gets the keys; ctrl+x ↓ opens th
     await openFirst(app)
     await leader(app, "down")
     await app.until((f) => f.includes("shell 1 · make test") && f.includes("Running") && f.includes("esc"))
+    // The chat has the keys: Esc closes its picker, and what is typed goes to its prompt.
+    await escape(app)
+    await app.until((f) => !f.includes("Running") && f.includes("ctrl+x → focus pane"))
+    app.input.typeText("for the chat")
+    await app.until((f) => f.includes("for the chat"))
+    expect(typed(office, sh.id)).toBe("")
   } finally {
     await app.stop()
     office.stop()
@@ -470,6 +484,192 @@ test("an ended Codex session opens read-only in the pane, and Esc closes it", as
     // The chat has the keys and its own keys again.
     app.input.typeText("back")
     await app.until((f) => f.includes("back"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+/** A Codex card asking for one of `options`, from the session `sid`'s harness. */
+const harnessCard = (sid: string, n: string, options: string[]) => ({
+  session_id: sid,
+  source: "harness" as const,
+  node_id: n,
+  run_id: "turn_1",
+  title: "Codex wants to run a command",
+  question: "$ touch a",
+  options,
+})
+
+test("a Codex card that opens while the owner types in the pane's prompt leaves the keys there, and isn't answered", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    await openFirst(app)
+    await app.until((f) => f.includes("Codex says hello."))
+    app.input.typeText("half a")
+    await app.until((f) => f.includes("half a"))
+    const card = office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
+    // It shows folded, saying how to reach it.
+    await app.until((f) => f.includes("Codex asks: Codex wants to run a command"))
+    // The draft keeps the keys: a digit and Enter go to the prompt, not to the card.
+    app.input.typeText(" 1")
+    await app.until((f) => f.includes("half a 1"))
+    app.input.pressEnter()
+    await until(() => office.requests.some((r) => r.method === "POST" && r.path === `/sessions/${child.id}/prompt`))
+    expect(office.requests.some((r) => r.path === `/questions/${card.id}/answer`)).toBe(false)
+    expect(office.state.questions[card.id]!.status).toBe("open")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a secret card in a pane without the keys reads none of what the owner types in the chat", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const child = codex(office, chat.id, "busy")
+  const { app } = await boot(office, 120, chat.id)
+  try {
+    await app.until((f) => f.includes("↓ 1 Codex session"))
+    await openFirst(app)
+    const card = office.addQuestion({
+      session_id: child.id,
+      source: "harness" as const,
+      node_id: "2",
+      run_id: "turn_1",
+      question: "Token?",
+      questions: [{ question: "Paste the deploy token", header: "Token", options: [], secret: true }],
+    })
+    await app.until((f) => f.includes("Paste the deploy token"))
+    await leader(app, "left")
+    await app.until((f) => f.includes("ctrl+x → focus pane"))
+    app.input.typeText("sentinel-77")
+    await app.until((f) => f.includes("sentinel-77"))
+    app.input.pressEnter()
+    await until(() => office.requests.some((r) => r.method === "POST" && r.path === `/sessions/${chat.id}/prompt`))
+    // No dot was typed into the secret, and nothing answered it.
+    expect(app.frame()).not.toContain("•")
+    expect(office.requests.some((r) => r.path === `/questions/${card.id}/answer`)).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a shell that waits for a password while a card is open opens beside it, the card keeping the keys; ctrl+x → gives them", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    const ssh = shell(office, sid, { name: "shell 2", profile: "ssh", command: "ssh h" })
+    await app.until((f) => f.includes("↓ 1 shell"))
+    const card = office.addApproval(sid, {
+      kind: "command",
+      tool: "terminal_run",
+      action: "make deploy",
+      args: { shell: "shell 1", command: "make deploy" },
+      reason: "Ask mode",
+      rules: [],
+    })
+    await app.until((f) => f.includes("make deploy") && f.includes("enter confirm"))
+    office.addInstrument(sid, { ...ssh, status: "waiting", waiting: "secret", updated_at: new Date().toISOString() })
+    let f = await app.until((f) => corner(f) !== undefined && f.includes("ctrl+x → focus pane"))
+    expect(corner(f)).toEqual({ x: 60, y: 0 })
+    expect(boxColor(app)).toEqual(dim(MINH))
+    // A digit meant for the card goes to the card, not the password prompt.
+    app.input.pressKey("2")
+    await Bun.sleep(100)
+    expect(typed(office, ssh.id)).toBe("")
+    expect(office.requests.some((r) => r.path === `/questions/${card.id}/answer`)).toBe(false)
+    await leader(app, "right")
+    f = await app.until((f) => f.includes("type your password here"))
+    app.input.typeText("pw")
+    await until(() => typed(office, ssh.id) === "pw")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("below 108 columns a pane that opens itself over a draft or a card waits, a line says so, and ctrl+x → shows it", async () => {
+  const office = createFakeOffice()
+  const { sid, app } = await boot(office, 100)
+  try {
+    const ssh = shell(office, sid, { name: "shell 2", profile: "ssh", command: "ssh h" })
+    await app.until((f) => f.includes("↓ 1 shell"))
+    app.input.typeText("a draft")
+    await app.until((f) => f.includes("a draft"))
+    office.addInstrument(sid, { ...ssh, status: "waiting", waiting: "secret", updated_at: new Date().toISOString() })
+    let f = await app.until((f) => f.includes("shell 2 is open in the pane: ctrl+x → shows it"))
+    // It doesn't cover the chat, and the draft keeps the keys.
+    expect(corner(f)).toBeUndefined()
+    app.input.typeText("-more")
+    await app.until((f) => f.includes("a draft-more"))
+    expect(typed(office, ssh.id)).toBe("")
+    // ctrl+x → shows it, full screen, with the keys; ctrl+x ← puts it back to wait.
+    await leader(app, "right")
+    f = await app.until((f) => corner(f)?.x === 0 && f.includes("type your password here"))
+    expect(f).not.toContain("a draft-more")
+    app.input.typeText("pw")
+    await until(() => typed(office, ssh.id) === "pw")
+    app.input.pressEnter()
+    await until(() => typed(office, ssh.id) === "pw\r")
+    await leader(app, "left")
+    f = await app.until((f) => corner(f) === undefined && f.includes("a draft-more"))
+    expect(f).toContain("shell 2 is open in the pane")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("below 108 columns ctrl+x o on a card for a shell's command leaves the card in view, the shell waiting in the pane", async () => {
+  const office = createFakeOffice()
+  const { sid, app } = await boot(office, 100)
+  try {
+    const sh = shell(office, sid, { name: "shell 1", command: "tail -f build.log" })
+    await app.until((f) => f.includes("↓ 1 shell"))
+    office.addApproval(sid, {
+      kind: "command",
+      tool: "terminal_run",
+      action: "make deploy",
+      args: { shell: "shell 1", command: "make deploy" },
+      reason: "Ask mode",
+      rules: [],
+    })
+    await app.until((f) => f.includes("make deploy") && f.includes("enter confirm"))
+    await leader(app, "o")
+    const f = await app.until((f) => f.includes("shell 1 is open in the pane"))
+    expect(corner(f)).toBeUndefined()
+    expect(f).toContain("enter confirm")
+    expect(typed(office, sh.id)).toBe("")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("in a Codex session's own view, Enter on a sibling's row goes to the chat with the sibling in its pane", async () => {
+  const office = createFakeOffice()
+  const chat = office.state.sessions[0]!
+  const first = codex(office, chat.id, "busy")
+  const second = codex(office, chat.id, "busy")
+  office.addInstrument(chat.id, { ...office.state.instruments[chat.id]!.find((i) => i.id === second.id)!, name: "codex 2" })
+  const { app } = await boot(office, 120, first.id, "codex 1 · driven by @minh")
+  try {
+    await press(app, "down")
+    await app.until((f) => f.includes("Codex: codex 2"))
+    await press(app, "down")
+    await app.setup.renderOnce()
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("@minh auto ·") && corner(f) !== undefined && header(f).includes("codex 2"))
+    expect(f).not.toContain("driven by @minh")
+    // The sibling's prompt has the keys.
+    app.input.typeText("Go on.")
+    app.input.pressEnter()
+    await until(() => office.requests.some((r) => r.method === "POST" && r.path === `/sessions/${second.id}/prompt`))
   } finally {
     await app.stop()
     office.stop()

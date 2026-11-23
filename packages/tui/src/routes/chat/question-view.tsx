@@ -18,6 +18,7 @@ import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
 import { clearFirst, useBindings, useOpenCorpModeStack } from "../../keymap"
 import { SecretInput } from "../../ui/secret-input"
+import { useInteractivity } from "../../context/interactivity"
 import { createReadThrough, wrap } from "../../ui/read-through"
 import type { CardPage, PageAnswer } from "./answer"
 import { display } from "../../util/printable"
@@ -86,7 +87,9 @@ export function QuestionView(
     answers: [] as PageAnswer[],
   })
 
-  const active = () => props.enabled !== false && !props.hidden
+  // Off while its side lacks the keys too: a card in a pane the chat has the keys beside reads none of them.
+  const interactive = useInteractivity()
+  const active = () => props.enabled !== false && !props.hidden && interactive()
   const page = createMemo(() => props.pages[store.page])
   const answer = createMemo<PageAnswer>(() => store.answers[store.page] ?? { picked: [], text: "" })
   const options = createMemo(() => page()?.options ?? [])

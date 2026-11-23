@@ -17,8 +17,9 @@ import { useKV } from "../context/kv"
 import { useLocal } from "../context/local"
 import { useOffice } from "../context/office"
 import { usePanel, type PanelPresentation } from "../context/panel"
-import { usePromptRef } from "../context/prompt"
-import { useBindings, useOpenCorpKeymap } from "../keymap"
+import { PromptRefProvider, usePromptRef } from "../context/prompt"
+import { useRoute } from "../context/route"
+import { useBindings, useCommandShortcut, useOpenCorpKeymap } from "../keymap"
 import { Session } from "../routes/session"
 import { childState } from "../routes/session/composer/tabs"
 import { InstrumentPanel, InstrumentScreen, type Driver } from "../routes/session/instrument-view"
@@ -31,6 +32,7 @@ import { clampSessionPaneWidth, SESSION_SIDEBAR_WIDTH } from "../ui/layout"
 import { createPaneResize } from "../ui/pane-resize"
 import { PaneResizeHandle } from "../ui/pane-resize-handle"
 import { Toast } from "../ui/toast"
+import { display } from "../util/printable"
 import { interruptible } from "../util/status"
 import { PanelHost } from "./panel-host"
 
@@ -38,7 +40,8 @@ import { PanelHost } from "./panel-host"
  * A chat and its one right pane, the upstream TUI's session frame. The pane shows an instrument of the chat, a shell
  * or a Codex or Claude Code session, else the sidebar. It is docked beside the chat, its width dragged with the handle
  * on the divider and kept on disk for every pane, or full screen, which a screen under 108 columns forces. The keys
- * go to one side at a time: a click, or <leader>left and <leader>right, moves them.
+ * go to one side at a time: a click, or <leader>left and <leader>right, moves them, and a pane never takes them while
+ * the owner types elsewhere. Under 108 columns a pane without the keys waits, so it never covers a draft or a card.
  */
 export function SessionFrame(props: { sessionID: string }) {
   const prompt = usePromptRef()
@@ -51,6 +54,8 @@ export function SessionFrame(props: { sessionID: string }) {
   const panels = usePanel()
   const dialog = useDialog()
   const keymap = useOpenCorpKeymap()
+  const { navigate } = useRoute()
+  const showKey = useCommandShortcut("pane.focus.right")
   const availableWidth = () => dimensions().width
   const defaultPaneWidth = () => Math.max(1, Math.floor(panels.width() / 2))
   // One width for every pane, kept on disk; none until the handle is first dragged.
@@ -86,8 +91,6 @@ export function SessionFrame(props: { sessionID: string }) {
   let sessionNode: BoxRenderable | undefined
   let rightNode: BoxRenderable | undefined
   let panelNode: BoxRenderable | undefined
-  // Whether the panel opening now takes the keys; a shell that opens itself beside a draft doesn't.
-  let focusOnOpen = true
 
   const session = createMemo(() => office.state.sessions.find((s) => s.id === props.sessionID))
   // An ended or failed shell stays in the list, with its scrollback, until the session next goes idle.
@@ -117,14 +120,17 @@ export function SessionFrame(props: { sessionID: string }) {
     if (!id) return undefined
     return instruments().find((i) => i.id === id) ?? (last?.id === id ? last : undefined)
   })
-  const fullscreen = () => activePanel() !== undefined && panels.presentation() === "fullscreen"
+  // Under 108 columns the pane can only show full screen, which would hide the chat: without the keys, it waits.
+  const parked = createMemo(() => activePanel() !== undefined && !panels.canSplit() && activePane() !== "right")
+  const shown = () => activePanel() !== undefined && !parked()
+  const fullscreen = () => shown() && panels.presentation() === "fullscreen"
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
     if (sidebarOpen()) return true
     return sidebar() === "auto" && wide()
   })
   const rightPane = createMemo(() => {
-    if (activePanel()) return "panel"
+    if (shown()) return "panel"
     if (sidebarVisible()) return "sidebar"
   })
   const toggleSidebar = () => {
@@ -150,7 +156,8 @@ export function SessionFrame(props: { sessionID: string }) {
   const [dropping, setDropping] = createSignal(false)
 
   const focusSession = () => {
-    if (fullscreen()) return
+    // Full screen leaves no chat, unless it is a narrow screen's, which waits once the chat has the keys.
+    if (fullscreen() && panels.canSplit()) return
     // Cards replace the input, so returning focus must not depend on it.
     if (activePane() === "right") renderer.currentFocusedRenderable?.blur()
     setActivePane("session")
@@ -206,20 +213,32 @@ export function SessionFrame(props: { sessionID: string }) {
     if (untrack(midLine)) setDropping(true)
   }
 
-  /** Opens instrument `id` in the pane, in the presentation last chosen unless `presentation` says, with the keys
-   *  unless `keys` is false. */
-  function openPanel(
-    id: string,
-    keys = true,
-    presentation: PanelPresentation = fullscreenChoice() ? "fullscreen" : "panel",
-  ) {
+  /** Opens instrument `id` in the pane, with the keys and in the presentation last chosen; or, with `keys` false,
+   *  beside the chat (waiting, on a narrow screen), the keys staying where they are: a pane never takes them while
+   *  the owner types elsewhere. */
+  function openPanel(id: string, keys = true) {
     const current = activePanel()
     if (current && current.id !== id) leaving()
     setItself(false)
-    focusOnOpen = keys
-    panels.open({ id, sessionID: props.sessionID }, presentation)
+    const presentation: PanelPresentation = keys && fullscreenChoice() ? "fullscreen" : "panel"
+    batch(() => {
+      panels.open({ id, sessionID: props.sessionID }, presentation)
+      if (keys) setActivePane("right")
+    })
     // The same panel stays mounted, so it takes the keys here rather than as it mounts.
-    if (current?.id === id) keys ? focusRightPane() : focusSession()
+    if (current?.id === id && keys) focusRightPane()
+  }
+  /** Opens instrument `id`, the frame's own or another chat's: a sibling of the Codex or Claude Code session this
+   *  frame shows goes to the chat that lists it, with it in that chat's pane. */
+  function openInstrument(id: string) {
+    if (instruments().some((i) => i.id === id)) return openPanel(id)
+    const chat =
+      office.state.sessions.find((s) => s.id === id)?.instrument_of ??
+      Object.keys(office.state.instruments).find((sid) => office.state.instruments[sid]?.some((i) => i.id === id))
+    batch(() => {
+      navigate({ type: "session", sessionID: chat ?? id })
+      if (chat) panels.open({ id, sessionID: chat }, fullscreenChoice() ? "fullscreen" : "panel")
+    })
   }
   /** Closes the pane; the chat gets the keys, once the owner has ended a line they were typing into it. */
   function closePanel() {
@@ -232,7 +251,7 @@ export function SessionFrame(props: { sessionID: string }) {
   function toggleFullscreen() {
     if (!activePanel()) {
       const shell = cardShell()
-      if (shell) openPanel(shell.id, false, "panel")
+      if (shell) openPanel(shell.id, false)
       return
     }
     const before = panels.presentation()
@@ -246,18 +265,20 @@ export function SessionFrame(props: { sessionID: string }) {
     if (id && !instruments().some((i) => i.id === id)) untrack(closePanel)
   })
 
-  // A PTY shell waiting for the approver's password opens itself when no pane is open: with the keys, or, while the
-  // prompt holds a draft, beside it with the draft keeping them. It closes once the wait ends and the owner has
-  // finished the line they were typing into it, a password's rest that must not reach the chat, unless the owner has
-  // since opened something else.
+  // A PTY shell waiting for the approver's password opens itself when no pane is open. It takes the keys only while
+  // the owner types nowhere else, so the password can't go to the chat and on to the model; with a draft in the prompt
+  // or a card open, it opens beside the chat (waiting, on a narrow screen) and the owner gives it the keys. It closes
+  // once the wait ends and the owner has finished the line they were typing into it, a password's rest that must not
+  // reach the chat, unless the owner has since opened something else.
   const secretWait = (i: Instrument) => i.interactive && i.status === "waiting" && i.waiting === "secret"
+  const typingElsewhere = () =>
+    !!prompt.current?.current.input || openQuestions(office.state, props.sessionID).length > 0
   createEffect(
     on(
       () => (approving() ? shells().find(secretWait)?.id : undefined),
       (id) => {
         if (!id || untrack(activePanel)) return
-        const draft = !!untrack(() => prompt.current?.current.input)
-        openPanel(id, !draft, draft ? "panel" : undefined)
+        openPanel(id, !untrack(typingElsewhere))
         setItself(true)
       },
     ),
@@ -305,7 +326,14 @@ export function SessionFrame(props: { sessionID: string }) {
   }
 
   /** Goes from the session in the pane back to the chat: its keys, or, full screen, the pane closed. */
-  const leavePane = () => (fullscreen() ? closePanel() : focusSession())
+  const leavePane = () => (fullscreen() && panels.canSplit() ? closePanel() : focusSession())
+  // A frame that mounts with its pane open, as a sibling's row opens it from another chat, gives it the keys.
+  if (untrack(activePanel)) setActivePane("right")
+  /** The line in the chat for a pane that waits. */
+  const paneNote = () => {
+    const instrument = parked() ? panelInstrument() : undefined
+    return instrument && `${display(instrument.name)} is open in the pane: ${showKey()} shows it`
+  }
 
   /** Focuses the chat and opens its picker, as the upstream TUI's terminal select does. */
   function selectInstrument() {
@@ -323,7 +351,7 @@ export function SessionFrame(props: { sessionID: string }) {
         title: "Give the chat the keys, the pane staying open",
         category: "Session",
         hidden: true,
-        enabled: activePanel() !== undefined && !fullscreen(),
+        enabled: activePane() === "right" && (!fullscreen() || !panels.canSplit()),
         run: focusSession,
       },
       {
@@ -427,9 +455,10 @@ export function SessionFrame(props: { sessionID: string }) {
             width={sessionWidth()}
             shells={shells()}
             visibleID={activePanel()?.id}
-            onOpen={(id) => openPanel(id)}
+            onOpen={openInstrument}
             onPicker={(show) => (showPicker = show)}
             keysDropped={dropping()}
+            paneNote={paneNote()}
           />
         </InteractivityProvider>
         {/* While the pane has the keys, a click in the chat gives them back. */}
@@ -471,7 +500,7 @@ export function SessionFrame(props: { sessionID: string }) {
           <Show
             when={rightPane() === "sidebar"}
             fallback={
-              <Show keyed when={activePanel()}>
+              <Show keyed when={shown() ? activePanel() : undefined}>
                 {(item) => (
                   <Show when={panelInstrument()}>
                     {(instrument) => (
@@ -482,9 +511,7 @@ export function SessionFrame(props: { sessionID: string }) {
                         onFocus={focusRightPane}
                         onTarget={(node) => {
                           panelNode = node
-                          if (!node) return setActivePane("session")
-                          if (focusOnOpen) focusRightPane()
-                          focusOnOpen = true
+                          if (node && activePane() === "right") focusRightPane()
                         }}
                       >
                         <InstrumentPanel
@@ -497,12 +524,14 @@ export function SessionFrame(props: { sessionID: string }) {
                           <Show
                             when={instrument().kind === "terminal"}
                             fallback={
-                              <Session
-                                sessionID={item.id}
-                                pane={{ close: closePanel, leave: leavePane }}
-                                width={(fullscreen() ? availableWidth() : paneResize.size()) - 2}
-                                onOpen={(id) => openPanel(id)}
-                              />
+                              <PromptRefProvider drafts={prompt.drafts}>
+                                <Session
+                                  sessionID={item.id}
+                                  pane={{ close: closePanel, leave: leavePane }}
+                                  width={(fullscreen() ? availableWidth() : paneResize.size()) - 2}
+                                  onOpen={openInstrument}
+                                />
+                              </PromptRefProvider>
                             }
                           >
                             <InstrumentScreen

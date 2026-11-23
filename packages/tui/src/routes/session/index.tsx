@@ -157,6 +157,8 @@ export type SessionProps = {
   onPicker?: (show: (() => void) | undefined) => void
   /** Whether the owner's keys are dropped until Enter, after a shell they were typing into closed. */
   keysDropped?: boolean
+  /** A line saying the pane holds an instrument it can't show beside the chat, and how to show it. */
+  paneNote?: string
 }
 
 export function Session(props: SessionProps) {
@@ -190,8 +192,8 @@ export function Session(props: SessionProps) {
   const switchable = () => permission.mode(props.sessionID) !== null && !question()
   const [focus, setFocus] = createSignal<"card" | "prompt">("card")
   const cardFocused = createMemo(() => codex() && cards().length > 0 && focus() === "card")
-  // Cards opening when none were open take the keys, unless the prompt holds a draft: keys typed for the prompt must
-  // never land on a card, where a digit or Enter picks an option.
+  // Cards opening when none were open take the keys, unless this side's prompt holds a draft: keys typed for the
+  // prompt must never land on a card, where a digit or Enter picks an option.
   createEffect(
     on(
       () => cards().length > 0,
@@ -391,11 +393,10 @@ export function Session(props: SessionProps) {
 
   let seeded = false
   let scroll: ScrollBoxRenderable
-  // The app's prompt ref is the chat's: the pane's prompt leaves it alone, so the chat's keeps its place.
+  // Each side has its own prompt ref: the pane's session sits in a provider of its own.
   const bind = (r: PromptRef | undefined) => {
-    if (props.pane) return
     promptRef.set(r)
-    if (seeded || !route.prompt || !r) return
+    if (seeded || props.pane || !route.prompt || !r) return
     seeded = true
     r.set(route.prompt)
   }
@@ -846,6 +847,13 @@ export function Session(props: SessionProps) {
                   )}
                 </For>
               </scrollbox>
+              <Show when={props.paneNote}>
+                {(note) => (
+                  <text fg={theme.warning} flexShrink={0} wrapMode="word">
+                    {note()}
+                  </text>
+                )}
+              </Show>
               <Show when={props.keysDropped}>
                 <text fg={theme.warning} flexShrink={0} wrapMode="word">
                   The shell closed: keys are dropped until Enter
