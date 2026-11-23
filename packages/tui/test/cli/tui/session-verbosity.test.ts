@@ -4,7 +4,7 @@ import { expect, test } from "bun:test"
 import type { Message, Part, ToolPart } from "@opencorp/protocol"
 import { activitySummary, busyLabel, summarizeActivity } from "../../../src/routes/session/activity-summary"
 import { groupRefs, partitionPending, partPath, type SessionRow } from "../../../src/routes/session/grouping/session"
-import { reduceMessageRows } from "../../../src/routes/session/rows"
+import { blankText, reduceMessageRows } from "../../../src/routes/session/rows"
 import { toolName } from "../../../src/routes/session"
 
 const AT = "2026-11-23T10:00:00.000Z"
@@ -81,6 +81,14 @@ test("blank text draws nothing and breaks no run", () => {
   expect(shape(reduce(assistant("a", [tool("s1", "shell"), text("t", " \n"), tool("s2", "shell")]), "low"))).toEqual([
     "activity:2",
   ])
+})
+
+test("the caller can say which parts are blank, so the projection need not read every text", () => {
+  const message = assistant("a", [tool("s1", "shell"), text("t", "Thinking it over"), tool("s2", "shell")])
+  const rows = reduceMessageRows(message, "low", (part) => part.tool, new Set(), (part) => part.id === "t")
+  expect(shape(rows)).toEqual(["activity:2"])
+  expect(blankText(text("w", " \n"))).toBe(true)
+  expect(blankText(text("x", " x"))).toBe(false)
 })
 
 test("permission-blocked tools inside an activity group are tracked as pending without reordering", () => {

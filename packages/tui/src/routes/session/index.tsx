@@ -4,6 +4,7 @@ import {
   createMemo,
   createSignal,
   For,
+  mapArray,
   Match,
   on,
   onCleanup,
@@ -87,7 +88,7 @@ import {
   type SessionRow,
   type Verbosity,
 } from "./grouping/session"
-import { reduceMessageRows } from "./rows"
+import { blankText, reduceMessageRows } from "./rows"
 
 export { alwaysSeparate, InlineToolRow } from "./message-parts"
 
@@ -1198,7 +1199,10 @@ function AssistantMessage(props: { message: Message; last: boolean }) {
   const office = useOffice()
   const permission = usePermission()
   const [rows, setRows] = createStore<(SessionRow & { key: string })[]>([])
+  // Each part's blankness in a memo of its own: a streamed delta rebuilds the rows only when a text stops being blank.
+  const blanks = createMemo(mapArray(() => props.message.parts, (part) => createMemo(() => blankText(part))))
   createComputed(() => {
+    const blank = blanks()
     const waiting = new Set(
       props.message.parts.flatMap((part) =>
         part.type === "tool" && part.yian_call_id && permission.waiting(ctx.sessionID, part.yian_call_id)
@@ -1206,7 +1210,7 @@ function AssistantMessage(props: { message: Message; last: boolean }) {
           : [],
       ),
     )
-    const next = reduceMessageRows(props.message, ctx.verbosity(), toolName, waiting)
+    const next = reduceMessageRows(props.message, ctx.verbosity(), toolName, waiting, (_, index) => !!blank[index]?.())
     setRows(reconcile(next.map((row) => ({ ...row, key: rowKey(row) })), { key: "key" }))
   })
   const part = (id: string) => props.message.parts.find((p) => p.id === id)
