@@ -13,6 +13,7 @@ import {
   untrack,
   useContext,
 } from "solid-js"
+import { createStore } from "solid-js/store"
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
 import {
@@ -79,10 +80,11 @@ import { display } from "../../util/printable"
 import { InteractivityProvider } from "../../context/interactivity"
 import { clampPaneWidth, createPaneResize } from "../../ui/pane-resize"
 import { PaneResizeHandle } from "../../ui/pane-resize-handle"
-import { DialogInstruments, DialogInstrumentView } from "./dialog-instruments"
+import { DialogInstrumentView } from "./dialog-instruments"
 import { waitingInstrument } from "./instrument-line"
 import { InstrumentView, nextPlacement, PLACEMENTS, type InstrumentPlacement } from "./instrument-view"
-import { childSessions, InstrumentFooter } from "./instrument-footer"
+import { Composer } from "./composer"
+import { busyCounts, busyTab, childState, harnessFamily } from "./composer/tabs"
 import { sessionOwner, speakerLabel } from "./speakers"
 import { endsLine } from "./keys"
 import { NoteLine } from "./note-line"
@@ -107,8 +109,6 @@ const sessionBindingCommands = [
   "session.export",
   "session.child.first",
   "session.parent",
-  "session.child.next",
-  "session.child.previous",
 ] as const
 
 const sessionGlobalBindingCommands = [
@@ -350,28 +350,45 @@ export function Session() {
       },
     ),
   )
-  // The chat's Codex and Claude Code sessions, each its own child session, which open as a chat; in a child, its chat
-  // and siblings.
-  const harnesses = createMemo(() =>
-    (office.state.instruments[route.sessionID] ?? []).filter((i) => i.kind !== "terminal"),
-  )
+  // In a child session (a Codex or Claude Code session an employee's chat drives), the chat that drives it.
   const parentID = createMemo(() => session()?.instrument_of ?? undefined)
-  const children = createMemo(() => childSessions(office.state.sessions, parentID() ?? route.sessionID))
-  // The store may not hold a child yet (it holds the latest sessions): the chat's list names it too.
-  const firstChild = () => children()[0]?.id ?? harnesses()[0]?.id
-  /** Opens child session `sessionID` in place of this chat. */
-  function enterChild(sessionID: string) {
-    dialog.clear()
-    navigate({ type: "session", sessionID })
-  }
-  /** Moves to the next (1) or previous (-1) Codex or Claude Code session of the chat, round its list. */
-  function moveChild(direction: number) {
-    const list = children()
-    if (list.length < 2) return
-    const at = list.findIndex((s) => s.id === route.sessionID)
-    const next = list[(at + direction + list.length) % list.length]
-    if (next) enterChild(next.id)
-  }
+  // A child whose session ended takes no message: in its prompt's place the picker, as the upstream TUI shows a
+  // subagent's. A live or idle child keeps its prompt, where the owner writes to the harness.
+  const readOnly = createMemo(() => !!parentID() && childState(session(), undefined) === "ended")
+  // The picker in the prompt's place: opened with ↓, or always in a child that ended. A card takes its place while one
+  // is open, as the upstream TUI's permission prompts do.
+  const [composer, setComposer] = createStore({ open: false, tab: undefined as string | undefined })
+  const composerVisible = createMemo(() => readOnly() || (composer.open && !question()))
+  const openingTab = () =>
+    busyTab(
+      busyCounts({
+        family: harnessFamily(office.state, route.sessionID),
+        shells: office.state.instruments[route.sessionID] ?? [],
+        sessionID: route.sessionID,
+      }),
+    )
+  // A child's picker lists its chat's Codex and Claude Code sessions, which the chat's list names: the chat is loaded
+  // too when the child opened first.
+  createEffect(
+    on(parentID, (parent) => {
+      if (parent) office.syncSession(parent).catch(() => {})
+    }),
+  )
+  // In a child, its name in the chat's list, who drives it and the tokens its harness reported.
+  const childInfo = createMemo(() => {
+    const current = session()
+    const chat = parentID()
+    if (!current || !chat) return undefined
+    const listed = office.state.instruments[chat]?.find((i) => i.id === current.id)
+    const said = current.harness === "claude" ? "Claude Code" : "Codex"
+    const used = current.harness_usage
+    const tokens = used ? used.input_tokens + used.output_tokens : 0
+    return {
+      said,
+      label: listed ? display(listed.name) : `${said} session`,
+      tokens: tokens > 0 ? `${Locale.number(tokens)} tokens` : undefined,
+    }
+  })
   // The open instrument, kept while it closes.
   const openInstrument = createMemo<Instrument | undefined>((last) => {
     const id = opened()?.id
@@ -654,47 +671,29 @@ export function Session() {
       run: () => dialog.replace(() => <DialogMode sessionID={route.sessionID} />),
     },
     {
+      // The upstream TUI's "Toggle subagent picker". A click on the line under the prompt names the tab to open on.
       title: "Open an instrument…",
-      value: "session.instrument.list",
-      category: "Session",
-      enabled: instruments().length > 0 || harnesses().length > 0,
-      run: () =>
-        dialog.replace(() => (
-          <DialogInstruments
-            instruments={[...instruments(), ...harnesses()]}
-            current={opened()?.id}
-            // A Codex or Claude Code session is a child session: it opens as a chat.
-            onOpen={(id) => (harnesses().some((i) => i.id === id) ? enterChild(id) : showInstrument(id))}
-          />
-        )),
-    },
-    {
-      title: "Go to the chat's first Codex or Claude Code session",
       value: "session.child.first",
       category: "Session",
-      enabled: !parentID() && firstChild() !== undefined,
-      run: () => enterChild(firstChild()!),
+      enabled: !question(),
+      run: (ctx?: { payload?: unknown }) => {
+        const tab = ctx?.payload
+        if (tab === "subagents" || tab === "shell") setComposer({ open: true, tab })
+        else if (composer.open || readOnly()) setComposer("open", false)
+        else setComposer({ open: true, tab: openingTab() })
+        dialog.clear()
+      },
     },
     {
       title: "Go back to the chat that drives this Codex or Claude Code session",
       value: "session.parent",
       category: "Session",
       enabled: !!parentID(),
-      run: () => enterChild(parentID()!),
-    },
-    {
-      title: "Next Codex or Claude Code session of the chat",
-      value: "session.child.next",
-      category: "Session",
-      enabled: !!parentID() && children().length > 1,
-      run: () => moveChild(1),
-    },
-    {
-      title: "Previous Codex or Claude Code session of the chat",
-      value: "session.child.previous",
-      category: "Session",
-      enabled: !!parentID() && children().length > 1,
-      run: () => moveChild(-1),
+      run: () => {
+        const parent = parentID()
+        if (parent) navigate({ type: "session", sessionID: parent })
+        dialog.clear()
+      },
     },
     {
       title: "List the chat's rules",
@@ -1054,6 +1053,18 @@ export function Session() {
                         {display(modelLabel(current(), office.connections()))}
                       </span>
                     </text>
+                    {/* A child session: which of the chat's sessions it is, who drives it and its harness's tokens. */}
+                    <Show when={childInfo()}>
+                      {(child) => (
+                        <text fg={theme.textMuted} wrapMode="none">
+                          <span style={{ fg: theme.text }}>
+                            <b>{child().label}</b>
+                          </span>
+                          {" · "}driven by @{display(current().person)}
+                          <Show when={child().tokens}>{(tokens) => <> · {tokens()}</>}</Show>
+                        </text>
+                      )}
+                    </Show>
                     <Show when={current().model_note}>
                       {(note) => (
                         <text fg={theme.warning} wrapMode="word">
@@ -1113,85 +1124,102 @@ export function Session() {
                     </text>
                   </Show>
                   {/* A card may shrink to what the chat leaves it: its body scrolls in what remains. */}
-                  <box flexShrink={card() ? 1 : 0}>
-                    <Show
-                      when={harnessed()}
-                      fallback={
-                        <Show
-                          when={question()?.id}
-                          keyed
-                          fallback={
-                            <Prompt
-                              visible={true}
-                              ref={bind}
-                              onSend={lift}
-                              onSubmit={() => toBottom()}
-                              onInterrupt={interrupt}
-                              sessionID={route.sessionID}
-                            />
-                          }
-                        >
-                          {/* Keyed and untracked: a card's source never changes, so the choice is made once. */}
-                          {(_id) =>
-                            question()?.source === "approval" ? (
-                              <PermissionPrompt question={question()} />
-                            ) : (
-                              <>
-                                <QuestionCard
-                                  question={question()}
-                                  hidden={!!sideOf()}
-                                  onChat={() => setSideOf(question()?.id)}
-                                />
-                                <Show when={sideQuestion()}>
-                                  {(q) => (
-                                    <SideChat
-                                      question={q()}
-                                      session={sideSession()}
-                                      onBack={() => setSideOf(undefined)}
-                                      onSend={() => {
-                                        const undo = lift()
-                                        toBottom()
-                                        return undo
-                                      }}
-                                      onInterrupt={interrupt}
-                                    />
-                                  )}
-                                </Show>
-                              </>
-                            )
-                          }
-                        </Show>
-                      }
-                    >
-                      {/* A child session: the Codex or Claude Code session an employee's chat drives, with the way
-                          back to it. */}
-                      <Show when={parentID() ? current() : undefined}>
-                        {(child) => <InstrumentFooter session={child()} />}
-                      </Show>
-                      {/* Keyed by id, so a card whose question is re-read (a reconnect) keeps its state. */}
-                      <For each={cards().map((q) => q.id)}>
-                        {(id, i) => (
-                          <Show when={office.state.questions[id]}>
-                            {(q) => (
-                              <HarnessCard
-                                question={q()}
-                                active={i() === 0 && cardFocused()}
-                                waiting={i() > 0}
+                  <box flexShrink={card() && !composerVisible() ? 1 : 0}>
+                    <Show when={readOnly() ? childInfo() : undefined}>
+                      {(child) => (
+                        <text fg={theme.textMuted} wrapMode="word" paddingBottom={1}>
+                          This {child().said} session ended. It takes no more messages.
+                        </text>
+                      )}
+                    </Show>
+                    <Composer
+                      sessionID={route.sessionID}
+                      open={composerVisible()}
+                      defaultTab={composer.tab ?? (readOnly() ? "subagents" : undefined)}
+                      onClose={() => {
+                        // A child that ended has no prompt to go back to: its picker closes to the chat.
+                        const parent = parentID()
+                        if (readOnly() && parent) return navigate({ type: "session", sessionID: parent })
+                        setComposer("open", false)
+                      }}
+                      shells={instruments()}
+                      onOpenShell={(id) => showInstrument(id)}
+                    />
+                    <Show when={!composerVisible()}>
+                      <Show
+                        when={harnessed()}
+                        fallback={
+                          <Show
+                            when={question()?.id}
+                            keyed
+                            fallback={
+                              <Prompt
+                                visible={true}
+                                ref={bind}
+                                onSend={lift}
+                                onSubmit={() => toBottom()}
                                 onInterrupt={interrupt}
+                                sessionID={route.sessionID}
                               />
-                            )}
+                            }
+                          >
+                            {/* Keyed and untracked: a card's source never changes, so the choice is made once. */}
+                            {(_id) =>
+                              question()?.source === "approval" ? (
+                                <PermissionPrompt question={question()} />
+                              ) : (
+                                <>
+                                  <QuestionCard
+                                    question={question()}
+                                    hidden={!!sideOf()}
+                                    onChat={() => setSideOf(question()?.id)}
+                                  />
+                                  <Show when={sideQuestion()}>
+                                    {(q) => (
+                                      <SideChat
+                                        question={q()}
+                                        session={sideSession()}
+                                        onBack={() => setSideOf(undefined)}
+                                        onSend={() => {
+                                          const undo = lift()
+                                          toBottom()
+                                          return undo
+                                        }}
+                                        onInterrupt={interrupt}
+                                      />
+                                    )}
+                                  </Show>
+                                </>
+                              )
+                            }
                           </Show>
-                        )}
-                      </For>
-                      <Prompt
-                        visible={true}
-                        inactive={cardFocused()}
-                        ref={bind}
-                        onSend={lift}
-                        onSubmit={() => toBottom()}
-                        onInterrupt={interrupt}
-                        sessionID={route.sessionID}
-                      />
+                        }
+                      >
+                        {/* Keyed by id, so a card whose question is re-read (a reconnect) keeps its state. */}
+                        <For each={cards().map((q) => q.id)}>
+                          {(id, i) => (
+                            <Show when={office.state.questions[id]}>
+                              {(q) => (
+                                <HarnessCard
+                                  question={q()}
+                                  active={i() === 0 && cardFocused()}
+                                  waiting={i() > 0}
+                                  onInterrupt={interrupt}
+                                />
+                              )}
+                            </Show>
+                          )}
+                        </For>
+                        <Prompt
+                          visible={true}
+                          inactive={cardFocused()}
+                          ref={bind}
+                          onSend={lift}
+                          onSubmit={() => toBottom()}
+                          onInterrupt={interrupt}
+                          sessionID={route.sessionID}
+                        />
+                      </Show>
                     </Show>
                   </box>
                 </>

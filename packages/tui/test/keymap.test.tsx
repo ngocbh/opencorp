@@ -5,7 +5,13 @@ import { testRender, useRenderer } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { onCleanup } from "solid-js"
 import { TuiKeybind } from "../src/config/keybind"
-import { getOpenCorpModeStack, OPENCORP_BASE_MODE, OpenCorpKeymapProvider, registerOpenCorpKeymap } from "../src/keymap"
+import {
+  formatKeySequence,
+  getOpenCorpModeStack,
+  OPENCORP_BASE_MODE,
+  OpenCorpKeymapProvider,
+  registerOpenCorpKeymap,
+} from "../src/keymap"
 
 function createResolvedKeymapConfig(input: TuiKeybind.KeybindOverrides = {}) {
   const keybinds = TuiKeybind.parse(input)
@@ -134,6 +140,68 @@ test("mode-less bindings stay active when the mode changes", async () => {
         "session.first": 2,
         "agent.cycle": 0,
       },
+    })
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("the picker's keys are the upstream TUI's: ↓ toggles it, ↑ goes to the parent, and its rows take ↑/↓, Enter and ctrl+d", () => {
+  const config = createResolvedKeymapConfig()
+  const keys = (command: string) => config.keybinds.get(command).map((binding) => binding.key)
+  expect(keys("session.child.first")).toEqual(["down"])
+  expect(keys("session.parent")).toEqual(["up"])
+  expect(["up", "down", "select", "interrupt"].map((key) => keys(`composer.subagent.${key}`))).toEqual([
+    ["up"],
+    ["down"],
+    ["return"],
+    ["ctrl+d"],
+  ])
+  expect(["up", "down", "select", "kill"].map((key) => keys(`composer.shell.${key}`))).toEqual([
+    ["up"],
+    ["down"],
+    ["return"],
+    ["ctrl+d"],
+  ])
+  // The old footer's Next and Prev are gone, with their config names.
+  expect(keys("session.child.next")).toEqual([])
+  expect(keys("session.child.previous")).toEqual([])
+  expect(TuiKeybind.unknownKeys({ session_child_cycle: "none", session_child_cycle_reverse: "none" })).toHaveLength(2)
+})
+
+test("arrow keys show as arrows, as the upstream TUI shows them", async () => {
+  const shown: Record<string, string> = {}
+
+  function Harness() {
+    const renderer = useRenderer()
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    const config = createResolvedKeymapConfig()
+    const offKeymap = registerOpenCorpKeymap(keymap, renderer, config)
+    const commands = ["session.child.first", "session.parent", "session.instrument.focus.chat"]
+    const offLayer = keymap.registerLayer({
+      commands: commands.map((name) => ({ name, run() {} })),
+      bindings: config.keybinds.gather("test", commands),
+    })
+    const bindings = keymap.getCommandBindings({ visibility: "registered", commands })
+    for (const command of commands) shown[command] = formatKeySequence(bindings.get(command)?.[0]?.sequence, config)
+    onCleanup(() => {
+      offLayer()
+      offKeymap()
+    })
+
+    return (
+      <OpenCorpKeymapProvider keymap={keymap}>
+        <box />
+      </OpenCorpKeymapProvider>
+    )
+  }
+
+  const app = await testRender(() => <Harness />)
+  try {
+    expect(shown).toEqual({
+      "session.child.first": "↓",
+      "session.parent": "↑",
+      "session.instrument.focus.chat": "ctrl+x ←",
     })
   } finally {
     app.renderer.destroy()

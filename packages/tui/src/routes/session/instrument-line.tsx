@@ -1,17 +1,12 @@
 import type { Instrument } from "@opencorp/protocol"
-import { createMemo, Show } from "solid-js"
+import { createMemo, createSignal, Show } from "solid-js"
 import { useOffice } from "../../context/office"
 import { useTheme } from "../../context/theme"
+import { useCommandShortcut, useOpenCorpKeymap } from "../../keymap"
 import { wrap } from "../../ui/read-through"
 import { Locale } from "../../util/locale"
 import { display } from "../../util/printable"
-
-/** Each kind's count, in the line's order. */
-const KINDS: { kind: Instrument["kind"]; one: string; many: string }[] = [
-  { kind: "terminal", one: "{} shell", many: "{} shells" },
-  { kind: "codex", one: "{} Codex session", many: "{} Codex sessions" },
-  { kind: "claude", one: "{} Claude Code session", many: "{} Claude Code sessions" },
-]
+import { busyCounts, busyTab, harnessFamily, shellRunning } from "./composer/tabs"
 
 /** The most columns a waiting command takes on the line, its ellipsis included. */
 const COMMAND_COLUMNS = 30
@@ -30,25 +25,49 @@ export function waitingInstrument(instruments: readonly Instrument[] | undefined
   return instruments?.find((i) => i.status === "waiting")
 }
 
-/** After the prompt line's left side: a count per kind of the session's instruments that haven't ended, then how
- *  many of them failed. Nothing while it has none. It takes only the room the line has left, cut in the middle when
- *  that is too little, so the rest of the line stays as it was and a failure still shows. */
+/** After the prompt line's left side: what the session has running, after the picker's key (↓): its shells running a
+ *  command and its family's Codex and Claude Code sessions running a turn, a count per kind; then how many of its
+ *  instruments failed. Nothing while none runs or failed. A click opens the picker on the first tab with something
+ *  running. It takes only the room the line has left, cut in the middle when that is too little, so the rest of the
+ *  line stays as it was and a failure still shows. The upstream TUI's prompt footer count. */
 export function InstrumentLine(props: { sessionID: string }) {
   const office = useOffice()
   const { theme } = useTheme()
-  const listed = createMemo(() => (office.state.instruments[props.sessionID] ?? []).filter((i) => i.status !== "ended"))
-  const counts = createMemo(() =>
-    KINDS.flatMap(({ kind, one, many }) => {
-      const n = listed().filter((i) => i.kind === kind).length
-      return n ? [` · ${Locale.pluralize(n, one, many)}`] : []
-    }).join(""),
+  const keymap = useOpenCorpKeymap()
+  const shortcut = useCommandShortcut("session.child.first")
+  const [hovered, setHovered] = createSignal(false)
+  const listed = createMemo(() => office.state.instruments[props.sessionID] ?? [])
+  const family = createMemo(() =>
+    harnessFamily(office.state, props.sessionID).filter(
+      (entry) => entry.sessionID !== props.sessionID && entry.state === "running",
+    ),
   )
+  const counts = createMemo(() => busyCounts({ family: family(), shells: listed(), sessionID: props.sessionID }))
+  const live = createMemo(() => {
+    const harness = (kind: string) => family().filter((entry) => entry.harness === kind).length
+    return [
+      [listed().filter((i) => i.kind === "terminal" && shellRunning(i)).length, "{} shell", "{} shells"] as const,
+      [harness("codex"), "{} Codex session", "{} Codex sessions"] as const,
+      [harness("claude"), "{} Claude Code session", "{} Claude Code sessions"] as const,
+    ].flatMap(([n, one, many]) => (n ? [Locale.pluralize(n, one, many)] : []))
+  })
   const failed = createMemo(() => listed().filter((i) => i.status === "failed").length)
   return (
-    <Show when={counts()}>
+    <Show when={live().length > 0 || failed()}>
       <box flexGrow={1} flexBasis={0} overflow="hidden" paddingRight={2}>
-        <text fg={theme.textMuted} wrapMode="none" truncate>
-          {counts()}
+        <text
+          fg={hovered() ? theme.text : theme.textMuted}
+          wrapMode="none"
+          truncate
+          onMouseOver={() => setHovered(true)}
+          onMouseOut={() => setHovered(false)}
+          onMouseUp={() => keymap.dispatchCommand("session.child.first", { payload: busyTab(counts()) })}
+        >
+          <Show when={live().length > 0}>
+            {" · "}
+            <Show when={shortcut()}>{(key) => <span style={{ fg: theme.text }}>{key()} </span>}</Show>
+            {live().join(" · ")}
+          </Show>
           <Show when={failed()}>
             {" · "}
             <span style={{ fg: theme.error }}>{failed()} failed</span>

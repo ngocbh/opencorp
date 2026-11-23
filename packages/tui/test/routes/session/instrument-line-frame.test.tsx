@@ -1,6 +1,7 @@
-// The line under the prompt: after the cwd, or the spinner and "esc interrupt", a count per kind of the chat's
-// instruments that haven't ended, and how many failed; on the right, what waits for the owner, in place of the
-// shortcuts. Its layout is the upstream TUI's prompt line, with its footer's permissions count as the warning.
+// The line under the prompt: after the cwd, or the spinner and "esc interrupt", the picker's key (↓) and a count per
+// kind of what the chat has running, then how many of its instruments failed; on the right, what waits for the owner,
+// in place of the shortcuts. Its layout is the upstream TUI's prompt line, its count the upstream footer's, with the
+// footer's permissions count as the warning.
 import type { Instrument } from "@opencorp/protocol"
 import type { CapturedLine } from "@opentui/core"
 import { expect, test } from "bun:test"
@@ -77,26 +78,32 @@ test("with no instruments the line is as before", async () => {
   }
 })
 
-test("the line counts the running shells and sessions by kind", async () => {
+test("the line counts what runs, by kind, after the picker's key", async () => {
   const { office, sid, app } = await boot(120)
   try {
     add(office, sid)
-    let f = await app.until((f) => line(f).includes("/tmp/proj · 1 shell"))
-    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · 1 shell${ENDS_WITH_SHORTCUTS}`))
+    let f = await app.until((f) => line(f).includes("/tmp/proj · ↓ 1 shell"))
+    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · ↓ 1 shell${ENDS_WITH_SHORTCUTS}`))
+    // An idle shell runs nothing; a starting session counts as running.
     add(office, sid, { status: "idle" })
-    add(office, sid, { kind: "codex", name: "codex 1", profile: "harness" })
+    const codex = add(office, sid, { kind: "codex", name: "codex 1", profile: "harness" })
     const claude = add(office, sid, { kind: "claude", name: "claude 1", profile: "harness", status: "starting" })
-    f = await app.until((f) => line(f).includes("2 shells"))
+    f = await app.until((f) => line(f).includes("Claude Code session"))
     expect(line(f)).toMatch(
-      new RegExp(`^   /tmp/proj · 2 shells · 1 Codex session · 1 Claude Code session${ENDS_WITH_SHORTCUTS}`),
+      new RegExp(`^   /tmp/proj · ↓ 1 shell · 1 Codex session · 1 Claude Code session${ENDS_WITH_SHORTCUTS}`),
     )
-    expect(fgOf(app, "2 shells")?.equals(theme.textMuted)).toBe(true)
+    expect(fgOf(app, "1 shell")?.equals(theme.textMuted)).toBe(true)
+    expect(fgOf(app, "↓")?.equals(theme.text)).toBe(true)
     // One its host took out of the list leaves the count; while the session can be interrupted, the counts follow
     // "esc interrupt".
     office.removeInstrument(sid, claude.id)
     office.updateSession(sid, { status: "busy" })
     f = await app.until((f) => line(f).includes("esc interrupt"))
-    expect(line(f)).toMatch(new RegExp(`^   \\S+ esc interrupt · 2 shells · 1 Codex session${ENDS_WITH_SHORTCUTS}`))
+    expect(line(f)).toMatch(new RegExp(`^   \\S+ esc interrupt · ↓ 1 shell · 1 Codex session${ENDS_WITH_SHORTCUTS}`))
+    // A session between turns leaves the count.
+    office.addInstrument(sid, { ...codex, status: "idle" })
+    f = await app.until((f) => !line(f).includes("Codex"))
+    expect(line(f)).toMatch(new RegExp(`^   \\S+ esc interrupt · ↓ 1 shell${ENDS_WITH_SHORTCUTS}`))
   } finally {
     await app.stop()
     office.stop()
@@ -109,13 +116,13 @@ test("a failed instrument is counted as failed", async () => {
     add(office, sid)
     add(office, sid, { status: "failed", error: "No sandbox here: install bubblewrap" })
     let f = await app.until((f) => line(f).includes("1 failed"))
-    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · 2 shells · 1 failed${ENDS_WITH_SHORTCUTS}`))
+    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · ↓ 1 shell · 1 failed${ENDS_WITH_SHORTCUTS}`))
     expect(fgOf(app, "1 failed")?.equals(theme.error)).toBe(true)
-    expect(fgOf(app, "2 shells")?.equals(theme.textMuted)).toBe(true)
+    expect(fgOf(app, "1 shell")?.equals(theme.textMuted)).toBe(true)
     const codex = { kind: "codex", name: "codex 1", profile: "harness" } as const
     add(office, sid, { ...codex, status: "failed", error: "codex is missing" })
     f = await app.until((f) => line(f).includes("2 failed"))
-    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · 2 shells · 1 Codex session · 2 failed${ENDS_WITH_SHORTCUTS}`))
+    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · ↓ 1 shell · 2 failed${ENDS_WITH_SHORTCUTS}`))
   } finally {
     await app.stop()
     office.stop()
@@ -134,7 +141,7 @@ test("a waiting shell shows what waits for you on the right, in place of the sho
       command: "ssh nhb25@misha.ycrc.yale.edu -t tmux attach",
     })
     let f = await app.until((f) => line(f).includes("is waiting for you"))
-    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · 1 shell +${SSH_WAITS}`))
+    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · ↓ 1 shell +${SSH_WAITS}`))
     expect(line(f)).not.toContain("shift+tab mode")
     expect(line(f)).not.toContain("commands")
     expect(fgOf(app, "⚠")?.equals(theme.warning)).toBe(true)
@@ -149,7 +156,7 @@ test("a waiting shell shows what waits for you on the right, in place of the sho
     // With no command, it's named; a short command shows whole.
     add(office, sid, { status: "waiting", waiting: "approval" })
     f = await app.until((f) => line(f).includes("is waiting for you"))
-    expect(line(f)).toMatch(/· 2 shells +⚠ shell \d+ is waiting for you$/)
+    expect(line(f)).toMatch(/· ↓ 2 shells +⚠ shell \d+ is waiting for you$/)
     // The oldest waiting one shows first.
     add(office, sid, {
       ...ssh,
@@ -159,7 +166,7 @@ test("a waiting shell shows what waits for you on the right, in place of the sho
       updated_at: new Date(Date.now() + 1).toISOString(),
     })
     f = await app.until((f) => line(f).includes("⚠ sudo apt update is waiting for you"))
-    expect(line(f)).toMatch(/· 2 shells +⚠ sudo apt update is waiting for you$/)
+    expect(line(f)).toMatch(/· ↓ 2 shells +⚠ sudo apt update is waiting for you$/)
   } finally {
     await app.stop()
     office.stop()
@@ -175,28 +182,28 @@ test("what waits draws a command's escapes and control characters harmlessly, an
       command: "printf '\x1b[31mred\x1b[0m\x07' && ssh h",
     })
     let f = await app.until((f) => line(f).includes("is waiting for you"))
-    expect(line(f)).toMatch(/· 1 shell +⚠ printf 'red' && ssh h is waiting for you$/)
+    expect(line(f)).toMatch(/· ↓ 1 shell +⚠ printf 'red' && ssh h is waiting for you$/)
     expect(f).not.toContain("\x1b")
     expect(f).not.toContain("[31m")
     add(office, sid, { ...shell, name: "shell\x1b[2J\x07 9", command: " \n\t " })
     f = await app.until((f) => line(f).includes("⚠ shell 9 is waiting for you"))
-    expect(line(f)).toMatch(/· 1 shell +⚠ shell 9 is waiting for you$/)
+    expect(line(f)).toMatch(/· ↓ 1 shell +⚠ shell 9 is waiting for you$/)
   } finally {
     await app.stop()
     office.stop()
   }
 })
 
-test("an ended shell leaves the count", async () => {
+test("a shell that ends or goes idle leaves the count", async () => {
   const { office, sid, app } = await boot()
   try {
     const one = add(office, sid)
     const two = add(office, sid)
-    await app.until((f) => line(f).includes("· 2 shells"))
+    await app.until((f) => line(f).includes("· ↓ 2 shells"))
     add(office, sid, { ...one, status: "ended" })
-    let f = await app.until((f) => line(f).includes("· 1 shell") && !line(f).includes("2 shells"))
-    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · 1 shell${ENDS_WITH_SHORTCUTS}`))
-    add(office, sid, { ...two, status: "ended" })
+    let f = await app.until((f) => line(f).includes("· ↓ 1 shell") && !line(f).includes("2 shells"))
+    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · ↓ 1 shell${ENDS_WITH_SHORTCUTS}`))
+    add(office, sid, { ...two, status: "idle" })
     f = await app.until((f) => !line(f).includes("shell"))
     expect(line(f)).toBe(IDLE)
   } finally {
@@ -214,7 +221,7 @@ test("on a narrow screen the counts give way, cut in the middle, and the rest of
     add(office, sid, { status: "failed", error: "No sandbox here: install bubblewrap" })
     add(office, sid, { kind: "claude", name: "claude 1", profile: "harness" })
     const f = await app.until((f) => line(f).includes("failed"))
-    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · 3 s.*\\.\\.\\..* failed${ENDS_WITH_SHORTCUTS}`))
+    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · ↓ 2.*\\.\\.\\..* failed${ENDS_WITH_SHORTCUTS}`))
     expect(f.split("\n").filter((r) => r.includes("/tmp/proj"))).toHaveLength(1)
   } finally {
     await app.stop()
@@ -231,9 +238,9 @@ test("on a narrow screen what waits for you stays whole, and the counts give way
     add(office, sid, { kind: "codex", name: "codex 1", profile: "harness" })
     add(office, sid, { status: "failed", error: "No sandbox here: install bubblewrap" })
     add(office, sid, { status: "waiting", waiting: "secret", command: "ssh nhb25@misha.ycrc.yale.edu -t tmux attach" })
-    // The counts are cut to what fits beside the warning, here to their first and last letters.
-    const f = await app.until((f) => line(f).includes("is waiting for you") && line(f).includes("4 ..."))
-    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · 4 \\.\\.\\.\\S+  ${SSH_WAITS}`))
+    // The counts are cut to what fits beside the warning, here to the key and their last letters.
+    const f = await app.until((f) => line(f).includes("is waiting for you") && line(f).includes("↓ ..."))
+    expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · ↓ \\.\\.\\.\\S+  ${SSH_WAITS}`))
     expect(f.split("\n").filter((r) => r.includes("/tmp/proj"))).toHaveLength(1)
   } finally {
     await app.stop()

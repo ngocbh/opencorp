@@ -558,3 +558,42 @@ test("a card that takes the prompt's place while a steer goes out keeps it out o
   })
   expect(errors).toEqual([])
 })
+
+test("each view keeps its own draft: home's unsent text stays home, and a session's stays with it", async () => {
+  const office = createFakeOffice()
+  const app = await bootFrame(createStub(office))
+  /** Opens the palette and picks the command titled `title`. */
+  const run = async (title: string) => {
+    app.input.pressKey("p", { ctrl: true })
+    await app.until((f) => f.includes("Commands"))
+    await Bun.sleep(50)
+    app.input.typeText(title)
+    await app.until((f) => f.split(title).length > 2)
+    app.input.pressEnter()
+  }
+  try {
+    await app.until((f) => f.includes("@minh"))
+    app.input.typeText("for home only")
+    await app.until((f) => f.includes("for home only"))
+    await run("Switch session")
+    await app.until((f) => f.includes("@minh · /tmp/proj ·"))
+    app.input.pressEnter()
+    let f = await app.until((f) => f.includes("@minh · idle"))
+    expect(f).not.toContain("for home only")
+    app.input.typeText("for the chat")
+    await app.until((f) => f.includes("for the chat"))
+    await run("New session")
+    f = await app.until((f) => f.includes("for home only"))
+    expect(f).not.toContain("for the chat")
+    await run("Switch session")
+    await app.until((f) => f.includes("@minh · /tmp/proj ·"))
+    app.input.pressEnter()
+    f = await app.until((f) => f.includes("@minh · idle") && f.includes("for the chat"))
+    expect(f).not.toContain("for home only")
+    // Nothing went out.
+    expect(office.requests.filter((r) => r.method === "POST")).toEqual([])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

@@ -138,7 +138,7 @@ export function Prompt(props: PromptProps) {
     const s = session()
     return s?.harness === "codex" && !s.instrument_of && ["ended", "failed", "debriefing"].includes(s.status)
   })
-  const history = usePromptHistory()
+  const history = usePromptHistory(() => unwrap(store.prompt))
   const stash = usePromptStash()
   const keymap = useOpenCorpKeymap()
   const peopleShortcut = useCommandShortcut("person.list")
@@ -359,12 +359,14 @@ export function Prompt(props: PromptProps) {
       input.blur()
     },
     set(prompt) {
+      history.reset()
       input.setText(prompt.input)
       setStore("prompt", prompt)
       restoreExtmarksFromParts(prompt.parts)
       input.gotoBufferEnd()
     },
     reset() {
+      history.reset()
       input.clear()
       input.extmarks.clear()
       setStore("prompt", {
@@ -378,8 +380,12 @@ export function Prompt(props: PromptProps) {
     },
   }
 
+  // Captured once: the session route is keyed by sessionID, so this Prompt belongs to exactly one session (home's is
+  // undefined). Reading props.sessionID lazily could see the next route during onCleanup and stash under the wrong one.
+  const stashSessionID = props.sessionID
+
   onMount(() => {
-    const saved = promptRef.takeDraft()
+    const saved = promptRef.takeDraft(stashSessionID)
     if (store.prompt.input) return
     if (saved && saved.prompt.input) {
       input.setText(saved.prompt.input)
@@ -399,7 +405,7 @@ export function Prompt(props: PromptProps) {
     disposed = true
     // Text that is going out isn't a draft: the next prompt would offer it again after it was sent.
     if (store.prompt.input && store.prompt.input !== sending) {
-      promptRef.saveDraft({ prompt: unwrap(store.prompt), cursor: input.cursorOffset })
+      promptRef.saveDraft(stashSessionID, { prompt: unwrap(store.prompt), cursor: input.cursorOffset })
     }
     setInputTarget(undefined)
     props.ref?.(undefined)
@@ -598,8 +604,11 @@ export function Prompt(props: PromptProps) {
     ],
   }))
 
+  // ↑ and ↓ move the cursor, then step through the history; past its ends they fall through (false) to the session's
+  // ↑ (the parent) and ↓ (the picker). Above those, as the upstream TUI's.
   useBindings(() => {
     return {
+      priority: 1,
       target: inputTarget,
       enabled: (() => {
         cursorVersion()
@@ -612,12 +621,16 @@ export function Prompt(props: PromptProps) {
           category: "Prompt",
           run() {
             if (input.cursorOffset !== 0) {
-              if (input.scrollY + input.visualCursor.visualRow === 0) input.cursorOffset = 0
-              return false
+              if (input.scrollY + input.visualCursor.visualRow === 0) {
+                input.cursorOffset = 0
+                return
+              }
+              input.moveCursorUp()
+              return
             }
 
             const item = history.move(-1, input.plainText)
-            if (item === undefined) return false
+            if (!item) return false
             showHistory(item)
             input.cursorOffset = 0
           },
@@ -629,6 +642,7 @@ export function Prompt(props: PromptProps) {
 
   useBindings(() => {
     return {
+      priority: 1,
       target: inputTarget,
       enabled: (() => {
         cursorVersion()
@@ -644,13 +658,16 @@ export function Prompt(props: PromptProps) {
               if (
                 input.scrollY + input.visualCursor.visualRow ===
                 Math.max(0, input.editorView.getTotalVirtualLineCount() - 1)
-              )
+              ) {
                 input.cursorOffset = input.plainText.length
-              return false
+                return
+              }
+              input.moveCursorDown()
+              return
             }
 
             const item = history.move(1, input.plainText)
-            if (item === undefined) return false
+            if (!item) return false
             showHistory(item)
             input.cursorOffset = input.plainText.length
           },
@@ -685,11 +702,11 @@ export function Prompt(props: PromptProps) {
     toast.show({ message: "Image and PDF attachments are not supported yet", variant: "warning" })
   }
 
-  function showHistory(text: string) {
-    input.setText(text)
-    input.extmarks.clear()
-    setStore("prompt", { input: text, parts: [] })
-    setStore("extmarkToPartIndex", new Map())
+  /** Shows a text from the history, or the draft it was left from, with its parts. */
+  function showHistory(prompt: PromptInfo) {
+    input.setText(prompt.input)
+    setStore("prompt", prompt)
+    restoreExtmarksFromParts(prompt.parts)
   }
 
   /** The prompt's text with pasted-text placeholders expanded; `@file` mentions stay as text. */
@@ -791,8 +808,14 @@ export function Prompt(props: PromptProps) {
         history.append(text)
         return true
       }
-      // A new session opens even if its prompt failed; the unsent text follows it there.
-      if (sessionID && sessionID !== props.sessionID) route.navigate({ type: "session", sessionID })
+      // A new session opens even if its prompt failed; the unsent text follows it there, stashed under its id and
+      // cleared here so this prompt's cleanup doesn't stash it under its own.
+      if (sessionID && sessionID !== props.sessionID) {
+        // Copy before clearing: unwrap returns the live store target, which the reset writes into.
+        promptRef.saveDraft(sessionID, { prompt: { ...unwrap(store.prompt) }, cursor: input.cursorOffset })
+        ref.reset()
+        route.navigate({ type: "session", sessionID })
+      }
       return true
     }
 
@@ -884,6 +907,7 @@ export function Prompt(props: PromptProps) {
 
   function clearPrompt() {
     if (store.prompt.input.trim().length >= DRAFT_RETENTION_MIN_CHARS) history.append(promptText())
+    else history.reset()
     input.clear()
     input.extmarks.clear()
     setStore("prompt", {
