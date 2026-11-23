@@ -45,6 +45,7 @@ import {
   checkClearOf,
   checkWorkspace,
   type OfficePaths as Guards,
+  realPath,
   SandboxPolicy,
   UnsafeProfile,
   UnsafeWorkspace,
@@ -53,7 +54,7 @@ import { fsHelper, run, startOnTerminal } from "../../runtime/sandbox/run.ts"
 import { latestVersion, newerStore, userVersion } from "../../runtime/store/migrate.ts"
 import { storeProblem } from "../../runtime/store/problem.ts"
 import { LIVE, StoreError } from "../../runtime/store/store.ts"
-import { CHECKOUT } from "../../util/checkout.ts"
+import { CHECKOUT, binaryCheckout } from "../../util/checkout.ts"
 import { type Env, which } from "../../util/env.ts"
 import { strerror } from "../../util/errors.ts"
 import { OfficePaths } from "../../util/home.ts"
@@ -1040,12 +1041,13 @@ export function sourceRoots(checkout: string): string[] {
 
 /**
  * The newest modification time (ms) of the code the office runs from a checkout command
- * (`[bun, ...flags, <checkout>/packages/cli/src/main.ts]`): the files under `sourceRoots`. 0 for a compiled binary,
- * or when nothing is found.
+ * (`[bun, ...flags, <checkout>/packages/cli/src/main.ts]`) or a binary built in a checkout (`binaryCheckout`): the
+ * files under the checkout's `sourceRoots`. 0 for any other compiled binary, or when nothing is found.
  */
 export function newestSource(command: readonly [string, ...string[]]): number {
-  // npm installs date every file 1985, so a binary's dates say nothing; VERSION catches an upgrade.
-  if (command.length < 2) return 0
+  // A build's own date says nothing, since install.sh builds again on every run; npm installs date every file 1985.
+  // VERSION catches an upgrade of those.
+  if (command.length < 2 && binaryCheckout(realPath(command[0])) === null) return 0
   return Math.max(0, ...sourceRoots(installPaths(command)[0]!).map(newestUnder))
 }
 

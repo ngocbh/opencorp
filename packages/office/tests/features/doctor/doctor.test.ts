@@ -2381,6 +2381,14 @@ test("the newest source covers the office protocol cli and yian", () => {
   fs.utimesSync(entry, 500, 500)
   expect(doctor.newestSource(["/usr/local/bin/bun", entry])).toBe(500_000)
   expect(doctor.newestSource(COMMAND)).toBe(0) // a compiled binary
+
+  // A binary built in the checkout runs that checkout's code: its build's own date says nothing, since every
+  // install.sh run builds it again.
+  const binary = path.join(checkout, "packages/cli/dist/npm/opencorp-linux-x64/bin/opencorp")
+  fs.mkdirSync(path.dirname(binary), { recursive: true })
+  fs.writeFileSync(binary, "")
+  fs.utimesSync(binary, 800, 800)
+  expect(doctor.newestSource([binary])).toBe(500_000)
 })
 
 test("every source root the doctor watches exists in this checkout", () => {

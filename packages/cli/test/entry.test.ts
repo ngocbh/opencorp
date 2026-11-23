@@ -7,6 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import type { Readable } from "node:stream"
 import { fileURLToPath } from "node:url"
+import { startOffice } from "@opencorp/office/testing/office"
 import { noticeFiles } from "../script/notices"
 
 setDefaultTimeout(30_000)
@@ -1141,6 +1142,74 @@ describe("the built binary", () => {
     }
     expect(Math.min(...times), times.map(Math.round).join(", ")).toBeLessThan(500)
   }, 150_000)
+
+  test("a binary built in a checkout runs the office from there: init, HQ's app, doctor's version line and restart", async () => {
+    // A checkout as install.sh leaves it: the binary at packages/cli/dist/npm/<platform>/bin/opencorp beside its
+    // assets, HQ's app built in packages/app/dist, and the office's source, last changed before the office starts.
+    const checkout = fs.realpathSync(fs.mkdtempSync(path.join(built, "checkout-")))
+    const pkgDir = path.join(checkout, "packages/cli/dist/npm", PLATFORM)
+    const binary = path.join(pkgDir, "bin/opencorp")
+    fs.mkdirSync(path.dirname(binary), { recursive: true })
+    fs.linkSync(bin, binary)
+    fs.symlinkSync(path.join(npmOut, PLATFORM, "assets"), path.join(pkgDir, "assets"))
+    const app = path.join(checkout, "packages/app/dist")
+    fs.mkdirSync(app, { recursive: true })
+    fs.writeFileSync(path.join(app, "index.html"), "<!doctype html><title>the checkout's HQ</title>\n")
+    const source = path.join(checkout, "packages/office/src/main.ts")
+    fs.mkdirSync(path.dirname(source), { recursive: true })
+    fs.writeFileSync(source, "")
+    const past = Date.now() / 1000 - 3600
+    fs.utimesSync(source, past, past)
+
+    // init starts the office in the background, and its init run in a worker.
+    const office = await startOffice({ opencorp: binary })
+    cleanups.push(() => office.stop())
+    const pidfile = path.join(office.home, "office/office.pid")
+    /** The running daemon's pid and command line. */
+    const daemon = () => {
+      const pid = Number.parseInt(fs.readFileSync(pidfile, "utf8"), 10)
+      const ps = spawnSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], {
+        env: { PATH: "/usr/bin:/bin" },
+        encoding: "utf8",
+        timeout: 5000,
+      })
+      return { pid, args: ps.stdout.trim() }
+    }
+    const first = daemon()
+    // The binary runs the daemon, and nothing secret is in its arguments.
+    expect(first.args).toBe(`${binary} daemon --home ${office.home} --reexeced`)
+
+    /** The body of HQ's `GET <at>` over its socket, as `opencorp hq` forwards a visit to it. */
+    const hq = (at: string) =>
+      new Promise<string>((resolve, reject) => {
+        const options = { socketPath: office.hqSocket, path: at, headers: { host: "127.0.0.1:49380" }, timeout: 10_000 }
+        const req = http.get(options, (res) => {
+          let body = ""
+          res.setEncoding("utf8").on("data", (chunk: string) => (body += chunk))
+          res.on("end", () => resolve(body))
+        })
+        req.on("timeout", () => req.destroy(new Error(`GET ${at} timed out`)))
+        req.on("error", reject)
+      })
+    expect(await hq("/")).toContain("the checkout's HQ")
+
+    const version = async () => {
+      const doctor = await office.opencorp(["doctor"])
+      const line = doctor.stdout.split("\n").find((text) => / version /.test(text))
+      return line ?? `no version line:\n${doctor.stdout}${doctor.stderr}`
+    }
+    expect(await version()).toMatch(new RegExp(`^✓ version +pid ${first.pid} runs the current code$`))
+    // The checkout's source changed after the office started: it runs older code.
+    fs.utimesSync(source, new Date(), new Date())
+    expect(await version()).toMatch(/^⚠ version +the office started before its code last changed; restart it/)
+
+    const restarted = await office.opencorp(["restart"])
+    expect(restarted.code, `${restarted.stdout}${restarted.stderr}`).toBe(0)
+    const second = daemon()
+    expect(second.pid).not.toBe(first.pid)
+    expect(second.args).toBe(`${binary} daemon --home ${office.home} --reexeced`)
+    expect(await version()).toMatch(new RegExp(`^✓ version +pid ${second.pid} runs the current code$`))
+  }, 300_000)
 
   test("the binary loads the TUI assets from beside it and extracts nothing to TMPDIR", async () => {
     const result = await runTui(bin)

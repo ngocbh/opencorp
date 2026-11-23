@@ -7,6 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import { selfCommand } from "../../platform.ts"
 import { type OfficePaths as SandboxOfficePaths, isInside, realPath } from "../sandbox/policy.ts"
+import { binaryCheckout } from "../../util/checkout.ts"
 import { type Env, which } from "../../util/env.ts"
 
 /** The programs the daemon, its workers and the harnesses run; `socat` is what Claude Code's sandbox needs on Linux. */
@@ -44,7 +45,8 @@ export function resolveTools(env: Env): Tools {
 
 /**
  * The office's install folders, as realpaths. A checkout command
- * (`[bun, ...flags, <checkout>/packages/cli/src/main.ts]`) is the checkout root. A compiled binary at
+ * (`[bun, ...flags, <checkout>/packages/cli/src/main.ts]`) is the checkout root, and so is a binary built in the
+ * checkout (`binaryCheckout`), which serves HQ's app from it. Any other compiled binary at
  * `<pkg>/bin/opencorp`, with `<pkg>` an `opencorp-<os>-<cpu>` package, is that package, plus the `opencorp` shim
  * package when npm's layouts put it there: hoisted beside `<pkg>` in the same `node_modules`, or nested, with `<pkg>`
  * in the `node_modules` of a shim that itself sits in a `node_modules`. pnpm's store isn't searched: a workspace
@@ -54,6 +56,8 @@ export function installPaths([program, ...rest]: readonly [string, ...string[]] 
   const entry = rest.at(-1)
   if (entry !== undefined) return [path.dirname(path.dirname(path.dirname(path.dirname(realPath(entry)))))]
   const binary = realPath(program)
+  const checkout = binaryCheckout(binary)
+  if (checkout !== null) return [checkout]
   const bin = path.dirname(binary)
   const pkg = path.dirname(bin)
   const inPackage =

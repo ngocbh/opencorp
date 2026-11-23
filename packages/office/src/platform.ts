@@ -26,6 +26,17 @@ export function selfCommand(): [string, ...string[]] {
   return [process.execPath, ...CHECKOUT_FLAGS, fileURLToPath(new URL("../../cli/src/main.ts", import.meta.url))]
 }
 
+/** The realpath of the compiled binary this code runs as; null in a checkout, where Bun runs the source, and when the
+ *  binary can't be found (removed since it started). */
+export function selfBinary(): string | null {
+  if (!Bun.isStandaloneExecutable) return null
+  try {
+    return fs.realpathSync(process.execPath)
+  } catch {
+    return null
+  }
+}
+
 /** The folder the compiled binary's TUI loads OpenTUI's native library and assets from, `<bin>/../assets` (the same
  *  path `packages/cli/src/main.ts` gives OpenTUI); null in a checkout, where they load from node_modules. */
 export function tuiAssetRoot(): string | null {

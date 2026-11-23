@@ -128,12 +128,15 @@ export class TestOffice {
   readonly env: Record<string, string>
   /** The device token from `identity.json` for an office started with `device`; else undefined. */
   token: string | undefined
+  /** The `opencorp` it runs: the checkout wrapper, or a compiled binary. */
+  readonly program: string
   readonly #ps: string
   readonly #pidfile: string
   #stopped: Promise<void> | undefined
 
-  constructor(root: string, llm: FakeLLM, ps: string, extra: Record<string, string> = {}) {
+  constructor(root: string, llm: FakeLLM, ps: string, extra: Record<string, string> = {}, program = OPENCORP) {
     this.root = root
+    this.program = program
     this.home = path.join(root, "h")
     const paths = new OfficePaths(this.home)
     this.socket = paths.socket
@@ -150,9 +153,9 @@ export class TestOffice {
     })
   }
 
-  /** Runs `opencorp <argv>` through the checkout wrapper with `env`, in `cwd` (default the home); killed after 90 s. */
+  /** Runs `opencorp <argv>` through `program` with `env`, in `cwd` (default the home); killed after 90 s. */
   opencorp(argv: string[], { cwd = this.home }: { cwd?: string } = {}): Promise<Ran> {
-    return run([OPENCORP, ...argv], { cwd, env: this.env, timeout: 90_000 })
+    return run([this.program, ...argv], { cwd, env: this.env, timeout: 90_000 })
   }
 
   /** Stops the office (SIGTERM, SIGKILL after 15 s), kills every process naming `root`, closes the fake LLM and
@@ -182,12 +185,14 @@ export class TestOffice {
 
 /** Starts a real office on a fresh temp home through `opencorp init`, with `hq` as its `office/hq.json` and, unless
  *  `device`, no device listed for the CEO (Ngoc, @ngocbh, of Acme); `env` joins the environment it and `opencorp()`
- *  run with, such as `OPENCORP_CLAUDE_BIN` naming a fake. Stops it and rethrows when init fails. */
+ *  run with, such as `OPENCORP_CLAUDE_BIN` naming a fake. `opencorp` is the program that runs init and `opencorp()`
+ *  (default the checkout wrapper; a compiled binary to test one). Stops it and rethrows when init fails. */
 export async function startOffice({
   hq = { tcp: false },
   device = false,
   env = {},
-}: { hq?: unknown; device?: boolean; env?: Record<string, string> } = {}): Promise<TestOffice> {
+  opencorp = OPENCORP,
+}: { hq?: unknown; device?: boolean; env?: Record<string, string>; opencorp?: string } = {}): Promise<TestOffice> {
   const ps = psBinary()
   // Short, for the socket paths: macOS caps a unix socket's path at 104 bytes.
   const root = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
@@ -198,13 +203,13 @@ export async function startOffice({
     fs.rmSync(root, { recursive: true, force: true })
     throw error
   }
-  const office = new TestOffice(root, llm, ps, env)
+  const office = new TestOffice(root, llm, ps, env, opencorp)
   try {
     fs.mkdirSync(path.join(office.home, "office"), { recursive: true, mode: 0o700 })
     fs.writeFileSync(path.join(office.home, "office", "hq.json"), JSON.stringify(hq))
     llm.script({ content: "OK", match: "Reply with the single word OK." })
     const argv = [
-      OPENCORP,
+      opencorp,
       "init",
       "--home",
       office.home,
