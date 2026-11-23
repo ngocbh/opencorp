@@ -189,7 +189,9 @@ test("in auto a command the check says ask holds on a card that shows the check'
   const h = await makeHarness(fake)
   const id = await chat(h)
   const [q] = await held(h, id, "cancel it")
-  expect(q!.approval).toMatchObject({ tool: "terminal_run", action: "scancel 42", reason: "Auto's check: cancels a cluster job" })
+  expect(q!.approval).toMatchObject({
+    tool: "terminal_run", action: "scancel 42", reason: `Auto's check: cancels a cluster job (run ${checkRuns(h, id)[0]})`,
+  })
   expect(q!.options).toEqual([YES, sessionOption(["scancel 42"]), alwaysOption(["scancel 42"])])
   expect(await calls(h, id)).toEqual([["held", null]])
 })
@@ -235,14 +237,16 @@ test("a check that fails or doesn't finish asks, and the card says the check cou
   const failing = await makeHarness(fake)
   const id = await chat(failing)
   const [q] = await held(failing, id, "build it")
-  expect(q!.approval!.reason).toBe("Auto asks: its check couldn't judge this: it couldn't run")
+  expect(q!.approval!.reason).toMatch(/^Auto asks: its check couldn't judge this: it couldn't run \(run [0-9a-f-]{36}\)$/)
 
   const slow = await fakeLlm()
   slow.script(shell("make"), verdict("make", "run", "builds the project", { hold: true }))
   const h = await makeHarness(slow, { checkTimeoutMs: 1500 })
   const late = await chat(h)
   const [timed] = await held(h, late, "build it")
-  expect(timed!.approval!.reason).toBe("Auto asks: its check couldn't judge this: it didn't finish in 1.5 s")
+  expect(timed!.approval!.reason).toMatch(
+    /^Auto asks: its check couldn't judge this: it didn't finish in 1\.5 s \(run [0-9a-f-]{36}\)$/,
+  )
 })
 
 sandboxed("in default a build command asks with no check, and a read-only one runs", async () => {
@@ -258,7 +262,8 @@ sandboxed("in default a build command asks with no check, and a read-only one ru
 
 test("a switch to dontAsk while Auto's check runs refuses the call, with no card", async () => {
   const fake = await fakeLlm()
-  const why = "Not run: this session doesn't ask (dontAsk mode): Auto's check: cancels a cluster job."
+  // The refusal cites the check's run: what comes before it is fixed.
+  const why = "Not run: this session doesn't ask (dontAsk mode): Auto's check: cancels a cluster job (run "
   fake.script(
     shell("scancel 42"),
     verdict("scancel 42", "ask", "cancels a cluster job", { hold: true }),
@@ -272,7 +277,7 @@ test("a switch to dontAsk while Auto's check runs refuses the call, with no card
   fake.release()
   await replied(h, id, "I won't.")
   expect(h.store.listQuestions({ sessionId: id })).toEqual([])
-  expect(await calls(h, id)).toEqual([["completed", why]])
+  expect(await calls(h, id)).toEqual([["completed", `${why}${checkRuns(h, id)[0]}).`]])
 })
 
 test("the chat's permissions hold nothing: its terminal acts only on what the gate decided for each call", async () => {
@@ -316,14 +321,15 @@ test("the chat's permissions hold nothing: its terminal acts only on what the ga
 
 test("in dontAsk a command the check says ask is refused with no card, and the agent reads why", async () => {
   const fake = await fakeLlm()
-  const why = "Not run: this session doesn't ask (dontAsk mode): Auto's check: cancels a cluster job."
+  // The refusal cites the check's run: what comes before it is fixed.
+  const why = "Not run: this session doesn't ask (dontAsk mode): Auto's check: cancels a cluster job (run "
   fake.script(shell("scancel 42"), verdict("scancel 42", "ask", "cancels a cluster job"), says("I won't.", why))
   const h = await makeHarness(fake)
   const id = await chat(h, "dontAsk")
   await h.harness.prompt(id, "cancel it")
   await replied(h, id, "I won't.")
   expect(h.store.listQuestions({ sessionId: id })).toEqual([])
-  expect(await calls(h, id)).toEqual([["completed", why]])
+  expect(await calls(h, id)).toEqual([["completed", `${why}${checkRuns(h, id)[0]}).`]])
 })
 
 test("in ask mode the employee's command holds on an approval card, and the run waits", async () => {

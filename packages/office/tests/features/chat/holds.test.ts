@@ -218,7 +218,8 @@ test("in auto, Auto's check judges an MCP or module call from its words and argu
   expect(g.card(0)).toBeUndefined()
   // Its ask verdict holds the call on a card that shows why.
   const card = await waitFor(() => g.card(1), { what: "the module call's card" })
-  expect(card.approval).toMatchObject({ reason: "Auto's check: it posts data", rules: ["module crm quote"] })
+  expect(card.approval).toMatchObject({ rules: ["module crm quote"] })
+  expect(card.approval!.reason).toMatch(/^Auto's check: it posts data \(run [0-9a-f-]{36}\)$/)
   expect(check.judged).toEqual([
     { kind: "tool", command: 'mcp github create_issue {"title":"Fix"}', profile: "none", cwd: "", host: "" },
     { kind: "tool", command: 'module crm quote {"amount":5}', profile: "none", cwd: "", host: "" },

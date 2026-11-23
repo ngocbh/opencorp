@@ -153,7 +153,8 @@ test("Auto's check is a hold: its run verdict releases the call with its reason,
 
   await host.prompt("touch held", OWNER)
   const [card] = await cards(host, 1)
-  expect(card!.approval).toMatchObject({ action: "touch held", reason: "Auto's check: the owner may want a say" })
+  expect(card!.approval).toMatchObject({ action: "touch held" })
+  expect(card!.approval!.reason).toMatch(/^Auto's check: the owner may want a say \(run [0-9a-f-]{36}\)$/)
   expect(fs.existsSync(path.join(work, "held"))).toBe(false)
   host.answer(card!.id, YES, "option", OWNER)
   await replied(host, "Held.")
