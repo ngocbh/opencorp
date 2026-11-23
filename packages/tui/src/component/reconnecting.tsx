@@ -3,8 +3,8 @@ import { useTheme } from "../context/theme"
 import { Spinner } from "./spinner"
 
 /** A full-screen overlay saying the office's connection was lost and is being retried, with why the office's state
- *  can't be read when `error` says. */
-export function Reconnecting(props: { error?: string }) {
+ *  can't be read when `error` says. With no office (`local`), it names the session instead. */
+export function Reconnecting(props: { error?: string; local?: boolean }) {
   const { theme } = useTheme()
 
   return (
@@ -33,8 +33,8 @@ export function Reconnecting(props: { error?: string }) {
         <Spinner color={theme.text}>Connection lost…</Spinner>
         <text fg={theme.textMuted}>
           {props.error !== undefined
-            ? `The office's state can't be read: ${props.error}. Retrying…`
-            : "Reconnecting to the office automatically."}
+            ? `${props.local ? "The session's" : "The office's"} state can't be read: ${props.error}. Retrying…`
+            : `Reconnecting to ${props.local ? "the session" : "the office"} automatically.`}
         </text>
       </box>
     </box>

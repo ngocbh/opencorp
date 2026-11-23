@@ -1,5 +1,6 @@
 // The overlay over every screen while the TUI reconnects to the office. Before the first connection home's own notes
-// say why it waits instead, and any other screen gets the overlay only after a longer grace.
+// say why it waits instead, and any other screen gets the overlay only after a longer grace. While it shows, one
+// Ctrl+C quits, since a toast asking for a second would show under it.
 import { expect, test } from "bun:test"
 import { createFakeOffice, createStub } from "../fixture/fake-office"
 import { bootFrame } from "../fixture/frame"
@@ -103,6 +104,23 @@ test("after a drop, an office whose state can't be read shows why on the overlay
     expect(f).not.toContain("Reconnecting to the office automatically.")
     office.notImplemented.clear()
     await app.until((f) => !f.includes(LOST) && f.includes("@minh · idle"), 8000)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+}, 20_000)
+
+test("while the overlay shows, one Ctrl+C quits a chat", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]!
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    office.stop()
+    await app.until((f) => f.includes(LOST), 4000)
+    app.input.pressKey("c", { ctrl: true })
+    await app.until(() => app.setup.renderer.isDestroyed)
+    expect(app.frame()).not.toContain("Press again to leave")
   } finally {
     await app.stop()
     office.stop()
