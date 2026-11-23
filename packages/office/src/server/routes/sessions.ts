@@ -5,6 +5,7 @@ import {
   CreateSessionRequest,
   type ErrorCode,
   Message,
+  MessagePage,
   PromptRequest,
   Session,
   SetModeRequest,
@@ -86,11 +87,64 @@ export async function harnessCall<T>(fn: () => T | Promise<T>): Promise<T> {
 }
 
 /** What a client reads of a session before following its live events: a yian chat's transcript or a Codex
- *  session's current turn. 404 comes first: Python's transcript read was a store read, with no harness. */
+ *  session's current turn, whole or a page of it (`messagesReply`). 404 comes first: Python's transcript read was a
+ *  store read, with no harness. */
 export async function listMessages(ctx: RequestContext, params: Params) {
   const session = stored(ctx, params.id!)
   const actor = harness(ctx, "GET /sessions/:id/messages")
-  return harnessCall(() => actor.messages(session.id))
+  return messagesReply(ctx.query, session.id, () => harnessCall(() => actor.messages(session.id)))
+}
+
+/** The longest cursor a page gives: a message id is far shorter. */
+const MAX_CURSOR = 1024
+
+/** A page's cursor: the session and the id of the message the next, older page ends before, as base64url JSON. */
+function cursor(sessionId: string, messageId: string): string {
+  return Buffer.from(JSON.stringify({ session: sessionId, id: messageId })).toString("base64url")
+}
+
+/** The message id `raw`, a page's cursor, names in session `sessionId`; 400 `bad_cursor` for anything a page of this
+ *  session didn't give. Its text echoes nothing of the request. */
+function cursorId(raw: string, sessionId: string): string {
+  const bad = () => new HttpError(400, "bad_cursor", "before isn't a cursor a page of this session's messages gave")
+  if (raw.length > MAX_CURSOR || !/^[A-Za-z0-9_-]+$/.test(raw)) throw bad()
+  let value: unknown
+  try {
+    value = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"))
+  } catch {
+    throw bad()
+  }
+  const { session, id } = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>
+  if (typeof session !== "string" || typeof id !== "string" || id === "") throw bad()
+  if (session !== sessionId) throw new HttpError(400, "bad_cursor", "before is a cursor of another session's messages")
+  return id
+}
+
+/**
+ * Session `sessionId`'s messages as `query` asks for them, from `read`. With neither `limit` nor `before`, all of
+ * them. Otherwise a page, as upstream's message list pages: the newest `limit` (from 1 to MAX_LIMIT, DEFAULT_LIMIT
+ * when absent; 422 otherwise) before the message `before` names, or the newest of all, oldest first, with `next`, the
+ * cursor of the page before it, null at the first message. A cursor names a message, so newer ones arriving don't
+ * move it; one this session's pages didn't give, or whose message the transcript no longer has, is 400 `bad_cursor`.
+ * The no-office host serves its session's messages through it too.
+ */
+export async function messagesReply(
+  query: URLSearchParams,
+  sessionId: string,
+  read: () => Promise<Message[]>,
+): Promise<Message[] | MessagePage> {
+  const last = (name: string) => query.getAll(name).at(-1)
+  const [rawLimit, rawBefore] = [last("limit"), last("before")]
+  if (rawLimit === undefined && rawBefore === undefined) return read()
+  const n = limit(rawLimit)
+  const before = rawBefore === undefined ? null : cursorId(rawBefore, sessionId)
+  const messages = await read()
+  const end = before === null ? messages.length : messages.findIndex((m) => m.id === before)
+  if (end < 0) {
+    throw new HttpError(400, "bad_cursor", "before names a message this session's transcript no longer has")
+  }
+  const start = Math.max(0, end - n)
+  return { messages: messages.slice(start, end), next: start > 0 ? cursor(sessionId, messages[start]!.id) : null }
 }
 
 /** Start a person's main chat in a folder, opened by the request's person, on the model the office chooses. */
@@ -166,7 +220,12 @@ export const ROUTES: readonly Route<RequestContext>[] = [
   { method: "GET", path: "/sessions", reply: z.array(Session), handler: listSessions },
   { method: "POST", path: "/sessions", body: CreateSessionRequest, reply: Session, handler: createSession },
   { method: "GET", path: "/sessions/:id", reply: Session, handler: getSession },
-  { method: "GET", path: "/sessions/:id/messages", reply: z.array(Message), handler: listMessages },
+  {
+    method: "GET",
+    path: "/sessions/:id/messages",
+    reply: z.union([z.array(Message), MessagePage]),
+    handler: listMessages,
+  },
   { method: "POST", path: "/sessions/:id/prompt", body: PromptRequest, reply: Ack, handler: prompt },
   { method: "POST", path: "/sessions/:id/steer", body: PromptRequest, reply: Ack, handler: steer },
   { method: "POST", path: "/sessions/:id/interrupt", reply: Ack, handler: interrupt },

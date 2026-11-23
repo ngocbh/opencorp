@@ -16,7 +16,7 @@ const NAMES = [
   "Id", "Handle", "Ulid", "GitId", "DeviceName", "TokenHash", "Device", "PasswordHash", "ConnectionName",
   "Timestamp", "CompanyDefaults", "Company", "HarnessPolicy", "Sop", "Routine", "Person", "Group",
   "AssetTool", "Grant", "Asset", "WorkItem", "Comment", "Session", "SessionMode", "HarnessUsage", "Message",
-  "MessageRemoved", "Part", "TextPart", "FilePart", "ToolPart", "ErrorPart", "Permission", "QuestionOption",
+  "MessagePage", "MessageRemoved", "Part", "TextPart", "FilePart", "ToolPart", "ErrorPart", "Permission", "QuestionOption",
   "QuestionPage",
   "AnswerField", "DiscussionEntry", "Approval", "Question", "Profile", "ProfileProposal", "Event", "LiveEvent",
   "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "SetModeRequest",
@@ -133,7 +133,7 @@ const BODIES = [
   "CompanyView", "CostReport", "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
   "HqLoginRequest", "CompanyTree", "CompanyFile", "RunPage", "RunDetail", "RunNodePage", "RunEventPage",
   "RunEvent", "RunCallList", "RunCall", "OfficeInfo", "RuleList", "RemoveRuleRequest", "InstrumentKeysRequest",
-  "InstrumentSizeRequest", "InstrumentScreen",
+  "InstrumentSizeRequest", "InstrumentScreen", "MessagePage",
 ]
 
 test("every route body has a fixture", () => {

@@ -178,6 +178,16 @@ export const Message = z.strictObject({
 })
 export type Message = z.input<typeof Message>
 
+/** A page of a session's transcript (`GET /sessions/{id}/messages?limit=N&before=…`): its newest messages before the
+ *  cursor `before`, or the newest of all, oldest first. */
+export const MessagePage = z.strictObject({
+  messages: z.array(Message),
+  /** The `before` of the next, older page; null once the page holds the transcript's first message. A cursor is
+   *  opaque, and stays good while newer messages arrive. */
+  next: z.string().min(1).nullable().default(null),
+})
+export type MessagePage = z.input<typeof MessagePage>
+
 /** `message.removed` data: a queued message the run took back before anything read it, such as one Esc held or sent
  *  again, which then shows under its new id. */
 export const MessageRemoved = z.strictObject({ id: ItemId, session_id: Ulid })
