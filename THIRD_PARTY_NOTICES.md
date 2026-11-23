@@ -99,6 +99,15 @@ license, the upstream paths and commit, and our paths.
 - **Upstream:** `packages/tui/src/component/prompt/index.tsx` and `packages/tui/src/routes/session/footer.tsx` at
   commit `b471c2b`.
 - **Ours:** `packages/tui/src/routes/session/instrument-line.tsx`, `packages/tui/src/component/prompt/index.tsx`.
+- **What:** the row under the prompt's text, ported from current upstream's prompt metadata row: who answers in their
+  colour, then the model, on one row; short of room, parts give way in turn and then the model is cut short with "…",
+  to no fewer than 9 cells; with `takeWidth` and `truncateWidth`. Our own: what it names (the employee, or a Codex or
+  Claude Code session and its harness), "as @…" in a session the owner writes to as themselves, the order the parts
+  give way in, and the width taken from the row's own size rather than the screen's, so it fits a pane.
+- **Upstream:** `packages/tui/src/component/prompt/metadata.tsx` (`PromptMetadataRow`, `promptMetadataLayout`) and
+  `packages/tui/src/util/locale.ts` (`takeWidth`, `truncateWidth`), read at commit `4332e24f` (2026-11-22).
+- **Ours:** `packages/tui/src/component/prompt/metadata.tsx`, `packages/tui/src/util/locale.ts`,
+  `packages/tui/src/component/prompt/index.tsx`.
 - **What:** the TUI's move to OpenTUI 0.8.4, the version current upstream runs: the spinner renderable, which replaces
   the `opentui-spinner` package; and, as upstream does, a text area's size invalidated with
   `invalidateIntrinsicSize`, syntax styles given the renderer's scene, awaited suspends and resumes, the renderer's

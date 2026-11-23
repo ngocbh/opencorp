@@ -522,7 +522,7 @@ test("each session keeps its own draft: the chat's unsent text never reaches a C
   }
 })
 
-test("in a Codex session the chat drives, each message says who sent it, and the prompt says the owner writes", async () => {
+test("in a Codex session the chat drives, each message says who sent it, and the prompt says the owner writes as themselves", async () => {
   const { fake, chat, children } = office([{ status: "busy" }])
   const child = children[0]!
   fake.state.messages[child.id] = [
@@ -549,9 +549,9 @@ test("in a Codex session the chat drives, each message says who sent it, and the
     // Each message's sender is on the line above it.
     expect(lines[at("Fix the build.") - 1]).toMatch(/┃\s+@minh\s*$/)
     expect(lines[at("Use the staging database.") - 1]).toMatch(/┃\s+Ngoc Bui \(owner\)\s*$/)
-    // The owner types here, not the employee who drives it.
-    expect(pane(f)).toMatch(/@ngocbh · CEO · gpt|@ngocbh · CEO · Codex/)
-    expect(pane(f)).not.toMatch(/@minh · Software engineer/)
+    // The line under the prompt names who answers, the session on Codex, and that the owner writes as themselves.
+    expect(pane(f)).toContain("codex 1 Codex · as @ngocbh")
+    expect(pane(f)).not.toMatch(/@ngocbh · CEO|@minh · Software engineer/)
   } finally {
     await app.stop()
     fake.stop()

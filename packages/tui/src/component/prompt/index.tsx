@@ -1,6 +1,5 @@
 import {
   BoxRenderable,
-  RGBA,
   TextareaRenderable,
   MouseEvent,
   PasteEvent,
@@ -38,6 +37,7 @@ import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
 import { costCapArgument, dollars, useCostCap } from "../cost-cap"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
+import { PromptWhoRow, type PromptWho } from "./metadata"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { errorMessage } from "../../util/error"
 import { interruptible, working } from "../../util/status"
@@ -100,10 +100,6 @@ const DRAFT_RETENTION_MIN_CHARS = 20
 function randomIndex(count: number) {
   if (count <= 0) return 0
   return Math.floor(Math.random() * count)
-}
-
-function fadeColor(color: RGBA, alpha: number) {
-  return RGBA.fromValues(color.r, color.g, color.b, color.a * alpha)
 }
 
 export function Prompt(props: PromptProps) {
@@ -948,14 +944,6 @@ export function Prompt(props: PromptProps) {
       }),
     }
   })
-  // Who writes in the prompt: the person the chat is with, except in a Codex or Claude Code session an employee's
-  // chat drives, where the owner writes to the harness beside the employee who drives it.
-  const writer = createMemo(() => {
-    const s = session()
-    if (!s?.instrument_of) return local.person.current()
-    const handle = office.person ?? sessionOwner(s, office.state.people)
-    return office.state.people.find((p) => p.handle === handle) ?? local.person.current()
-  })
   // The open session's model, or Codex for a new chat that will run on it.
   const footerModel = createMemo(() => {
     const s = session()
@@ -964,6 +952,25 @@ export function Prompt(props: PromptProps) {
     if (s && harness !== undefined) return display(s.harness_model ?? harness)
     if (s) return sessionModel(s, office.connections()).model
     return local.harness.current() === "codex" ? "Codex" : undefined
+  })
+  // Who answers what is written here: the person the chat is with; or, in a Codex or Claude Code session an employee's
+  // chat drives, the session itself, on its harness's model, which the owner writes to as themselves.
+  const who = createMemo<PromptWho | undefined>(() => {
+    const s = session()
+    if (s?.instrument_of) {
+      const harness = HARNESS_NAMES[s.harness] ?? s.harness
+      const listed = office.state.instruments[s.instrument_of]?.find((i) => i.id === s.id)
+      const owner = office.person ?? sessionOwner(s, office.state.people)
+      return {
+        name: listed ? display(listed.name) : harness,
+        harness: listed ? harness : undefined,
+        model: s.harness_model ? display(s.harness_model) : undefined,
+        as: owner ? `as @${owner}` : undefined,
+      }
+    }
+    const person = local.person.current()
+    if (!person) return undefined
+    return { name: `@${person.handle}`, mode: mode() ?? undefined, title: person.title, model: footerModel() }
   })
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))
 
@@ -1067,39 +1074,13 @@ export function Prompt(props: PromptProps) {
               syntaxStyle={syntax()}
             />
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
-              <box flexDirection="row" gap={1}>
-                <Show when={writer()} fallback={<box height={1} />}>
-                  {(person) => (
-                    <>
-                      <text fg={fadeColor(highlight(), agentMetaAlpha())}>@{person().handle}</text>
-                      <Show when={mode()}>
-                        {(m) => (
-                          // dontAsk refuses what would ask, so it stands out.
-                          <text
-                            fg={fadeColor(m() === "dontAsk" ? theme.warning : theme.textMuted, agentMetaAlpha())}
-                          >
-                            {m()}
-                          </text>
-                        )}
-                      </Show>
-                      <Show when={person().title}>
-                        <text fg={fadeColor(theme.textMuted, titleMetaAlpha())}>·</text>
-                        <text fg={fadeColor(leader() ? theme.textMuted : theme.text, titleMetaAlpha())}>
-                          {person().title}
-                        </text>
-                      </Show>
-                    </>
-                  )}
-                </Show>
-                <Show when={footerModel()}>
-                  {(model) => (
-                    <>
-                      <text fg={fadeColor(theme.textMuted, titleMetaAlpha())}>·</text>
-                      <text fg={fadeColor(theme.textMuted, titleMetaAlpha())}>{model()}</text>
-                    </>
-                  )}
-                </Show>
-              </box>
+              <PromptWhoRow
+                who={who()}
+                highlight={highlight()}
+                muted={leader()}
+                nameAlpha={agentMetaAlpha()}
+                metaAlpha={titleMetaAlpha()}
+              />
               <Show when={hasRightContent()}>
                 <box flexDirection="row" gap={1} alignItems="center">
                   {props.right}

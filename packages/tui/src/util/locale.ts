@@ -75,6 +75,31 @@ export function truncate(str: string, len: number): string {
   return str.slice(0, len - 1) + "…"
 }
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+
+/** The start of `str` that takes at most `width` cells, cut between graphemes. */
+export function takeWidth(str: string, width: number) {
+  if (width <= 0) return ""
+  if (Bun.stringWidth(str) <= width) return str
+  const result: string[] = []
+  let used = 0
+  for (const { segment } of graphemeSegmenter.segment(str)) {
+    const next = Bun.stringWidth(segment)
+    if (used + next > width) break
+    result.push(segment)
+    used += next
+  }
+  return result.join("")
+}
+
+/** `str` in at most `width` cells, cut short with "…" when it takes more. */
+export function truncateWidth(str: string, width: number): string {
+  if (width <= 0) return ""
+  if (Bun.stringWidth(str) <= width) return str
+  if (width === 1) return "…"
+  return takeWidth(str, width - 1) + "…"
+}
+
 export function truncateLeft(str: string, len: number): string {
   if (str.length <= len) return str
   return "…" + str.slice(-(len - 1))
