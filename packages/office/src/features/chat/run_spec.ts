@@ -38,7 +38,7 @@ type Workspace = Pick<WorkspaceTools, "call" | "interrupt">
 /** What the session actor and the approvals use of a main chat's terminal. */
 type Shells = Pick<
   EmployeeTerminal,
-  "tools" | "bind" | "plan" | "audited" | "where" | "interruptWaits" | "close" | "onEnded" | "delivered"
+  "tools" | "bind" | "plan" | "where" | "interruptWaits" | "close" | "onEnded" | "delivered"
 >
 /** What the session actor uses of a main chat's Codex or Claude Code instrument. */
 type Harnessed = Pick<EmployeeInstrument, "tools" | "cutCalls" | "close" | "suspend">
@@ -144,7 +144,7 @@ export function mainSpec({
       max_turns: defaults.max_turns,
     },
     groups: ({ session, runId, onQuestion, permissions }) => {
-      if (permissions !== undefined) terminal.bind(runId, permissions)
+      if (permissions !== undefined) terminal.bind(permissions)
       const ctx = { store, repo, session, runId, onQuestion, carried, monitor, workspace, terminal, codex, claude }
       return build(["toolbox", "workspace", "terminal", "codex", "claude", "company"], ctx)
     },
@@ -173,7 +173,6 @@ export function sideSpec({
   repo,
   session,
   workspace,
-  monitor,
   question,
 }: {
   store: Store
@@ -181,7 +180,6 @@ export function sideSpec({
   repo: CompanyRepo
   session: SessionRecord
   workspace: Workspace
-  monitor: Monitor
   question: QuestionRecord | undefined
 }): RunSpec {
   const person = personOf(repo, session)
@@ -196,7 +194,7 @@ export function sideSpec({
       history_budget: defaults.side_seed_max_chars + SIDE_HISTORY_CHARS,
     },
     groups: ({ session, runId }) =>
-      build(["workspace", "work_items"], { store, session, runId, monitor, workspace, readOnly: true, question }),
+      build(["workspace", "work_items"], { store, session, runId, workspace, readOnly: true, question }),
     memories: profileMemory(git, person.handle),
     skills: [],
     names: [person.handle, person.name],

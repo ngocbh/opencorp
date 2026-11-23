@@ -3,8 +3,8 @@
 import type { ToolboxTool } from "../runtime/permissions/monitor.ts"
 import type { ToolContext } from "./context.ts"
 
-/** `ctx.monitor`'s asset tools for `ctx.session`'s person in run `ctx.runId`; none without a monitor and session. */
+/** `ctx.monitor`'s asset tools for `ctx.session`'s person; none without a monitor and session. */
 export function tools(ctx: ToolContext): Record<string, ToolboxTool> {
   if (ctx.monitor === undefined || ctx.session === undefined) return {}
-  return ctx.monitor.tools(ctx.session.person, { runId: ctx.runId ?? null, sessionId: ctx.session.id })
+  return ctx.monitor.tools(ctx.session.person)
 }

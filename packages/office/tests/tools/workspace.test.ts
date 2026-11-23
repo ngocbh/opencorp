@@ -1,12 +1,10 @@
-/** The workspace tool group: the file tools, each call audited and none gated; and the pipes the terminal runs an
- *  employee's commands through, under the workspace's shell policy, each call tracked for the reaper. */
+/** The workspace tool group: the file tools, none gated; and the pipes the terminal runs an employee's commands
+ *  through, under the workspace's shell policy, each call tracked for the reaper. */
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
-import type { ToolOutcome } from "../../src/runtime/permissions/monitor.ts"
 import { helperCommand } from "../../src/platform.ts"
 import { TOOL_NAMES, tools as workspaceGroup, WorkspaceTools } from "../../src/tools/workspace.ts"
-import { makeMonitor } from "../runtime/permissions/helpers.ts"
 import { makePolicy, sandboxAvailable } from "../runtime/sandbox/helpers.ts"
 import { openStore, session, tempDir } from "./helpers.ts"
 import { waitFor } from "../helpers.ts"
@@ -21,22 +19,20 @@ function workspaceTools({ writable = true, helper }: { writable?: boolean; helpe
 }
 
 test("the workspace group is the file tools, with no shell", async () => {
-  const { monitor, store } = await makeMonitor()
   const calls: string[] = []
   const workspace = {
-    call: async (name: string): Promise<ToolOutcome> => {
+    call: async (name: string): Promise<string> => {
       calls.push(name)
-      return { output: "ok", audit: { tool: name, argsSummary: "", exit: 0, duration: 0 } }
+      return "ok"
     },
   }
-  const group = workspaceGroup({ monitor, workspace, session: session({ person: "minh" }), runId: "r1" })
+  const group = workspaceGroup({ workspace, session: session({ person: "minh" }), runId: "r1" })
   expect(Object.keys(group)).toEqual(["read_file", "write_file", "edit_file", "list", "search"])
   expect(Object.keys(group)).toEqual([...TOOL_NAMES])
   expect(await group.list!.call({}, { callId: "r1/chat#0/reply/0/0" })).toBe("ok")
   expect(calls).toEqual(["list"])
-  expect(store.listAudit().map((r) => [r.tool, r.outcome])).toEqual([["list", "ok"]])
   // A side chat's read-only group.
-  expect(Object.keys(workspaceGroup({ monitor, workspace, session: session(), readOnly: true }))).toEqual([
+  expect(Object.keys(workspaceGroup({ workspace, session: session(), readOnly: true }))).toEqual([
     "read_file",
     "list",
     "search",

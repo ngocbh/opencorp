@@ -105,6 +105,9 @@ export interface Verdict {
   readonly verdict: "run" | "ask"
   readonly reason: string
   readonly failed?: boolean
+  /** The id of the check's run whose log holds this verdict (a cached verdict's is the run that made it), when one
+   *  ran. */
+  readonly run?: string
 }
 
 const BY_RULE = "an allow rule"
@@ -261,12 +264,11 @@ export interface ApprovalCard {
  *  for a command, the line and the command it is typed into for typed text. */
 export type Basis = { readonly cwd: string | null } | { readonly line: string; readonly into: string | null }
 
-/** What the session's gate decided for a terminal call before it started (yian's `beforeToolCall`): what lets it run,
- *  for its audit row (`by read-only`, `approved by @<who>`), the state it was decided on, whether its approver said
- *  Yes on a card, and what it decided: the tool, the command or whole typed line, whether that line ends without
- *  Enter, and the shell it runs in (null for a new one). The call acts only if it is exactly that. */
+/** What the session's gate decided for a terminal call before it started (yian's `beforeToolCall`): the state it was
+ *  decided on, whether its approver said Yes on a card, and what it decided: the tool, the command or whole typed
+ *  line, whether that line ends without Enter, and the shell it runs in (null for a new one). The call acts only if it
+ *  is exactly that. Why it runs is the gate's note, in the run log. */
 export interface Decided {
-  readonly why: string
   readonly basis: Basis
   readonly approved: boolean
   readonly tool: "terminal_run" | "terminal_type"
@@ -384,7 +386,8 @@ export async function judged(
   if (!shaped) return { verdict: "ask", reason: "it gave no verdict", failed: true }
   const verdict = answer as Verdict
   const failed = verdict.failed === true ? { failed: true } : {}
-  return { verdict: verdict.verdict, reason: oneLine(verdict.reason), ...failed }
+  const run = typeof verdict.run === "string" ? { run: verdict.run } : {}
+  return { verdict: verdict.verdict, reason: oneLine(verdict.reason), ...failed, ...run }
 }
 
 /** `text` as one line: control characters and line breaks become spaces, runs of spaces one, cut to

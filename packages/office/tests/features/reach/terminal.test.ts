@@ -121,9 +121,9 @@ async function learning(o: {
       return out !== null ? out : tools[name].call(args, { callId })
     },
     /** The owner's Yes to held call `callId`: yian releases it, and the call is made again under its id. */
-    approve: (callId: string, o: { credit?: string; signal?: AbortSignal } = {}) => {
+    approve: (callId: string, o: { signal?: AbortSignal } = {}) => {
       if (gate === undefined) throw new Error("these permissions have no gate")
-      const call = gate.approve(callId, o.credit ?? "approved")
+      const call = gate.approve(callId)
       return tools[call.name as keyof typeof tools].call(call.args, { callId, ...(o.signal ? { signal: o.signal } : {}) })
     },
     /** The id of the `n`th shell made. */
@@ -231,7 +231,7 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
       }
       // The owner lets a PATH change run: the system's ssh it then finds is the wrapper still.
       expect(isPending(await t.call("run", { command: "PATH=/usr/bin:/bin", why: "x", shell: "shell 1" }))).toBe(true)
-      await t.approve(held[0]!.callId, { credit: "approved by @ngocbh" })
+      await t.approve(held[0]!.callId)
       const printed = json(await t.call("run", { command: "command -v ssh; ssh -G h", why: "x", shell: "shell 1" }))
       expect(printed.output).toBe(`$ command -v ssh; ssh -G h\n/usr/bin/ssh\n${config}`)
     },
@@ -246,7 +246,7 @@ describe.skipIf(!sandboxAvailable())("in the SSH-only sandbox", () => {
       const command = "ssh -o ControlMaster=auto -G h"
       expect(isPending(await t.call("run", { command, why: "x", shell: "shell 1" }))).toBe(true)
       const signal = new AbortController().signal
-      const approved = json(await t.approve(held[0]!.callId, { signal: signal, credit: "approved by @ngocbh" }))
+      const approved = json(await t.approve(held[0]!.callId, { signal }))
       expect(approved.output).toStartWith(`$ ${command}\ncontrolmaster no\n`)
       await t.call("run", { command: "scp h:/etc/hostname copied; true", why: "copy a file", shell: "shell 1" })
       const call = t.fake.calls().find((argv) => argv.includes("h"))!

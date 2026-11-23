@@ -7,7 +7,7 @@ type Asset = z.output<typeof AssetSchema>
 
 /** One tool of an asset kind. `run(asset, args, secrets)` executes a call in the office and returns JSON data
  *  (or a Promise of it); `secrets` maps each of `asset.secrets` to its value. What `run` throws becomes an
- *  `error:` result, except an `AbortError`, which interrupts the call (it is audited and rethrown): a kind that
+ *  `error:` result, except an `AbortError`, which interrupts the call (it is rethrown): a kind that
  *  aborts its own work, a fetch on a timeout say, rethrows that as a plain `Error`. */
 export interface KindTool {
   readonly run: (asset: Asset, args: Record<string, unknown>, secrets: ReadonlyMap<string, string>) => unknown

@@ -52,7 +52,6 @@ async function approvals(mode: "auto" | "default" | "ask" = "auto", plans: Recor
     notice: () => {},
     settle: () => {},
     planCommand: (_tool, args) => (typeof args?.command === "string" ? plans[args.command] : undefined) ?? { decide: false },
-    audited: () => {},
     release: async (callId, note) => void released.push({ callId, note }),
     completeCall: async (callId, output) => void completed.push({ callId, output }),
     onQuestion: (question, options) => answers.ask(question, options),
@@ -130,15 +129,14 @@ test("a card approves its call only with its approver's Yes", async () => {
   const owner = a.card(`${RUN}/chat#0/reply/1/1`, "ls")
   a.o.office.store.answerQuestion(owner.id, YES, "option", CEO)
   expect(a.perms.decided!(owner.call_id!)).toEqual({
-    why: `approved by @${CEO}`, basis: { cwd: "/w" }, approved: true, tool: "terminal_run", text: "ls", partial: false,
-    shell: null,
+    basis: { cwd: "/w" }, approved: true, tool: "terminal_run", text: "ls", partial: false, shell: null,
   })
 })
 
 test("what the gate let a call do is taken once, and gone once its job ends or its call closes", async () => {
   const a = await approvals("auto", { ls: planOf("ls") })
   expect(a.chat.gate(RUN, call("ls", 0))).toEqual({ run: true, note: "read-only" })
-  expect(a.perms.decided!(call("ls", 0).callId)).toMatchObject({ why: "by read-only", text: "ls" })
+  expect(a.perms.decided!(call("ls", 0).callId)).toMatchObject({ approved: false, text: "ls" })
   expect(a.perms.decided!(call("ls", 0).callId)).toBeNull()
   // A call that never started: its job ended, or yian closed it.
   a.chat.gate(RUN, call("ls", 1))

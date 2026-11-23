@@ -27,13 +27,16 @@ export interface RecordMeta {
 /** A shell's state in its record: running until its host ends it, or until a start finds it cut off. */
 export type RecordState = "running" | "ended" | "failed" | "interrupted"
 
-/** A command the shell ran: what, who ran it, when, and its exit code once it ended (null for none, as when a signal
- *  ended it). No `exit` means it never ended in the record: still running, or cut off. `told` is the key of the note
- *  the agent is owed of its end, once its reply said it runs on, until something else told the agent of it. */
+/** A command the shell ran: what, who ran it, when, the yian call that ran it and that call's run (when it has one),
+ *  and its exit code once it ended (null for none, as when a signal ended it). No `exit` means it never ended in the
+ *  record: still running, or cut off. `told` is the key of the note the agent is owed of its end, once its reply said
+ *  it runs on, until something else told the agent of it. */
 export interface RecordedCommand {
   command: string
   by: string
   at: string
+  call?: string
+  run?: string
   exit?: number | null
   told?: string
 }
@@ -70,11 +73,13 @@ const isText = (value: unknown): value is string => typeof value === "string"
 /** Whether `value` is a command as meta.json holds it. */
 function isCommand(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false
-  const { command, by, at, exit, told } = value as Record<string, unknown>
+  const { command, by, at, call, run, exit, told } = value as Record<string, unknown>
   return (
     isText(command) &&
     isText(by) &&
     isText(at) &&
+    (call === undefined || isText(call)) &&
+    (run === undefined || isText(run)) &&
     (exit === undefined || exit === null || typeof exit === "number") &&
     (told === undefined || isText(told))
   )
@@ -138,11 +143,13 @@ export class InstrumentRecord {
     view.onSettled((text) => this.write(text))
   }
 
-  /** Records that `by` ran `command`: a command line the agent runs, never the owner's keys, which no record takes.
-   *  Throws, recording nothing, when meta.json can't be written. */
-  command(command: string, by: string): void {
+  /** Records that `by` ran `command`, for yian call `callId` (`<run>/...`) when it has one: a command line the agent
+   *  runs, never the owner's keys, which no record takes. Throws, recording nothing, when meta.json can't be written. */
+  command(command: string, by: string, callId?: string): void {
     if (this.file.state !== "running") return
-    this.file.commands.push({ command, by, at: now() })
+    const slash = callId?.indexOf("/") ?? -1
+    const call = callId === undefined ? {} : { call: callId, run: slash < 0 ? callId : callId.slice(0, slash) }
+    this.file.commands.push({ command, by, at: now(), ...call })
     try {
       this.save()
     } catch (error) {
@@ -286,13 +293,13 @@ export function clearTold(dir: string, key: string): void {
   replaceFile(dir, META, metaText(file))
 }
 
-/** Marks each record in `dir`'s folders that is still running as interrupted: its host stopped while the shell ran.
- *  Each, once marked, goes to `interrupted`, so the host can account for the commands it cut off (those with no
- *  `exit`); a record is marked, and handed on, once. Run at the host's start, before any shell. Returns a line for
+/** Marks each record in `dir`'s folders that is still running as interrupted: its host stopped while the shell ran,
+ *  and a command with no `exit` is one it cut off. A record is marked once. Run at the host's start, before any
+ *  shell. Returns a line for
  *  each folder whose meta.json isn't a record's (`readRecord`'s `RecordError`, a meta.json over `META_MAX` among
  *  them), which it leaves as it is, for the host to log. Folders with no meta.json, and files, hold no record; a
  *  missing `dir` holds none. Throws when `dir` can't be read, or a record's meta.json can't be rewritten. */
-export function recoverRecords(dir: string, interrupted?: (file: RecordFile) => void): string[] {
+export function recoverRecords(dir: string): string[] {
   let names: string[]
   try {
     names = fs.readdirSync(dir)
@@ -314,7 +321,6 @@ export function recoverRecords(dir: string, interrupted?: (file: RecordFile) => 
     if (file === null || file.state !== "running") continue
     file.state = "interrupted"
     replaceFile(folder, META, metaText(file))
-    interrupted?.(file)
   }
   return problems
 }

@@ -212,7 +212,7 @@ test("the approver's keys reach the shell, and at an echo-off prompt nothing rec
   expect(done).toMatchObject({ status: "idle", exit: 0 })
   expect(fake.tty()).toEqual(["pw-0wner"])
 
-  // The shell echoed none of it, so no view, record, event, log or audit row holds it.
+  // The shell echoed none of it, so no view, record, event or log holds it.
   const screen = (await request(t.sock, "GET", `/sessions/${s.id}/instruments/${id}/screen`, { headers: t.ceo }))
     .json() as InstrumentScreen
   const events: string[] = []
@@ -223,7 +223,6 @@ test("the approver's keys reach the shell, and at an echo-off prompt nothing rec
   }
   const saidText = said.flatMap((spy) => spy.mock.calls.map((call) => call.map(String).join(" ")))
   const records = fs.readdirSync(recordDir).map((name) => fs.readFileSync(path.join(recordDir, name), "utf8"))
-  const audit = t.office.store.listAudit().map((row) => JSON.stringify(row))
   const places = [
     ["the model's view", asked.output + done.output],
     ["the screen", Buffer.from(screen.data, "base64").toString()],
@@ -231,7 +230,6 @@ test("the approver's keys reach the shell, and at an echo-off prompt nothing rec
     ["the record", records.join("\n")],
     ["the console", saidText.join("\n")],
     ["the logs", t.logs.join("\n")],
-    ["the audit", audit.join("\n")],
   ]
   for (const [place, text] of places) expect([place, /pw-|0wn/.test(text!)]).toEqual([place, false])
   expect(Buffer.from(screen.data, "base64").toString()).toContain("fake password for h: ")

@@ -75,7 +75,7 @@ async function office() {
     store,
     git: new CompanyGit(root, worktrees),
     session: store.createSession(session({ person: "minh" })),
-    monitor: new Monitor(root, store, new SecretStore(path.join(dir, "secrets"))),
+    monitor: new Monitor(root, new SecretStore(path.join(dir, "secrets"))),
     defaults: repo.company!.defaults!,
     minh: repo.people.get("minh")!,
   }
@@ -111,7 +111,6 @@ function shellsOf(o: Office) {
     person: "minh",
     folder: path.join(o.dir, "session"),
     instruments: new Instruments(() => {}),
-    store: o.store,
     mode: () => "auto",
   })
   return { terminal, pipes }
@@ -171,10 +170,9 @@ test("a main run's build binds its permissions to the terminal, whose commands a
   const plan = terminal.plan("run", { command: "make", why: "builds it" })
   expect(plan).toMatchObject({ decide: true, tool: "terminal_run", action: { kind: "command", text: "make" } })
   if (!plan.decide) throw new Error("the terminal has nothing to decide")
-  const decided = (id: string | undefined) => (id === callId ? decidedFor(plan, "approved by @ngocbh", true) : null)
+  const decided = (id: string | undefined) => (id === callId ? decidedFor(plan, true) : null)
   const groups = spec.groups({ session: o.session, runId: "r1", permissions: { ...perms, decided } })
   expect(Object.keys(groups.terminal!)).toEqual(["run", "type", "read", "interrupt", "close"])
-  terminal.audited(plan, "held", "Ask mode")
   const ran = groups.terminal!.run!.call({ command: "make", why: "builds it" }, { callId })
   await waitFor(() => pipes.running().length === 1, { what: "the approved command" })
   pipes.end("make", 0)
@@ -182,12 +180,6 @@ test("a main run's build binds its permissions to the terminal, whose commands a
   expect(pipes.commands).toEqual(["make"])
   // The terminal holds nothing itself.
   expect(held).toEqual([])
-  const rows = o.store.listAudit({ sessionId: o.session.id })
-  expect(rows.map((r) => [r.kind, r.tool, r.outcome, r.runId, r.args])).toEqual([
-    ["workspace", "terminal_run", "held", "r1", { summary: "command='make'", shell: null }],
-    ["workspace", "terminal_run", "ok", "r1", { summary: "command='make'", shell: "shell 1" }],
-  ])
-  expect(rows[1]!.detail).toMatch(/^exit=0 duration=[\d.]+s approved by @ngocbh$/)
   // A command the gate decided nothing for runs nothing.
   const refused = await groups.terminal!.run!.call({ command: "ls", why: "x" }, { callId: "r1/chat#0/reply/0/1" })
   expect(json(refused)).toEqual({ refused: "no permission check decided this call" })

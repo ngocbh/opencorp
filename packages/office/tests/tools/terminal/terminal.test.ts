@@ -1,6 +1,6 @@
 /** A terminal: one session's shells by name, as its host binds them. Calls on one shell queue, waits end together,
  *  a call cut off stops the command it waited on, close ends them all, a start failure says what to fix, the gate reads
- *  the profile from the shells' sandbox, and the host's audit gets each command the gate decided. Plain PTYs or a
+ *  the profile from the shells' sandbox, and each shell's record keeps the commands it ran. Plain PTYs or a
  *  fake pipes runner, except the pipes test, which runs in the sandbox where one runs. */
 import fs from "node:fs"
 import path from "node:path"
@@ -91,7 +91,7 @@ test("a run whose reply is cut off stops its command, in a pipes shell and in a 
   // A pipes shell: the call's own signal, then the terminal's interruptWaits.
   const allowMake = [rule("allow", "command", "make *")]
   let fake!: ReturnType<typeof fakePipes>
-  const pipes = openTerminal({ perms: permissions({ rules: allowMake }).perms, shells: (dir) => (fake = fakePipes(dir)).shells, audit: true })
+  const pipes = openTerminal({ perms: permissions({ rules: allowMake }).perms, shells: (dir) => (fake = fakePipes(dir)).shells })
   const stop = new AbortController()
   const cut = pipes.call("run", { command: "make one", why: "x", wait: 60 }, { signal: stop.signal })
   await waitFor(() => fake.running().length === 1, { what: "the command" })
@@ -102,30 +102,27 @@ test("a run whose reply is cut off stops its command, in a pipes shell and in a 
   pipes.terminal.interruptWaits()
   expect(json(await waited)).toMatchObject({ shell: "shell 1", status: "idle", exit: null })
   expect(fake.running()).toEqual([])
-  expect(pipes.audits.map((row) => [row.outcome, row.text, "exit" in row ? [row.exit, row.stopped] : undefined])).toEqual([
-    ["error", "make one", [null, "its call was cut off"]],
-    ["error", "make two", [null, "its call was cut off"]],
-  ])
-  // The agent's interrupt, the owner's Ctrl-C and a close each say why the command ended with no exit.
+  // The shell's record keeps each, ended with no exit.
+  const recorded = () => pipes.record("sh_1").commands.map(({ command, exit }) => [command, exit])
+  expect(recorded()).toEqual([["make one", null], ["make two", null]])
+  // The agent's interrupt and the owner's Ctrl-C end a command with no exit too; the next reply's note says why.
   const why = async (stop: (t: typeof pipes) => Promise<unknown> | void, command: string) => {
     expect(json(await pipes.call("run", { command, why: "x", wait: 0, shell: "shell 1" }))).toMatchObject({ status: "running" })
     await stop(pipes)
-    await waitFor(() => pipes.audits.length > 2, { what: "the stopped command's row" })
-    const row = pipes.audits.pop()!
-    return "stopped" in row ? row.stopped : undefined
+    await waitFor(() => JSON.stringify(recorded().at(-1)) === JSON.stringify([command, null]), { what: "the command's end" })
+    return json(await pipes.call("read", { shell: "shell 1", wait: 0 })).note
   }
-  expect(await why((t) => t.call("interrupt", { shell: "shell 1" }), "make three")).toBe("the agent interrupted it")
+  expect(await why((t) => t.call("interrupt", { shell: "shell 1" }), "make three")).toBe("No exit: you interrupted the command.")
   expect(await why((t) => t.terminal.shell(t.terminal.shells()[0]!.id)!.ownerKeys("\x03"), "make four")).toBe(
-    "it was stopped, or couldn't run",
+    "No exit: the owner stopped the command (Ctrl-C), or it couldn't run.",
   )
-  expect(await why((t) => t.call("close", { shell: "shell 1" }), "make five")).toBe("its shell ended")
   // An approved run's command stops with its own signal.
   const { perms, held } = permissions({ mode: "ask" })
   let approvedFake!: ReturnType<typeof fakePipes>
   const asked = openTerminal({ perms, shells: (dir) => (approvedFake = fakePipes(dir)).shells })
   expect(isPending(await asked.call("run", { command: "make three", why: "x" }))).toBe(true)
   const approval = new AbortController()
-  const approved = asked.approve(held[0]!.callId, { signal: approval.signal, credit: "approved by @ngocbh" })
+  const approved = asked.approve(held[0]!.callId, { signal: approval.signal })
   await waitFor(() => approvedFake.running().length === 1, { what: "the approved command" })
   approval.abort()
   expect(json(await approved)).toMatchObject({ status: "idle", exit: null })
@@ -290,7 +287,6 @@ test("a command whose reply said running goes on when a later call is cut off", 
   const t = openTerminal({
     perms: permissions({ rules: [rule("allow", "command", "make *")] }).perms,
     shells: (dir) => (fake = fakePipes(dir)).shells,
-    audit: true,
   })
   expect(json(await t.call("run", { command: "make long", why: "x", wait: 0 }))).toMatchObject({
     shell: "shell 1", status: "running",
@@ -456,44 +452,36 @@ test("with no host for notes, the run tool and its running reply say to read the
   expect(noted).toContain("if you have nothing else to do, end your reply")
 })
 
-test("the host's audit gets a held, a refused and an ended command, with why it ran or the approval's credit", async () => {
+test("each shell's record keeps the commands it ran, who ran them and their exits; a refused or held one isn't there", async () => {
   const rules = [rule("allow", "command", "echo *"), rule("deny", "command", "rm *")]
   const { perms, held } = permissions({ mode: "ask", rules })
   let fake!: ReturnType<typeof fakePipes>
-  const t = openTerminal({ perms, shells: (dir) => (fake = fakePipes(dir)).shells, audit: true })
+  const t = openTerminal({ perms, shells: (dir) => (fake = fakePipes(dir)).shells })
   expect(json(await t.call("run", { command: "echo hi", why: "x" }))).toMatchObject({ shell: "shell 1", exit: 0 })
   expect(await t.call("run", { command: "rm x", why: "x", shell: "shell 1" })).toBe("Not run: a deny rule: rm *.")
   expect(isPending(await t.call("run", { command: "make", why: "builds it" }))).toBe(true)
-  const approved = t.approve(held[0]!.callId, { credit: "approved by @ngocbh" })
+  expect(t.terminal.shells().map((s) => s.name)).toEqual(["shell 1"])
+  const approved = t.approve(held[0]!.callId)
   await waitFor(() => fake.running().length === 1, { what: "the approved command" })
   fake.end("make", 2)
   expect(json(await approved)).toMatchObject({ shell: "shell 2", status: "idle", exit: 2 })
-  const rows = t.audits.map((row) => ("duration" in row ? { ...row, duration: typeof row.duration } : row))
-  expect(rows).toEqual([
-    {
-      outcome: "ok", tool: "terminal_run", text: "echo hi", shell: "shell 1", exit: 0, duration: "number",
-      why: "by an allow rule", stopped: null,
-    },
-    { outcome: "denied", tool: "terminal_run", text: "rm x", shell: "shell 1", reason: "Not run: a deny rule: rm *." },
-    { outcome: "held", tool: "terminal_run", text: "make", shell: null, reason: "Ask mode" },
-    {
-      outcome: "error", tool: "terminal_run", text: "make", shell: "shell 2", exit: 2, duration: "number",
-      why: "approved by @ngocbh", stopped: null,
-    },
+  const kept = (id: string) => t.record(id).commands.map(({ command, by, exit }) => ({ command, by, exit }))
+  expect([kept("sh_1"), kept("sh_2")]).toEqual([
+    [{ command: "echo hi", by: "@minh", exit: 0 }],
+    [{ command: "make", by: "@minh", exit: 2 }],
   ])
 })
 
-test("a command that ends after the agent's wait still writes its row when it ends, with its exit", async () => {
+test("a command that ends after the agent's wait gets its exit in its shell's record when it ends", async () => {
   let fake!: ReturnType<typeof fakePipes>
   const check = async () => ({ verdict: "run" as const, reason: "builds the project" })
-  const t = openTerminal({ perms: permissions({ check }).perms, shells: (dir) => (fake = fakePipes(dir)).shells, audit: true })
+  const t = openTerminal({ perms: permissions({ check }).perms, shells: (dir) => (fake = fakePipes(dir)).shells })
   expect(json(await t.call("run", { command: "make", why: "x", wait: 0 }))).toMatchObject({ status: "running" })
-  expect(t.audits).toEqual([])
+  expect(t.record("sh_1").commands).toEqual([
+    { command: "make", by: "@minh", at: expect.any(String), call: "r/n/1/0", run: "r" },
+  ])
   fake.end("make", 0)
-  await waitFor(() => t.audits.length === 1, { what: "the command's row" })
-  expect(t.audits[0]).toMatchObject({
-    outcome: "ok", text: "make", shell: "shell 1", exit: 0, why: "by Auto's check: builds the project",
-  })
+  await waitFor(() => t.record("sh_1").commands[0]?.exit === 0, { what: "the command's exit" })
 })
 
 test("a shell's start reads only the host's base where, never the host's caller", async () => {

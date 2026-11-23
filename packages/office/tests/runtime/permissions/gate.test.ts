@@ -208,6 +208,23 @@ test("a tool card shows the call as the model made it, why it asks, and the exac
   })
 })
 
+test("each verdict of Auto's check that names its run cites it: a run's note, an ask's card and a refusal", () => {
+  const rules = ["mcp github create_issue"]
+  const run1 = "0f8e2a7c-1111-4222-8333-944455556666"
+  expect(afterCheck({ verdict: "run", reason: "harmless", run: run1 }, rules, "auto")).toEqual(
+    run(`Auto's check: harmless (run ${run1})`),
+  )
+  expect(afterCheck({ verdict: "ask", reason: "posts data", run: run1 }, rules, "auto")).toEqual({
+    verdict: "ask", reason: `Auto's check: posts data (run ${run1})`, rules,
+  })
+  expect(afterCheck({ verdict: "ask", reason: "it timed out", failed: true, run: run1 }, rules, "auto")).toEqual({
+    verdict: "ask", reason: `Auto asks: its check couldn't judge this: it timed out (run ${run1})`, rules,
+  })
+  expect(afterCheck({ verdict: "ask", reason: "posts data", run: run1 }, rules, "dontAsk")).toEqual(
+    DONT(`Auto's check: posts data (run ${run1})`),
+  )
+})
+
 test("Auto's check's verdict runs the call with its reason, or asks, or is refused once the session doesn't ask", () => {
   const rules = ["mcp github create_issue"]
   expect(afterCheck({ verdict: "run", reason: "harmless" }, rules, "auto")).toEqual(run("Auto's check: harmless"))

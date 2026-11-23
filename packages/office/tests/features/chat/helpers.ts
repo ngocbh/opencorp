@@ -9,7 +9,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { HttpResponse } from "@ngocbh/yian/llm_clients"
 import { realScheduler, type Scheduler } from "@ngocbh/yian/platform"
-import { iterRunRecords, type RunLogEntry } from "@ngocbh/yian/run"
+import { agentCall, agentCalls, type AgentToolResult, iterRunRecords, type RunLogEntry } from "@ngocbh/yian/run"
 import { type LiveEvent, now, OFFICE, Session, WorkItem } from "@opencorp/protocol"
 import { ConnectionFile } from "../../../src/models/connections.ts"
 import { ChatHarness } from "../../../src/features/chat/harness.ts"
@@ -678,7 +678,7 @@ export async function chatOffice(
   const answers = new Answers(office.store, { log })
   const transcript = new Transcript(office.paths.runs)
   const live = new LiveRelay({ bus: office.bus, transcript, log })
-  const monitor = new Monitor(office.paths.company, office.store, new SecretStore(office.paths.secrets))
+  const monitor = new Monitor(office.paths.company, new SecretStore(office.paths.secrets))
   const workspace: ChatOffice["workspace"] = { interrupts: 0, calls: [], run: async () => "ok" }
   // The calls an interrupt stops.
   const active = new Set<AbortController>()
@@ -688,8 +688,7 @@ export async function chatOffice(
       const own = new AbortController()
       active.add(own)
       try {
-        const output = await workspace.run(tool, args, options.signal ? AbortSignal.any([own.signal, options.signal]) : own.signal)
-        return { output, audit: { tool, argsSummary: "", exit: 0, duration: 0 } }
+        return await workspace.run(tool, args, options.signal ? AbortSignal.any([own.signal, options.signal]) : own.signal)
       } finally {
         active.delete(own)
       }
@@ -734,7 +733,6 @@ export async function chatOffice(
         person: session.person,
         folder: office.paths.sessionDir(session.id),
         instruments: office.instruments,
-        store,
         mode: () => store.getSession(session.id)?.mode ?? session.mode,
       })
       const spec = mainSpec({ store, git, repo, session, workspace: standIn, terminal, monitor, carried })
@@ -886,6 +884,15 @@ export async function card(o: ChatOffice, sid: string, source: string): Promise<
   const open = () => o.office.store.listQuestions({ sessionId: sid, status: "open", source })
   await waitFor(() => open().length > 0, { what: `the ${source} card` })
   return open()[0]!
+}
+
+/** Each tool call the agent of session `sid`'s last run made, with its result, the gate's note, whether it was held
+ *  and the note it was released with, in order, as yian reads them back from the run's log. */
+export async function toolResults(o: { office: Office }, sid: string): Promise<AgentToolResult[]> {
+  const log = path.join(o.office.paths.runs, o.office.store.getSession(sid)!.run_ids.at(-1)!, "log.jsonl")
+  const found: AgentToolResult[] = []
+  for (const call of agentCalls(log)) found.push(...(await agentCall(log, call, { env: () => undefined })).toolResults)
+  return found
 }
 
 /** The text parts of session `sid`'s messages with `role`, in order. */
@@ -1087,7 +1094,7 @@ export async function makeHarness(
   const models = new ModelCache(office.connections, { lister })
   const make = (workers: WorkerRegistry) => {
     harness = new ChatHarness(office, {
-      monitor: new Monitor(office.paths.company, office.store, office.secrets),
+      monitor: new Monitor(office.paths.company, office.secrets),
       hooks,
       workers,
       scheduler,

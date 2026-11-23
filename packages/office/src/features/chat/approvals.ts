@@ -21,12 +21,8 @@ import type { AnswerKind } from "../../runtime/sessions/harness.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store } from "../../runtime/store/store.ts"
 import type { CommandPlan } from "../../tools/terminal/terminal.ts"
 import type { OfficePaths } from "../../util/home.ts"
-import { DETAIL_CHARS } from "../../util/redact.ts"
 import { errorName } from "../../runtime/worker/rpc.ts"
 import { CallGate } from "./gate.ts"
-
-/** The flow Auto's check runs, which its audit rows name. */
-const CHECK_TOOL = "classify_command"
 
 /** What a session's approvals need of its actor. Each is called inside the actor's serial queue, as the answer or
  *  the switch that leads to it is. */
@@ -44,8 +40,6 @@ export interface ApprovalHost {
   /** What the session's terminal would act on for its tool `tool` (`run`, `type`) with `args`, read from its shells
    *  now (`Terminal.plan`); nothing to decide when it has no terminal or the arguments weren't recorded. */
   planCommand(tool: string, args: Readonly<Record<string, unknown>> | null): CommandPlan
-  /** The terminal's audit row of a command the gate held or refused (`Terminal.audited`). */
-  audited(plan: CommandPlan, outcome: "held" | "denied", reason: string): void
   /** Runs held call `callId` once (`release`), `note` kept in the run log; `card`'s answer is consumed once the run
    *  takes it. */
   release(callId: string, note: string | null, card: QuestionRecord | null): Promise<void>
@@ -72,9 +66,9 @@ export interface ApprovalHost {
  * no rule, until a commit fixes it; deny rules from the rest still refuse first.
  *
  * One check per session, so the same command in the session is judged once. Each check runs as a `classify` worker
- * job on the office's connection, resolved again for each check; its run log goes to the session's `checks/` folder,
- * its verdict to an audit row (`kind` check), and what it spent to the session's cost, priced at the connection's
- * prices. The session's own rules and the check's verdicts live in memory with its actor, so an office restart starts
+ * job on the office's connection, resolved again for each check; its run log, which holds its verdict, goes to the
+ * session's `checks/` folder, and the note of the call it lets run cites that run; what it spent goes to the session's
+ * cost, priced at the connection's prices. The session's own rules and the check's verdicts live in memory with its actor, so an office restart starts
  * them fresh: the next check asks the model again, and a "don't ask again" from before asks again.
  *
  * A No completes a held call with the approver's words, and answers the run's other open cards the same way, as one
@@ -170,7 +164,6 @@ export class ChatApprovals {
       post: (label, job) => host.post(label, job),
       settle: (when) => host.settle(when),
       planCommand: (tool, args) => host.planCommand(tool, args),
-      audited: (plan, outcome, reason) => host.audited(plan, outcome, reason),
       release: (callId, note, card) => host.release(callId, note, card),
       completeCall: (callId, output) => host.completeCall(callId, output),
       completeWithAnswer: (card) => host.completeWithAnswer(card),
@@ -358,20 +351,9 @@ export class ChatApprovals {
     return true
   }
 
-  /** Records one check: its audit row, then, for a check that called the model, its cost as the session's. */
+  /** Records one check that called the model: its cost, as the session's. Its run log, in the session's `checks/`,
+   *  holds what it was asked and its verdict. */
   #record(entry: CheckRecord): void {
-    const session = this.#session()
-    const { kind, command, profile, cwd, host } = entry.input
-    this.#store.recordAudit({
-      person: session.person,
-      kind: "check",
-      tool: CHECK_TOOL,
-      args: { kind, command, profile, cwd, host, cached: entry.cached },
-      outcome: entry.failed ? "failed" : entry.verdict,
-      sessionId: session.id,
-      runId: entry.runId,
-      detail: entry.reason.slice(0, DETAIL_CHARS),
-    })
     if (entry.usage === null || entry.runId === null) return
     const { prices, subscription } = this.#pricing
     this.#charge(entry.runId, entry.model, callUsd(prices, entry.model, entry.usage), subscription)

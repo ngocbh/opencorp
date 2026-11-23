@@ -212,12 +212,14 @@ test("in auto, Auto's check judges an MCP or module call from its words and argu
   expect(check.judged).toEqual([])
   g.held(0)
   g.held(1)
-  // Its run verdict releases the call, noting the check's reason; no card is made.
-  expect(await g.delivered("release", 0)).toMatchObject({ note: "Auto's check: it only reads" })
+  // Its run verdict releases the call, noting the check's reason and the run whose log holds it; no card is made.
+  const released = await g.delivered("release", 0)
+  expect((released as { note?: string }).note).toMatch(/^Auto's check: it only reads \(run [0-9a-f-]{36}\)$/)
   expect(g.card(0)).toBeUndefined()
   // Its ask verdict holds the call on a card that shows why.
   const card = await waitFor(() => g.card(1), { what: "the module call's card" })
-  expect(card.approval).toMatchObject({ reason: "Auto's check: it posts data", rules: ["module crm quote"] })
+  expect(card.approval).toMatchObject({ rules: ["module crm quote"] })
+  expect(card.approval!.reason).toMatch(/^Auto's check: it posts data \(run [0-9a-f-]{36}\)$/)
   expect(check.judged).toEqual([
     { kind: "tool", command: 'mcp github create_issue {"title":"Fix"}', profile: "none", cwd: "", host: "" },
     { kind: "tool", command: 'module crm quote {"amount":5}', profile: "none", cwd: "", host: "" },
@@ -233,9 +235,6 @@ test("Auto's check never reads a secret value: the company's are redacted from a
   expect(check.judged).toHaveLength(1)
   expect(check.judged[0]!.command).not.toContain("sk-SECRET-4f2a91")
   expect(check.judged[0]!.command).toStartWith('mcp github create_issue {"title":"Fix","token":')
-  // Its audit row holds what the check read.
-  const [row] = g.o.office.store.listAudit({ sessionId: g.sid }).filter((r) => r.kind === "check")
-  expect(JSON.stringify(row!.args)).not.toContain("sk-SECRET-4f2a91")
 })
 
 test("Auto's check never reads the model key of the run that made the call, though that run's job has ended", async () => {

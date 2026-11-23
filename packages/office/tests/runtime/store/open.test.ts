@@ -19,7 +19,6 @@ const TABLES = new Set([
   "questions",
   "profile_proposals",
   "worked_folders",
-  "audit",
   "usage",
   "workers",
   "hq_sessions",

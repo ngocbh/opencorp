@@ -565,7 +565,6 @@ export class SessionActor implements LiveCalls {
         settle: (when) => this.#trySettle(when),
         planCommand: (tool, args) =>
           args === null ? { decide: false } : (this.#spec?.terminal?.plan(tool, { ...args }) ?? { decide: false }),
-        audited: (plan, outcome, reason) => this.#spec?.terminal?.audited(plan, outcome, reason),
         release: (callId, note, card) => {
           const delivery: Delivery = {
             id: newId(), op: "release", call_id: callId, ...(note === null ? {} : { note }),

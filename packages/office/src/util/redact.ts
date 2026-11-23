@@ -1,12 +1,10 @@
-/** Secret scrubbing for asset-tool results and audit rows: every form of a secret the office
+/** Secret scrubbing for asset-tool results and what Auto's check reads: every form of a secret the office
  *  knows, as the Python office's monitor scrubbed them, with the Python string functions it relied on. */
 
 import { Buffer } from "node:buffer"
 
 /** What replaces a secret. */
 export const REDACTED = "[redacted]"
-/** Characters of a result kept in its audit row. */
-export const DETAIL_CHARS = 2000
 /** The shortest value the secret store accepts: results are scrubbed of every secret value, so a short one would
  *  mangle them. */
 export const MIN_VALUE_CHARS = 8
@@ -241,16 +239,6 @@ export function pyJson(value: unknown, ensureAscii = false): string {
       .map(([k, v]) => jsonDumps(k, ensureAscii) + ": " + pyJson(v, ensureAscii)).join(", ") + "}"
   }
   return jsonDumps(String(value), ensureAscii)
-}
-
-/** `args` redacted, or, when their JSON (as Python writes it) is longer than DETAIL_CHARS, that JSON cut to fit. */
-export function auditArgs(args: Record<string, unknown>, keys: Iterable<string>, values: Iterable<string>):
-  Record<string, unknown> {
-  // Python round-trips args through JSON first; callers pass JSON data plus the codec's kinds (the monitor puts a
-  // call's args through JSON first).
-  const redacted = redact(args, keys, values) as Record<string, unknown>
-  const text = pyJson(redacted)
-  return text.length <= DETAIL_CHARS ? redacted : { truncated: text.slice(0, DETAIL_CHARS) }
 }
 
 // Python string functions the forms of a secret are built with

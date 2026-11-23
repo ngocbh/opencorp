@@ -1,7 +1,6 @@
 /** Workspace tools: read, write, edit, list and search, each one sandboxed call; and the pipes the terminal runs an
  *  employee's commands through, in the same workspace's sandbox. */
 import { startTime } from "../util/proc.ts"
-import type { ToolOutcome, WorkspaceCall } from "../runtime/permissions/monitor.ts"
 import { pyJson, repr, strip } from "../util/redact.ts"
 import type { SandboxPolicy } from "../runtime/sandbox/policy.ts"
 import { fsHelper, type Result, run, type RunOptions } from "../runtime/sandbox/run.ts"
@@ -17,8 +16,6 @@ export const READ_TOOLS = ["read_file", "list", "search"] as const
 // (every op's output is bounded: 200k read characters, 200 search matches, 5000 names,
 // each at most 6 bytes a character as JSON), so a cut-off reply is reported as an error.
 export const FILE_OUTPUT_CAP = 16 << 20
-const BULK_ARGS = new Set(["content", "old", "new"])
-const MAX_ARG_CHARS = 200
 
 type ToolName = (typeof TOOL_NAMES)[number]
 
@@ -126,6 +123,10 @@ const SPECS: Record<ToolName, { description: string; parameters: Record<string, 
   },
 }
 
+/** Forwards one workspace call (`WorkspaceTools.call`'s output, or anything shaped like it); a held one returns
+ *  yian's `pending()`. */
+export type WorkspaceCall = (name: string, args: Record<string, unknown>, options?: ToolCallOptions) => Promise<unknown>
+
 /** The model-facing workspace tools, keyed by tool name in `TOOL_NAMES` order, for a run's `workspace` group.
  *
  *  Each tool's `call(args, options)` forwards `call(name, filled, { callId, signal })` and returns its result:
@@ -145,14 +146,15 @@ export function workspaceToolFunctions(call: WorkspaceCall): Record<string, Work
   )
 }
 
-/** The `workspace` group, each call audited by `ctx.monitor`: every file tool, or `READ_TOOLS` when `ctx.readOnly`.
- *  The file tools are never gated: the sandbox bounds what they reach. Commands are the terminal's.
+/** The `workspace` group: every file tool, or `READ_TOOLS` when `ctx.readOnly`. The file tools ask nothing by mode:
+ *  the sandbox bounds what they reach. Commands are the terminal's. The run log keeps each call and its result.
  *
- *  No tools (`{}`) without a monitor, workspace and session. */
+ *  No tools (`{}`) without a workspace. */
 export function tools(ctx: ToolContext): Record<string, WorkspaceTool> {
-  if (!ctx.monitor || !ctx.workspace || !ctx.session) return {}
-  const calls = workspaceToolFunctions(
-    ctx.monitor.workspace(ctx.workspace, ctx.session.person, ctx.runId ?? null, { sessionId: ctx.session.id }),
+  const workspace = ctx.workspace
+  if (!workspace) return {}
+  const calls = workspaceToolFunctions((name, args, options) =>
+    workspace.call(name, args, options?.signal === undefined ? {} : { signal: options.signal }),
   )
   return ctx.readOnly ? Object.fromEntries(READ_TOOLS.map((name) => [name, calls[name]!])) : calls
 }
@@ -208,17 +210,13 @@ export class WorkspaceTools {
   /** Runs the file tool `name` with `args` (the office side of a `tool_call`); `signal` stops the call as an
    *  interrupt does.
    *
-   *  Missing or unexpected arguments come back as an `error:` outcome that never ran. Rejects with a `RangeError`
-   *  when `name` is not a workspace tool. */
-  async call(
-    name: string,
-    args: Record<string, unknown>,
-    options: { signal?: AbortSignal } = {},
-  ): Promise<ToolOutcome> {
+   *  Its output is what the model reads. Missing or unexpected arguments come back as an `error:` output that never
+   *  ran. Rejects with a `RangeError` when `name` is not a workspace tool. */
+  async call(name: string, args: Record<string, unknown>, options: { signal?: AbortSignal } = {}): Promise<string> {
     if (!Object.hasOwn(SIGNATURES, name)) throw new RangeError(`unknown workspace tool ${repr(name)}`)
     const tool = name as ToolName
     const bound = bind(tool, args)
-    if (typeof bound === "string") return unrun(name, args, bound)
+    if (typeof bound === "string") return `error: ${name}: ${bound}`
     const own = new AbortController()
     const signal = options.signal ? AbortSignal.any([own.signal, options.signal]) : own.signal
     this.#active.add(own)
@@ -238,7 +236,7 @@ export class WorkspaceTools {
           `error: ${tool} output too large (over ${this.#fileOutputCap} bytes); ` +
           "ask for less (offset and limit, a narrower path, or a glob)"
       } else output = fileOutput(tool, result)
-      return { output, audit: { tool, argsSummary: summarize(bound), exit: result.exit, duration: result.duration } }
+      return output
     } finally {
       this.#active.delete(own)
     }
@@ -287,14 +285,6 @@ function bind(tool: ToolName, args: Record<string, unknown>): Record<string, unk
   return bound
 }
 
-/** The outcome of a call refused before it ran. */
-function unrun(tool: string, args: Record<string, unknown>, message: string): ToolOutcome {
-  return {
-    output: `error: ${tool}: ${message}`,
-    audit: { tool, argsSummary: summarize(args), exit: null, duration: 0 },
-  }
-}
-
 /** Python's `f"{x:g}"` for the timeouts used here. */
 function g(x: number): string {
   return Number(x.toPrecision(6)).toString()
@@ -317,26 +307,3 @@ function fileOutput(tool: string, result: Result): string {
   return `error: ${tool} failed (exit ${result.exit}): ${stderr}`
 }
 
-/** Summarizes arguments for the audit log; bulk text is recorded by length only. */
-function summarize(args: Record<string, unknown>): string {
-  const parts: string[] = []
-  for (const [key, value] of Object.entries(args)) {
-    if (value == null || (key === "offset" && value === 0) || (key === "replace_all" && value === false)) continue
-    if (BULK_ARGS.has(key) && typeof value === "string") {
-      parts.push(`${key}=<${[...value].length} chars>`)
-      continue
-    }
-    let text =
-      typeof value === "string"
-        ? repr(value)
-        : typeof value === "boolean"
-          ? (value ? "True" : "False")
-          : typeof value === "number" || typeof value === "bigint"
-            ? String(value)
-            : pyJson(value)
-    const chars = [...text]
-    if (chars.length > MAX_ARG_CHARS) text = chars.slice(0, MAX_ARG_CHARS - 3).join("") + "..."
-    parts.push(`${key}=${text}`)
-  }
-  return parts.join(" ")
-}

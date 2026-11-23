@@ -446,20 +446,6 @@ export interface StoreOptions {
   log?: (line: string) => void
 }
 
-/** One tool call as recorded by the permission layer. */
-export interface AuditEntry {
-  id: number
-  at: string
-  person: string
-  kind: string
-  tool: string
-  args: Record<string, unknown>
-  outcome: string
-  sessionId: string | null
-  runId: string | null
-  detail: string | null
-}
-
 /** The price of one model call. */
 export interface UsageRecord {
   id: number
@@ -1413,71 +1399,7 @@ export class Store {
     })
   }
 
-  // Audit, usage, workers: office bookkeeping, no events.
-
-  /** Appends an audit row. `args` must already be redacted. */
-  recordAudit(entry: {
-    person: string
-    kind: string
-    tool: string
-    args: Record<string, unknown>
-    outcome: string
-    sessionId?: string | null
-    runId?: string | null
-    detail?: string | null
-  }): AuditEntry {
-    const at = now()
-    const { person, kind, tool, args, outcome } = entry
-    const sessionId = entry.sessionId ?? null
-    const runId = entry.runId ?? null
-    const detail = entry.detail ?? null
-    const row = this.transaction((tx) =>
-      tx.get(
-        "INSERT INTO audit (at, person, session_id, run_id, kind, tool, args, outcome, detail) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-        at,
-        person,
-        sessionId,
-        runId,
-        kind,
-        tool,
-        JSON.stringify(args),
-        outcome,
-        detail,
-      ),
-    )!
-    return { id: row.id as number, at, person, kind, tool, args, outcome, sessionId, runId, detail }
-  }
-
-  /** Audit rows in the order they were written, optionally filtered. */
-  listAudit(filter?: { sessionId?: string; person?: string }): AuditEntry[] {
-    const clauses: string[] = []
-    const params: string[] = []
-    if (filter?.sessionId !== undefined) {
-      clauses.push("session_id = ?")
-      params.push(filter.sessionId)
-    }
-    if (filter?.person !== undefined) {
-      clauses.push("person = ?")
-      params.push(filter.person)
-    }
-    const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""
-    return this.db
-      .prepare(`SELECT * FROM audit${where} ORDER BY id`)
-      .all(...params)
-      .map((r) => ({
-        id: r.id as number,
-        at: r.at as string,
-        person: r.person as string,
-        kind: r.kind as string,
-        tool: r.tool as string,
-        args: JSON.parse(r.args as string) as Record<string, unknown>,
-        outcome: r.outcome as string,
-        sessionId: r.session_id as string | null,
-        runId: r.run_id as string | null,
-        detail: r.detail as string | null,
-      }))
-  }
+  // Usage, workers: office bookkeeping, no events.
 
   /** Appends the price of one model call; `subscription` when it ran on one, which pays nothing for it. */
   recordUsage(usage: { sessionId: string; runId: string; model: string; usd: number; subscription?: boolean }): UsageRecord {

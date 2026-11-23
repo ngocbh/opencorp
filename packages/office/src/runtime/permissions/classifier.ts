@@ -221,8 +221,8 @@ export class Check {
   readonly #record: (entry: CheckRecord) => Promise<void>
   readonly #timeoutMs: number
   readonly #cacheSize: number
-  /** The session's verdicts by their exact input, oldest first. */
-  readonly #cache = new Map<string, { verdict: "run" | "ask"; reason: string }>()
+  /** The session's verdicts by their exact input, oldest first, each with the run that made it. */
+  readonly #cache = new Map<string, { verdict: "run" | "ask"; reason: string; run: string }>()
 
   constructor(o: {
     run: CheckRunner
@@ -248,7 +248,9 @@ export class Check {
     const key = JSON.stringify([asked.kind, asked.command, asked.profile, asked.cwd, asked.host])
     const kept = this.#cache.get(key)
     if (kept) {
-      await this.#record({ input: asked, ...kept, failed: false, cached: true, runId: null, model: null, usage: null })
+      const { verdict, reason } = kept
+      const cached = { input: asked, verdict, reason, failed: false, cached: true, runId: null, model: null, usage: null }
+      await this.#record(cached)
       return { ...kept }
     }
     const runId = randomUUID()
@@ -276,8 +278,8 @@ export class Check {
     const verdict = !late && outcome !== null && "ok" in outcome ? verdictOf(outcome.ok.output) : null
     if (verdict !== null) {
       await this.#record({ ...ran, ...verdict, failed: false })
-      this.#keep(key, verdict)
-      return { ...verdict }
+      this.#keep(key, { ...verdict, run: runId })
+      return { ...verdict, run: runId }
     }
     const reason =
       late || outcome === null
@@ -288,10 +290,10 @@ export class Check {
             ? outcome.error.message
             : COULD_NOT_RUN
     await this.#record({ ...ran, verdict: "ask", reason, failed: true })
-    return { verdict: "ask", reason, failed: true }
+    return { verdict: "ask", reason, failed: true, run: runId }
   }
 
-  #keep(key: string, verdict: { verdict: "run" | "ask"; reason: string }): void {
+  #keep(key: string, verdict: { verdict: "run" | "ask"; reason: string; run: string }): void {
     if (this.#cacheSize <= 0) return
     for (const oldest of this.#cache.keys()) {
       if (this.#cache.size < this.#cacheSize) break

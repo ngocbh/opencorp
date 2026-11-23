@@ -308,7 +308,6 @@ export class LocalHost {
         const terminal = this.#tools.terminal
         return args === null || terminal === undefined ? { decide: false } : terminal.plan(tool, { ...args })
       },
-      audited: (plan, outcome, reason) => this.#tools.terminal?.audited(plan, outcome, reason),
       release: (callId, note, card) => this.#release(callId, note, card),
       completeCall: (callId, output) => this.#completeCall(callId, output),
       completeWithAnswer: (card) => this.#complete(card, approvalResult(card)),

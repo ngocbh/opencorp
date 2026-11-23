@@ -6,10 +6,8 @@ import { TOOLS } from "../../../src/runtime/permissions/fake_asset.ts"
 import type { Kinds } from "../../../src/runtime/permissions/assets.ts"
 import { Monitor } from "../../../src/runtime/permissions/monitor.ts"
 import { SecretStore } from "../../../src/runtime/secrets.ts"
-import type { Store } from "../../../src/runtime/store/store.ts"
 import { makeCompany } from "../../company/helpers.ts"
 import { tempDir } from "../../helpers.ts"
-import { openStore } from "../store/helpers.ts"
 
 export const TOKEN = "s3cr3t-t0ken-value"
 
@@ -66,16 +64,15 @@ export async function makeSecrets(): Promise<SecretStore> {
   return secrets
 }
 
-/** A monitor over a company of the base files with `files` applied, with a fresh store and secret store, which it
- *  returns too. Call inside a test. */
+/** A monitor over a company of the base files with `files` applied, with a fresh secret store, which it returns
+ *  too. Call inside a test. */
 export async function makeMonitor(
   files: Record<string, unknown> = {},
   kinds: Kinds = KINDS,
   options: { log?: (line: string) => void } = {},
-): Promise<{ monitor: Monitor; store: Store; secrets: SecretStore }> {
-  const store = openStore()
+): Promise<{ monitor: Monitor; secrets: SecretStore }> {
   const secrets = await makeSecrets()
-  return { monitor: new Monitor(makeCompany(files), store, secrets, kinds, options), store, secrets }
+  return { monitor: new Monitor(makeCompany(files), secrets, kinds, options), secrets }
 }
 
 /** Writes `content` as YAML to repo path `rel` under `root`. */

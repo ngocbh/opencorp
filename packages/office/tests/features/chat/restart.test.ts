@@ -164,7 +164,6 @@ test("an approval card survives an office restart, and Yes after it runs the com
   expect(lastAsked(fake, JSON.stringify('"output":"$ ls\\na.txt\\n"').slice(1, -1))).toBe(true)
   expect(lastAsked(fake, JSON.stringify('"exit":0').slice(1, -1))).toBe(true)
   expect(o.office.store.getQuestion(q.id)!.status).toBe("consumed")
-  expect(o.office.store.listAudit({ sessionId: sid }).map((r) => r.outcome)).toEqual(["held", "ok"])
 })
 
 test("a restart while an approved command runs never runs it again: the agent reads yian's word that its outcome is unknown", async () => {

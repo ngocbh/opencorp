@@ -10,9 +10,7 @@ import { Transcript } from "../../../src/features/chat/transcript.ts"
 import { FlowOutsideRepo, loadConfined } from "../../../src/company/flows.ts"
 import { CompanyGit } from "../../../src/company/git.ts"
 import { loadRepo } from "../../../src/company/loader.ts"
-import { Monitor } from "../../../src/runtime/permissions/monitor.ts"
 import { discussion, readSeed, SEED_FILE, writeSeed } from "../../../src/features/questions/side.ts"
-import { SecretStore } from "../../../src/runtime/secrets.ts"
 import { newId, type SessionRecord } from "../../../src/runtime/store/store.ts"
 import { READ_TOOLS } from "../../../src/tools/workspace.ts"
 import { PrivateFileError } from "../../../src/util/private_files.ts"
@@ -214,7 +212,6 @@ async function office() {
   })
   const git = new CompanyGit(root, path.join(dir, "worktrees"))
   const store = openStore()
-  const monitor = new Monitor(root, store, new SecretStore(path.join(dir, "secrets")))
   const repo = loadRepo(root)
   const head = await git.head()
   const asker = store.createSession(session({ repo_commit: head }))
@@ -223,7 +220,7 @@ async function office() {
     const s = store.createSession(
       session({ repo_commit: head, kind: "side", question_id: asked.id, status: "starting", ...over }),
     )
-    const spec = sideSpec({ store, git, repo, session: s, workspace: NO_WORKSPACE, monitor, question: asked })
+    const spec = sideSpec({ store, git, repo, session: s, workspace: NO_WORKSPACE, question: asked })
     return { session: s, spec }
   }
   return { dir, git, head, repo, side }
@@ -293,7 +290,7 @@ async function curl(spec: RunSpec, session: SessionRecord, url: string): Promise
   const plan = spec.terminal!.plan("run", { command, why: "checks the network" })
   if (!plan.decide) throw new Error("the side chat's terminal has nothing to decide")
   const decided = (callId: string | undefined) =>
-    callId === "run-1/n/1/0" ? decidedFor(plan, "by Auto's check: checks the network", false) : null
+    callId === "run-1/n/1/0" ? decidedFor(plan, false) : null
   const run = spec.groups({ session, runId: "run-1", permissions: { ...perms, decided } }).terminal!.run!
   const reply = JSON.parse(String(await run.call({ command, why: "checks the network" }, { callId: "run-1/n/1/0" })))
   return String(reply.output).split("\n")[1]!

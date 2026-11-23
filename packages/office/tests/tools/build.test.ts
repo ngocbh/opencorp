@@ -20,19 +20,9 @@ import { company, openStore, session, tempDir, workItem } from "./helpers.ts"
 class FakeMonitor {
   readonly seen: unknown[][] = []
 
-  tools(person: string, { runId = null, sessionId = null }: { runId?: string | null; sessionId?: string | null } = {}) {
-    this.seen.push(["tools", person, runId, sessionId])
+  tools(person: string) {
+    this.seen.push(["tools", person])
     return { fake__echo: { description: "Echo.", parameters: {}, call: () => "echo" } }
-  }
-
-  workspace(
-    _tools: unknown,
-    person: string,
-    runId: string | null,
-    { sessionId = null }: { sessionId?: string | null } = {},
-  ) {
-    this.seen.push(["workspace", person, runId, sessionId])
-    return async (name: string) => `${name} ran`
   }
 }
 
@@ -94,14 +84,13 @@ test("the terminal group is the session's terminal's tools, and empty without on
   expect(tools!.run!.description).toBe(terminal.tools().run.description)
 })
 
-test("tools are bound to the runs person run and session", async () => {
-  const c = ctx()
+test("the toolbox is the run's person's, and the workspace group's calls reach its file tools", async () => {
+  const calls: string[] = []
+  const c = { ...ctx(), workspace: { call: async (name: string) => (calls.push(name), `${name} ran`) } }
   const groups = build(["toolbox", "workspace"], c)
   expect(await groups.workspace!.read_file!.call({ path: "a.py" })).toBe("read_file ran")
-  expect((c.monitor as unknown as FakeMonitor).seen).toEqual([
-    ["tools", "minh", "run-1", c.session.id],
-    ["workspace", "minh", "run-1", c.session.id],
-  ])
+  expect(calls).toEqual(["read_file"])
+  expect((c.monitor as unknown as FakeMonitor).seen).toEqual([["tools", "minh"]])
 })
 
 test("a read only run gets only the read tools", () => {
@@ -114,7 +103,7 @@ type Field = keyof ToolContext
 // when it is called (ask_manager's onQuestion) is not part of the gate.
 const GATES: Record<string, [(ctx: ToolContext) => Record<string, unknown>, Field[]]> = {
   toolbox: [toolboxTools, ["monitor", "session"]],
-  workspace: [workspaceTools, ["monitor", "workspace", "session"]],
+  workspace: [workspaceTools, ["workspace"]],
   "company.work": [workTools, ["store", "repo", "session", "runId"]],
   work_items: [workItemsTools, ["store", "session"]],
 }
@@ -165,7 +154,7 @@ test("the office tool specs equal the saved copy", () => {
   const store = openStore()
   const item = store.createWorkItem(workItem({ requester: "minh" }))
   const s = store.createSession(session({ person: "minh", work_item_id: item.id }))
-  const monitor = new Monitor(root, store, new SecretStore(path.join(tempDir(), "office", "secrets")))
+  const monitor = new Monitor(root, new SecretStore(path.join(tempDir(), "office", "secrets")))
   const c: ToolContext = {
     store,
     repo: loadRepo(root),

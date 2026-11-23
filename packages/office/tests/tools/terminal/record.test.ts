@@ -10,7 +10,6 @@ import {
   RecordError,
   readRecord,
   recoverRecords,
-  type RecordFile,
   type RecordMeta,
 } from "../../../src/tools/terminal/record.ts"
 import { tempDir } from "../../helpers.ts"
@@ -210,21 +209,32 @@ test("a record left running when its host stopped is marked interrupted on the n
   expect(recoverRecords(path.join(session, "missing"))).toEqual([])
 })
 
-test("recovery hands its host each record it marks interrupted, with the commands still running when it stopped", () => {
+test("a command's record names the call and the run it started in, when it has them", () => {
+  const dir = path.join(tempDir(), "sh_1")
+  const record = new InstrumentRecord(dir, META)
+  record.command("ls", "@minh", "r1/chat#0/reply/1/0")
+  record.exit(0)
+  record.command("make", "@minh")
+  expect(readRecord(dir)!.commands.map(({ command, run, call }) => ({ command, run, call }))).toEqual([
+    { command: "ls", run: "r1", call: "r1/chat#0/reply/1/0" },
+    { command: "make", run: undefined, call: undefined },
+  ])
+})
+
+test("recovery marks each record still running interrupted, once: a command with no exit is one its host's stop cut off", () => {
   const session = tempDir()
   const left = new InstrumentRecord(path.join(session, "sh_1"), { ...META, id: "sh_1" })
   left.command("ls", "@minh")
   left.exit(0)
   left.command("make", "@minh")
   new InstrumentRecord(path.join(session, "sh_2"), { ...META, id: "sh_2" }).end("ended")
-  const handed: RecordFile[] = []
-  expect(recoverRecords(session, (file) => void handed.push(file))).toEqual([])
-  expect(handed.map((file) => [file.id, file.state, file.commands.map((c) => [c.command, c.exit])])).toEqual([
-    ["sh_1", "interrupted", [["ls", 0], ["make", undefined]]],
-  ])
-  // Marked once: a later start hands nothing again.
-  expect(recoverRecords(session, (file) => void handed.push(file))).toEqual([])
-  expect(handed).toHaveLength(1)
+  expect(recoverRecords(session)).toEqual([])
+  const file = readRecord(path.join(session, "sh_1"))!
+  expect([file.state, file.commands.map((c) => [c.command, c.exit])]).toEqual(["interrupted", [["ls", 0], ["make", undefined]]])
+  expect(readRecord(path.join(session, "sh_2"))!.state).toBe("ended")
+  // Marked once: a later start leaves it as it is.
+  expect(recoverRecords(session)).toEqual([])
+  expect(readRecord(path.join(session, "sh_1"))).toEqual(file)
 })
 
 test("meta.json is private to the owner", () => {
