@@ -211,16 +211,20 @@ test("a worker that dies while the employee waits on Codex stops the Codex turn 
 })
 
 test("a cost-cap stop while the employee waits on Codex stops the Codex turn, so it spends nothing more", async () => {
-  // The reply that calls codex_start costs $6, over the company's $5 cap: the cap stops the run as the call runs.
+  // The reply that calls codex_start costs $6, over the company's $5 cap: the cap stops the run while the office's
+  // gate decides the call, as the call starts, or as its turn runs.
   const { h, s } = await codexTurn({ usage: { prompt_tokens: 6, completion_tokens: 1 } })
-  await waitFor(() => h.office.instruments.list(s.id).length === 1, { what: "Codex's session" })
   await waitFor(() => h.store.getSession(s.id)?.capped === true, { what: "the cap" })
-  await waitFor(() => noTurnRuns(h, s.id), { timeout: 20_000, what: "no Codex turn to run on" })
-  // Either the turn was interrupted, or the session stopped before its message went.
-  const [listed] = h.office.instruments.list(s.id)
+  const stopped = () => h.registry.get(s.id) === undefined || h.registry.get(s.id)!.parked
+  await waitFor(stopped, { timeout: 20_000, what: "the cap's stop" })
+  const settled = () => h.office.instruments.list(s.id).length === 0 || noTurnRuns(h, s.id)
+  await waitFor(settled, { timeout: 20_000, what: "no Codex turn to run on" })
+  // No session started; or its turn was interrupted, or it stopped before its message went.
+  const listed = h.office.instruments.list(s.id)
+  expect(listed.length).toBeLessThanOrEqual(1)
   const sent = h.codex!.fake.calls("turn/start").length
   expect(sent === 0 || h.codex!.fake.calls("turn/interrupt").length === 1).toBe(true)
-  expect(listed!.status).not.toBe("running")
+  expect(listed.every((instrument) => instrument.status !== "running")).toBe(true)
 })
 
 test("after an office restart, history reads the Codex session's record, and send resumes its thread", async () => {

@@ -8,6 +8,7 @@ import {
   complete,
   DeliveryRefused,
   interrupt,
+  release,
   RunBusyError,
   runFlow,
   send,
@@ -36,6 +37,7 @@ import {
   errnoFields,
   errorMessage,
   errorName,
+  gateHook,
   plainAuthError,
   remoteTool,
   REPLY_TYPES,
@@ -214,6 +216,8 @@ function applier(
           return { seq: await send(log, delivery.inbox, delivery.event, { ...options, key: delivery.key ?? null }) }
         case "complete":
           return { seq: await complete(log, delivery.call_id, delivery.result, options) }
+        case "release":
+          return { seq: await release(log, delivery.call_id, { ...options, note: delivery.note ?? null }) }
         case "close":
           return { seq: await closeInbox(log, delivery.inbox, options) }
         case "withdraw": {
@@ -232,7 +236,7 @@ function applier(
   }
 }
 
-/** The calls a run waits on, in a frame's field names. */
+/** The calls a run waits on, in a frame's field names; `held` for a call the office's gate held. */
 function wireWaits(waits: RunInspection["waits"]): Frame[] {
   return waits.map((w) => ({
     node: w.node,
@@ -241,6 +245,7 @@ function wireWaits(waits: RunInspection["waits"]): Frame[] {
     inbox: w.inbox,
     deadline: w.deadline,
     settled: w.settled,
+    held: w.held,
   }))
 }
 
@@ -639,7 +644,8 @@ async function serveJob(
  *  with `advance: false`, only delivers); when yian refuses the advance before appending anything, the fields are
  *  `{status: "not_resumed", run_id, error_type}` and the deliveries still held are refused `not_started`; so are they
  *  when the run's log is gone or can't be read, with `unreadable: true`, and when it ends inside its run start, with
- *  `error_type: "unstarted"` and `unreadable: true`. */
+ *  `error_type: "unstarted"` and `unreadable: true`. Either way, the office's gate decides each tool call the run's
+ *  agents make before it runs (`gateHook`). */
 async function runJob(
   job: Job,
   channel: Channel,
@@ -688,6 +694,9 @@ async function runJob(
     onEvent,
     live,
     tools: jobTools(job, rpc),
+    // The office decides each tool call an agent's model makes before it runs; the run is then gated for good, so
+    // every advance of it passes the hook too.
+    beforeToolCall: gateHook(rpc),
     skills: pickSkills(job.pin, job.person, job.skills),
     signal,
     env: read,

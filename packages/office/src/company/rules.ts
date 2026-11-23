@@ -1,5 +1,5 @@
 /**
- * Rules for an agent's commands and typed input, kept in the company repo in one format: each agent's
+ * Rules for an agent's commands, typed input and tool calls, kept in the company repo in one format: each agent's
  * `people/<handle>/rules.yaml`, which the office commits when the approver picks "always", and the company's
  * `rules.yaml` at the repo's root, for every agent, which only a hand edit committed to the repo changes.
  *
@@ -7,13 +7,18 @@
  * file missing at HEAD holds no rules. One that exists but doesn't load is reported with lint's message: its sessions'
  * host then blocks them until a commit fixes it, since dropping it would drop its deny rules. Not loading includes a
  * link, a folder, a file over `MAX_RULES_BYTES`, YAML that doesn't parse, and a rule that isn't allow, ask or deny on
- * command or input with a pattern of words one space apart. Lint reads a tree's files the same way: a file under a
- * linked folder is none, as git keeps only the link.
+ * command, input or tool with a pattern of words one space apart. Lint reads a tree's files the same way: a file under
+ * a linked folder is none, as git keeps only the link.
+ *
+ * A `tool` rule matches a tool call by its words (`toolWords`): its source's kind, then the names its source gives
+ * it, so `host codex start`, `mcp github *` or `module crm quote`, where a last `*` stands for one or more further
+ * words (`toolRuleMatches`). Lint warns of one that no call's words can match.
  */
 import fs from "node:fs"
 import path from "node:path"
+import type { ToolSource } from "@ngocbh/yian/tools"
 import {
-  Handle, now, Rule as RuleSchema, type RuleFileError, RulePattern, Timestamp, validationMessage,
+  Handle, now, Rule as RuleSchema, type RuleFileError, RulePattern, ruleWords, Timestamp, validationMessage,
 } from "@opencorp/protocol"
 import { z } from "zod"
 import { actorLine } from "./access.ts"
@@ -44,6 +49,11 @@ const UNREADABLE = "can't be read"
 const PATTERN_FORM = "pattern: must be words with one space between each"
 /** Lint's warning for a `*` that is part of a word, or a word before the last. */
 const LITERAL_STAR = "pattern: a * matches further words only as the last word on its own; this one matches a literal *"
+/** Lint's warning for a tool rule no call's words (`toolWords`) can match. */
+const TOOL_PATTERN =
+  "pattern: a tool rule names a call by its source: host [group] tool, mcp server tool, module alias export, " +
+  "memory input tool, or flow [library] flow, each part a word, or a last * for one or more further words; this " +
+  "one matches no tool call"
 const COMPANY_ONLY = "company rules change only by editing rules.yaml in the company repo"
 
 /** A time as a hand-written file often has it, without the milliseconds. */
@@ -109,8 +119,72 @@ export function loadRules(
     if (words.some((word, j) => word.includes("*") && !(word === "*" && j === words.length - 1))) {
       warnings.push(repoIssue(file, "rules.literal_star", at + LITERAL_STAR, "warning"))
     }
+    if (rule.data.kind === "tool" && !fitsSomeCall(words)) {
+      warnings.push(repoIssue(file, "rules.tool_pattern", at + TOOL_PATTERN, "warning"))
+    }
   }
   return { rules, warnings }
+}
+
+/** A tool call's words, which a `tool` rule's pattern matches: its source's kind, then the names its source gives
+ *  it. A host tool's group comes before its name (`host codex start`), but a tool named as its group, or with no
+ *  group, is its name alone (`host propose_company`), so its words stay the same whether its group has other tools or
+ *  none (the model then sees it top-level); an MCP tool's server comes before its name; a module's tool is its `uses:`
+ *  alias and its export, not the ref the alias names; a memory's tool its memory input and its name; a granted flow
+ *  its name, after its library's alias when it is a library's def. Null when a name isn't one word (empty, or holding
+ *  whitespace): no rule can name the call. */
+export function toolWords(source: ToolSource): string[] | null {
+  const words = ((): string[] => {
+    switch (source.kind) {
+      case "host":
+        return source.group === null || source.group === source.tool
+          ? ["host", source.tool]
+          : ["host", source.group, source.tool]
+      case "mcp":
+        return ["mcp", source.server, source.tool]
+      case "module":
+        return ["module", source.alias, source.export]
+      case "memory":
+        return ["memory", source.input, source.tool]
+      case "flow":
+        return source.library === null ? ["flow", source.flow] : ["flow", source.library, source.flow]
+    }
+  })()
+  return words.every((word) => /^\S+$/u.test(word)) ? words : null
+}
+
+/** Whether tool rule `pattern` matches a call's `words` (`toolWords`): word for word, where a last `*` stands for one
+ *  or more further words, so `host codex *` names the `codex` group's tools and not a lone tool `codex`. A pattern no
+ *  rules file could hold, or a call with no words, matches nothing. */
+export function toolRuleMatches(pattern: string, words: readonly string[] | null): boolean {
+  const want = ruleWords(pattern)
+  if (want === null || words === null) return false
+  const wild = want.at(-1) === "*"
+  const fixed = wild ? want.slice(0, -1) : want
+  if (wild ? words.length <= fixed.length : words.length !== fixed.length) return false
+  return fixed.every((word, i) => word === words[i])
+}
+
+/** How many names follow each source kind in a call's words (`toolWords`): the fewest and the most. */
+const TOOL_NAMES: Readonly<Record<ToolSource["kind"], readonly [number, number]>> = {
+  host: [1, 2],
+  mcp: [2, 2],
+  module: [2, 2],
+  memory: [2, 2],
+  flow: [1, 2],
+}
+
+/** Whether a tool rule's pattern `words` can match some call's words: `*` alone, or a source kind followed by as many
+ *  names as that kind has, where a last `*` stands for one or more further ones. */
+function fitsSomeCall(words: readonly string[]): boolean {
+  const wild = words.at(-1) === "*"
+  const fixed = wild ? words.slice(0, -1) : words
+  if (fixed.length === 0) return true
+  const kind = fixed[0]!
+  if (!Object.hasOwn(TOOL_NAMES, kind)) return false
+  const [fewest, most] = TOOL_NAMES[kind as ToolSource["kind"]]
+  const names = fixed.length - 1
+  return wild ? names < most : names >= fewest && names <= most
 }
 
 /** What `rel` holds under `root`, a tree of the company repo, read as the office reads it at a commit: nothing under a
@@ -239,9 +313,11 @@ function same(a: RuleText, b: RuleText): boolean {
   return a.effect === b.effect && a.kind === b.kind && a.pattern === b.pattern
 }
 
-/** `rules` for a commit subject: `allow "ls *", "make *"`, a typed input's as `allow typing "y"`. */
+/** `rules` for a commit subject: `allow "ls *", "make *"`, a typed input's as `allow typing "y"`, a tool call's as
+ *  `allow tool "host codex start"`. */
 function listed(rules: readonly RuleText[]): string {
-  const head = (r: RuleText) => (r.kind === "input" ? `${r.effect} typing` : r.effect)
+  const head = (r: RuleText) =>
+    r.kind === "input" ? `${r.effect} typing` : r.kind === "tool" ? `${r.effect} tool` : r.effect
   return rules
     .map((r, i) => (i > 0 && head(rules[i - 1]!) === head(r) ? "" : `${head(r)} `) + JSON.stringify(r.pattern))
     .join(", ")
@@ -324,8 +400,8 @@ function stored(rule: Rule): Record<string, string> {
 /** The comment an agent's rules file starts with. */
 function header(handle: string): string {
   return (
-    `# @${handle}'s rules for commands and typed input: allow, ask or deny. A deny wins, then an ask, then an allow,\n` +
-    `# whichever file a rule comes from: the session's, @${handle}'s, or the company's rules.yaml.\n`
+    `# @${handle}'s rules for commands, typed input and tool calls: allow, ask or deny. A deny wins, then an ask,\n` +
+    `# then an allow, whichever file a rule comes from: the session's, @${handle}'s, or the company's rules.yaml.\n`
   )
 }
 

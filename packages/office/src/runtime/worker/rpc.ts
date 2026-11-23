@@ -5,6 +5,9 @@ import type { JsonObject } from "@ngocbh/yian/run"
 import {
   type AskHandler,
   type FunctionTool,
+  type GateContext,
+  type GatedCall,
+  type GateDecision,
   isPending,
   isPermanentToolError,
   isReportedToolError,
@@ -26,10 +29,12 @@ export const ASK_KEYS = ["question", "questions", "answer_schema", "title", "nod
 export type AskRequest = Record<(typeof ASK_KEYS)[number], unknown>
 
 /** Worker -> office request frame type -> office -> worker reply frame type. A `memory_<op>` request is the memory
- *  call `op` (`MemoryRequest`): a worker only reads a memory, so no request changes one. */
+ *  call `op` (`MemoryRequest`): a worker only reads a memory, so no request changes one. A `gate_call` asks whether a
+ *  model's tool call may run (`gateHook`). */
 export const REQUEST_REPLIES = {
   ask_user: "answer",
   tool_call: "tool_result",
+  gate_call: "gate_decision",
   memory_open: "memory_reply",
   memory_snapshot: "memory_reply",
   memory_call: "memory_reply",
@@ -258,6 +263,115 @@ export function askUserStub(rpc: Rpc): AskHandler {
   }
 }
 
+/** How long, in ms, a run waits for the office's gate to decide a call before the call is refused. The office
+ *  decides at once, holding what waits for a person or a check, so only a stuck office reaches it. */
+export const GATE_TIMEOUT_MS = 30_000
+
+/** What a failed gate request's reply says, whatever failed in the office: it reaches the worker's log in yian's
+ *  warning, so it never quotes the office's own error. */
+export const GATE_FAILED = "the office's permission check failed"
+
+/**
+ * Yian's `beforeToolCall`, answered by the office: one `gate_call` request per model tool call, carrying the
+ * `GatedCall` (`call`, in the wire's field names). The office's `{run: true}` runs the call, with its `note` when it
+ * has one; `{refuse}` refuses it with that text; `{hold: true}` holds it (`pending()`) until the office releases or
+ * completes it. An error reply, a reply of any other type or shape, a closed channel, a stop, or no reply within
+ * `timeoutMs` makes the hook throw, and yian then refuses the call with its fixed text: the gate fails closed. The
+ * request ends when the decision is no longer wanted (`ctx.signal`), and a late reply is dropped.
+ */
+export function gateHook(
+  rpc: Rpc,
+  { timeoutMs = GATE_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): (call: GatedCall, ctx: GateContext) => Promise<GateDecision> {
+  return async (call, ctx) => {
+    const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(timeoutMs)])
+    return decisionOf(await rpc.request("gate_call", { call: wireCall(call) }, { signal }))
+  }
+}
+
+/** `call` in the wire's field names. */
+function wireCall(call: GatedCall): Frame {
+  return {
+    call_id: call.callId,
+    node: call.node,
+    tool: call.tool,
+    source: call.source,
+    arguments: call.arguments,
+    scopes: call.scopes.map(({ scope, callId }) => ({ scope, call_id: callId })),
+    attempt: call.attempt,
+  }
+}
+
+/** The yian decision a `gate_decision` reply says; throws a `TypeError` for a reply of any other type or shape. */
+function decisionOf(reply: Frame): GateDecision {
+  const { type, id: _id, ...fields } = reply
+  if (type !== REQUEST_REPLIES.gate_call) throw new TypeError("the office's reply to a gate_call isn't a gate_decision")
+  const keys = Object.keys(fields).sort().join(",")
+  if (keys === "hold" && fields.hold === true) return pending()
+  if (keys === "refuse" && typeof fields.refuse === "string") return { refuse: fields.refuse }
+  if (keys === "run" && fields.run === true) return undefined
+  if (keys === "note,run" && fields.run === true && typeof fields.note === "string") {
+    return { run: true, note: fields.note }
+  }
+  throw new TypeError("the office's gate_decision reply is malformed")
+}
+
+/** The reply fields for the office's gate decision `decision`: `{run: true}` (with its `note`), `{refuse}` or
+ *  `{hold: true}` for yian's `pending()`; throws a `TypeError` for anything else. */
+function decisionFields(decision: unknown): Frame {
+  if (isPending(decision)) return { hold: true }
+  if (decision === undefined) return { run: true }
+  if (isPlainObject(decision)) {
+    const keys = Object.keys(decision).sort().join(",")
+    if (keys === "refuse" && typeof decision.refuse === "string") return { refuse: decision.refuse }
+    if ((keys === "run" || keys === "note,run") && decision.run === true) {
+      if (decision.note === undefined) return { run: true }
+      if (typeof decision.note === "string") return { run: true, note: decision.note }
+    }
+  }
+  throw new TypeError("the gate's decision isn't a run, a refusal or pending()")
+}
+
+const nonEmpty = z.string().min(1)
+/** A `GatedCall`'s `source` as the wire carries it: yian's `ToolSource`. */
+const WireSource = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("host"), group: nonEmpty.nullable(), tool: nonEmpty }),
+  z.strictObject({ kind: z.literal("mcp"), server: nonEmpty, tool: nonEmpty }),
+  z.strictObject({ kind: z.literal("module"), alias: nonEmpty, ref: nonEmpty, export: nonEmpty }),
+  z.strictObject({ kind: z.literal("memory"), input: nonEmpty, tool: nonEmpty }),
+  z.strictObject({ kind: z.literal("flow"), flow: nonEmpty, library: nonEmpty.nullable() }),
+])
+/** A `gate_call` request's `call`. `arguments` is the model's, kept as sent. */
+const WireCall = z.strictObject({
+  call_id: z.string(),
+  node: z.string(),
+  tool: z.string(),
+  source: WireSource,
+  arguments: z.custom<Record<string, unknown>>(isPlainObject),
+  scopes: z.array(z.strictObject({ scope: z.string(), call_id: z.string() })),
+  attempt: z.int().positive(),
+})
+
+/** The `GatedCall` a `gate_call` request's `call` carries; throws a `TypeError` naming the first bad field, never its
+ *  value. */
+function gatedCall(raw: unknown): GatedCall {
+  const parsed = WireCall.safeParse(raw)
+  if (!parsed.success) {
+    const where = parsed.error.issues[0]?.path.filter((key) => typeof key !== "symbol").join(".")
+    throw new TypeError(`gate_call request has a bad 'call${where ? `.${where}` : ""}'`)
+  }
+  const call = parsed.data
+  return {
+    callId: call.call_id,
+    node: call.node,
+    tool: call.tool,
+    source: call.source,
+    arguments: call.arguments as GatedCall["arguments"],
+    scopes: call.scopes.map(({ scope, call_id }) => ({ scope, callId: call_id })),
+    attempt: call.attempt,
+  }
+}
+
 /** What an office tool's call gets beside its arguments: the yian call id, a signal that aborts the call, and a
  *  signal that aborts when the agent that made the call takes an interrupt (Esc) while it runs. A tool that watches
  *  `interrupted` may stop early and reply with its own result, which the model reads; the agent then ends
@@ -323,6 +437,14 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
     callId: string,
     options?: { interrupted?: AbortSignal },
   ): unknown
+  /**
+   * Decides whether the model's tool call `call` may run, before it starts (`call.callId` starts with
+   * `${worker.job.run_id}/`), as a yian `GateDecision`: `undefined` or `{run: true}` runs it, with `note` kept in the
+   * run log; `{refuse: text}` refuses it, and the model reads `text`; yian's `pending()` holds it until the office
+   * answers it with a `release` or `complete` delivery. The run waits for the answer, so it must come quickly: a
+   * person's or a check's answer is a hold. A throw or any other answer refuses the call.
+   */
+  gateCall(worker: W, call: GatedCall): unknown
   /** Runs the memory call `request` on the office memory the job names, or on a session the worker opened on one;
    *  resolves to the reply's fields. */
   memory(worker: W, request: MemoryRequest): Frame | Promise<Frame>
@@ -385,6 +507,11 @@ export class BaseHandlers implements WorkerHandlers {
     return await named[name]!.call(args, interrupted === undefined ? { callId } : { callId, interrupted })
   }
 
+  /** Runs every call. */
+  gateCall(_worker: unknown, _call: GatedCall): unknown {
+    return { run: true }
+  }
+
   memory(_worker: unknown, request: MemoryRequest): Promise<Frame> {
     return this.memories.answer(request)
   }
@@ -395,11 +522,13 @@ export type RpcLog = (level: "INFO" | "WARNING", line: string) => void
 
 /**
  * The reply frame for a worker's request `frame`, from `handlers`, after checking it against `worker.job`. A question
- * or tool call whose handler returns Yian's `pending()` is `{pending: true}`.
+ * or tool call whose handler returns Yian's `pending()` is `{pending: true}`. A gate call's reply is `{run: true}`
+ * (with its `note`), `{refuse}`, or `{hold: true}` for `pending()`.
  *
- * A malformed request, a question or tool call whose `call_id` isn't of `worker.job`'s run, a tool not in the job's
- * groups, a memory the job doesn't name, or a failing tool, question or memory call is `{error: "failed", message}`;
- * a question the handler refuses with `AskRefused` is `{error: "refused", message}`. A memory call's error branded by
+ * A malformed request, a question, tool call or gate call whose `call_id` isn't of `worker.job`'s run, a tool not in
+ * the job's groups, a memory the job doesn't name, or a failing tool, question or memory call is `{error: "failed",
+ * message}`; a gate that fails or decides nothing of the right shape is `{error: "failed", message: GATE_FAILED}`; a
+ * question the handler refuses with `AskRefused` is `{error: "refused", message}`. A memory call's error branded by
  * yian is its kind (`busy`, `change_id_reused` or `missing`), and a refusal the model reads (a `ReportedToolError`)
  * is `{error: "refused", message, permanent}`. Throws a `TypeError` for a frame whose type isn't a request type.
  */
@@ -431,6 +560,15 @@ export async function answerRequest(
         const result = await handlers.toolCall(worker, args.group, args.name, args.args, args.callId, options)
         return isPending(result) ? { ...head, pending: true } : { ...head, result: result ?? null }
       }
+      case "gate_call":
+        try {
+          return { ...head, ...decisionFields(await handlers.gateCall(worker, args.call)) }
+        } catch (error) {
+          // The name only, here and in the reply's fixed text: yian's warning puts the reply's text in the worker's
+          // log, and the message could quote the call.
+          write(log, "INFO", `worker gate_call request failed: ${errorName(error)}`)
+          return { ...head, error: "failed", message: GATE_FAILED }
+        }
       case "memory":
         return { ...head, ...(await handlers.memory(worker, args.request)) }
     }
@@ -515,6 +653,7 @@ export class OfficeRequests {
 type RequestArgs =
   | { kind: "ask_user"; request: AskRequest; callId: string }
   | { kind: "tool_call"; group: string; name: string; args: Record<string, unknown>; callId: string }
+  | { kind: "gate_call"; call: GatedCall }
   | { kind: "memory"; request: MemoryRequest }
 
 /** The handler arguments a request frame carries; throws a `TypeError` naming a missing or bad field, never its
@@ -546,6 +685,8 @@ function requestArgs(kind: RequestType, frame: Frame): RequestArgs {
         args: maybe("args", isPlainObject) ?? {},
         callId: need("call_id", isString),
       }
+    case "gate_call":
+      return { kind, call: gatedCall(need("call", isPlainObject)) }
     default:
       return { kind: "memory", request: memoryRequest(kind, need, maybe) }
   }
@@ -553,7 +694,7 @@ function requestArgs(kind: RequestType, frame: Frame): RequestArgs {
 
 /** The memory request a `memory_<op>` frame carries, its fields read with `need` and `maybe`. */
 function memoryRequest(
-  kind: Exclude<RequestType, "ask_user" | "tool_call">,
+  kind: Exclude<RequestType, "ask_user" | "tool_call" | "gate_call">,
   need: <T>(key: string, check: (value: unknown) => value is T) => T,
   maybe: <T>(key: string, check: (value: unknown) => value is T) => T | null,
 ): MemoryRequest {
@@ -591,12 +732,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null
 }
 
-/** Throws for a question or tool call whose call id isn't of `job`'s run, then the handlers' own refusal for a tool
- *  not in `job.groups` or a memory `job.memory` doesn't name; `ask_user` and a call on an open session need no grant
- *  (the handlers know the sessions they opened). */
+/** Throws for a question, tool call or gate call whose call id isn't of `job`'s run, then the handlers' own refusal
+ *  for a tool not in `job.groups` or a memory `job.memory` doesn't name; `ask_user`, a gate call (which runs nothing)
+ *  and a call on an open session need no grant (the handlers know the sessions they opened). */
 function checkJob(job: Job, args: RequestArgs): void {
+  const callId = args.kind === "gate_call" ? args.call.callId : args.kind === "memory" ? null : args.callId
   // A fixed text, so the reply never echoes the id sent.
-  if ((args.kind === "ask_user" || args.kind === "tool_call") && !args.callId.startsWith(`${job.run_id}/`)) {
+  if (callId !== null && !callId.startsWith(`${job.run_id}/`)) {
     throw new Error(`${args.kind} request's call_id is not this run's`)
   }
   if (args.kind === "tool_call") {

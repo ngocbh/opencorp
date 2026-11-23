@@ -3298,7 +3298,7 @@ test("a model call with no token counts is logged unpriced", async () => {
 
 const SRC = fileURLToPath(new URL("../../../src/", import.meta.url))
 // The yian functions that drive a run: only a worker calls them, on the run it hosts.
-const HOST_CALLS = new Set(["send", "complete", "close", "interrupt", "cancel", "advance"])
+const HOST_CALLS = new Set(["send", "complete", "release", "close", "interrupt", "cancel", "advance"])
 const HOST_MODULES = new Set(["@ngocbh/yian", "@ngocbh/yian/run"])
 // Modules that call host functions and run in the worker: only src/runtime/worker/ loads them.
 const WORKER_ONLY = new Set(["runtime/worker/main", "runtime/worker/history"])

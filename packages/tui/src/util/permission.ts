@@ -25,13 +25,14 @@ export function shownText(text: string): string {
  * question (odd characters escaped, a script numbered), so what the owner reads is what runs:
  * - a shell command: `# Shell command`, and `$ ` before its first line;
  * - a typed line: `⌨ Type into <shell>`, the line, whether it ends without Enter, and the command it goes into;
- * - any other tool: `⚙ Call tool <tool>`, and the action.
+ * - a tool card (`kind: "tool"`), whatever its tool's name, and any other tool: `⚙ Call tool <tool>`, and the action.
  */
 export function permissionPresentation(
-  approval: Pick<Approval, "tool" | "args" | "partial" | "into">,
+  approval: Pick<Approval, "tool" | "args" | "partial" | "into"> & { kind?: Approval["kind"] },
   shown: string,
 ): PermissionPresentation {
   const lines = shown === "" ? [] : shown.split("\n")
+  if (approval.kind === "tool") return { icon: "⚙", title: `Call tool ${shownText(approval.tool)}`, lines }
   if (SHELLS.has(approval.tool))
     return { icon: "#", title: "Shell command", lines: lines.map((line, i) => (i === 0 ? `$ ${line}` : `  ${line}`)) }
   if (approval.tool === "terminal_type") {

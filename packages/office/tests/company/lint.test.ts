@@ -878,6 +878,40 @@ test("a * that isn't a rule pattern's last word on its own is a lint warning", a
   ])
 })
 
+test("a tool rule that can't match a tool call is a lint warning", async () => {
+  const good = [
+    "*", "host *", "host codex start", "host propose_company", "mcp github *", "mcp github create_issue",
+    "module crm quote", "memory profile *", "flow drive_harness", "flow billing quote", "flow billing *",
+  ]
+  const bad = [
+    "github create_issue", "module crm", "mcp a b c", "mcp a b c *", "flow", "Host x", "memory profile",
+    // A last * stands for one or more further words, and these calls have none past their names.
+    "mcp github create_issue *", "host codex start *",
+  ]
+  const rules = [...good, ...bad].map((pattern) => ({ effect: "deny", kind: "tool", pattern }))
+  const root = makeCompany({ "rules.yaml": { rules } })
+  const found = (await lint(loadRepo(root))).map((issue) => [issue.code, issue.path, issue.message, issue.severity])
+  const why =
+    "pattern: a tool rule names a call by its source: host [group] tool, mcp server tool, module alias export, " +
+    "memory input tool, or flow [library] flow, each part a word, or a last * for one or more further words; this " +
+    "one matches no tool call"
+  expect(found).toEqual(
+    bad.map((_, i) => ["rules.tool_pattern", "rules.yaml", `rule ${good.length + i + 1}: ${why}`, "warning"]),
+  )
+})
+
+test("a flow that grants a tool whose name holds a space, which no rule could name, fails lint", async () => {
+  const flow =
+    "id: chat\nname: chat\ndefs:\n  my tool:\n    description: Shout.\n    input:\n      text: !str\n" +
+    "    nodes:\n      loud:\n        kind: code\n        input:\n          text: ${input.text}\n" +
+    "        output: !str\n        code: return inputs.text\n    output: ${loud.output}\nnodes:\n  reply:\n" +
+    '    kind: agent\n    tools: ["my tool"]\n    prompt: hi\n    output: !str\noutput: ${reply.output}\n'
+  const root = makeCompany({ "shared/flows/chat.yaml": flow })
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.message).toContain("my tool")
+})
+
 test("a person's folders load with their access, and a relative path fails lint", async () => {
   const folders: { path: string; access: "read" | "write" }[] = [
     { path: "~/.cargo", access: "read" },

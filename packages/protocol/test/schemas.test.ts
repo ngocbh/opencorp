@@ -214,12 +214,22 @@ test("a question may be an approval card, holding what it would allow", () => {
   expect(Schemas.Approval.safeParse({ kind: "command", tool: "shell", action: "ls", reason: "", extra: 1 }).success)
     .toBe(false)
   expect(Schemas.Approval.safeParse({ kind: "file", tool: "shell", action: "ls", reason: "" }).success).toBe(false)
+  // A tool card holds a model's call of any other tool, by the name the model sees, and offers tool rules.
+  const action = 'crm_quote {"amount":5}'
+  const tool = { kind: "tool" as const, tool: "crm_quote", action, reason: "Ask mode", rules: ["module crm quote"] }
+  expect(Schemas.Approval.parse({ ...tool, args: { amount: 5 } })).toEqual({
+    ...tool, args: { amount: 5 }, why: "", partial: false, into: null,
+  })
 })
 
 test("a rule has a source, and a rules list names the files that don't load", () => {
   const rule = { effect: "allow", kind: "command", pattern: "git status *" } as const
   for (const source of ["session", "agent", "company"] as const)
     expect(Schemas.Rule.parse({ ...rule, source })).toEqual({ ...rule, source, by: null, at: null, note: null })
+  // A rule is on commands, typed input, or tool calls by their source's words.
+  for (const [kind, pattern] of [["input", "y"], ["tool", "module crm quote"], ["tool", "mcp github *"]] as const)
+    expect(Schemas.Rule.parse({ effect: "deny", kind, pattern, source: "agent" }).kind).toBe(kind)
+  expect(Schemas.Rule.safeParse({ ...rule, source: "agent", kind: "file" }).success).toBe(false)
   expect(Schemas.Rule.safeParse({ ...rule, source: "everywhere" }).success).toBe(false)
   expect(Schemas.Rule.safeParse({ ...rule, source: "agent", pattern: "" }).success).toBe(false)
   expect(Schemas.Rule.safeParse({ ...rule, source: "agent", effect: "maybe" }).success).toBe(false)

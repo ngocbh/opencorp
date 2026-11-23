@@ -599,7 +599,8 @@ export function createFakeOffice(
     const asker = session(sessionId).person
     const held = ApprovalSchema.parse(approval)
     const rules = held.rules
-    const what = held.kind === "input" ? "type into a running command" : "run a command"
+    const what =
+      held.kind === "tool" ? "call a tool" : held.kind === "input" ? "type into a running command" : "run a command"
     return addQuestion({
       session_id: sessionId,
       call_id: `run-1/reply/${++approvals}/0`,

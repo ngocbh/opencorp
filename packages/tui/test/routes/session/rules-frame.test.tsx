@@ -11,6 +11,7 @@ const AT = "2026-11-20T10:00:00.000Z"
 const SESSION: Rule = { effect: "allow", kind: "command", pattern: "ls *", source: "session", by: null, at: null }
 const AGENT: Rule = { effect: "allow", kind: "command", pattern: "git status *", source: "agent", by: "ngocbh", at: AT }
 const COMPANY: Rule = { effect: "deny", kind: "command", pattern: "rm -rf *", source: "company", by: null, at: null }
+const TOOL: Rule = { effect: "ask", kind: "tool", pattern: "mcp github *", source: "company", by: null, at: null }
 
 /** Boots the fake office's first chat with `list` as its rules, wide enough for a rule's line. */
 async function boot(list: RuleList) {
@@ -37,14 +38,15 @@ const removals = (office: FakeOffice, id: string) =>
   office.requests.filter((r) => r.method === "POST" && r.path === `/sessions/${id}/rules/remove`).map((r) => r.body)
 
 test("/rules lists the chat's rules with their source, and d removes a session or agent one", async () => {
-  const { office, s, app } = await boot({ rules: [SESSION, AGENT, COMPANY], errors: [] })
+  const { office, s, app } = await boot({ rules: [SESSION, AGENT, COMPANY, TOOL], errors: [] })
   try {
     await openRules(app)
-    const frame = await app.until((f) => f.includes("rm -rf *"))
+    const frame = await app.until((f) => f.includes("rm -rf *") && f.includes("mcp github *"))
     const row = (pattern: string) => frame.split("\n").find((line) => line.includes(pattern))!
     expect(row("ls *")).toMatch(/allow\s+command\s+ls \*\s+session/)
     expect(row("git status *")).toMatch(/allow\s+command\s+git status \*\s+agent, by @ngocbh/)
     expect(row("rm -rf *")).toMatch(/deny\s+command\s+rm -rf \*\s+company/)
+    expect(row("mcp github *")).toMatch(/ask\s+tool\s+mcp github \*\s+company/)
     // The first rule is selected: d removes it, and the list is read again.
     app.input.pressKey("d")
     await app.until((f) => !f.includes("ls *") && f.includes("git status *"))
@@ -54,7 +56,7 @@ test("/rules lists the chat's rules with their source, and d removes a session o
       { effect: "allow", kind: "command", pattern: "ls *", source: "session" },
       { effect: "allow", kind: "command", pattern: "git status *", source: "agent" },
     ])
-    expect(office.state.rules[s.id]!.rules).toEqual([COMPANY])
+    expect(office.state.rules[s.id]!.rules).toEqual([COMPANY, TOOL])
   } finally {
     await app.stop()
     office.stop()

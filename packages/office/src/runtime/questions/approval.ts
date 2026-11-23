@@ -76,7 +76,8 @@ export function holdApproval(
 ): (card: HeldCard, callId: string) => unknown {
   return (card, callId) => {
     const t = now()
-    const what = card.kind === "input" ? "type into a running command" : "run a command"
+    const what =
+      card.kind === "tool" ? "call a tool" : card.kind === "input" ? "type into a running command" : "run a command"
     const data = {
       id: newId(),
       session_id: session.id,

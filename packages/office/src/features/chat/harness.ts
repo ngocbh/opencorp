@@ -800,6 +800,7 @@ export class ChatHarness implements SessionHarness {
       askUser: (worker, request, callId) => this.#inCall(() => handlers.askUser(worker, request, callId)),
       toolCall: (worker, group, name, args, callId, options) =>
         this.#inCall(() => handlers.toolCall(worker, group, name, args, callId, options)),
+      gateCall: (worker, call) => this.#inCall(() => handlers.gateCall(worker, call)),
       memory: (worker, request) => this.#inCall(() => handlers.memory(worker, request)),
     }
   }

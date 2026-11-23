@@ -9,7 +9,8 @@
       "by": "ngocbh",
       "at": "2026-11-20T10:00:00.000Z"
     },
-    { "effect": "deny", "kind": "command", "pattern": "git push --force *", "source": "company", "by": null, "at": null }
+    { "effect": "deny", "kind": "command", "pattern": "git push --force *", "source": "company", "by": null, "at": null },
+    { "effect": "ask", "kind": "tool", "pattern": "mcp github *", "source": "company", "by": null, "at": null }
   ],
   "errors": [{ "source": "agent", "path": "people/minh/rules.yaml", "message": "isn't valid YAML (line 2)" }]
 }
