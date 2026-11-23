@@ -1,3 +1,4 @@
+import type { Env } from "@opencorp/client/node"
 import type { CommandRun } from "../main"
 import { type SetupDeps, realSetupDeps, setUp } from "../setup"
 
@@ -9,8 +10,8 @@ import { type SetupDeps, realSetupDeps, setUp } from "../setup"
  * flag. With `--provider-stdin` it asks nothing. Without a terminal the TUI can draw on (or with TERM=dumb), it
  * runs on stdin and stdout, and no office opens.
  */
-export function onboard(argv: string[], deps: SetupDeps = realSetupDeps): Promise<number> {
-  return setUp("onboard", argv, deps)
+export function onboard(argv: string[], env: Env, deps: SetupDeps = realSetupDeps): Promise<number> {
+  return setUp("onboard", argv, env, deps)
 }
 
-export const run: CommandRun = (argv) => onboard(argv)
+export const run: CommandRun = (argv, env) => onboard(argv, env)

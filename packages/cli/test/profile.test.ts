@@ -15,25 +15,24 @@ const notRunningAt = (home: string) =>
 let home: string
 let socket: string
 let office: FakeOffice
-const saved = { ...process.env }
+// The $EDITOR `opencorp profile` gets; none until a test sets one.
+let editorSetting: string | undefined
 
 beforeEach(() => {
   // A short path: unix socket paths are limited to about 100 bytes.
   home = mkdtempSync(path.join(os.tmpdir(), "acpe-"))
   mkdirSync(path.join(home, "office"))
   socket = path.join(home, "office", "office.sock")
-  process.env.OPENCORP_HOME = home
-  delete process.env.VISUAL
-  delete process.env.EDITOR
+  editorSetting = undefined
   office = createFakeOffice({ socket })
 })
 afterEach(() => {
   office.stop()
-  process.env = { ...saved }
   rmSync(home, { recursive: true, force: true })
 })
 
-/** Runs `opencorp profile …`, capturing what it writes to stdout and stderr. */
+/** Runs `opencorp profile …` for the office at `home`, with `editorSetting` as $EDITOR, capturing what it writes to
+ *  stdout and stderr. */
 async function profile(...argv: string[]) {
   const out: string[] = []
   const err: string[] = []
@@ -42,7 +41,8 @@ async function profile(...argv: string[]) {
   console.log = (...a: unknown[]) => void out.push(a.join(" "))
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
-    return { code: await main(["profile", ...argv]), out: out.join("\n"), err: err.join("\n") }
+    const env = { HOME: home, OPENCORP_HOME: home, ...(editorSetting !== undefined && { EDITOR: editorSetting }) }
+    return { code: await main(["profile", ...argv], env), out: out.join("\n"), err: err.join("\n") }
   } finally {
     console.log = log
     console.error = error
@@ -52,7 +52,7 @@ async function profile(...argv: string[]) {
 /** Makes $EDITOR the shell script `body`, in which $1 is the file being edited. */
 function editor(body: string) {
   writeFileSync(path.join(home, "ed.sh"), body)
-  process.env.EDITOR = `sh ${path.join(home, "ed.sh")}`
+  editorSetting = `sh ${path.join(home, "ed.sh")}`
 }
 
 const puts = () => office.requests.filter((r) => r.method === "PUT").map((r) => r.body)

@@ -6,23 +6,19 @@ import { tui, TUI_USAGE } from "../src/commands/tui"
 
 let office: FakeOffice
 let home: string
-const saved = process.env.OPENCORP_HOME
 beforeEach(() => {
   // Short, under /tmp: macOS caps socket paths at 104 bytes.
   home = fs.mkdtempSync("/tmp/oct-")
   fs.mkdirSync(path.join(home, "office"))
-  process.env.OPENCORP_HOME = home
   office = createFakeOffice({ socket: path.join(home, "office", "office.sock") })
 })
 afterEach(() => {
   office.stop()
-  if (saved === undefined) delete process.env.OPENCORP_HOME
-  else process.env.OPENCORP_HOME = saved
   fs.rmSync(home, { recursive: true, force: true })
 })
 
-/** Runs `tui(argv, deps)`, capturing what it writes to stdout and stderr. */
-async function capture(argv: string[], deps: Parameters<typeof tui>[1]) {
+/** Runs `tui(argv, deps)` for the office at `home`, capturing what it writes to stdout and stderr. */
+async function capture(argv: string[], deps: Parameters<typeof tui>[2]) {
   const out: string[] = []
   const err: string[] = []
   const log = console.log
@@ -30,7 +26,7 @@ async function capture(argv: string[], deps: Parameters<typeof tui>[1]) {
   console.log = (...a: unknown[]) => void out.push(a.join(" "))
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
-    return { code: await tui(argv, deps), out, err }
+    return { code: await tui(argv, { HOME: home, OPENCORP_HOME: home }, deps), out, err }
   } finally {
     console.log = log
     console.error = error

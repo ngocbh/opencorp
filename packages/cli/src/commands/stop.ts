@@ -1,3 +1,4 @@
+import type { Env } from "@opencorp/client/node"
 import type { CommandRun } from "../main"
 import { type Deps, install, realDeps } from "../office"
 
@@ -6,8 +7,8 @@ import { type Deps, install, realDeps } from "../office"
  * again at the next login and `opencorp start` starts it now. Exits 0 when it stopped or wasn't running, 1 on
  * failure.
  */
-export function stop(argv: string[], deps: Deps = realDeps): Promise<number> {
-  return install("stop", argv, deps)
+export function stop(argv: string[], env: Env, deps: Deps = realDeps): Promise<number> {
+  return install("stop", argv, env, deps)
 }
 
-export const run: CommandRun = (argv) => stop(argv)
+export const run: CommandRun = (argv, env) => stop(argv, env)

@@ -5,7 +5,7 @@ import { Context, Effect, Layer } from "effect"
 import { opencorpHome } from "@opencorp/client/node"
 
 function root() {
-  return path.join(opencorpHome(), "tui")
+  return path.join(opencorpHome(process.env), "tui")
 }
 
 /** Paths for TUI state, resolved from `OPENCORP_HOME` (default `~/.opencorp`) on each read. */

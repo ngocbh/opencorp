@@ -1,3 +1,4 @@
+import type { Env } from "@opencorp/client/node"
 import type { CommandRun } from "../main"
 import { type SetupDeps, realSetupDeps, setUp } from "../setup"
 
@@ -10,8 +11,8 @@ import { type SetupDeps, realSetupDeps, setUp } from "../setup"
  * `--provider-stdin` it asks nothing. Without a terminal the TUI can draw on (or with TERM=dumb), the
  * company comes from the flags and defaults, and no office opens.
  */
-export function init(argv: string[], deps: SetupDeps = realSetupDeps): Promise<number> {
-  return setUp("init", argv, deps)
+export function init(argv: string[], env: Env, deps: SetupDeps = realSetupDeps): Promise<number> {
+  return setUp("init", argv, env, deps)
 }
 
-export const run: CommandRun = (argv) => init(argv)
+export const run: CommandRun = (argv, env) => init(argv, env)

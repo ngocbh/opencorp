@@ -17,7 +17,7 @@ const USAGE = "usage: opencorp password [--handle H]"
  * `opencorp password [--handle H]`: asks for a new password twice, without echo, and sets it as H's
  * (by default, whoever this device acts as). Only H or the CEO can. Needs a terminal.
  */
-export const run: CommandRun = async (argv) => {
+export const run: CommandRun = async (argv, env) => {
   let values
   try {
     ;({ values } = parseArgs({
@@ -37,8 +37,8 @@ export const run: CommandRun = async (argv) => {
     console.error("opencorp password: there's no terminal to read the password on without echo")
     return 2
   }
-  const me = localIdentity()
-  const office = officeClient(me)
+  const me = localIdentity(env)
+  const office = officeClient(me, env)
   try {
     const handle =
       values.handle === undefined ? (me?.handle ?? (await office.whoami()).person) : bareHandle(values.handle)
@@ -65,7 +65,7 @@ export const run: CommandRun = async (argv) => {
     console.error("opencorp password: no usable password")
     return 1
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning(e)
+    if (e instanceof OfficeUnavailable) return officeNotRunning(e, env)
     console.error(`opencorp password: ${e instanceof Error ? e.message : e}`)
     return 1
   }

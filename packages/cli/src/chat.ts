@@ -22,6 +22,22 @@ export function homeFlag(argv: string[]): string | undefined {
   return home
 }
 
+/** Runs `show` with this process's `$OPENCORP_HOME` as `home` (unset when undefined), then puts back the value it had.
+ *  The TUI reads its home from there, not from the env a command was given. */
+export async function withTuiHome<T>(home: string | undefined, show: () => Promise<T>): Promise<T> {
+  const caller = process.env.OPENCORP_HOME
+  const set = (value: string | undefined) => {
+    if (value === undefined) delete process.env.OPENCORP_HOME
+    else process.env.OPENCORP_HOME = value
+  }
+  set(home)
+  try {
+    return await show()
+  } finally {
+    set(caller)
+  }
+}
+
 /** A built-in agent's chat: its session on the no-office host in this process, served on a private socket to the TUI,
  *  which opens on it and closes once the session is over; the host stops once both are. Resolves to how the session
  *  ended, with why when its run failed, or `left` when the owner left the TUI first, which ends it. The TUI keeps its
@@ -33,7 +49,8 @@ export async function localChat(session: LocalSession, home?: string): Promise<C
   // node_modules.
   const assets = (await import("@opencorp/office/platform")).tuiAssetRoot()
   if (assets !== null) process.env.OTUI_ASSET_ROOT = assets
-  const host = await LocalHost.start(session)
+  // Its workers start from this process's environment, as the office's start from the daemon's.
+  const host = await LocalHost.start(session, { environ: process.env })
   let served: Awaited<ReturnType<typeof serveLocal>> | undefined
   try {
     served = await serveLocal(host)
@@ -48,16 +65,10 @@ export async function localChat(session: LocalSession, home?: string): Promise<C
     const [{ Effect }, { Global, run: runTui }] = await Promise.all([import("effect"), import("@opencorp/tui")])
     const local = { sessionID: host.id, until }
     const input = { socket: served.socket, token: served.token, person: OWNER, cwd: process.cwd(), args: {}, local }
-    // The TUI reads its home from $OPENCORP_HOME, as the office's TUI that opens after init does. It is put back once
-    // the TUI closes: the install reads it after, to say whether the caller's shell finds this office.
-    const caller = process.env.OPENCORP_HOME
-    if (home !== undefined) process.env.OPENCORP_HOME = home
-    try {
-      await Effect.runPromise(runTui(input).pipe(Effect.provide(Global.layer)))
-    } finally {
-      if (caller === undefined) delete process.env.OPENCORP_HOME
-      else process.env.OPENCORP_HOME = caller
-    }
+    // The TUI keeps its state under `home`, as the office's TUI that opens after init does. `$OPENCORP_HOME` is put back
+    // once the TUI closes: the install reads it after, to say whether the caller's shell finds this office.
+    const show = () => Effect.runPromise(runTui(input).pipe(Effect.provide(Global.layer)))
+    await (home === undefined ? show() : withTuiHome(home, show))
     if (!over) return { status: "left", error: null }
     const failure = host.failure
     return failure === null ? { status: "ended", error: null } : { status: "failed", error: failure }

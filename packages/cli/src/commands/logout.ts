@@ -12,7 +12,7 @@ const USAGE = "usage: opencorp logout"
  * `opencorp logout`: removes this device from its person's devices, sent with its own token, then
  * deletes `identity.json`. With no office, deletes it anyway and says the entry remains.
  */
-export const run: CommandRun = async (argv) => {
+export const run: CommandRun = async (argv, env) => {
   try {
     if (parseArgs({ args: argv, options: { help: { type: "boolean", short: "h" } } }).values.help) {
       console.log(USAGE)
@@ -22,7 +22,7 @@ export const run: CommandRun = async (argv) => {
     console.error(`opencorp logout: ${e instanceof Error ? e.message : e}`)
     return 2
   }
-  const file = identityPath()
+  const file = identityPath(env)
   let me: Identity | undefined
   try {
     me = readIdentity(file, (m) => console.error(`opencorp: ${m}`))
@@ -51,7 +51,7 @@ export const run: CommandRun = async (argv) => {
   let note: string
   let removed = false
   try {
-    await createOfficeClient({ socket: defaultSocket(), token: me.token }).devices.remove(me.handle, me.device)
+    await createOfficeClient({ socket: defaultSocket(env), token: me.token }).devices.remove(me.handle, me.device)
     note = `Removed ${entry}.`
     removed = true
   } catch (e) {
@@ -61,7 +61,7 @@ export const run: CommandRun = async (argv) => {
         `The office dropped the connection, so ${entry} may remain; ` +
         `check with \`opencorp devices list\` and ${remove}.`
     else if (e instanceof OfficeUnavailable) {
-      const reason = unreachableReason(e)
+      const reason = unreachableReason(e, env)
       note =
         reason === undefined
           ? `The office isn't running, so ${entry} remains; ${remove}.`
@@ -77,6 +77,6 @@ export const run: CommandRun = async (argv) => {
   }
   fs.rmSync(file, { force: true })
   console.log(`${note} This device is logged out.`)
-  if (removed) await warnIfTokenless()
+  if (removed) await warnIfTokenless(env)
   return 0
 }

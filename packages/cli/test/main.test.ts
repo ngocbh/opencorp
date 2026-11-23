@@ -8,19 +8,14 @@ import pkg from "../package.json" with { type: "json" }
 
 // An empty home: a command that reaches for the office exits 3 here instead of passing a help test.
 let home: string
-let savedHome: string | undefined
 beforeEach(() => {
-  savedHome = process.env.OPENCORP_HOME
   home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-main-"))
-  process.env.OPENCORP_HOME = home
 })
 afterEach(() => {
-  if (savedHome === undefined) delete process.env.OPENCORP_HOME
-  else process.env.OPENCORP_HOME = savedHome
   fs.rmSync(home, { recursive: true, force: true })
 })
 
-/** Runs `main(argv)`, capturing what it writes to stdout and stderr. */
+/** Runs `main(argv)` on the empty home, capturing what it writes to stdout and stderr. */
 async function capture(argv: string[]) {
   const out: string[] = []
   const err: string[] = []
@@ -29,7 +24,7 @@ async function capture(argv: string[]) {
   console.log = (...a: unknown[]) => void out.push(a.join(" "))
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
-    return { code: await main(argv), out: out.join("\n"), err: err.join("\n") }
+    return { code: await main(argv, { HOME: home, OPENCORP_HOME: home }), out: out.join("\n"), err: err.join("\n") }
   } finally {
     console.log = log
     console.error = error

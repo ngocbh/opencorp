@@ -31,7 +31,7 @@ export async function endSession(opts: { client: OfficeClient; cwd: string; id?:
 const USAGE = "usage: opencorp end [SESSION_ID]"
 
 /** `opencorp end [SESSION_ID]`: ends that session, or else this folder's newest live main session. */
-export const run: CommandRun = async (argv) => {
+export const run: CommandRun = async (argv, env) => {
   let positionals: string[]
   try {
     let values: { help?: boolean }
@@ -57,7 +57,7 @@ export const run: CommandRun = async (argv) => {
     console.error("opencorp end: the session id is empty")
     return 2
   }
-  const client = officeClient(localIdentity())
+  const client = officeClient(localIdentity(env), env)
   try {
     // The office keys folders by their real path.
     const session = await endSession({ client, cwd: realpathSync(process.cwd()), id })
@@ -66,7 +66,7 @@ export const run: CommandRun = async (argv) => {
     else console.log(`Ending ${who}'s ${session.kind.replace("_", " ")} session ${session.id}.`)
     return 0
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning(e)
+    if (e instanceof OfficeUnavailable) return officeNotRunning(e, env)
     console.error(`opencorp end: ${e instanceof Error ? e.message : e}`)
     return 1
   }

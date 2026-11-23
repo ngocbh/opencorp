@@ -2,21 +2,29 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-/** The OpenCorp home: `$OPENCORP_HOME`, default `~/.opencorp`. */
-export function opencorpHome() {
+/** A process environment: its variables by name. */
+export type Env = Record<string, string | undefined>
+
+/** The user's home folder in `env`: `$HOME`, or the account's (`os.homedir()`) when it is unset or empty. */
+export function homeDir(env: Env) {
+  return env.HOME || os.homedir()
+}
+
+/** The OpenCorp home in `env`: `$OPENCORP_HOME`, default `~/.opencorp`. */
+export function opencorpHome(env: Env) {
   // Empty is unset and a leading `~` is expanded, as the office's install commands read it.
-  const home = process.env.OPENCORP_HOME || path.join(os.homedir(), ".opencorp")
-  return home === "~" || home.startsWith("~/") ? path.join(os.homedir(), home.slice(1)) : home
+  const home = env.OPENCORP_HOME || path.join(homeDir(env), ".opencorp")
+  return home === "~" || home.startsWith("~/") ? path.join(homeDir(env), home.slice(1)) : home
 }
 
-/** The office socket: `$OPENCORP_HOME/office/office.sock` (default `~/.opencorp/office/office.sock`). */
-export function defaultSocket() {
-  return path.join(opencorpHome(), "office", "office.sock")
+/** The office socket in `env`: `$OPENCORP_HOME/office/office.sock` (default `~/.opencorp/office/office.sock`). */
+export function defaultSocket(env: Env) {
+  return path.join(opencorpHome(env), "office", "office.sock")
 }
 
-/** This device's identity file: `$OPENCORP_HOME/identity.json` (default `~/.opencorp/identity.json`). */
-export function identityPath() {
-  return path.join(opencorpHome(), "identity.json")
+/** This device's identity file in `env`: `$OPENCORP_HOME/identity.json` (default `~/.opencorp/identity.json`). */
+export function identityPath(env: Env) {
+  return path.join(opencorpHome(env), "identity.json")
 }
 
 /**

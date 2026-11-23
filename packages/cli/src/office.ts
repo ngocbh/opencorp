@@ -5,15 +5,16 @@
 import { createOfficeClient, OfficeDropped, OfficeError, OfficeTimeout, OfficeUnavailable } from "@opencorp/client"
 import {
   readIdentity,
+  type Env,
   type Identity,
   defaultSocket,
+  homeDir,
   identityPath,
   opencorpHome,
   socketProblem,
 } from "@opencorp/client/node"
-import { selfCommand, selfSpawnCwd, selfSpawnEnv } from "@opencorp/office/platform"
+import { selfCommand, selfSpawnEnv } from "@opencorp/office/platform"
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
 
 /** What running the install touches; tests pass fakes. */
@@ -23,8 +24,6 @@ export interface Deps {
    *  and the first SIGINT after INTERRUPT_GRACE_MS (later ones aren't passed on, so a targeted repeat SIGINT never
    *  reaches the install's rule that a repeat Ctrl-C exits at once; a terminal's repeat Ctrl-C still does). */
   spawn(argv: string[], options: { cwd: string; env: Record<string, string> }): Promise<number>
-  /** The folder the install runs in (`selfSpawnCwd`); throws when the home folder doesn't exist. */
-  spawnCwd(): string
 }
 
 /** How long a SIGINT waits before it is passed on to a running install. */
@@ -57,7 +56,6 @@ export const realDeps: Deps = {
       clearTimeout(grace)
     }
   },
-  spawnCwd: selfSpawnCwd,
 }
 
 /** How to run one install command: its argv, env and folder. */
@@ -113,14 +111,14 @@ function absoluteArgs(command: string, args: string[], cwd: () => string): strin
 /**
  * How to run `opencorp install <command> ...args` in this binary: relative `--home`, `--from` (onboard) and
  * `$OPENCORP_HOME` made absolute against `cwd`, the env `environ` without the names that change how Bun starts,
- * and `home` (by default the home dir, which throws when it doesn't exist) as its folder.
+ * and `home` as its folder.
  */
 export function installSpawn(
   command: string,
   args: string[],
-  environ: Record<string, string | undefined> = process.env,
-  cwd: () => string = () => process.cwd(),
-  home: string = selfSpawnCwd(),
+  environ: Env,
+  cwd: () => string,
+  home: string,
 ): InstallSpec {
   const env = { ...environ }
   if (env.OPENCORP_HOME !== undefined) env.OPENCORP_HOME = absolute(env.OPENCORP_HOME, cwd)
@@ -131,22 +129,26 @@ export function installSpawn(
   }
 }
 
-/** `installSpawn(command, args)` in `deps.spawnCwd()`, or undefined after saying on stderr that the home folder
- *  doesn't exist. */
-export function installSpec(command: string, args: string[], deps: Deps): InstallSpec | undefined {
-  let home: string
+/**
+ * `installSpawn(command, args)` with `env`, run in the real path of `env`'s home folder (as `selfSpawnCwd` picks it,
+ * never the caller's folder), or undefined after saying on stderr that the home folder doesn't exist.
+ */
+export function installSpec(command: string, args: string[], env: Env): InstallSpec | undefined {
+  const home = homeDir(env)
+  let folder: string
   try {
-    home = deps.spawnCwd()
+    folder = fs.realpathSync(home)
   } catch {
-    console.error(`opencorp ${command}: your home folder ${os.homedir()} doesn't exist`)
+    console.error(`opencorp ${command}: your home folder ${home} doesn't exist`)
     return undefined
   }
-  return installSpawn(command, args, process.env, () => process.cwd(), home)
+  return installSpawn(command, args, env, () => process.cwd(), folder)
 }
 
-/** Runs `opencorp install <command> ...args` and resolves to its exit code; 1 when the home folder doesn't exist. */
-export async function install(command: string, args: string[], deps: Deps = realDeps): Promise<number> {
-  const spec = installSpec(command, args, deps)
+/** Runs `opencorp install <command> ...args` with `env` and resolves to its exit code; 1 when the home folder doesn't
+ *  exist. */
+export async function install(command: string, args: string[], env: Env, deps: Deps = realDeps): Promise<number> {
+  const spec = installSpec(command, args, env)
   return spec ? deps.spawn(spec.argv, { cwd: spec.cwd, env: spec.env }) : 1
 }
 
@@ -156,26 +158,27 @@ export const bareHandle = (typed: string) => typed.replace(/^@/, "")
 /** Exit code when no office answers, as the install's `start` exits with no office yet. */
 export const NO_OFFICE = 3
 
-/** What to say when the office at this env's home doesn't answer: which home, and that `$OPENCORP_HOME` picks it. */
-export const notRunning = () =>
-  `The office at ${opencorpHome()} isn't running. ` +
+/** What to say when the office at `env`'s home doesn't answer: which home, and that `$OPENCORP_HOME` picks it. */
+export const notRunning = (env: Env) =>
+  `The office at ${opencorpHome(env)} isn't running. ` +
   "Run `opencorp start` (or `opencorp doctor` if it won't start); set $OPENCORP_HOME if your office is elsewhere."
 
 /**
- * Why the office can't be reached, for a message: `about` is the failure, or the socket path to look at (default the
- * default socket). Undefined when there's no socket, so the office just isn't running.
+ * Why the office can't be reached, for a message: `about` is the failure, or the socket path to look at (otherwise
+ * `env`'s default socket). Undefined when there's no socket, so the office just isn't running.
  */
-export function unreachableReason(about: unknown = defaultSocket()): string | undefined {
+export function unreachableReason(about: unknown, env: Env): string | undefined {
   if (about instanceof OfficeDropped) return about.message
   if (about instanceof OfficeUnavailable) return socketProblem(about.socket)
-  return socketProblem(typeof about === "string" ? about : defaultSocket())
+  return socketProblem(typeof about === "string" ? about : defaultSocket(env))
 }
 
 /**
- * Says the office can't be reached, and why when there's a socket that doesn't answer (`about`: the failure, or the
- * socket path looked at), or that it answered `officeDown`'s check too slowly or with an error; returns `NO_OFFICE`.
+ * Says the office at `env`'s home can't be reached, and why when there's a socket that doesn't answer (`about`: the
+ * failure, or the socket path looked at), or that it answered `officeDown`'s check too slowly or with an error;
+ * returns `NO_OFFICE`.
  */
-export function officeNotRunning(about?: unknown, print: (line: string) => void = console.error): number {
+export function officeNotRunning(about: unknown, env: Env, print: (line: string) => void = console.error): number {
   if (about instanceof OfficeTimeout) {
     const within = about.timeoutMs / 1000
     print(`The office didn't answer within ${within} s; it may be busy or stuck. Run \`opencorp doctor\`.`)
@@ -185,39 +188,39 @@ export function officeNotRunning(about?: unknown, print: (line: string) => void 
     print(`The office answered its health check with HTTP ${about.status}. Run \`opencorp doctor\`.`)
     return NO_OFFICE
   }
-  const reason = unreachableReason(about)
-  if (reason === undefined) print(notRunning())
+  const reason = unreachableReason(about, env)
+  if (reason === undefined) print(notRunning(env))
   else if (about instanceof OfficeDropped) print(`${reason}. Run \`opencorp doctor\`.`)
   else print(`The office can't be reached: ${reason}. Run \`opencorp doctor\`.`)
   return NO_OFFICE
 }
 
 /**
- * This device's identity, or undefined without one. A file it can't use is reported on stderr
+ * This device's identity under `env`'s home, or undefined without one. A file it can't use is reported on stderr
  * and treated as none: the office then says whether it needs a token.
  */
-export function localIdentity(): Identity | undefined {
+export function localIdentity(env: Env): Identity | undefined {
   const warn = (message: string) => console.error(`opencorp: ${message}`)
   try {
-    return readIdentity(identityPath(), warn)
+    return readIdentity(identityPath(env), warn)
   } catch (e) {
     warn(e instanceof Error ? e.message : String(e))
     return undefined
   }
 }
 
-/** A client for the office on the default socket; `me` is this device's identity, or undefined to send no token. */
-export function officeClient(me: Identity | undefined) {
-  return createOfficeClient({ socket: defaultSocket(), token: me?.token })
+/** A client for the office on `env`'s default socket; `me` is this device's identity, or undefined to send no token. */
+export function officeClient(me: Identity | undefined, env: Env) {
+  return createOfficeClient({ socket: defaultSocket(env), token: me?.token })
 }
 
 /**
- * Warns on stderr when the office on the default socket now takes a request without a token, as after removing the
- * last device any human listed. Says nothing when it refuses one or can't be asked.
+ * Warns on stderr when the office on `env`'s default socket now takes a request without a token, as after removing
+ * the last device any human listed. Says nothing when it refuses one or can't be asked.
  */
-export async function warnIfTokenless(): Promise<void> {
+export async function warnIfTokenless(env: Env): Promise<void> {
   try {
-    const { person, device } = await createOfficeClient({ socket: defaultSocket() }).whoami()
+    const { person, device } = await createOfficeClient({ socket: defaultSocket(env) }).whoami()
     if (device !== null || !person) return
     console.error(
       `opencorp: warning: no human lists a device now, so the office takes requests without a token as @${person}; ` +

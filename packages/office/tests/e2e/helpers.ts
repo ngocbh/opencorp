@@ -294,7 +294,7 @@ export class RunningOffice {
       throw new Error(`opencorp init exited ${done.code}:\n${done.stdout}${done.stderr}`)
     this.llm.forget() // tests count the office's model calls from the first
     if (device) {
-      // The client's identityPath() reads OPENCORP_HOME from this process's env, which a test never changes.
+      // The office's identity.json, read by its path: this process's env names no office.
       const file = path.join(this.home, "identity.json")
       const identity = readIdentity(file)
       if (identity === undefined) throw new Error(`init left no identity at ${file}`)

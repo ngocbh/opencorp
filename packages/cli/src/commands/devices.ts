@@ -71,7 +71,7 @@ function browserLines(browsers: BrowserSession[]): string[] {
  * may see. `opencorp devices add H NAME SHA256` and `opencorp devices remove H NAME` change H's list;
  * `opencorp devices remove-browser ID-OR-NAME` signs one of this office's browsers out (by name, only your own).
  */
-export const run: CommandRun = async (argv) => {
+export const run: CommandRun = async (argv, env) => {
   try {
     const { values, positionals } = parseArgs({
       args: argv,
@@ -83,8 +83,8 @@ export const run: CommandRun = async (argv) => {
       return 0
     }
     const [sub, ...rest] = positionals
-    const me = localIdentity()
-    const office = officeClient(me)
+    const me = localIdentity(env)
+    const office = officeClient(me, env)
     if (sub === "list" && rest.length <= 1) {
       const handle = rest[0] !== undefined ? bareHandle(rest[0]) : (await office.whoami()).person
       const person = (await office.people.list()).find((p) => p.handle === handle)
@@ -111,7 +111,7 @@ export const run: CommandRun = async (argv) => {
       const handle = bareHandle(given)
       await office.devices.remove(handle, name)
       console.log(`Removed device ${name} from @${handle}.`)
-      await warnIfTokenless()
+      await warnIfTokenless(env)
       return 0
     }
     if (sub === "remove-browser" && rest.length === 1) {
@@ -132,7 +132,7 @@ export const run: CommandRun = async (argv) => {
     }
     throw new Usage(USAGE)
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning(e)
+    if (e instanceof OfficeUnavailable) return officeNotRunning(e, env)
     console.error(`opencorp devices: ${e instanceof Error ? e.message : e}`)
     return e instanceof Usage || (e as { code?: string }).code?.startsWith("ERR_PARSE_ARGS") ? 2 : 1
   }

@@ -3,28 +3,26 @@ import fs from "node:fs"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
-import { opencorpHome, defaultSocket, socketProblem } from "../src/paths"
+import { opencorpHome, defaultSocket, homeDir, socketProblem } from "../src/paths"
 
-const saved = process.env.OPENCORP_HOME
-afterEach(() => {
-  if (saved === undefined) delete process.env.OPENCORP_HOME
-  else process.env.OPENCORP_HOME = saved
-})
+// A home folder that is never the real one; the helpers only name paths under it.
+const HOME = "/tmp/och-user"
 
 test("the socket lives under OPENCORP_HOME, defaulting to ~/.opencorp", () => {
-  process.env.OPENCORP_HOME = "/tmp/ach"
-  expect(defaultSocket()).toBe("/tmp/ach/office/office.sock")
-  delete process.env.OPENCORP_HOME
-  expect(defaultSocket()).toBe(`${os.homedir()}/.opencorp/office/office.sock`)
+  expect(defaultSocket({ HOME, OPENCORP_HOME: "/tmp/ach" })).toBe("/tmp/ach/office/office.sock")
+  expect(defaultSocket({ HOME })).toBe(`${HOME}/.opencorp/office/office.sock`)
 })
 
 test("an empty OPENCORP_HOME means the default, and a leading ~/ is the home directory", () => {
-  process.env.OPENCORP_HOME = ""
-  expect(opencorpHome()).toBe(`${os.homedir()}/.opencorp`)
-  process.env.OPENCORP_HOME = "~/offices/acme"
-  expect(opencorpHome()).toBe(`${os.homedir()}/offices/acme`)
-  process.env.OPENCORP_HOME = "~"
-  expect(opencorpHome()).toBe(os.homedir())
+  expect(opencorpHome({ HOME, OPENCORP_HOME: "" })).toBe(`${HOME}/.opencorp`)
+  expect(opencorpHome({ HOME, OPENCORP_HOME: "~/offices/acme" })).toBe(`${HOME}/offices/acme`)
+  expect(opencorpHome({ HOME, OPENCORP_HOME: "~" })).toBe(HOME)
+})
+
+test("the home folder is the env's HOME, or the account's when it is unset or empty", () => {
+  expect(homeDir({ HOME })).toBe(HOME)
+  expect(homeDir({})).toBe(os.homedir())
+  expect(homeDir({ HOME: "" })).toBe(os.homedir())
 })
 
 const cleanups: (() => void)[] = []

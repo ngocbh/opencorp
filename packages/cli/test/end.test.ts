@@ -1,4 +1,4 @@
-import { afterAll, afterEach, expect, test } from "bun:test"
+import { afterAll, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
 import { createOfficeClient } from "@opencorp/client"
@@ -14,15 +14,10 @@ const notRunningAt = (home: string) =>
 
 const home = mkdtempSync("/tmp/ace-")
 const socket = path.join(home, "office", "office.sock")
-const saved = process.env.OPENCORP_HOME
-afterEach(() => {
-  process.env.OPENCORP_HOME = saved
-})
 afterAll(() => rmSync(home, { recursive: true, force: true }))
 
 /** Runs `main(argv)` against the office under `home`, capturing stdout and stderr. */
 async function capture(argv: string[]) {
-  process.env.OPENCORP_HOME = home
   const out: string[] = []
   const err: string[] = []
   const log = console.log
@@ -30,7 +25,7 @@ async function capture(argv: string[]) {
   console.log = (...a: unknown[]) => void out.push(a.join(" "))
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
-    return { code: await main(argv), out: out.join("\n"), err: err.join("\n") }
+    return { code: await main(argv, { HOME: home, OPENCORP_HOME: home }), out: out.join("\n"), err: err.join("\n") }
   } finally {
     console.log = log
     console.error = error
