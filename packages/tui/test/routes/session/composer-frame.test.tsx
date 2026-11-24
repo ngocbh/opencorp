@@ -1,7 +1,8 @@
 // The picker, ported from the upstream TUI's composer picker. ↓ at the end of a chat's prompt opens it in the prompt's
 // place, on the first tab with something running: Sessions, the chat's Codex and Claude Code sessions (each its child
 // session, marked Running, Idle or Ended), or Shell, its shells. ←/→ switch tabs, ↑/↓ move, Enter opens the row in the
-// right pane, ↑ on the first row or Esc closes; ctrl+d interrupts a session or sends a shell Ctrl-C. Sessions lists the
+// right pane, ↑ on the first row or Esc closes; ctrl+d interrupts a session, sends a running shell Ctrl-C, or closes an
+// idle shell, asking first when it has output the owner hasn't read. Sessions lists the
 // live sessions, running or idle, and Shell the shells that run; ctrl+a shows the rest. The line under the prompt
 // counts the same, after ↓, and a click opens the picker on the first tab with something running. A child whose
 // session ended has no prompt: the picker sits in its place, and Esc goes back to the chat or closes the pane. An idle
@@ -141,6 +142,10 @@ const row = (f: string, text: string) => f.split("\n").find((r) => r.includes(te
 
 const prompts = (fake: FakeOffice, id: string) =>
   fake.requests.filter((r) => r.method === "POST" && r.path === `/sessions/${id}/prompt`)
+
+/** The requests to close shell `id` of chat `chat`. */
+const closes = (fake: FakeOffice, chat: string, id: string) =>
+  fake.requests.filter((r) => r.method === "POST" && r.path === `/sessions/${chat}/instruments/${id}/close`)
 
 test("↓ at the end of the chat's prompt opens the picker on Sessions; ↓ moves, and Enter opens the session in the pane, where the owner writes", async () => {
   const { fake, chat, children } = office([{ status: "busy" }, { status: "busy" }])
@@ -473,6 +478,90 @@ test("ctrl+d interrupts a running session, and sends a running shell Ctrl-C; Ent
     app.input.pressEnter()
     const f = await app.until((f) => pane(f).includes("@minh is driving · shell 1 · running · make step1"))
     expect(pane(f)).toContain("ctrl+x f full screen")
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
+
+test("ctrl+d stops a running shell's command and closes an idle shell; an ended shell is offered neither", async () => {
+  const { fake, chat, shells } = office([], [{ status: "running" }, { status: "idle", command: null }])
+  const app = await boot(fake, chat.id)
+  try {
+    await app.until((f) => f.includes("@minh auto ·") && f.includes("↓ 1 shell"))
+    await press(app, "down")
+    let f = await app.until((f) => f.includes("shell 1 · make step1"))
+    expect(f).toContain("interrupt ctrl+d")
+    expect(f).not.toContain("close ctrl+d")
+    // The idle shell is under ctrl+a: ctrl+d closes it, and it printed nothing, so nothing is asked.
+    app.input.pressKey("a", { ctrl: true })
+    f = await app.until((f) => row(f, "shell 2").endsWith("Idle"))
+    expect(f).toContain("close ctrl+d")
+    expect(f).not.toContain("interrupt ctrl+d")
+    app.input.pressKey("d", { ctrl: true })
+    await until(() => closes(fake, chat.id, shells[1]!.id).length === 1, 3000)
+    f = await app.until((f) => row(f, "shell 2").endsWith("Ended"))
+    expect(f).not.toContain("haven't read")
+    // An ended shell stays, the record of what ran: ctrl+d neither closes nor interrupts it.
+    expect(f).not.toContain("close ctrl+d")
+    expect(f).not.toContain("interrupt ctrl+d")
+    app.input.pressKey("d", { ctrl: true })
+    await Bun.sleep(200)
+    expect(closes(fake, chat.id, shells[1]!.id)).toHaveLength(1)
+    expect(fake.requests.filter((r) => r.path.endsWith("/keys"))).toEqual([])
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
+
+test("closing an idle shell with output the owner hasn't read asks first; once read in the pane, it closes at once", async () => {
+  const { fake, chat, shells } = office([], [{ status: "idle", command: null }, { status: "idle", command: null }])
+  fake.instrumentOutput(chat.id, shells[0]!.id, "$ make\nbuilt it\n")
+  fake.instrumentOutput(chat.id, shells[1]!.id, "$ make docs\nwrote the docs\n")
+  const app = await boot(fake, chat.id)
+  /** Opens the picker on its Shell tab, which shows the shells that don't run. */
+  const shellTab = async () => {
+    await press(app, "down")
+    await app.until((f) => f.includes("tabs ←/→"))
+    await press(app, "right")
+    await app.until((f) => row(f, "shell 1").length > 0 && f.includes("show active ctrl+a"))
+  }
+  try {
+    await app.until((f) => f.includes("@minh auto ·") && f.includes(COMMANDS))
+    await press(app, "down")
+    await press(app, "right")
+    await app.until((f) => f.includes("No active shells"))
+    app.input.pressKey("a", { ctrl: true })
+    await app.until((f) => row(f, "shell 1").endsWith("Idle") && f.includes("close ctrl+d"))
+    app.input.pressKey("d", { ctrl: true })
+    await app.until((f) => f.includes("Close shell 1?") && f.includes("It has output you haven't read."))
+    // Esc keeps it.
+    await escape(app)
+    await app.until((f) => !f.includes("Close shell 1?") && f.includes("close ctrl+d"))
+    expect(closes(fake, chat.id, shells[0]!.id)).toEqual([])
+    // Asked again, Confirm closes it.
+    app.input.pressKey("d", { ctrl: true })
+    await app.until((f) => f.includes("Close shell 1?"))
+    await app.setup.renderOnce()
+    app.input.pressEnter()
+    await until(() => closes(fake, chat.id, shells[0]!.id).length === 1, 3000)
+    await app.until((f) => !f.includes("Close shell 1?") && row(f, "shell 1").endsWith("Ended"))
+    // shell 2's output, read in the pane, closes it at once.
+    await press(app, "down")
+    await app.setup.renderOnce()
+    app.input.pressEnter()
+    await app.until((f) => pane(f).includes("wrote the docs"))
+    app.input.pressKey("x", { ctrl: true })
+    await app.setup.renderOnce()
+    app.input.pressArrow("up")
+    await app.until((f) => !f.includes("┌") && f.includes(COMMANDS))
+    // The picker keeps its row: shell 2's.
+    await shellTab()
+    await app.until((f) => row(f, "shell 2").endsWith("Idle") && f.includes("close ctrl+d"))
+    app.input.pressKey("d", { ctrl: true })
+    await until(() => closes(fake, chat.id, shells[1]!.id).length === 1, 3000)
+    expect(app.frame()).not.toContain("Close shell 2?")
   } finally {
     await app.stop()
     fake.stop()

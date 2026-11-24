@@ -300,6 +300,8 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       /** The size the approver's view draws a shell at, which its PTY takes and every other view then draws at. */
       resize: async (id: string, iid: string, req: InstrumentSizeRequest) =>
         post<Ack>(`${instrument(id, iid)}/size`, req),
+      /** The approver closes a shell, as the agent's close does, signed as them; the agent is told. */
+      closeShell: async (id: string, iid: string) => post<Ack>(`${instrument(id, iid)}/close`),
     },
     connections: {
       list: () => get<ConnectionList>("/connections"),

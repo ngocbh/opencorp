@@ -249,13 +249,15 @@ export type MessageReply = "turn" | "answer" | "steer" | "queued"
 const OWED_KEY = /^(?:terminal|codex|claude):[^:/]+:\d+/
 
 /** An instrument's note about the agent's own work, as `note` takes it: its text, the key its send carries, the
- *  instrument it is signed by (`author`, the shell's or the harness session's name as the chat lists it), and the key
- *  of the note the instrument's record owes (`owed`, cleared once the run has it), if any. */
+ *  instrument it is signed by (`author`, the shell's or the harness session's name as the chat lists it), the key
+ *  of the note the instrument's record owes (`owed`, cleared once the run has it), if any, and whether it is `quiet`:
+ *  it reports the owner's own act, so it never wakes an agent at rest. */
 interface Note {
   readonly text: string
   readonly key: string
   readonly author: string
   readonly owed: string | null
+  readonly quiet?: boolean
 }
 
 /** A call a waiting run waits on, as a `result` frame lists it. */
@@ -1078,12 +1080,14 @@ export class SessionActor implements LiveCalls {
    * a key, which marks it as the instrument's. It is
    * never an answer to the model's open question. A running reply reads it as a steer, a run at rest takes it as a new
    * turn, and over the cost cap it waits for a raise, as a message does; it opens no cap item. After Esc it waits for
-   * the next person's message. Notes that come together go to the run in one job, so one turn reads them all. Dropped
-   * once the session is ending, finished or closed: there is no one left to tell.
+   * the next person's message. Notes that come together go to the run in one job, so one turn reads them all. A
+   * `quiet` note, the owner's own act (closing a shell), never wakes the agent: while no reply runs to read it as a
+   * steer, it waits with the held notes for the agent's next turn. Dropped once the session is ending, finished or
+   * closed: there is no one left to tell.
    */
-  note(text: string, key: string, author: string): void {
+  note(text: string, key: string, author: string, { quiet = false }: { quiet?: boolean } = {}): void {
     if (this.#closed || this.#finished) return
-    this.#notes.push({ text, key, author, owed: key })
+    this.#notes.push({ text, key, author, owed: key, ...(quiet ? { quiet } : {}) })
     if (this.#notesDue) return
     this.#notesDue = true
     // A turn of the event loop later, so the notes of commands that end together go in one job.
@@ -1093,17 +1097,18 @@ export class SessionActor implements LiveCalls {
     }, 0)
   }
 
-  /** Sends `notes` to the run (`#giveNotes`), or holds them for the next person's message after Esc; none once the
+  /** Sends `notes` to the run (`#giveNotes`), the held ones first, or holds them for the next person's message after
+   *  Esc; quiet ones alone wait too while no reply runs, so the owner's own act never starts a turn. None once the
    *  session is ending or finished. */
   async #sendNotes(notes: readonly Note[]): Promise<void> {
     if (notes.length === 0 || this.#finished || this.#ending || this.#runId === null) return
     const session = this.#session()
     if (!LIVE.includes(session.status) || session.status === "ending") return
-    if (this.#hushed) {
+    if (this.#hushed || (!this.#replying() && notes.every((note) => note.quiet === true))) {
       this.#heldNotes.push(...notes)
       return
     }
-    await this.#giveNotes(session, notes)
+    await this.#giveNotes(session, [...this.#heldNotes.splice(0), ...notes])
   }
 
   /** Gives each of `notes` to the run as a `send` signed by its shell, with its key, as `#give` gives a message; with
@@ -3567,7 +3572,7 @@ export class SessionActor implements LiveCalls {
     if (this.#spec === null) {
       const spec = await this.#ctx.spec(session)
       this.#spec = spec
-      spec.terminal?.onEnded((ended) => this.note(ended.text, ended.key, ended.shell))
+      spec.terminal?.onEnded((ended) => this.note(ended.text, ended.key, ended.shell, { quiet: ended.quiet === true }))
       spec.codex?.onEnded((ended) => this.note(ended.text, ended.key, ended.session))
       spec.claude?.onEnded((ended) => this.note(ended.text, ended.key, ended.session))
       const due = this.#reconcileDue

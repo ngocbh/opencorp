@@ -152,6 +152,112 @@ test("a command that ends while the agent rests starts a new turn with its note"
   expect(message).toMatchObject({ role: "user", author: null, instrument: { id: shell!.id, name: "shell 1" } })
 })
 
+/** The note of the owner, @ngocbh, closing `shell`, with the command it stopped if any. */
+const closedNote = (shell: string, command?: string) =>
+  command === undefined
+    ? `${shell}: closed by @ngocbh.`
+    : `${shell}: closed by @ngocbh while \`${command}\` ran; the command was stopped.`
+
+/** How many times the model's request `n` (from 1) holds `text`. */
+function times(fake: Awaited<ReturnType<typeof fakeLlm>>, n: number, text: string): number {
+  return JSON.stringify(fake.requests()[n - 1]?.messages ?? []).split(JSON.stringify(text).slice(1, -1)).length - 1
+}
+
+/** The owner, @ngocbh, closes session `sid`'s shell named `name`, as the instrument route does. */
+async function ownerCloses(o: ChatOffice, sid: string, name: string): Promise<string> {
+  const shell = o.office.instruments.list(sid).find((i) => i.name === name)!
+  await o.office.instruments.get(sid, shell.id)!.close!("ngocbh")
+  return shell.id
+}
+
+test("the owner's close of a shell never wakes the resting agent: its note goes once, with their next message", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all", 30), { content: "Built." }, { match: closedNote("shell 1"), content: "Noted." }, {
+    content: "Still here.",
+  })
+  const { o, end } = await notesOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  // The command ends while the reply waits on it: its reply carries the end, so no note of it comes.
+  await waitFor(() => o.pipes.commands.length === 1, { what: "the command" })
+  end("make all", 0)
+  await waitFor(() => texts(o, sid).includes("Built.") && status(o, sid) === "idle" && !actor.hasWorker, {
+    what: "the first reply",
+  })
+  const id = await ownerCloses(o, sid, "shell 1")
+  expect(o.office.instruments.list(sid)[0]).toMatchObject({ status: "ended" })
+  // No model call reports the owner's own act: the note waits.
+  await Bun.sleep(300)
+  expect([fake.requests().length, actor.hasWorker, notes(o, sid)]).toEqual([2, false, []])
+  await actor.prompt("what's left?")
+  await waitFor(() => texts(o, sid).includes("Noted.") && status(o, sid) === "idle", { what: "the next turn" })
+  expect(fake.requests()).toHaveLength(3)
+  expect(asked(fake, 3, 'author="shell 1"')).toBe(true)
+  expect(asked(fake, 3, "what's left?")).toBe(true)
+  // The chat shows it as the shell's note, and the shell's record says who closed it.
+  expect(notes(o, sid)).toEqual([closedNote("shell 1")])
+  const message = o.transcript.messages(sid, session(o, sid).run_ids).find((m) => isInstrumentNote(m))
+  expect(message).toMatchObject({ role: "user", author: null, instrument: { id, name: "shell 1" } })
+  const meta = path.join(o.office.paths.sessionDir(sid), "terminal", id, "meta.json")
+  expect(JSON.parse(fs.readFileSync(meta, "utf8"))).toMatchObject({ state: "ended", closedBy: "ngocbh" })
+  // Sent once: the turn after reads it once, in the history.
+  await actor.prompt("and now?")
+  await waitFor(() => texts(o, sid).includes("Still here.") && status(o, sid) === "idle", { what: "the turn after" })
+  expect(times(fake, 4, closedNote("shell 1"))).toBe(1)
+  expect(notes(o, sid)).toEqual([closedNote("shell 1")])
+})
+
+test("the owner's close of a shell while the agent's reply runs reaches it as a steer, naming the command it stopped", async () => {
+  const fake = await fakeLlm()
+  fake.script(
+    run("make all"),
+    run("make docs", 60),
+    { match: closedNote("shell 1", "make all"), content: "Shell 1 is gone." },
+    { match: heading("shell 2", "make docs", 0), content: "Docs built." },
+  )
+  const { o, end } = await notesOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  // The reply waits on make docs when the owner closes make all's shell.
+  await waitFor(() => o.pipes.commands.length === 2, { what: "both commands" })
+  await ownerCloses(o, sid, "shell 1")
+  await waitFor(() => texts(o, sid).includes("Shell 1 is gone.") && status(o, sid) === "idle", { what: "the reply" })
+  expect(fake.requests()).toHaveLength(3)
+  expect(asked(fake, 3, closedNote("shell 1", "make all"))).toBe(true)
+  // It ended the reply's wait on make docs, which runs on; make all got no note of its own.
+  expect(asked(fake, 3, "Your wait ended early")).toBe(true)
+  expect(notes(o, sid)).toEqual([closedNote("shell 1", "make all")])
+  end("make docs", 0)
+  await waitFor(() => texts(o, sid).includes("Docs built.") && status(o, sid) === "idle", { what: "the docs note" })
+  expect(notes(o, sid).map((note) => note.split("\n")[0])).toEqual([
+    closedNote("shell 1", "make all"),
+    heading("shell 2", "make docs", 0),
+  ])
+})
+
+test("a close note held while the agent rests goes once with the next note that wakes it", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all"), run("make docs"), { content: "Started." }, {
+    match: heading("shell 2", "make docs", 0),
+    content: "Read both.",
+  })
+  const { o, end } = await notesOffice(fake)
+  const { actor, sid } = await started(o)
+  await ownerCloses(o, sid, "shell 1")
+  await Bun.sleep(300)
+  expect([fake.requests().length, actor.hasWorker]).toEqual([3, false])
+  // make docs ends: its note wakes the agent, and the close's note goes first, with it.
+  end("make docs", 0)
+  await waitFor(() => texts(o, sid).includes("Read both.") && status(o, sid) === "idle", { what: "the woken turn" })
+  expect(fake.requests()).toHaveLength(4)
+  expect(times(fake, 4, closedNote("shell 1", "make all"))).toBe(1)
+  expect(asked(fake, 4, heading("shell 2", "make docs", 0))).toBe(true)
+  expect(notes(o, sid).map((note) => note.split("\n")[0])).toEqual([
+    closedNote("shell 1", "make all"),
+    heading("shell 2", "make docs", 0),
+  ])
+})
+
 test("two commands that end together send two notes, which one model call reads", async () => {
   const fake = await fakeLlm()
   const both: ScriptedReply = {

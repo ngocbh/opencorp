@@ -39,7 +39,11 @@
  *  shell, the command, its exit and its last lines, fenced, keyed by the shell and the command's number there. None comes when
  *  the agent interrupted the command or closed its shell, when a read or type the agent was waiting on returned the
  *  end, or once the terminal has closed. A note leaves the agent's place in the view where it was. The shell's record
- *  keeps the key of each note owed (`told`), so the host can send a note of it after a restart (`restoredNote`). */
+ *  keeps the key of each note owed (`told`), so the host can send a note of it after a restart (`restoredNote`).
+ *
+ *  **The owner's close** (`ownerClose`) ends a shell as the agent's close does, signed by the owner: the shell's record
+ *  says who closed it, the host gets one quiet note of it, naming the command it stopped, in place of that command's
+ *  note, and a later call on the shell, but a read, is refused with who closed it. */
 import { type Action, type Basis, type Decided, type Permissions, type Where } from "../../runtime/permissions/policy.ts"
 import fs from "node:fs"
 import { SandboxPolicy } from "../../runtime/sandbox/policy.ts"
@@ -80,11 +84,12 @@ export type TerminalProfile = "workspace" | "ssh" | "none"
 
 /** A command the agent was told runs on has ended: its note, as the model reads it, and its shell. `key` names the
  *  command alone (`terminal:<shell id>:<n>`, the nth command the terminal ran in that shell), so a note sent again
- *  is the same note. */
+ *  is the same note. A `quiet` note reports the owner's own act (`ownerClose`): it needn't wake an agent at rest. */
 export interface CommandEnded {
   readonly key: string
   readonly shell: string
   readonly text: string
+  readonly quiet?: boolean
 }
 
 /** What the host binds for one new shell: its id, its record, and where its state and live output go. */
@@ -189,6 +194,8 @@ const NO_EXIT_NOTES: Readonly<Record<string, string>> = {
 }
 const STILL_RUNNING = "No exit yet: the command is still running."
 const SHELL_GONE = "No exit: the shell ended, closed or killed by a signal."
+/** What a call on a shell the owner closed is refused with. */
+const closedRefusal = (by: string) => `@${by} closed this shell; run with no shell to start a new one`
 
 /** One shell of the terminal: listed from the moment it is made, ready once `opened` settles. */
 interface Entry {
@@ -210,6 +217,8 @@ interface Entry {
   waits: number
   /** A command that ended while a read or type waited, and whose note waits on that reply. */
   untold: Running | null
+  /** Who closed the shell from their client (`ownerClose`), once one has. */
+  closedBy: string | null
 }
 
 /** A command the terminal ran: what, when, where its output starts in the view, its number in its shell,
@@ -385,6 +394,37 @@ export class Terminal {
     for (const call of [...this.early]) call.abort()
   }
 
+  /** The owner, `by`, closes shell `id` from their client, as the agent's close does: the shell ends, and so does its
+   *  command. Its record says who closed it, and the host gets one quiet note of it, signed by the shell, which names
+   *  the command it stopped in place of that command's own note. Nothing for a shell still starting, or one that has
+   *  ended. */
+  async ownerClose(id: string, by: string): Promise<void> {
+    const entry = this.entries.find((e) => e.id === id)
+    const shell = entry?.shell
+    if (entry === undefined || shell == null || entry.closedBy !== null) return
+    const { status } = shell.state()
+    if (status === "starting" || status === "ended" || status === "failed") return
+    entry.closedBy = by
+    try {
+      entry.record.closedBy(by)
+    } catch {
+      // meta.json can't be written: the note still says who closed it.
+    }
+    const running = entry.running
+    if (running !== null) this.untell(entry, running)
+    await shell.close()
+    if (this.closed) return
+    const head = `${entry.name}: closed by @${by}`
+    const text = running === null
+      ? `${head}.`
+      : `${head} while \`${oneLine(running.command, NOTE_COMMAND)}\` ran; the command was stopped.`
+    try {
+      this.host.ended?.({ key: `terminal:${entry.id}:${entry.commands}:closed`, shell: entry.name, text, quiet: true })
+    } catch {
+      // The host's notes failed; the shell is closed, and its record says by whom.
+    }
+  }
+
   /** Whether the host tells the session when a command whose reply said it runs on ends. */
   private get notes(): boolean {
     return this.host.ended !== undefined
@@ -429,6 +469,9 @@ export class Terminal {
       const entry = this.find(parsed.shell)
       if (entry === undefined) return refusalText(this.unknown(parsed.shell))
       return await this.queue(entry, async (shell): Promise<unknown> => {
+        if (entry.closedBy !== null && parsed.tool !== "read") {
+          return this.text(entry, shell, shell.refusal(closedRefusal(entry.closedBy)))
+        }
         switch (parsed.tool) {
           case "type":
             return await this.waiting(entry, () => this.type(entry, shell, parsed, call))
@@ -469,7 +512,7 @@ export class Terminal {
       const entry = this.find(parsed.shell)
       if (entry === undefined) return refusalText(this.unknown(parsed.shell))
       return await this.queue(entry, async (shell) => {
-        const problem = shell.runProblem(command)
+        const problem = entry.closedBy !== null ? closedRefusal(entry.closedBy) : shell.runProblem(command)
         if (problem !== null) return this.text(entry, shell, shell.refusal(problem))
         // The folder the gate reads relative paths from: its decision holds only there.
         const moved = this.movedRun(call.decided, parsed, entry.name, this.where(entry.id).cwd)
@@ -690,7 +733,7 @@ export class Terminal {
     }
     const entry: Entry = {
       id: binding.id, name, opened, record: binding.record, shell: null, queue: Promise.resolve(), running: null,
-      noExit: null, commands: 0, waits: 0, untold: null,
+      noExit: null, commands: 0, waits: 0, untold: null, closedBy: null,
     }
     made = entry
     this.entries.push(entry)

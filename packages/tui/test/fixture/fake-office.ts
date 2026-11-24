@@ -857,11 +857,11 @@ export function createFakeOffice(
     outputs.delete(id)
     live({ type: "instrument.removed", session_id: sessionId, data: { id, session_id: sessionId } })
   }
-  /** As the office's guard: only the session's approver (its opener, else the CEO) may type or resize, then the
-   *  instrument must be listed; the body is checked after. */
-  function approverOnly(sessionId: string, id: string, actor: string) {
+  /** As the office's guard: only the session's approver (its opener, else the CEO) may type, resize or close (`what`),
+   *  then the instrument must be listed; the body is checked after. */
+  function approverOnly(sessionId: string, id: string, actor: string, what = "type into or resize") {
     const approver = session(sessionId).opened_by ?? ceo()
-    if (actor !== approver) throw fail(403, "forbidden", `only @${approver} may type into or resize this session's shells`)
+    if (actor !== approver) throw fail(403, "forbidden", `only @${approver} may ${what} this session's shells`)
     return instrument(sessionId, id)
   }
   /** The office's 409 for a shell still starting, or one that ended or failed: it takes no keys or size. */
@@ -877,6 +877,13 @@ export function createFakeOffice(
     running(found)
     if (!found.interactive && parsed.data!.data !== "\x03")
       throw fail(409, "not_interactive", "this shell takes no keys but Ctrl-C, which interrupts its command")
+  }
+  /** The office's close: the shell ends, signed by the approver; only a shell closes. */
+  function closeShell(sessionId: string, id: string, actor: string) {
+    const found = approverOnly(sessionId, id, actor, "close")
+    running(found)
+    if (found.kind !== "terminal") throw fail(409, "not_supported", "this instrument can't be closed from a client")
+    addInstrument(sessionId, { ...found, status: "ended", command: null, updated_at: now() })
   }
   /** The office's resize: the PTY takes it, and the instrument says so. */
   function instrumentSize(sessionId: string, id: string, body: unknown, actor: string) {
@@ -1209,6 +1216,14 @@ export function createFakeOffice(
       "/sessions/:id/instruments/:iid/size",
       ({ params, body, actor }) => {
         instrumentSize(params.id, params.iid, body, actor)
+        return Response.json({ ok: true })
+      },
+    ],
+    [
+      "POST",
+      "/sessions/:id/instruments/:iid/close",
+      ({ params, actor }) => {
+        closeShell(params.id, params.iid, actor)
         return Response.json({ ok: true })
       },
     ],

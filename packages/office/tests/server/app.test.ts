@@ -121,6 +121,7 @@ const TABLE: [string, string, string, unknown][] = [
   ["GET", "/sessions/:id/instruments/:iid/screen", `/sessions/${ULID}/instruments/${ULID}/screen`, null],
   ["POST", "/sessions/:id/instruments/:iid/keys", `/sessions/${ULID}/instruments/${ULID}/keys`, { data: "ls\r" }],
   ["POST", "/sessions/:id/instruments/:iid/size", `/sessions/${ULID}/instruments/${ULID}/size`, { cols: 80, rows: 24 }],
+  ["POST", "/sessions/:id/instruments/:iid/close", `/sessions/${ULID}/instruments/${ULID}/close`, null],
   ["GET", "/work-items/:id", `/work-items/${ULID}`, null],
   ["GET", "/work-items/:id/comments", `/work-items/${ULID}/comments`, null],
   ["GET", "/questions", "/questions", null],

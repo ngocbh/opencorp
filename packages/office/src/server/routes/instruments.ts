@@ -1,6 +1,6 @@
 /** Instrument routes: a session's live instruments, an instrument's screen for a client joining late, and the
- *  approver's keys and size for a shell. Anyone who may read the session may watch them; only its approver may type
- *  or resize, so other people's clients never fight over a shell's size.
+ *  approver's keys, size and close for a shell. Anyone who may read the session may watch them; only its approver may
+ *  type, resize or close, so other people's clients never fight over a shell's size.
  *
  *  The keys' body is never logged, recorded or kept: it goes straight to the instrument, and the pipeline logs no
  *  request body. A refused request is refused in the guard, before a byte of it is read. */
@@ -55,14 +55,15 @@ export function instrumentRoutes<C extends InstrumentsRequest>(of: (ctx: C) => I
     return found
   }
 
-  /** Refuses 403 `forbidden` unless the request's person is the session's approver (on the office, its opener, else
-   *  the CEO at its pinned commit); then 404 unless the session lists the instrument. */
-  const onlyApprover = async (ctx: C, params: Params): Promise<void> => {
+  /** A guard that refuses 403 `forbidden` unless the request's person is the session's approver (on the office, its
+   *  opener, else the CEO at its pinned commit), whom only `what` (`type into or resize`) names; then 404 unless the
+   *  session lists the instrument. */
+  const onlyApprover = (what: string) => async (ctx: C, params: Params): Promise<void> => {
     const host = of(ctx)
     const approver = await host.approver(stored(host, params.id!))
-    if (approver === null) throw new HttpError(403, "forbidden", "nobody may type into this session's shells")
+    if (approver === null) throw new HttpError(403, "forbidden", `nobody may ${what} this session's shells`)
     if (actingPerson(ctx) !== approver) {
-      throw new HttpError(403, "forbidden", `only @${approver} may type into or resize this session's shells`)
+      throw new HttpError(403, "forbidden", `only @${approver} may ${what} this session's shells`)
     }
     live(host, params)
   }
@@ -95,6 +96,19 @@ export function instrumentRoutes<C extends InstrumentsRequest>(of: (ctx: C) => I
     return { ok: true }
   }
 
+  /** The approver's close: the shell ends as the agent's close ends it, signed by them, and the agent is told. A shell
+   *  still starting, or one that ended, is 409 `not_live`; an instrument its host doesn't let the owner close (a
+   *  Codex session, OpenCorp's own connection shell) is 409 `not_supported`. */
+  const close = async (ctx: C, params: Params) => {
+    const instrument = live(of(ctx), params)
+    running(instrument)
+    if (instrument.close === undefined) {
+      throw new HttpError(409, "not_supported", "this instrument can't be closed from a client")
+    }
+    await instrument.close(actingPerson(ctx))
+    return { ok: true }
+  }
+
   /** The approver's view's size, which the shell's PTY takes and every other viewer draws at. */
   const resize = (ctx: C, params: Params, body: unknown) => {
     const { cols, rows } = body as z.output<typeof InstrumentSizeRequest>
@@ -113,7 +127,7 @@ export function instrumentRoutes<C extends InstrumentsRequest>(of: (ctx: C) => I
     {
       method: "POST",
       path: "/sessions/:id/instruments/:iid/keys",
-      guard: onlyApprover,
+      guard: onlyApprover("type into or resize"),
       body: InstrumentKeysRequest,
       reply: Ack,
       handler: keys,
@@ -121,10 +135,17 @@ export function instrumentRoutes<C extends InstrumentsRequest>(of: (ctx: C) => I
     {
       method: "POST",
       path: "/sessions/:id/instruments/:iid/size",
-      guard: onlyApprover,
+      guard: onlyApprover("type into or resize"),
       body: InstrumentSizeRequest,
       reply: Ack,
       handler: resize,
+    },
+    {
+      method: "POST",
+      path: "/sessions/:id/instruments/:iid/close",
+      guard: onlyApprover("close"),
+      reply: Ack,
+      handler: close,
     },
   ]
 }

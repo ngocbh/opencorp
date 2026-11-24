@@ -461,6 +461,7 @@ export class LocalHost {
             profile: terminal.profile,
             interactive: terminal.interactive,
             shell: () => terminal.shell(id),
+            close: (by) => terminal.ownerClose(id, by),
           })
           this.#list(listing)
         }

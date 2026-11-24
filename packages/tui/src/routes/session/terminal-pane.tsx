@@ -41,6 +41,15 @@ const RETRY_MAX_MS = 5000
 /** What comes while a screen loads, kept in order: an `instrument.output` event, or the instrument's new size. */
 type Held = { type: "output"; event: InstrumentOutput } | { type: "resize"; size: TerminalSize }
 
+const seen = new WeakMap<object, Map<string, number>>()
+/** How far the owner has seen each instrument's output in a view of it, by id: the offset just past the last byte a
+ *  view drew. One store per renderer, kept as long as the TUI runs, so closing the pane forgets nothing. */
+export function seenOutput(renderer: object): Map<string, number> {
+  let store = seen.get(renderer)
+  if (!store) seen.set(renderer, (store = new Map()))
+  return store
+}
+
 /**
  * Follows instrument `instrumentID`'s raw output as the office serves it: `screen` gets the bytes it still holds,
  * with the offset they start at, on open and again after a gap; then `output` gets each `instrument.output` event's
@@ -57,8 +66,10 @@ export function followOutput(opts: {
   failed: (message: string | undefined) => void
 }) {
   const office = useOffice()
+  const shown = seenOutput(useRenderer())
   // The offset of the first byte this view doesn't have.
   let have = 0
+  const saw = () => shown.set(opts.instrumentID, Math.max(shown.get(opts.instrumentID) ?? 0, have))
   // While a screen read is wanted, events wait in `held`; a read is in flight, or waits out a failure.
   let loading = true
   let reading = false
@@ -79,6 +90,7 @@ export function followOutput(opts: {
     if (start >= data.length) return
     have = event.offset + data.length
     opts.output(data.subarray(start))
+    saw()
   }
 
   const take = (item: Held) => {
@@ -107,6 +119,7 @@ export function followOutput(opts: {
         if (dropped) return load()
         have = screen.end
         opts.screen(Buffer.from(screen.data, "base64"), screen.offset)
+        saw()
         opts.failed(undefined)
         loading = false
         while (!disposed && !loading && held.length > 0) apply(held.shift()!)

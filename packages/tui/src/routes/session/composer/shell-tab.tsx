@@ -7,10 +7,12 @@ import { useOffice } from "../../../context/office"
 import { selectedForeground, useTheme } from "../../../context/theme"
 import { useBindings, useCommandShortcut } from "../../../keymap"
 import { useTuiConfig } from "../../../config"
+import { DialogConfirm } from "../../../ui/dialog-confirm"
+import { useDialog } from "../../../ui/dialog"
 import { useToast } from "../../../ui/toast"
 import { errorMessage } from "../../../util/error"
 import { display } from "../../../util/printable"
-import { LIVE } from "../terminal-pane"
+import { seenOutput } from "../terminal-pane"
 import { useComposerTab } from "./context"
 import { filterMemory, shellRunning } from "./tabs"
 
@@ -25,9 +27,14 @@ const STATUS: Record<Instrument["status"], string> = {
 
 const useFilter = filterMemory()
 
+/** Whether `shell` runs a command ctrl+d can stop: one starting takes no keys yet. */
+const stoppable = (shell: Instrument) => shell.status === "running" || shell.status === "waiting"
+
 /**
  * The picker's Shell tab: the chat's shells, each by its name and the command it runs. Enter opens one in the right
- * pane, whose row is then marked; ctrl+d sends it Ctrl-C, the office's one way to stop its command.
+ * pane, whose row is then marked. ctrl+d sends a running shell Ctrl-C, the office's one way to stop its command, and
+ * closes an idle one, asking first when it has output the owner hasn't seen in a view of it. ctrl+d leaves an ended
+ * shell alone: it is the record of what ran.
  */
 export function ShellTab(props: {
   sessionID: string
@@ -40,10 +47,12 @@ export function ShellTab(props: {
   const composer = useComposerTab()
   const tuiConfig = useTuiConfig()
   const toast = useToast()
+  const dialog = useDialog()
+  const renderer = useRenderer()
   const selectKey = useCommandShortcut("composer.shell.select")
   const killKey = useCommandShortcut("composer.shell.kill")
   const toggleKey = useCommandShortcut("composer.shell.toggle-activity")
-  const [filter, setFilter] = useFilter(useRenderer())
+  const [filter, setFilter] = useFilter(renderer)
 
   const entries = createMemo(() => props.shells.filter((shell) => filter().active === shellRunning(shell)))
 
@@ -57,6 +66,21 @@ export function ShellTab(props: {
     if (!entry) return
     composer.close()
     props.onOpen(entry.id)
+  }
+
+  /** Closes idle `shell`; first, when it printed output the owner hasn't seen, asks them. Its screen's end, which can't
+   *  be read, counts as unseen. */
+  const close = async (shell: Instrument) => {
+    const unread = await office.client.sessions.instrumentScreen(props.sessionID, shell.id).then(
+      (screen) => screen.end > (seenOutput(renderer).get(shell.id) ?? 0),
+      () => true,
+    )
+    if (unread) {
+      const name = display(shell.name)
+      const sure = await DialogConfirm.show(dialog, `Close ${name}?`, "It has output you haven't read.")
+      if (!sure) return
+    }
+    await office.client.sessions.closeShell(props.sessionID, shell.id)
   }
 
   createEffect(() => {
@@ -80,9 +104,8 @@ export function ShellTab(props: {
       label: "Shell",
       hints: () => [
         ...(selectedEntry() ? [{ label: "open", shortcut: selectKey() }] : []),
-        ...(selectedEntry() && LIVE.includes(selectedEntry()!.status)
-          ? [{ label: "interrupt", shortcut: killKey() }]
-          : []),
+        ...(selectedEntry()?.status === "idle" ? [{ label: "close", shortcut: killKey() }] : []),
+        ...(selectedEntry() && stoppable(selectedEntry()!) ? [{ label: "interrupt", shortcut: killKey() }] : []),
         { label: `show ${filter().active ? "inactive" : "active"}`, shortcut: toggleKey() },
       ],
     })
@@ -134,14 +157,14 @@ export function ShellTab(props: {
       },
       {
         name: "composer.shell.kill",
-        title: "Send the shell Ctrl-C",
+        title: "Send the shell Ctrl-C, or close it when idle",
         category: "Composer",
         run() {
           const entry = selectedEntry()
-          if (!entry || !LIVE.includes(entry.status)) return
-          office.client.sessions
-            .keys(props.sessionID, entry.id, { data: "\x03" })
-            .catch((error) => toast.show({ message: errorMessage(error), variant: "error" }))
+          const failed = (error: unknown) => toast.show({ message: errorMessage(error), variant: "error" })
+          if (entry?.status === "idle") return void close(entry).catch(failed)
+          if (!entry || !stoppable(entry)) return
+          office.client.sessions.keys(props.sessionID, entry.id, { data: "\x03" }).catch(failed)
         },
       },
     ],

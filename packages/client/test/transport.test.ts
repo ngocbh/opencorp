@@ -267,6 +267,8 @@ const GUARDED: [string, (c: Client, bad: string) => Promise<unknown>, (bad: stri
   ["sessions.keys (instrument)", (c, b) => c.sessions.keys("S1", b, body), (b) => `no instrument ${b}`],
   ["sessions.resize", (c, b) => c.sessions.resize(b, "I1", body), (b) => `no session ${b}`],
   ["sessions.resize (instrument)", (c, b) => c.sessions.resize("S1", b, body), (b) => `no instrument ${b}`],
+  ["sessions.closeShell", (c, b) => c.sessions.closeShell(b, "I1"), (b) => `no session ${b}`],
+  ["sessions.closeShell (instrument)", (c, b) => c.sessions.closeShell("S1", b), (b) => `no instrument ${b}`],
   ["questions.get", (c, b) => c.questions.get(b), (b) => `no question ${b}`],
   ["questions.answer", (c, b) => c.questions.answer(b, body), (b) => `no question ${b}`],
   ["questions.side", (c, b) => c.questions.side(b, body), (b) => `no question ${b}`],
@@ -369,17 +371,19 @@ test("ids a path segment can carry are sent, encoded", async () => {
   ])
 })
 
-test("a session's instruments, an instrument's screen, and the owner's keys and size go to the instrument's routes", async () => {
+test("a session's instruments, an instrument's screen, and the owner's keys, size and close go to the instrument's routes", async () => {
   const { client, seen } = socketClient()
   await client.sessions.instruments("S1")
   await client.sessions.instrumentScreen("S1", "I1")
   await client.sessions.keys("S1", "I1", { data: "\u0003" })
   await client.sessions.resize("S1", "I1", { cols: 120, rows: 40 })
+  await client.sessions.closeShell("S1", "I1")
   expect(seen.map((r) => [r.method, r.path, r.body])).toEqual([
     ["GET", "/sessions/S1/instruments", ""],
     ["GET", "/sessions/S1/instruments/I1/screen", ""],
     ["POST", "/sessions/S1/instruments/I1/keys", JSON.stringify({ data: "\u0003" })],
     ["POST", "/sessions/S1/instruments/I1/size", JSON.stringify({ cols: 120, rows: 40 })],
+    ["POST", "/sessions/S1/instruments/I1/close", ""],
   ])
 })
 

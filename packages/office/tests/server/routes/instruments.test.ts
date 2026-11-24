@@ -1,4 +1,5 @@
-/** Instrument routes: a session's live instruments, a shell's screen for a late join, and the approver's keys and size.
+/** Instrument routes: a session's live instruments, a shell's screen for a late join, and the approver's keys, size and
+ *  close.
  *  Each test opens its own shell on a plain PTY (or a pipes shell on a stand-in call) and adds it to the office's
  *  registry, as a terminal's host does; no route opens one. */
 import fs from "node:fs"
@@ -47,13 +48,15 @@ function folder(): string {
 }
 
 /** What a terminal's host adds for `shell()`, a shell of session `sessionId` that may not be open yet: its state as the
- *  shell has it, the owner's keys and Ctrl-C through `ownerKeys`, and the size it was last given. */
+ *  shell has it, the owner's keys and Ctrl-C through `ownerKeys`, the size it was last given, and the owner's close,
+ *  whose closer `closedBy` gets. */
 function hosted(
   sessionId: string,
   id: string,
   shell: () => PtyShell | PipeShell | undefined,
   size: { cols: number; rows: number } | null,
-): LiveInstrument {
+  closedBy: string[] = [],
+): LiveInstrument & { close(by: string): Promise<void> } {
   const created = now()
   return {
     id,
@@ -83,6 +86,10 @@ function hosted(
       size = { cols, rows }
       const pty = shell()
       if (pty instanceof PtyShell) pty.resize(cols, rows)
+    },
+    close: async (by) => {
+      closedBy.push(by)
+      await shell()?.close()
     },
   }
 }
@@ -143,7 +150,8 @@ function pipesShell(office: Office, sessionId: string) {
       })
     })
   let shell: PipeShell | undefined
-  office.instruments.add(sessionId, hosted(sessionId, id, () => shell, null))
+  const closedBy: string[] = []
+  office.instruments.add(sessionId, hosted(sessionId, id, () => shell, null, closedBy))
   shell = PipeShell.open(id, "shell 1", {
     run,
     record: rec,
@@ -152,7 +160,7 @@ function pipesShell(office: Office, sessionId: string) {
     output: (chunk) => office.instruments.output(sessionId, id, chunk),
   })
   onTestFinished(() => shell?.close())
-  return { shell, id, print: (text: string) => print(text) }
+  return { shell, id, print: (text: string) => print(text), closedBy }
 }
 
 /** A fake ssh in a short folder of its own, removed when the test finishes. */
@@ -323,6 +331,36 @@ test("a pipes shell takes the owner's Ctrl-C as an interrupt, and refuses other 
   const read = await pipes.shell.read({ waitMs: 5000 })
   expect(read).toMatchObject({ status: "idle", exit: null })
   expect(read.output).toStartWith("after the agent's read\n")
+})
+
+test("only the approver closes a shell, as themselves; one starting or ended is 409, and an instrument with no close is 409", async () => {
+  const t = await office()
+  // A chat's opener closes its shells, even over the CEO.
+  const s = t.office.store.createSession(session({ opened_by: "ava" }))
+  const pipes = pipesShell(t.office, s.id)
+  const close = `/sessions/${s.id}/instruments/${pipes.id}/close`
+  const closing = (headers: Record<string, string>) => request(t.sock, "POST", close, { headers })
+  expect(errorOf(await closing(t.ceo))).toEqual([403, "forbidden"])
+  expect((await closing(t.ceo)).json()).toMatchObject({ message: "only @ava may close this session's shells" })
+  expect(errorOf(await closing({}))).toEqual([401, "unauthenticated"])
+  expect([pipes.closedBy, pipes.shell.state().status]).toEqual([[], "idle"])
+  expect((await closing(t.ava)).json()).toEqual({ ok: true })
+  expect([pipes.closedBy, pipes.shell.state().status]).toEqual([["ava"], "ended"])
+  // An ended one stays listed, and takes no second close.
+  expect(errorOf(await closing(t.ava))).toEqual([409, "not_live"])
+  expect(pipes.closedBy).toEqual(["ava"])
+  // One still starting, and one its host can't close, as OpenCorp's own connection shell.
+  const starting = newId()
+  t.office.instruments.add(s.id, hosted(s.id, starting, () => undefined, null))
+  let r = await request(t.sock, "POST", `/sessions/${s.id}/instruments/${starting}/close`, { headers: t.ava })
+  expect(errorOf(r)).toEqual([409, "not_live"])
+  const other = pipesShell(t.office, s.id)
+  const { close: _, ...unclosable } = hosted(s.id, newId(), () => other.shell, null)
+  t.office.instruments.add(s.id, unclosable)
+  r = await request(t.sock, "POST", `/sessions/${s.id}/instruments/${unclosable.id}/close`, { headers: t.ava })
+  expect(errorOf(r)).toEqual([409, "not_supported"])
+  r = await request(t.sock, "POST", `/sessions/${s.id}/instruments/${newId()}/close`, { headers: t.ava })
+  expect(errorOf(r)).toEqual([404, "not_found"])
 })
 
 test("only the approver resizes a shell, and the instrument carries its new size", async () => {
