@@ -478,7 +478,7 @@ test("the chat's own keys do nothing while a shell has the keys, and work again 
     const shell = add(office, sid)
     await listed(app, 1)
     let f = await openShell(app)
-    f = await app.until((f) => f.includes("ctrl+x o full screen"))
+    f = await app.until((f) => f.includes("ctrl+x f full screen"))
     const chat = (f: string) => rows(f).map((r) => r.slice(0, 60))
     const before = chat(f)
     // PageUp doesn't scroll the chat, Shift+Tab doesn't switch its mode: both go to the shell.
@@ -516,7 +516,7 @@ test("the approver's view sends its size on open and on a resize; it draws at th
     await until(() => sizes(office, shell.id).length === 2)
     expect(sizes(office, shell.id)[1]).toEqual({ cols: 66, rows: 26 })
     // Full screen is the screen's width.
-    await leader(app, "o")
+    await leader(app, "f")
     await until(() => sizes(office, shell.id).length === 3)
     expect(sizes(office, shell.id)[2]).toEqual({ cols: 136, rows: 26 })
 
@@ -540,10 +540,10 @@ test("a view that isn't the approver's only follows the instrument's size", asyn
     await listed(app, 1)
     await openShell(app)
     await until(() => sizes(office, shell.id).length === 1)
-    await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o split"))
-    await leader(app, "o")
-    await app.until((f) => f.includes("ctrl+x o full screen"))
+    await leader(app, "f")
+    await app.until((f) => f.includes("ctrl+x f split"))
+    await leader(app, "f")
+    await app.until((f) => f.includes("ctrl+x f full screen"))
     await Bun.sleep(100)
     // The office refused the first; it sent no more.
     expect(sizes(office, shell.id)).toHaveLength(1)
@@ -665,14 +665,14 @@ test("Ctrl-C in an open shell goes to its command, not to the chat", async () =>
   }
 })
 
-test("Esc and ctrl+o in a focused shell go to the shell; ctrl+x o shows it full screen and back, and ctrl+x ↑ closes it", async () => {
+test("Esc and ctrl+o in a focused shell go to the shell; ctrl+x f shows it full screen and back, and ctrl+x ↑ closes it", async () => {
   const { office, sid, app } = await boot()
   try {
     const shell = add(office, sid, { command: "vim notes.txt" })
     office.updateSession(sid, { status: "busy" })
     await app.until((f) => f.includes("esc interrupt") && f.includes("↓ 1 shell"))
     await openShell(app)
-    await app.until((f) => f.includes("ctrl+x o full screen"))
+    await app.until((f) => f.includes("ctrl+x f full screen"))
     await escape(app)
     app.input.pressKey("o", { ctrl: true })
     await until(() => typed(office, shell.id).join("") === "\x1b\x0f")
@@ -680,11 +680,11 @@ test("Esc and ctrl+o in a focused shell go to the shell; ctrl+x o shows it full 
     expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
     expect(office.requests.some((r) => r.path.endsWith("/interrupt"))).toBe(false)
 
-    await leader(app, "o")
-    f = await app.until((f) => f.includes("ctrl+x o split"))
+    await leader(app, "f")
+    f = await app.until((f) => f.includes("ctrl+x f split"))
     expect(corner(f)).toEqual({ x: 0, y: 0, right: 119 })
-    await leader(app, "o")
-    f = await app.until((f) => f.includes("ctrl+x o full screen"))
+    await leader(app, "f")
+    f = await app.until((f) => f.includes("ctrl+x f full screen"))
     expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
     await leaderArrow(app, "up")
     await app.until((f) => !f.includes("┌"))
@@ -766,7 +766,7 @@ test("the owner's keys go out batched, as typed, and the TUI adds none of them t
   }
 })
 
-test("<leader>o on an approval card for a terminal command opens its shell beside the card", async () => {
+test("<leader>f on an approval card for a terminal command opens its shell beside the card", async () => {
   const { office, sid, app } = await boot()
   try {
     const shell = add(office, sid, { name: "shell 1", command: "tail -f build.log" })
@@ -783,7 +783,7 @@ test("<leader>o on an approval card for a terminal command opens its shell besid
       rules: [],
     })
     await app.until((f) => f.includes("make deploy") && f.includes("enter confirm"))
-    await leader(app, "o")
+    await leader(app, "f")
     // A split beside the card, which keeps the keys.
     let f = await app.until((f) => f.includes("waiting for input") && f.includes("┌"))
     expect(corner(f)).toEqual({ x: 60, y: 0, right: 119 })
@@ -929,8 +929,8 @@ test("a shell's view sends nothing once it is closed, its terminal's focus repor
     office.instrumentOutput(sid, shell.id, "\x1b[?1004hediting")
     await listed(app, 1)
     await openShell(app)
-    await leader(app, "o")
-    await app.until((f) => f.includes("editing") && f.includes("ctrl+x o split"))
+    await leader(app, "f")
+    await app.until((f) => f.includes("editing") && f.includes("ctrl+x f split"))
     app.input.typeText("i")
     await until(() => typed(office, shell.id).join("") === "i")
     await leaderArrow(app, "up")

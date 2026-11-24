@@ -19,7 +19,7 @@ them.
 | ctrl+x ← and ctrl+x →, or a click | Move your keys between the chat and the pane, or show a pane that waits |
 | ctrl+x ↑ | Close the pane; Esc does too when it takes no typing |
 | ctrl+x ↓ | Open the picker again |
-| ctrl+x o | Show the pane full screen, or beside the chat again; the next pane opens the same way. On a card for a command in a shell, with no pane open, open that shell beside the card |
+| ctrl+x f | Show the pane full screen, or beside the chat again; the next pane opens the same way. On a card for a command in a shell, with no pane open, open that shell beside the card |
 
 Drag the line between the chat and the pane to resize it, or double-click it to go back to half. One width, kept,
 serves every pane. Under 108 columns the pane is full screen while it has your keys; without them it waits rather
@@ -55,8 +55,7 @@ while a command runs), and a missing `.mcp.json` can still be created.
   `$` lines in their colour. A shell waiting for your password opens itself, with your keys unless you are typing a
   draft or a card is open; then press ctrl+x → to type the password there. Esc in the chat stops your employee and
   the command they were waiting on. A command they were told is still running goes on. A message you send while they
-  wait shows `unread`, its border grey, until they read it before their next step; Esc stops them, and they read it
-  next.
+  wait has a grey border until they read it before their next step; Esc stops them, and they read it next.
 - **The picker.** ← and → switch its tabs (Sessions, Shell), ↑ and ↓ move, Enter opens in the pane, and Esc or ↑ on
   the first row closes it. It opens on the first tab with something running. Sessions lists the live sessions,
   running or idle, and Shell the shells that run; ctrl+a shows the rest, and stays as you set it until you quit.
@@ -126,10 +125,10 @@ it lists claude.
   A chat has at most four live sessions of each harness.
 - **Drafts.** Each chat and session keeps its own unsent text, so what you type in one never shows in another.
 - **Codex's cards.** What Codex asks you shows as a card in its session and in your employee's chat, above the prompt
-  and after the chat's own cards. The card or the prompt has your keys, and ctrl+t moves them, to the chat's own card
-  when one waits behind it; a card that opens while you answer another waits its turn. If a card closes unanswered
-  while you type into it (Codex stopped waiting, say), the rest of your line is dropped until Enter. Esc on the card
-  stops the session's turn.
+  and after the chat's own cards; in the chat it says which session asks (`codex 1 asks`). The card or the prompt has
+  your keys, and ctrl+t moves them, to the chat's own card when one waits behind it; a card that opens while you
+  answer another waits its turn. If a card closes unanswered while you type into it (Codex stopped waiting, say), the
+  rest of your line is dropped until Enter. Esc on the card stops the session's turn.
 - **Waits and notes.** Starting a session or sending it a message replies within 5 seconds, unless your employee asks
   to wait longer (at most two minutes), and a message ends the wait as it ends a command's. The harness works on,
   and when a turn your employee was told is still running ends, they get a note from its session (signed `codex 1`

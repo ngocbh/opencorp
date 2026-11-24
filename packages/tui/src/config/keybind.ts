@@ -166,7 +166,7 @@ export const Definitions = {
   "pane.focus.right": keybind("<leader>right", "Give the pane the keys"),
   "pane.select": keybind("<leader>down", "Open the picker of the chat's sessions and shells"),
   "pane.close": keybind("<leader>up", "Close the pane"),
-  "pane.fullscreen": keybind("<leader>o", "Show the pane full screen, or beside the chat"),
+  "pane.fullscreen": keybind("<leader>f", "Show the pane full screen, or beside the chat"),
   "pane.dismiss": keybind("escape", "Close a pane that takes no typing"),
 
   "composer.subagent.up": keybind("up", "Previous session in the picker"),

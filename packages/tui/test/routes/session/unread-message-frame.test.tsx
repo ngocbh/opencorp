@@ -1,5 +1,5 @@
-// A message the employee's run hasn't read yet: its left border grey, as upstream greys a pending delivery's, and a
-// muted line saying it is unread and what Esc does; once the run reads it, it looks like any other message.
+// A message the employee's run hasn't read yet: its left border grey, as upstream greys a pending delivery's, with no
+// line under it; once the run reads it, it looks like any other message.
 import type { LiveEvent, Message, Session } from "@opencorp/protocol"
 import type { CapturedLine } from "@opentui/core"
 import { expect, test } from "bun:test"
@@ -9,7 +9,6 @@ import { bootFrame } from "../../fixture/frame"
 
 const AT = "2026-11-23T10:00:00.000Z"
 const theme = resolveTheme(DEFAULT_THEMES[DEFAULT_THEME]!, "dark")
-const HINT = "unread · esc to interrupt so it's read now"
 
 /** A message of session `sid` from the owner (a user message) or the employee. */
 function message(sid: string, id: string, role: "user" | "assistant", text: string, unread = false): Message {
@@ -46,43 +45,46 @@ function border(lines: CapturedLine[], needle: string) {
   return line.spans.find((span) => span.text.includes("┃"))?.fg
 }
 
-test("an unread message has a grey border and says so with what Esc does, and looks as any other once read", async () => {
+/** The rows of `frame` from the one showing `text` to the end of its message's box: the row whose left border ends. */
+function messageRows(frame: string, text: string) {
+  const rows = frame.split("\n")
+  const start = rows.findIndex((r) => r.includes(text))
+  const end = rows.findIndex((r, y) => y > start && !r.includes("┃"))
+  return rows.slice(start, end)
+}
+
+test("an unread message has a grey border and nothing under its text, and looks as any other once read", async () => {
   const { office, app, s, steer } = await boot("busy")
   try {
-    // The hint names Esc once the session's status reaches the view, which may be a frame after the message.
-    const f = await app.until((f) => f.includes(HINT))
-    // The hint is under its own message only.
-    const rows = f.split("\n")
-    expect(rows.findIndex((r) => r.includes(HINT))).toBe(rows.findIndex((r) => r.includes("Also mention Rome.")) + 1)
-    expect(rows.filter((r) => r.includes("unread"))).toHaveLength(1)
+    // The session's status reaches the view a frame after the message.
+    const f = await app.until((f) => f.includes("Also mention Rome.") && f.includes("@minh · busy"))
+    // Its box holds its text and nothing else: no hint line.
+    expect(messageRows(f, "Also mention Rome.").slice(1).every((r) => r.replace("┃", "").trim() === "")).toBe(true)
+    expect(f).not.toContain("unread")
+    expect(f).not.toContain("esc to interrupt so")
     const spans = app.setup.captureSpans().lines
     expect(border(spans, "Also mention Rome.")).toEqual(theme.border)
     expect(border(spans, "Plan the trip.")).toEqual(theme.secondary)
-    // Its text keeps the text colour; the hint is muted.
+    // Its text keeps the text colour.
     const fg = (needle: string) =>
       spans.flatMap((line) => line.spans).find((span) => span.text.includes(needle))?.fg
     expect(fg("Also mention Rome.")).toEqual(theme.text)
-    expect(fg("unread")).toEqual(theme.textMuted)
     // The run reads it: the office sends it again, read, under its id.
     const read = { ...steer, unread: false } as unknown as LiveEvent["data"]
     office.live({ type: "message.updated", session_id: s.id, data: read })
-    const after = await app.until((f) => !f.includes("unread"))
-    expect(after).toContain("Also mention Rome.")
-    expect(border(app.setup.captureSpans().lines, "Also mention Rome.")).toEqual(theme.secondary)
+    await app.until(() => border(app.setup.captureSpans().lines, "Also mention Rome.")?.equals(theme.secondary) === true)
+    expect(messageRows(app.frame(), "Also mention Rome.")).toEqual(messageRows(f, "Also mention Rome."))
   } finally {
     await app.stop()
     office.stop()
   }
 })
 
-test("an unread message names no key while Esc can't stop anything: over the cost cap it waits for a raise", async () => {
+test("over the cost cap an unread message is grey too, with nothing under it", async () => {
   const { office, app } = await boot("waiting", { capped: true })
   try {
-    // The header's status proves the capped session reached the view: before it, no hint names a key either.
     const f = await app.until((f) => f.includes("cost cap reached") && f.includes("Also mention Rome."))
-    const rows = f.split("\n")
-    expect(rows[rows.findIndex((r) => r.includes("Also mention Rome.")) + 1]).toMatch(/┃\s+unread\s*$/)
-    expect(f).not.toContain("esc to interrupt so")
+    expect(f).not.toContain("unread")
     expect(border(app.setup.captureSpans().lines, "Also mention Rome.")).toEqual(theme.border)
   } finally {
     await app.stop()

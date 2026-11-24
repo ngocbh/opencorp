@@ -472,7 +472,7 @@ test("ctrl+d interrupts a running session, and sends a running shell Ctrl-C; Ent
     await app.setup.renderOnce()
     app.input.pressEnter()
     const f = await app.until((f) => pane(f).includes("@minh is driving · shell 1 · running · make step1"))
-    expect(pane(f)).toContain("ctrl+x o full screen")
+    expect(pane(f)).toContain("ctrl+x f full screen")
   } finally {
     await app.stop()
     fake.stop()

@@ -1,3 +1,7 @@
+import type { Instrument, Person, Session } from "@opencorp/protocol"
+import { display } from "./printable"
+import { personLabel } from "./transcript"
+
 type SessionNode = {
   id: string
   /** The session this one is a child of: the chat that drives it. */
@@ -43,4 +47,34 @@ export function sessionFamily<T extends SessionNode>(sessions: readonly T[], ses
   }
 
   return walk(root(current).id, [])
+}
+
+/** What a session that isn't one of a chat's instruments is, by its kind. */
+const KIND_NAME: Record<Exclude<Session["kind"], "instrument">, string> = {
+  main: "chat",
+  side: "side chat",
+  profile_manager: "profile",
+}
+
+/**
+ * What a link to each of `state`'s sessions says, in place of the upstream TUI's session title, which ours lack: its
+ * person, then its name in its chat's list for a Codex or Claude Code session (`@minh · codex 1`), else its kind
+ * (`@minh · chat`).
+ */
+export function sessionLabels(state: {
+  people: readonly Pick<Person, "handle">[]
+  sessions: readonly Pick<Session, "id" | "person" | "kind" | "harness" | "instrument_of">[]
+  instruments: Readonly<Record<string, readonly Pick<Instrument, "id" | "name">[] | undefined>>
+}) {
+  return new Map(
+    state.sessions.map((session) => {
+      const chat = session.instrument_of
+      const listed = chat ? state.instruments[chat]?.find((i) => i.id === session.id) : undefined
+      // Not yet in its chat's list: its harness names it, as the picker does.
+      const harness = session.harness === "claude" ? "Claude Code session" : "Codex session"
+      const name =
+        session.kind === "instrument" ? (listed ? display(listed.name) : harness) : KIND_NAME[session.kind]
+      return [session.id, `${personLabel(state.people, session.person)} · ${name}`] as const
+    }),
+  )
 }

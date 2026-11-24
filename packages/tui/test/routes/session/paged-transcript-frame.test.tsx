@@ -1,12 +1,13 @@
 // A long transcript mounts in pages, as upstream's mount budget mounts its rows: only the tail when the session opens,
 // older messages a chunk at a time as the reader scrolls near the top, with no jump. Message navigation mounts the
-// rest first; a reply that streams still keeps the view at the bottom; copy and export read every message; and a
-// session opens where the reader left it.
+// rest first; a reply that streams still keeps the view at the bottom; copy and export read every message; a
+// session opens where the reader left it; and scrolled up, upstream's "Jump to latest" goes back to the bottom.
 import type { Message, Part, Session, ToolPart } from "@opencorp/protocol"
 import { ScrollBoxRenderable, type Renderable } from "@opentui/core"
 import { TestRecorder } from "@opentui/core/testing"
 import { afterAll, beforeEach, expect, mock, setDefaultTimeout, test } from "bun:test"
 import * as clipboard from "../../../src/context/clipboard"
+import { DEFAULT_THEME, DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
 import { createFakeOffice, createStub, seed, type FakeOffice } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
 import { writeKV } from "../../fixture/kv"
@@ -19,6 +20,7 @@ type App = Awaited<ReturnType<typeof bootFrame>>
 setDefaultTimeout(60_000)
 
 const AT = "2026-11-23T10:00:00.000Z"
+const theme = resolveTheme(DEFAULT_THEMES[DEFAULT_THEME]!, "dark")
 const VERBOSITY = "session_verbosity"
 
 // Each test starts on the default verbosity; later test files expect it too.
@@ -203,6 +205,76 @@ test("a reply that streams keeps the view at the bottom, and the tail follows ne
     const view = transcript(app, userID(101))
     expect(view.mounted(userID(82))).toBe(true)
     expect(view.mounted(userID(81))).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+const JUMP = "Jump to latest ↓"
+
+/** The row and column where `needle` first shows in `frame`. */
+function at(frame: string, needle: string) {
+  const rows = frame.split("\n")
+  const y = rows.findIndex((row) => row.includes(needle))
+  return { x: rows[y]?.indexOf(needle) ?? -1, y }
+}
+
+test("scrolled up, Jump to latest shows under the transcript on its right, and a click goes back to the newest", async () => {
+  const { office, app } = await boot((id) => turns(id, 100), "Turn 99 answer")
+  try {
+    const bottom = app.frame()
+    expect(bottom).not.toContain(JUMP)
+    const prompt = at(bottom, "@minh auto ·")
+    for (let tick = 0; tick < 3; tick++) await app.setup.mockMouse.scroll(30, 12, "up")
+    let f = await app.until((f) => f.includes(JUMP) && !f.includes("Turn 99 answer"))
+    const jump = at(f, JUMP)
+    // In the row between the transcript and the prompt, which stays where it was; at the right, as upstream's.
+    expect(at(f, "@minh auto ·")).toEqual(prompt)
+    expect(jump.y).toBeLessThan(prompt.y)
+    expect(f.split("\n")[jump.y]!.slice(0, jump.x).trim()).toBe("")
+    expect(jump.x + JUMP.length).toBeGreaterThan(90)
+    // Muted, as upstream's secondary action; the text colour under the mouse.
+    const fg = () =>
+      app.setup
+        .captureSpans()
+        .lines[jump.y]!.spans.find((span) => span.text.includes("Jump"))?.fg
+    expect(fg()).toEqual(theme.textMuted)
+    await app.setup.mockMouse.moveTo(jump.x + 2, jump.y)
+    await app.until(() => fg()?.equals(theme.text) === true)
+
+    await app.setup.mockMouse.click(jump.x + 2, jump.y)
+    f = await app.until((f) => f.includes("Turn 99 answer") && !f.includes(JUMP))
+    expect(at(f, "@minh auto ·")).toEqual(prompt)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("scrolling back down to the newest message hides Jump to latest", async () => {
+  const { office, app } = await boot((id) => turns(id, 100), "Turn 99 answer")
+  try {
+    await app.setup.mockMouse.scroll(30, 12, "up")
+    await app.until((f) => f.includes(JUMP))
+    for (let tick = 0; tick < 5 && app.frame().includes(JUMP); tick++) {
+      await app.setup.mockMouse.scroll(30, 12, "down")
+      await Bun.sleep(20)
+      await app.setup.renderOnce()
+    }
+    await app.until((f) => f.includes("Turn 99 answer") && !f.includes(JUMP))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a chat that fits on screen never shows Jump to latest", async () => {
+  const { office, app } = await boot((id) => turns(id, 2), "Turn 1 answer")
+  try {
+    await app.setup.mockMouse.scroll(30, 12, "up")
+    await Bun.sleep(100)
+    expect(await app.until((f) => f.includes("Turn 1 answer"))).not.toContain(JUMP)
   } finally {
     await app.stop()
     office.stop()

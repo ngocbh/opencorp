@@ -471,6 +471,11 @@ export function Session(props: SessionProps) {
       tokens: tokens > 0 ? `${Locale.number(tokens)} tokens` : undefined,
     }
   })
+  // A card of one of the chat's Codex or Claude Code sessions says which asks, by its name in the chat's list.
+  const askerName = (sessionID: string) =>
+    sessionID === props.sessionID
+      ? undefined
+      : harnessFamily(office.state, props.sessionID).find((entry) => entry.sessionID === sessionID)?.name
   // The session's approver, whose word wins in it (`sessionOwner`).
   const approver = () => sessionOwner(session(), office.state.people)
   // In a Codex or Claude Code session an employee's chat drives, both the owner and the employee write to the
@@ -484,11 +489,6 @@ export function Session(props: SessionProps) {
     const owner = approver()
     return local.person.color(message.author && message.author !== owner ? message.author : owner)
   }
-  // What an unread message says the owner can do: Esc stops the reply, and the next turn reads it. Over the cost cap
-  // nothing runs to stop, and it waits for a raise.
-  const unreadHint = createMemo(() =>
-    interruptible(viewStatus()) && !viewSession()?.capped ? "esc to interrupt so it's read now" : undefined,
-  )
   const showTimestamps = createMemo(() => timestamps() === "show")
   // In the pane, the chat's sides take one column each, not two.
   const gutter = () => (props.pane ? 1 : 2)
@@ -551,6 +551,12 @@ export function Session(props: SessionProps) {
   const memory = scrollMemory(renderer)
 
   let awayTimer: ReturnType<typeof setTimeout> | undefined
+  // Whether the reader has left the newest message, which shows "Jump to latest" under the transcript.
+  const [awayFromBottom, setAwayFromBottom] = createSignal(false)
+  const [latestHovered, setLatestHovered] = createSignal(false)
+  createEffect(() => {
+    if (!awayFromBottom()) setLatestHovered(false)
+  })
   onCleanup(() => {
     if (awayTimer) clearTimeout(awayTimer)
     props.scrollRef?.(undefined)
@@ -688,6 +694,7 @@ export function Session(props: SessionProps) {
       awayTimer = undefined
       if (!scroll || scroll.isDestroyed) return
       const away = preserveWindow || isAwayFromBottom()
+      setAwayFromBottom(away)
       if (!away) {
         if (!renderer.getSelection()) setHiddenRows(undefined)
         scroll.stickyScroll = true
@@ -728,6 +735,7 @@ export function Session(props: SessionProps) {
       : -1
     if (!anchor || index === -1) {
       scroll.scrollTo(scroll.scrollHeight)
+      setAwayFromBottom(false)
       return
     }
     setHiddenRows(rowsBefore(weights(), index, TRANSCRIPT_BACKFILL_CHUNK))
@@ -741,6 +749,7 @@ export function Session(props: SessionProps) {
           memory.setScrollAnchor(props.sessionID, undefined)
           scroll.stickyScroll = true
           scroll.scrollTo(scroll.scrollHeight)
+          setAwayFromBottom(false)
           return
         }
         const contentY = scroll.scrollTop + boundary.node.y - scroll.viewport.y
@@ -800,6 +809,7 @@ export function Session(props: SessionProps) {
     ensureAllRowsPending = undefined
     if (awayTimer) clearTimeout(awayTimer)
     awayTimer = undefined
+    setAwayFromBottom(false)
     memory.setScrollAnchor(props.sessionID, undefined)
     batch(() => {
       setHiddenRows(undefined)
@@ -1274,7 +1284,6 @@ export function Session(props: SessionProps) {
                           index={index() + hidden()}
                           speaker={speaker(message)}
                           speakerColor={speakerColor(message)}
-                          unreadHint={unreadHint()}
                           onMouseUp={() => {
                             if (renderer.getSelection()?.getSelectedText()) return
                             dialog.replace(() => <DialogMessage messageID={message.id} sessionID={props.sessionID} />)
@@ -1289,6 +1298,28 @@ export function Session(props: SessionProps) {
                   )}
                 </For>
               </scrollbox>
+              {/* Upstream's line under the transcript, here in the row the gap leaves above what follows it, so the
+                  transcript keeps its height. */}
+              <box
+                height={1}
+                marginTop={-1}
+                marginBottom={-1}
+                flexShrink={0}
+                flexDirection="row"
+                justifyContent="flex-end"
+              >
+                <Show when={awayFromBottom()}>
+                  <box
+                    id="session-jump-to-latest"
+                    paddingLeft={1}
+                    onMouseOver={() => setLatestHovered(true)}
+                    onMouseOut={() => setLatestHovered(false)}
+                    onMouseUp={toBottom}
+                  >
+                    <text fg={latestHovered() ? theme.text : theme.textMuted}>Jump to latest ↓</text>
+                  </box>
+                </Show>
+              </box>
               <Show when={props.paneNote}>
                 {(note) => (
                   <text fg={theme.warning} flexShrink={0} wrapMode="word">
@@ -1337,6 +1368,7 @@ export function Session(props: SessionProps) {
                           ) : (
                             <HarnessCard
                               question={q()}
+                              asker={askerName(q().session_id)}
                               active={id === active()?.id}
                               waiting={i() > 0 || !stackOpen()}
                               focusLabel={ownNext() && `answer ${personLabel(office.state.people, ownNext()!.asker)}`}
@@ -1446,8 +1478,6 @@ function UserMessage(props: {
   index: number
   speaker?: string
   speakerColor?: RGBA
-  /** What the owner can do with the message while it is unread, after the word `unread`. */
-  unreadHint?: string
 }) {
   const ctx = use()
   const text = createMemo(() =>
@@ -1502,9 +1532,6 @@ function UserMessage(props: {
                 )}
               </For>
             </box>
-          </Show>
-          <Show when={props.message.unread}>
-            <text fg={theme.textMuted}>{props.unreadHint ? `unread · ${props.unreadHint}` : "unread"}</text>
           </Show>
           <Show when={ctx.showTimestamps()}>
             <text fg={theme.textMuted}>{Locale.todayTimeOrDateTime(Date.parse(props.message.created_at))}</text>

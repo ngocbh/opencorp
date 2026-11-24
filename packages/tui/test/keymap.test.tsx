@@ -169,19 +169,21 @@ test("the picker's keys are the upstream TUI's: ↓ toggles it, ↑ goes to the 
   expect(TuiKeybind.unknownKeys({ session_child_cycle: "none", session_child_cycle_reverse: "none" })).toHaveLength(2)
 })
 
-test("the pane's keys are the upstream TUI's: ctrl+x ←/→ move the keys, ctrl+x ↑ closes it and ctrl+x ↓ opens the picker; ctrl+x o shows it split or full", () => {
+test("the pane's keys are the upstream TUI's: ctrl+x ←/→ move the keys, ctrl+x ↑ closes it and ctrl+x ↓ opens the picker; ctrl+x f shows it split or full", () => {
   const config = createResolvedKeymapConfig()
   const keys = (command: string) => config.keybinds.get(command).map((binding) => binding.key)
   expect(keys("pane.focus.left")).toEqual(["<leader>left"])
   expect(keys("pane.focus.right")).toEqual(["<leader>right"])
   expect(keys("pane.close")).toEqual(["<leader>up"])
   expect(keys("pane.select")).toEqual(["<leader>down"])
-  expect(keys("pane.fullscreen")).toEqual(["<leader>o"])
+  // Upstream's panel full screen is the diff's bare `f`; a pane that takes typing would take that, so it follows the
+  // leader.
+  expect(keys("pane.fullscreen")).toEqual(["<leader>f"])
   // Esc closes only a pane that takes no typing.
   expect(keys("pane.dismiss")).toEqual(["escape"])
   // Split or full is one entry, so its key changes in one place.
-  const moved = createResolvedKeymapConfig({ "pane.fullscreen": "<leader>f" })
-  expect(moved.keybinds.get("pane.fullscreen").map((binding) => binding.key)).toEqual(["<leader>f"])
+  const moved = createResolvedKeymapConfig({ "pane.fullscreen": "<leader>o" })
+  expect(moved.keybinds.get("pane.fullscreen").map((binding) => binding.key)).toEqual(["<leader>o"])
   // The old instrument commands are gone, with their config names.
   expect(keys("session.instrument.cycle")).toEqual([])
   expect(

@@ -2,7 +2,7 @@
 // Claude Code session there, split by default. The divider drags its width, which a double click puts back to half and
 // one setting on disk keeps for every pane; it keeps 24 columns and leaves the chat 44. Below 108 columns it is full
 // screen. ctrl+x ←/→ move the keys between the chat and the pane, a click in either side focuses it, ctrl+x ↑ closes
-// it, and ctrl+x o shows it full screen or split. Unlike upstream's, it sits in a box in its driver's colour, bright
+// it, and ctrl+x f shows it full screen or split. Unlike upstream's, it sits in a box in its driver's colour, bright
 // with the keys and dim without; its header says who drives it.
 import type { Instrument, Message, Session } from "@opencorp/protocol"
 import type { CapturedLine, RGBA } from "@opentui/core"
@@ -319,18 +319,18 @@ test("ctrl+x ↑ closes the pane and the chat gets the keys; ctrl+x ↓ opens th
   }
 })
 
-test("ctrl+x o shows the pane full screen with the chat hidden, and back; the choice holds for the next pane", async () => {
+test("ctrl+x f shows the pane full screen with the chat hidden, and back; the choice holds for the next pane", async () => {
   const { office, sid, app } = await boot()
   try {
     const sh = shell(office, sid)
     await app.until((f) => f.includes("↓ 1 shell"))
     await openFirst(app)
-    await app.until((f) => f.includes("ctrl+x o full screen"))
-    await leader(app, "o")
+    await app.until((f) => f.includes("ctrl+x f full screen"))
+    await leader(app, "f")
     let f = await app.until((f) => corner(f)?.x === 0)
     expect(f).not.toContain("@minh · idle")
     expect(f).toContain("ctrl+x ↑ close")
-    expect(f).toContain("ctrl+x o split")
+    expect(f).toContain("ctrl+x f split")
     await until(() => kv().pane_fullscreen === true)
     // No chat to give the keys to: they stay with the shell.
     await leader(app, "left")
@@ -338,13 +338,13 @@ test("ctrl+x o shows the pane full screen with the chat hidden, and back; the ch
     app.input.pressEnter()
     await until(() => typed(office, sh.id) === "a\r")
 
-    await leader(app, "o")
+    await leader(app, "f")
     f = await app.until((f) => corner(f)?.x === 60)
     expect(rows(f)[1]).toContain("@minh · idle")
     await until(() => kv().pane_fullscreen === false)
 
     // Chosen full, the next pane opens full.
-    await leader(app, "o")
+    await leader(app, "f")
     await app.until((f) => corner(f)?.x === 0)
     await leader(app, "up")
     await app.until((f) => corner(f) === undefined && f.includes("@minh · idle"))
@@ -356,7 +356,7 @@ test("ctrl+x o shows the pane full screen with the chat hidden, and back; the ch
   }
 })
 
-test("below 108 columns a pane is full screen and ctrl+x o does nothing; wider, it splits again", async () => {
+test("below 108 columns a pane is full screen and ctrl+x f does nothing; wider, it splits again", async () => {
   const office = createFakeOffice()
   const { sid, app } = await boot(office, 100)
   try {
@@ -365,8 +365,8 @@ test("below 108 columns a pane is full screen and ctrl+x o does nothing; wider, 
     let f = await openFirst(app)
     expect(corner(f)?.x).toBe(0)
     expect(f).not.toContain("@minh · idle")
-    expect(f).not.toContain("ctrl+x o")
-    await leader(app, "o")
+    expect(f).not.toContain("ctrl+x f")
+    await leader(app, "f")
     await Bun.sleep(100)
     f = await app.until(() => true)
     expect(corner(f)?.x).toBe(0)
@@ -550,7 +550,7 @@ test("a secret card in a pane without the keys reads none of what the owner type
     await app.until((f) => f.includes("ctrl+x → focus pane"))
     // The card shows in the chat too, with the chat's keys: ctrl+t gives them to the chat's prompt.
     app.input.pressKey("t", { ctrl: true })
-    await app.until((f) => f.includes("Codex asks: Token? · ctrl+t to answer"))
+    await app.until((f) => f.includes("codex 1 asks: Token? · ctrl+t to answer"))
     app.input.typeText("sentinel-77")
     await app.until((f) => f.includes("sentinel-77"))
     app.input.pressEnter()
@@ -603,7 +603,7 @@ test("a shell that waits for a password while a card is open opens beside it, th
 /** The bodies of the requests sent to `path`. */
 const sent = (office: FakeOffice, path: string) => office.requests.filter((r) => r.path === path).map((r) => r.body)
 
-test("a Codex session's card, open before its chat was, shows in the chat above the prompt and answers from there", async () => {
+test("a Codex session's card, open before its chat was, shows in the chat above the prompt, says which session asks and answers from there", async () => {
   const office = createFakeOffice()
   const chat = office.state.sessions[0]!
   const child = codex(office, chat.id, "busy")
@@ -611,7 +611,8 @@ test("a Codex session's card, open before its chat was, shows in the chat above 
   const { app } = await boot(office, 120, chat.id)
   try {
     const f = await app.until((f) => f.includes("$ touch a"))
-    expect(f).toContain("Codex asks")
+    expect(f).toContain("codex 1 asks")
+    expect(f).not.toContain("Codex asks")
     expect(corner(f)).toBeUndefined()
     // The card has the keys: a digit answers it, and nothing goes to the chat.
     app.input.pressKey("1")
@@ -683,7 +684,7 @@ test("the chat's own card holds the prompt's place; a Codex session's card that 
     const own = deployApproval(office, chat.id)
     await app.until((f) => f.includes("make deploy") && f.includes("enter confirm"))
     const card = office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
-    const f = await app.until((f) => f.includes("Codex asks: Codex wants to run a command (waiting)"))
+    const f = await app.until((f) => f.includes("codex 1 asks: Codex wants to run a command (waiting)"))
     expect(f).toContain("enter confirm")
     expect(f).not.toContain("$ touch a")
     office.expire(own.id)
@@ -828,7 +829,7 @@ test("a card that closes under the owner's typing in a full-screen pane says the
     await app.until((f) => f.includes("↓ 1 Codex session"))
     await openFirst(app)
     await app.until((f) => f.includes("Codex says hello."))
-    await leader(app, "o")
+    await leader(app, "f")
     await app.until((f) => corner(f)?.x === 0)
     const secret = office.addQuestion(secretCard(child.id, "1"))
     await typeHalfSecret(app)
@@ -851,7 +852,7 @@ test("a card from an older Codex session waits behind a younger one's that has t
     const secret = office.addQuestion(secretCard(younger.id, "1"))
     await typeHalfSecret(app)
     const card = office.addQuestion(harnessCard(older.id, "2", ["Approve", "Deny"]))
-    await app.until((f) => f.includes("Codex asks: Codex wants to run a command (waiting)"))
+    await app.until((f) => f.includes("codex 1 asks: Codex wants to run a command (waiting)"))
     app.input.typeText("er1")
     await app.until((f) => f.includes("•••••••"))
     app.input.pressEnter()
@@ -947,7 +948,7 @@ test("once the chat's card closes and the Codex card ctrl+t left for it went sta
     await app.until((f) => f.includes("1. main"))
     office.expire(c1.id)
     const c2 = office.addQuestion({ ...harnessCard(younger.id, "2", ["Approve", "Deny"]), question: "$ touch b" })
-    await app.until((f) => f.includes("Codex asks: Codex wants to run a command (waiting)"))
+    await app.until((f) => f.includes("codex 2 asks: Codex wants to run a command (waiting)"))
     await Bun.sleep(100)
     app.input.pressKey("1")
     await until(() => office.state.questions[own.id]!.status !== "open")
@@ -972,7 +973,7 @@ test("a Codex session's card that opens while the chat's prompt holds a draft le
     app.input.typeText("half a")
     await app.until((f) => f.includes("half a"))
     const card = office.addQuestion(harnessCard(child.id, "1", ["Approve", "Deny"]))
-    await app.until((f) => f.includes("Codex asks: Codex wants to run a command · ctrl+t to answer"))
+    await app.until((f) => f.includes("codex 1 asks: Codex wants to run a command · ctrl+t to answer"))
     // A digit typed for the prompt stays text there and picks nothing.
     app.input.typeText(" 1")
     await app.until((f) => f.includes("half a 1"))
@@ -1089,7 +1090,7 @@ test("a Codex card in both the chat and the pane leaves the pane's prompt its Es
     app.input.pressKey("t", { ctrl: true })
     await app.until((f) => shown(f) === 2)
     app.input.pressKey("1")
-    await app.until((f) => shown(f) === 0 && !f.includes("Codex asks"))
+    await app.until((f) => shown(f) === 0 && !f.includes("Codex asks") && !f.includes("codex 1 asks"))
     expect(sent(office, `/questions/${card.id}/answer`)).toEqual([{ answer: "Approve", answer_kind: "option" }])
   } finally {
     await app.stop()
@@ -1208,7 +1209,7 @@ test("below 108 columns a pane that opens itself over a draft or a card waits, a
   }
 })
 
-test("below 108 columns ctrl+x o on a card for a shell's command leaves the card in view, the shell waiting in the pane", async () => {
+test("below 108 columns ctrl+x f on a card for a shell's command leaves the card in view, the shell waiting in the pane", async () => {
   const office = createFakeOffice()
   const { sid, app } = await boot(office, 100)
   try {
@@ -1223,7 +1224,7 @@ test("below 108 columns ctrl+x o on a card for a shell's command leaves the card
       rules: [],
     })
     await app.until((f) => f.includes("make deploy") && f.includes("enter confirm"))
-    await leader(app, "o")
+    await leader(app, "f")
     const f = await app.until((f) => f.includes("shell 1 is open in the pane"))
     expect(corner(f)).toBeUndefined()
     expect(f).toContain("enter confirm")

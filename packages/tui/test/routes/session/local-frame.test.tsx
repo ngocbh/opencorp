@@ -1,5 +1,6 @@
 // A local session: the TUI on a host with no office, opened on its one session as its owner. The session is the only
-// route, with no home and no session list, and the TUI closes once the session is over, printing its epilogue.
+// route, with no home and no session list, and the TUI closes once the session is over, printing its epilogue. Its
+// reconnecting overlay names the session, not an office.
 import { expect, test } from "bun:test"
 import { createFakeOffice, createStub, seed } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
@@ -67,3 +68,39 @@ test("the session's end closes the TUI with its epilogue", async () => {
     office.stop()
   }
 })
+
+test("a dropped connection's overlay names the session, not an office, and one Ctrl+C quits", async () => {
+  const { office, app, end } = await local()
+  try {
+    await app.until((frame) => frame.includes("@opencorp auto"))
+    office.stop()
+    const f = await app.until((frame) => frame.includes("Connection lost…"), 4000)
+    expect(f).toContain("Reconnecting to the session automatically.")
+    expect(f).not.toContain("the office")
+    expect(f).not.toContain("office's")
+    app.input.pressKey("c", { ctrl: true })
+    await app.until(() => app.setup.renderer.isDestroyed)
+  } finally {
+    end(undefined)
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a local session whose state can't be read says so on the overlay, without naming an office", async () => {
+  const { office, app, end } = await local()
+  try {
+    await app.until((frame) => frame.includes("@opencorp auto"))
+    office.notImplemented.add("GET /people")
+    office.dropStreams()
+    const f = await app.until((frame) => frame.includes("Connection lost…"), 4000)
+    expect(f).toContain("The session's state can't be read:")
+    expect(f).not.toContain("the office")
+    expect(f).not.toContain("office's")
+  } finally {
+    end(undefined)
+    await app.stop()
+    office.stop()
+  }
+})
+

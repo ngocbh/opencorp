@@ -173,8 +173,8 @@ license, the upstream paths and commit, and our paths.
 
   Our own: a Codex or Claude Code session as a panel, the session route given its id; the box around the pane in its
   driver's colour, bright with the keys and dim without, and the header saying who drives it; a pipes shell's `$`
-  lines in the employee's colour; `<leader>o` for full screen, which the diff's `f` can't be in a pane that takes
-  typing; under 108 columns, a pane without the keys waiting behind a line in the chat rather than covering a draft
+  lines in the employee's colour; full screen on `<leader>f`, the diff's `f` behind the leader, since a pane that
+  takes typing would take a bare `f`; under 108 columns, a pane without the keys waiting behind a line in the chat rather than covering a draft
   or a card; the leader twice sending the leader key; the keys gathered a frame at a time for the office's keys
   route; a waiting shell opening itself, and the keys dropped until Enter when a pane closes mid-line.
 - **Upstream:** `packages/tui/src/component/session-frame.tsx`, `packages/tui/src/context/panel.tsx`,
@@ -250,36 +250,36 @@ license, the upstream paths and commit, and our paths.
 - **Ours:** `packages/tui/src/routes/session/index.tsx` (`toolView`, `HarnessCall`, `InlineTool`),
   `packages/tui/test/routes/session/harness-calls-frame.test.tsx`.
 - **What:** the pending message's look, ported from current upstream: a user message whose delivery is pending draws
-  its left border in the border colour instead of its speaker's, its text unchanged. Adapted: pending is a chat
-  message its run hasn't read yet (`unread`), and a muted line under it says `unread` and, while Esc can stop the
-  reply, what Esc does. The "Pending steer" dialog (Move to queue, Delete) isn't ported: Yian can neither take back
-  one message nor hold one until the turn ends, so a click opens the message's actions as before.
+  its left border in the border colour instead of its speaker's, its text unchanged and nothing under it. Adapted:
+  pending is a chat message its run hasn't read yet (`unread`). The "Pending steer" dialog (Move to queue, Delete)
+  isn't ported: Yian can neither take back one message nor hold one until the turn ends, so a click opens the
+  message's actions as before.
 - **Upstream:** `packages/tui/src/routes/session/index.tsx` (`UserMessage` and its `delivery`, `pendingDelivery`),
   read at commit `4332e24f` (2026-11-21).
-- **Ours:** `packages/tui/src/routes/session/index.tsx` (`UserMessage`, `unreadHint`),
+- **Ours:** `packages/tui/src/routes/session/index.tsx` (`UserMessage`),
   `packages/tui/test/routes/session/unread-message-frame.test.tsx`.
 - **What:** the descendants' requests in the parent session: a session with no parent lists its own requests, then
   its descendants', and answers a child's where it is; a child lists only its own. Adapted: the requests are the open
   Codex cards of the chat's Codex and Claude Code sessions, shown above the chat's prompt as in the child's own view
-  (the first card or the prompt holding the keys), waiting as lines while one of the chat's own cards holds the
-  prompt's place; the card with the keys keeps them until it closes or ctrl+t moves them, a card that opens meanwhile
-  waiting as a line, the chat's own included, and once the chat's own card closes the keys go back to whoever had them
-  before it; Esc on one interrupts that child.
+  (the first card or the prompt holding the keys) and saying which session asks (`codex 1 asks`), waiting as lines
+  while one of the chat's own cards holds the prompt's place; the card with the keys keeps them until it closes or
+  ctrl+t moves them, a card that opens meanwhile waiting as a line, the chat's own included, and once the chat's own
+  card closes the keys go back to whoever had them before it; Esc on one interrupts that child.
 - **Upstream:** `packages/tui/src/routes/session/index.tsx` (`descendantSessionIDs`, `permissions`, `forms`, the
   prompt's `Switch`), read at commit `4332e24f` (2026-11-21).
 - **Ours:** `packages/tui/src/routes/session/composer/tabs.ts` (`familyQuestions`),
-  `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/component/session-frame.tsx`,
-  `packages/tui/test/routes/session/pane-frame.test.tsx`.
+  `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/routes/chat/harness-card.tsx`,
+  `packages/tui/src/component/session-frame.tsx`, `packages/tui/test/routes/session/pane-frame.test.tsx`.
 - **What:** ported from current upstream: the reconnecting overlay, a dimmed full screen with a raised box holding a
   spinner line and a muted line, and the app's timer that shows it once the connection has been down past a grace
   and hides it when the connection is back: one second after a drop, five before the first connection. Adapted: home
   shows none before the first connection, since it says the office isn't running; while the office's state can't
-  be read, the muted line says why, as home words it; its text names the office, and there is no service-restart
-  variant.
+  be read, the muted line says why, as home words it; its text names the office, or the session in a local session
+  with no office; while it shows, one Ctrl+C leaves a chat; and there is no service-restart variant.
 - **Upstream:** `packages/tui/src/component/reconnecting.tsx` and `packages/tui/src/app.tsx` (`showReconnecting` and
   its timer), read at commit `4332e24f` (2026-11-21).
 - **Ours:** `packages/tui/src/component/reconnecting.tsx`, `packages/tui/src/app.tsx`,
-  `packages/tui/test/component/reconnecting-frame.test.tsx`.
+  `packages/tui/test/component/reconnecting-frame.test.tsx`, `packages/tui/test/routes/session/local-frame.test.tsx`.
 - **What:** ported from current upstream: transcript verbosity and tool grouping. At Low each run of tool calls folds
   into one muted line counting its finished work (`+ 3 commands, 1 edit, 4 reads`), spinning with what runs until
   something finishes, and a click opens it; Medium groups only reads and searches (`Explored: 2 reads, 1 search`);
@@ -311,44 +311,49 @@ license, the upstream paths and commit, and our paths.
 - **What:** ported from current upstream: tail-first transcript mounting. A session opens on its newest entries, by
   a budget of rendered entries in which a folded group costs one; older ones mount a chunk at a time as the reader
   nears the top, an anchor holding the view still; a toggled group's line keeps its row; message navigation mounts the
-  rest first; and each session's scroll anchor is kept in memory, so the session opens where it was left. The mount
-  budget's, the anchors' and the activity anchor's tests come with them, and the frame tests' cases. Adapted: an
+  rest first; each session's scroll anchor is kept in memory, so the session opens where it was left; and once the
+  reader leaves the bottom, "Jump to latest ↓" under the transcript takes them back. The mount budget's, the anchors'
+  and the activity anchor's tests come with them, and the frame tests' cases. Adapted: an
   entry is a message, weighed by the rows it renders; an anchor registers a row's own first node rather than a box
   around it; a reads' group's line keeps its row too; navigation holds the reader's view while the rest mounts; the
-  anchors are kept per renderer rather than in session tabs, for the 50 sessions left most recently; and nothing
-  loads from the office, which sends a session's whole transcript at once, so the history prepend isn't ported.
+  anchors are kept per renderer rather than in session tabs, for the 50 sessions left most recently; "Jump to latest"
+  sits in the row the transcript's gap leaves rather than a row of its own; and nothing loads from the office, which
+  sends a session's whole transcript at once, so the history prepend isn't ported.
 - **Upstream:** `packages/tui/src/routes/session/mount-budget.ts`, `packages/tui/src/routes/session/anchors.ts`,
   `packages/tui/src/routes/session/anchor-view.tsx`, `packages/tui/src/routes/session/group-view.tsx` (its
   `GroupAnchor`s, the toggle's anchor), `packages/tui/src/routes/session/message-parts.tsx` (`InlineToolRow`'s
   `onMouseUp`), `packages/tui/src/routes/session/render-context.tsx` (`anchors`, `setGroupExpanded`'s anchor),
   `packages/tui/src/routes/session/index.tsx` (`TRANSCRIPT_TAIL_ROWS`, `TRANSCRIPT_BACKFILL_CHUNK`,
   `afterLayout`, `pinAbove`, `revealOlderRows`, `revealNewerRows`, `ensureAllRows`, `isAwayFromBottom`,
-  `updateAwayFromBottom`, `saveScrollAnchor`, `restoreScrollPosition`, `toBottom`, `moveTranscript`,
-  `session.first`, `setGroupExpanded`), `packages/tui/src/context/session-tabs.tsx` (`ScrollAnchor`, `scrollAnchor`,
+  `updateAwayFromBottom`, `awayFromBottom`, `latestHovered`, the "Jump to latest" row, `saveScrollAnchor`,
+  `restoreScrollPosition`, `toBottom`, `moveTranscript`, `session.first`, `setGroupExpanded`), `packages/tui/src/context/session-tabs.tsx` (`ScrollAnchor`, `scrollAnchor`,
   `setScrollAnchor`), `packages/tui/test/cli/tui/mount-budget.test.ts`, `packages/tui/test/cli/tui/anchors.test.ts`,
   `packages/tui/test/context/session-tabs.test.tsx` (the scroll anchor tests),
-  `packages/tui/test/session-mount-budget.test.tsx`, `packages/tui/test/session-history-reveal.test.tsx` and
-  `packages/tui/test/session-activity-anchor.test.tsx`, read at commit `4332e24f` (2026-11-21).
+  `packages/tui/test/session-mount-budget.test.tsx`, `packages/tui/test/session-history-reveal.test.tsx`,
+  `packages/tui/test/session-activity-anchor.test.tsx` and `packages/tui/test/session-submit-scroll.test.tsx`, read
+  at commit `4332e24f` (2026-11-21).
 - **Ours:** `packages/tui/src/routes/session/{mount-budget,anchors}.ts`,
   `packages/tui/src/routes/session/{anchor-view,index,group-view,message-parts,note-line,render-context}.tsx`,
   `packages/tui/test/cli/tui/mount-budget.test.ts`, `packages/tui/test/cli/tui/anchors.test.ts`,
   `packages/tui/test/routes/session/paged-transcript-frame.test.tsx`,
   `packages/tui/test/routes/session/activity-anchor-frame.test.tsx`.
-- **What:** ported from current upstream: session links. In a reply's text a session's id is underlined in the link
-  colour, and a plain click on it (not one that ends a selection, nor a modified one) opens that session; a code span
-  links only when it is exactly an id, and fenced code and table cells never link. Adapted: an id is a bare ULID, so it
-  links only when the TUI's list holds that session and it is neither the transcript's own nor the route's, with no
-  lookup; it keeps its text, since our sessions have no title; the hook has no filter, a ULID having no prefix, and a
-  session joining the list re-renders every block that names it, even when a delta naming it lands in the same
-  update; a click opens the session through the transcript's `onOpen` (one of the chat's Codex or Claude Code sessions
-  in the right pane) or goes there; there is no `@session:` form and no dialog to close.
+- **What:** ported from current upstream: session links. In a reply's text a session's id shows as a label in the link
+  colour, underlined, raw markdown showing the id, and a plain click on it (not one that ends a selection, nor a
+  modified one) opens that session; a code span links only when it is exactly an id, and fenced code and table cells
+  never link. Adapted: an id is a bare ULID, so it links only when the TUI's list holds that session and it is neither
+  the transcript's own nor the route's, with no lookup; our sessions have no title, so the label is the session's
+  person and its name in its chat's list, or its kind (`@minh · codex 1`, `@minh · chat`); the hook has no filter, a
+  ULID having no prefix, and a session joining the list re-renders every block that names it, even when a delta naming
+  it lands in the same update; a click opens the session through the transcript's `onOpen` (one of the chat's Codex or
+  Claude Code sessions in the right pane) or goes there; there is no `@session:` form and no dialog to close.
 - **Upstream:** `packages/tui/src/ui/session-link.ts`, `packages/tui/src/ui/link.tsx` (`plainClick`),
   `packages/util/src/session-mention.ts`, `packages/tui/src/routes/session/message-parts.tsx` (`TextPart`'s ref),
   `packages/tui/test/ui/session-link.test.tsx` and `packages/util/src/session-mention.test.ts`, read at commit
   `4332e24f` (2026-11-21).
 - **Ours:** `packages/tui/src/ui/session-link.ts`, `packages/tui/src/ui/link.ts`,
-  `packages/tui/src/util/session-mention.ts`, `packages/tui/src/routes/session/index.tsx` (`TextPartView`),
-  `packages/tui/test/ui/session-link.test.tsx`, `packages/tui/test/util/session-mention.test.ts`,
+  `packages/tui/src/util/session-mention.ts`, `packages/tui/src/util/session.ts` (`sessionLabels`),
+  `packages/tui/src/routes/session/index.tsx` (`TextPartView`), `packages/tui/test/ui/session-link.test.tsx`,
+  `packages/tui/test/util/session-mention.test.ts`, `packages/tui/test/util/session.test.ts`,
   `packages/tui/test/routes/session/session-links-frame.test.tsx`.
 - **What:** the check before a terminal starts that its folder is a directory, since a PTY's library may start the
   shell in the home instead, ported for learning's shells.

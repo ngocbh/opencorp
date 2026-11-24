@@ -8,14 +8,16 @@ description: "Open the TUI in a project folder to talk to your employees, and hi
 ## Talk to your team
 
 Run `opencorp` in a project folder. In a folder nobody has worked in yet, it first asks "Who do you
-want to talk to?". `opencorp -c` continues the newest session in that folder.
+want to talk to?". `opencorp -c` continues the newest session in that folder. Ctrl+C twice leaves the chat; if the
+office can't be reached, `Connection lost…` covers the screen until it is back, and one Ctrl+C leaves.
 
 In the chat, each run of your employee's tool calls shows as one line, such as `+ 3 commands, 1 edit, 4 reads`:
 click it to see the calls. "Verbosity" in the command list (ctrl+p) switches between Low (the default), Medium, which
-folds only reads and searches, and High, which shows every call.
+folds only reads and searches, and High, which shows every call. Scrolled up in a long chat, click
+`Jump to latest ↓` under it to go back to the newest message.
 
-A session's id in your employee's reply is a link to that session; one of the chat's Codex or Claude Code sessions
-opens in [the pane](/instruments/#the-pane).
+A session's id in your employee's reply shows as a link named after that session, such as `@minh · codex 1` or
+`@minh · chat`; one of the chat's Codex or Claude Code sessions opens in [the pane](/instruments/#the-pane).
 
 ## Hire
 
