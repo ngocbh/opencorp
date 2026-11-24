@@ -1,10 +1,11 @@
 ---
 title: "Instruments and permissions"
-description: "The shell, Codex and Claude Code your employees work with: how you watch them, what they may touch, the MCP servers you allow them, and where that stops."
+description: "The shell, Codex and Claude Code your employees work with: how you watch them, the mode that decides their tool calls, what they may touch, the MCP servers you allow them, and where that stops."
 ---
 
 Your employees work with three instruments: a shell, Codex and Claude Code. This page says how you watch and steer
-each one, what an employee's permission lets it touch, and what that permission doesn't cover.
+each one, how the mode decides each tool call, what an employee's permission lets it touch, and what that permission
+doesn't cover.
 
 ## The pane
 
@@ -26,6 +27,43 @@ serves every pane. Under 108 columns the pane is full screen while it has your k
 than cover what you type, and a line in the chat says so (`shell 2 is open in the pane: ctrl+x → shows it`). A pane
 never takes your keys while you type in the prompt or a card.
 
+## The mode
+
+Every tool call your employee's model makes goes through the chat's mode and rules before it runs. A chat starts in
+`auto`; Shift+Tab switches it to `default`, `ask`, `dontAsk` and back.
+
+| Call | `auto` | `default` | `ask` | `dontAsk` |
+|---|---|---|---|---|
+| A shell command or typed line | Runs if read-only or a file operation in the project folder; else Auto's check | Runs if read-only; else asks | Asks | As in `auto`, but refused where it would ask |
+| File, company, asset and memory tools | Run | Run | Run | Run |
+| Starting a Codex or Claude Code session | Runs | Runs | Asks | Runs |
+| A tool module's or an MCP server's tool | Auto's check | Asks | Asks | Refused, unless an allow rule covers it |
+| A flow granted to your employee | Runs | Runs | Runs | Runs if an allow rule covers each module tool it calls |
+
+- **Rules.** The company's `rules.yaml` and your employee's `people/<handle>/rules.yaml` allow, ask or deny. A rule of
+  kind `command` or `input` names shell commands or typed lines (`git status *`). One of kind `tool` names a call by
+  where its tool comes from, such as `host codex start`, `mcp github create_issue`, `module crm *` or
+  `flow drive_harness`; a last `*` stands for one or more words. Deny rules refuse in every mode, then ask rules ask,
+  then allow rules run, then the table decides. A rule names a tool module by its `uses:` alias (`crm` in
+  `module crm *`), so the company's lint refuses a module file given two aliases.
+- **Auto's check** is a model call on the office's connection. It reads the command, or the tool and its arguments,
+  never your employee's reason, with your secrets taken out. What it says run runs; the rest asks you, and `dontAsk`
+  refuses it. A command over 1000 bytes asks without it.
+- **Cards.** A card shows the call and why it asks. Yes runs it once; "Don't ask again" and "Always allow" also add a
+  rule for its exact words; No tells your employee what you wrote. While a card is open, the reply's later calls wait,
+  and a No refuses those that would ask too. Esc closes the card and stops your employee, the call not run. Switching
+  to `dontAsk` refuses the open cards. An open card survives an office restart, and is decided again by the rules then.
+  A call a restart or crash cut off before you approved it isn't run when the work resumes; one cut off after your Yes
+  doesn't run again, and your employee reads that its outcome is unknown.
+- **Granted flows.** A flow you grant your employee runs with no card or check: granting it approves what its own
+  steps do. Your rules still cover the tool modules those steps call (`call:`, `map`, `loop` or a `call(...)` in a
+  binding, in the flow and the flows it calls): a deny rule on one refuses the flow in every mode, while an ask rule
+  doesn't ask. When OpenCorp can't read which module tools a flow calls, it counts the flow as calling every one. The
+  calls the flow's own agents make go through the mode as your employee's do.
+- **The record.** Each run's log keeps why each call ran (the rule or form that let it, who said Yes, or Auto's check
+  with its own run), what was refused and why, and what your employee read. Each shell's record keeps its commands,
+  who ran them and their exits.
+
 ## The shell
 
 Your employee runs their commands in a shell sandboxed to the project folder: a command reaches that folder and a
@@ -37,12 +75,9 @@ as you. In a folder with no repository, `.git` stays read-only too: your employe
 `git init` yourself. On Linux the shell first makes any of those four folders that is missing, empty (`.git` only
 while a command runs), and a missing `.mcp.json` can still be created.
 
-- **The mode.** A chat starts in `auto`: read-only commands and file operations in the project folder run at once,
-  and the rest goes to Auto's check, a model call on the office's connection, or asks you. Shift+Tab switches the
-  mode to `default`, `ask`, `dontAsk` and back. A card asks you before what the mode doesn't allow; `dontAsk`
-  refuses it instead. While a card is open, your employee's later commands in that reply wait, and a No refuses
-  those that would ask too. A command a restart or crash cut off once you approved it doesn't run again: your
-  employee reads that its outcome is unknown.
+- **The mode.** Each command and each line typed into a running command goes through [the mode](#the-mode), decided
+  on the whole line: `sca` then `ncel 42` is decided as `scancel 42`. A command runs only as it was decided: if the
+  shell moved to another folder, or the line changed, before it runs, your employee is told to run it again.
 - **Deny rules.** A deny rule in the company's `rules.yaml` or your employee's `people/<handle>/rules.yaml` refuses
   the commands it matches in every mode, including a line your employee types into a running command. A
   command OpenCorp can't fully read (a `$(…)`, `eval "$CMD"`, `sh -c "$CMD"`, an unclosed quote) could hide one, so
@@ -72,41 +107,19 @@ while a command runs), and a missing `.mcp.json` can still be created.
   ended. If the office restarts while such a command runs, its shell is gone, and your next message tells your employee
   so.
 
-## Other tools
+## Tool modules
 
-Each other tool call your employee's model makes also goes through the chat's mode and rules before it runs.
+A company flow may grant its agent a tool module's tools: `uses: {crm: ./crm.ts}`, then `tools: [crm]`. The file must
+be inside the company repo. Each call your employee's model makes of them goes through [the mode](#the-mode). A module
+runs with your full power ([Where the permission stops](#where-the-permission-stops)), so grant only code you would run
+yourself.
 
-- **What runs.** File tools in the project folder, the company's tools and asset tools run in every mode. Starting a
-  Codex or Claude Code session asks you in `ask` mode. A tool from a tool module or an MCP server goes to Auto's check
-  in `auto`, judged from its name and arguments; it asks you in `default` and `ask`, and `dontAsk` refuses it.
-- **Tool rules.** A rule of kind `tool` in `rules.yaml` names calls by where their tool comes from, such as
-  `host codex start`, `mcp github create_issue`, `module crm *`, `memory profile append` or `flow drive_harness`. A
-  last `*` stands for one or more words. Deny rules refuse in every mode, then ask rules ask, then allow rules run.
-  "Don't ask again" and "Always allow" add the call's exact words. A rule names a tool module by its `uses:` alias
-  (`crm` in `module crm *`), so the company's lint refuses a module file given two aliases.
-- **Cards.** Yes runs the call once; No tells your employee what you wrote. While a card is open, the reply's later
-  calls wait. An open card survives an office restart, and is decided again by the rules then. A call a stop or crash
-  cut off before you approved it isn't run when your employee's work resumes.
-- **Granted flows.** A flow you grant your employee runs when they call it, in every mode, with no card or check:
-  granting it approves what it does. Its own steps that call a tool directly (`call:`, `map`, `loop`, or a
-  `call(...)` in a binding) skip the mode, but not your rules on the tool modules they call, in the flow or the flows
-  it calls: a deny rule on one (such as `module crm *`) refuses the flow in every mode, and in `dontAsk` the flow runs
-  only if an allow rule covers each one. An ask rule on one doesn't ask: granting the flow approved it. When OpenCorp
-  can't read which module tools a flow calls, it counts the flow as calling every one. A CODE step that imports a
-  module and calls it in its own code isn't seen, so grant such a flow only if you trust it. The calls the flow's own
-  agents make are gated as your employee's are.
-- **Tool modules.** A company flow may grant its agent a tool module's tools (`uses: {crm: ./crm.ts}`, then
-  `tools: [crm]`); the file must be inside the company repo. A module gets nothing from the office through `ctx`
-  (`ctx.context` is `undefined`), but it runs with your full power: on a worker thread, with no sandbox, as you. It can
-  read the model connection's environment, the worker's channel to the office and everything in `~/.opencorp`. Grant
-  only code you would run yourself.
-  - Its top-level code runs at every run start and resume. A tool's argument validator, if it has one, reads the
-    model's arguments before the mode and rules decide the call.
-  - The company's lint reports an error for a module, or a repo file it imports, whose import resolves outside the
-    repo: a path that leaves it, an absolute path, a symlink out of it, or a package. It reads only imports written as
-    literal paths, never one computed at run time;
-    [yian#1811](https://github.com/ngocbh/yian/issues/1811) tracks confining them.
-  - A module tool that returns `pending()` fails: nothing in the office answers it.
+- Its top-level code runs at every run start and resume. A tool's argument validator, if it has one, reads the
+  model's arguments before the mode and rules decide the call.
+- The company's lint reports an error for a module, or a repo file it imports, whose import resolves outside the repo:
+  a path that leaves it, an absolute path, a symlink out of it, or a package. It reads only imports written as literal
+  paths, never one computed at run time.
+- A module tool that returns `pending()` fails: nothing in the office answers it.
 
 ## Codex and Claude Code
 
@@ -298,6 +311,13 @@ a harness they use doesn't. Its lint warns about each allowed server.
 
 ## Where the permission stops
 
+- **A flow's own steps.** Only the calls your employee's model makes go through the mode. A granted flow's own steps
+  run without it: your rules see the module tools they call, but not what a CODE step does in its own code, which
+  runs on a worker thread with no sandbox, as you. Grant only flows you trust.
+- **Tool modules run as you.** A module gets nothing from the office through `ctx` (`ctx.context` is `undefined`), but
+  it runs on a worker thread with no sandbox, as you: it can read the model connection's environment, the worker's
+  channel to the office and everything in `~/.opencorp`. The lint catches an import that leaves the repo, not one
+  computed at run time; [a Yian issue](https://github.com/ngocbh/yian/issues/1811) tracks confining them.
 - **The harnesses run as you.** Only their commands, and Codex's file edits, are held to your employee's
   permission; those commands can't read the harnesses' own folders. Codex keeps its sign-in, sessions, logs and
   caches in your `~/.codex`. Claude Code keeps its sign-in in `~/.claude` (or the Keychain on macOS), and each
