@@ -16,7 +16,7 @@ import { type ChildProcess, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
-import { type EmployeePermission, claudeStart, mcpCwd } from "../../runtime/sandbox/harness_profile.ts"
+import { type EmployeePermission, claudeStart, mcpCwd, promptFolder } from "../../runtime/sandbox/harness_profile.ts"
 import { which } from "../../util/env.ts"
 import { killGroup } from "../../util/proc.ts"
 import { claudeInstructions, writeInstructions } from "./instructions.ts"
@@ -66,6 +66,13 @@ export const SOCAT_MISSING =
   "Claude Code's sandbox needs socat on Linux, and the office didn't find it (on its PATH when it started, or as " +
   "OPENCORP_SOCAT_BIN): install socat (for example `sudo apt-get install socat`, or `sudo dnf install socat`), or " +
   "point OPENCORP_SOCAT_BIN at one, then restart the office and run `opencorp doctor`"
+
+/** What every session's Claude Code is told of its commands: nobody approves one, so its checker refuses one it can't
+ *  check before it runs (a group, a substitution, complex quoting), or one naming a path outside its working folders. */
+export const PLAIN_COMMANDS =
+  "Nobody can approve a command in this session, so any command that can't be checked before it runs is refused. " +
+  "Prefer plain commands, without `( )` groups, `$(…)` substitutions or loops, and put scratch files in the working " +
+  "folder or `$TMPDIR`. If a command is refused as too complex, split it into plain steps."
 
 /** How the office talks to Claude Code: stream-json both ways, every message written out. */
 export const STREAM_ARGS = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"] as const
@@ -229,12 +236,13 @@ function allowing(settings: Record<string, unknown>, rules: readonly string[]): 
   return { ...settings, permissions: { ...permissions, allow: [...allow, ...rules] } }
 }
 
-/** What a session under employee permission `p` runs: `claude`, with `claudeArgs` of `claudeStart(p)` and, when
- *  there are any, the office's own words for the session (`prompt`) and then the owner's and the project's
- *  instructions (`claudeInstructions`, from `configDir`, Claude Code's config folder), written to
- *  `opencorp.instructions.md` in the session's own temp folder (fresh, private and the user's, as `claudeStart`
- *  checked it; the file 0600) for `--append-system-prompt-file`; and its environment. The file goes when the temp
- *  folder does, and the process removes it once Claude Code exits (`instructions`).
+/** What a session under employee permission `p` runs: `claude`, with `claudeArgs` of `claudeStart(p)` and the office's
+ *  own words for the session (`prompt`, when given), then on its commands (`PLAIN_COMMANDS`), then the owner's and
+ *  the project's instructions when there are any (`claudeInstructions`, from `configDir`, Claude Code's config
+ *  folder), written to `opencorp.instructions.md` in `promptDir`, the start's own folder for them, never its temp
+ *  folder (private, and out of reach of its commands and file tools, as `promptFolder` checks it; the file 0600), for
+ *  `--append-system-prompt-file`; and its environment. The file goes when its folder does, and the process removes it
+ *  once Claude Code exits (`instructions`).
  *
  *  The MCP servers `p` allows load from the owner's `.claude.json` (`claudeJson`), each one it defines, started in
  *  the office's empty folder (`mcpCwd`, `startIn`): their definitions go in `opencorp.mcp.json` in `p.mcpHome`
@@ -248,12 +256,14 @@ export function claudeSession(
     configDir,
     claudeJson,
     prompt,
+    promptDir,
     ...rest
   }: {
     claude: string
     configDir: string
     claudeJson?: string
     prompt?: string
+    promptDir: string
     sessionId?: string
     resume?: string
     model?: string
@@ -261,16 +271,16 @@ export function claudeSession(
 ): {
   command: string[]
   env: Record<string, string>
-  instructions: string | null
+  instructions: string
   mcp: McpLoad & { missing: string[] }
 } {
   const start = claudeStart(p)
   const allowed = p.allowedMcp ?? []
   const cwd = allowed.length > 0 ? mcpCwd(p) : null
   const found = claudeInstructions({ configDir, workspace: p.workspace, gitRoot: p.gitRoot })
-  const parts = [prompt === undefined ? null : `${prompt.trim()}\n`, found].filter((t): t is string => t !== null)
-  const text = parts.length === 0 ? null : parts.join("\n")
-  const instructions = text === null ? null : writeInstructions(start.env.TMPDIR!, "opencorp", text)
+  const parts = [prompt === undefined ? null : `${prompt.trim()}\n`, `${PLAIN_COMMANDS}\n`, found]
+  const text = parts.filter((t): t is string => t !== null).join("\n")
+  const instructions = writeInstructions(promptFolder(p, promptDir), "opencorp", text)
   let mcp: McpLoad & { missing: string[] } = { file: null, servers: [], missing: [] }
   if (cwd !== null) {
     const picked = mcpServersOf(claudeJson === undefined ? null : ownerMcpServers(claudeJson), allowed, cwd)
@@ -278,7 +288,7 @@ export function claudeSession(
     const file = servers.length === 0 ? null : writeMcpConfig(path.dirname(cwd), picked.servers)
     mcp = { file, servers, missing: picked.missing }
   }
-  const args = claudeArgs(start, { ...rest, ...(instructions === null ? {} : { instructions }), mcp })
+  const args = claudeArgs(start, { ...rest, instructions, mcp })
   return { command: [claude, ...args], env: start.env, instructions, mcp }
 }
 

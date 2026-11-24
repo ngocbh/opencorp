@@ -263,10 +263,11 @@ export function mcpServersOff(defined: readonly string[]): Record<string, { enab
 /** Claude Code's flag settings (`--settings`), its `--add-dir` folders, and its environment, for one session.
  *
  *  Its Bash sandbox reads everything but `denyRead` (where `allowRead` re-opens a folder), and can always write its
- *  working folder and each `--add-dir` folder, with `denyWrite` winning over every write allow; its own file tools
- *  are held by its permission rules, not the OS, so its `Read` denies mirror the folders denied by name. Throws as
- *  `checkPermission` does, and for the network on: its sandbox takes only a list of allowed hosts, and no setting
- *  that allows every host has been checked against a real Claude Code. */
+ *  working folders (its own, and each `--add-dir` folder: the listed folders and the temp folder), with `denyWrite`
+ *  winning over every write allow; its own file tools are held by its permission rules, not the OS, so its `Read`
+ *  denies mirror the folders denied by name. Throws as `checkPermission` does, and for the network on: its sandbox
+ *  takes only a list of allowed hosts, and no setting that allows every host has been checked against a real Claude
+ *  Code. */
 export function claudeStart(p: EmployeePermission): {
   settings: Record<string, unknown>
   addDirs: string[]
@@ -348,7 +349,11 @@ export function claudeStart(p: EmployeePermission): {
     // the command a turn runs (a real one's was gone 17 ms after), but one in the background outlived Esc and the turn.
     CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
   }
-  return { settings, addDirs: c.folders.map((folder) => folder.path), env }
+  // The session's own temp folder, which its sandbox already reads and writes, is a working folder too: with the read
+  // block on, its checker refuses, with nobody to ask, a command naming a path outside them. Claude Code's docs count
+  // `--add-dir` toward the block (not an `additionalDirectories` in `--settings`), and with no settings source
+  // (`--setting-sources=`) load no skills, commands or agents from such a folder, as the writable listed ones rely on.
+  return { settings, addDirs: [...c.folders.map((folder) => folder.path), c.tmpdir], env }
 }
 
 /** Claude Code's `denyWrite` entries for a kept path. While a command runs, its Linux sandbox holds a missing path with
@@ -724,7 +729,7 @@ export function checkCodexInstall(p: EmployeePermission, install: HarnessInstall
 }
 
 /** Throws `UnsafeProfile` unless `dir`, a folder the office keeps for the harness outside its install (the office's
- *  copies of Codex), lies in no folder `p` denies, and neither lies in nor holds the session's folder, the temp folder,
+ *  copies of Codex, Claude Code's instructions), lies in no folder `p` denies, and neither lies in nor holds the session's folder, the temp folder,
  *  a listed folder, another person's writable folder or the MCP folder (`mcpHome`): the harness's sandbox reads it as
  *  it is, and only the office writes it. `what` names it. Returns it resolved. Throws as `checkPermission` does too. */
 export function checkApart(p: EmployeePermission, dir: string, what: string): string {
@@ -743,6 +748,17 @@ export function checkApart(p: EmployeePermission, dir: string, what: string): st
     if (within(real, at) || within(at, real)) throw new UnsafeProfile(`${what} ${real} lies in or holds ${name}, ${at}`)
   }
   return real
+}
+
+/** `dir`, the folder of the instructions one start of Claude Code appends to its system prompt, resolved: refused
+ *  (`UnsafeProfile`) unless it is a private folder of the user's (0700, not a link) that `checkApart` passes, so the
+ *  employee's commands can neither read nor write it, and it is no working folder of Claude Code's file tools. Claude
+ *  Code rebuilds its system prompt when it compacts a conversation, and may read the file again then. Throws as
+ *  `checkPermission` does too. */
+export function promptFolder(p: EmployeePermission, dir: string): string {
+  const what = "Claude Code's instructions folder"
+  if (!privateDirectory(dir)) throw new UnsafeProfile(`${what} ${dir} isn't a private folder (a link is refused)`)
+  return checkApart(p, dir, what)
 }
 
 /** Throws `UnsafeProfile` unless Claude Code as the office runs it can't be changed by anyone but the user, as

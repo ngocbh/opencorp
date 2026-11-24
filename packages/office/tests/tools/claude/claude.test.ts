@@ -21,6 +21,7 @@ import {
   claudeArgs,
   claudeCommand,
   CLAUDE_TOOLS,
+  PLAIN_COMMANDS,
   claudeSession,
   nativeClaude,
   refusal,
@@ -38,9 +39,10 @@ type Obj = Record<string, any>
 /** What a worker gives every harness, before the harness's own fixed variables. */
 const BASE = { PATH: "/usr/bin:/bin", HOME: "/nonexistent-home", LANG: "C.UTF-8" }
 
-/** A temp layout: a home with credentials and an office, a workspace, a private empty temp folder, the fence, a
- *  read-only and a writable listed folder, and the fake Claude Code (2.1.325 unless scripted), all resolved and
- *  the user's alone to write. `permission` builds an employee's permission over it. */
+/** A temp layout: a home with credentials and an office, a workspace, a private empty temp folder and a private
+ *  folder for the instructions beside it, the fence, a read-only and a writable listed folder, and the fake Claude Code
+ *  (2.1.325 unless scripted), all resolved and the user's alone to write. `permission` builds an employee's permission
+ *  over it. */
 function layout(script: FakeClaudeScript = {}) {
   const root = fs.realpathSync(tempDir())
   const home = path.join(root, "home")
@@ -52,8 +54,11 @@ function layout(script: FakeClaudeScript = {}) {
   const data = path.join(root, "data")
   for (const dir of [ws, path.join(cargo, "bin"), data]) fs.mkdirSync(dir, { recursive: true })
   for (const dir of [cargo, path.join(cargo, "bin")]) fs.chmodSync(dir, 0o755)
-  fs.mkdirSync(tmp, { mode: 0o700 })
-  fs.chmodSync(tmp, 0o700)
+  const prompt = path.join(root, "tmp.prompt")
+  for (const dir of [tmp, prompt]) {
+    fs.mkdirSync(dir, { mode: 0o700 })
+    fs.chmodSync(dir, 0o700)
+  }
   fs.writeFileSync(fence, "")
   const fake = installFakeClaude(path.join(root, "fake"), { version: "2.1.325", ...script })
   const permission = (fields: Partial<EmployeePermission> = {}): EmployeePermission => ({
@@ -71,7 +76,7 @@ function layout(script: FakeClaudeScript = {}) {
     officeHome: path.join(home, ".opencorp"),
     ...fields,
   })
-  return { root, home, ws, tmp, cargo, data, fake, permission }
+  return { root, home, ws, tmp, prompt, cargo, data, fake, permission }
 }
 
 /** A Claude Code process on `fake` for `p`, logging to `<root>/claude.log`, with the lines it writes kept. */
@@ -124,7 +129,7 @@ async function rejection(promise: Promise<unknown>): Promise<Error> {
 }
 
 test("a start runs claude in the folder with the employee's settings and folders, no settings files, hooks, plugins or MCP servers, edits accepted and nothing asked", async () => {
-  const { root, ws, cargo, data, fake, permission } = layout()
+  const { root, ws, tmp, cargo, data, fake, permission } = layout()
   const { claude, start } = proc(root, fake, permission())
   await claude.start()
   const at = started(fake)
@@ -144,6 +149,8 @@ test("a start runs claude in the folder with the employee's settings and folders
     JSON.stringify(start.settings),
     `--add-dir=${cargo}`,
     `--add-dir=${data}`,
+    // The session's own temp folder is a working folder, so a command naming it isn't refused as outside them.
+    `--add-dir=${tmp}`,
   ])
   expect(at.argv.slice(0, STREAM_ARGS.length)).toEqual([...STREAM_ARGS])
   for (const flag of ["--mcp-config", "--plugin-dir", "--plugin-url", "--permission-prompt-tool", "-p"]) {
@@ -155,7 +162,7 @@ test("a start runs claude in the folder with the employee's settings and folders
     "setting-sources": "",
     "strict-mcp-config": true,
     "permission-mode": "acceptEdits",
-    "add-dir": [cargo, data],
+    "add-dir": [cargo, data, tmp],
   })
   // initialize registers no hook, so Claude Code sends no hook callback.
   const init = sent(fake).find((m) => m.type === "control_request")!
@@ -189,20 +196,55 @@ test("a start's environment is the worker's with the fixed PATH, its own temp fo
   await elsewhere.claude.close(2000)
 })
 
-test("a session's start passes the owner's and the project's CLAUDE.md from a file in its own temp folder, removed when Claude Code exits", async () => {
-  const { root, home, ws, tmp, fake, permission } = layout()
+test("the session's own temp folder is one of Claude Code's working folders, so its file tools read it; another session's, and /tmp, stay outside", async () => {
+  const { root, tmp, fake, permission } = layout()
+  const reads = [path.join(tmp, "eval/out.txt"), path.join(root, "other-session/out.txt"), "/tmp/out.txt"]
+  fake.set({ turns: [reads.map((file_path) => ({ tool: "Read", input: { file_path }, result: "read" }))] })
+  const { claude, start, lines } = proc(root, fake, permission())
+  expect(start.addDirs.at(-1)).toBe(tmp)
+  await claude.start()
+  await claude.send("Read them.")
+  await waitFor(() => lines.some((m) => m.type === "result"), { what: "the turn's result" })
+  const results = lines.flatMap((m) =>
+    m.type === "user" ? (m.message.content as Obj[]).filter((block) => block.type === "tool_result") : [],
+  )
+  expect(results.map((block) => [block.is_error === true, block.content])).toEqual([
+    [false, "read"],
+    [true, expect.any(String)],
+    [true, expect.any(String)],
+  ])
+  await claude.close(2000)
+})
+
+test("Claude Code is asked, in two or three sentences, for plain commands it can check, scratch files where it may write them, and plain steps after a refusal", () => {
+  expect(PLAIN_COMMANDS.split(/(?<=\.) /).length).toBeLessThanOrEqual(3)
+  for (const said of ["`( )` groups", "`$(…)`", "loops", "working folder", "`$TMPDIR`", "split it into plain steps"]) {
+    expect(PLAIN_COMMANDS, said).toContain(said)
+  }
+})
+
+test("a session's start passes the office's words on commands, then the owner's and the project's CLAUDE.md, from a file in its own instructions folder, never its temp folder, removed when Claude Code exits", async () => {
+  const { root, home, ws, tmp, prompt, fake, permission } = layout()
   const config = path.join(home, ".claude")
   fs.writeFileSync(path.join(config, "CLAUDE.md"), "Owner says: be brief.\n")
   fs.writeFileSync(path.join(ws, "CLAUDE.md"), "Project says: use tabs.\n")
   const p = permission()
-  const session = claudeSession(p, { claude: fake.claude, configDir: config, sessionId: "550e8400-e29b-41d4-a716-446655440000" })
-  const file = path.join(tmp, "opencorp.instructions.md")
+  const session = claudeSession(p, {
+    claude: fake.claude,
+    configDir: config,
+    promptDir: prompt,
+    sessionId: "550e8400-e29b-41d4-a716-446655440000",
+  })
+  // Out of reach of its commands and file tools: a rewritten file can't change what a compaction re-reads.
+  const file = path.join(prompt, "opencorp.instructions.md")
+  expect(fs.readdirSync(tmp)).toEqual([])
   expect(session.command).toContain(`--append-system-prompt-file=${file}`)
   expect(session.command[0]).toBe(fake.claude)
   expect(session.instructions).toBe(file)
   expect(fs.statSync(file).mode & 0o777).toBe(0o600)
   expect(fs.statSync(file).uid).toBe(process.getuid!())
   const text = fs.readFileSync(file, "utf8")
+  expect(text.startsWith(`${PLAIN_COMMANDS}\n\n`)).toBe(true)
   expect(text).toContain("Owner says: be brief.")
   expect(text).toContain("Project says: use tabs.")
   const logged: string[] = []
@@ -222,28 +264,28 @@ test("a session's start passes the owner's and the project's CLAUDE.md from a fi
   expect(fs.existsSync(file)).toBe(false)
   expect(logged).toEqual([])
 
-  // With no CLAUDE.md anywhere, no file and no flag.
+  // With no CLAUDE.md anywhere, the file holds the office's words on commands alone.
   fs.rmSync(path.join(config, "CLAUDE.md"))
   fs.rmSync(path.join(ws, "CLAUDE.md"))
-  const bare = claudeSession(p, { claude: fake.claude, configDir: config })
-  expect(bare.instructions).toBeNull()
-  expect(bare.command.some((arg) => arg.startsWith("--append-system-prompt"))).toBe(false)
+  const bare = claudeSession(p, { claude: fake.claude, configDir: config, promptDir: prompt })
+  expect(bare.instructions).toBe(file)
+  expect(fs.readFileSync(file, "utf8")).toBe(`${PLAIN_COMMANDS}\n`)
   expect(fs.readdirSync(tmp)).toEqual([])
   // The rest is the permission's start, as claudeArgs builds it.
-  expect(bare.command.slice(1)).toEqual(claudeArgs(claudeStart(p)))
+  expect(bare.command.slice(1)).toEqual(claudeArgs(claudeStart(p), { instructions: file }))
   expect(bare.env).toEqual(claudeStart(p).env)
 
-  // The office's own words for the session come first, with no CLAUDE.md too.
-  const told = claudeSession(p, { claude: fake.claude, configDir: config, prompt: "Two people write to you." })
+  // The office's own words for the session come first, then those on commands; each start writes the file anew.
+  const told = claudeSession(p, { claude: fake.claude, configDir: config, promptDir: prompt, prompt: "Two people write to you." })
   expect(told.instructions).toBe(file)
-  expect(fs.readFileSync(file, "utf8")).toBe("Two people write to you.\n")
-  // Each start's temp folder is fresh.
-  fs.rmSync(file)
+  expect(fs.readFileSync(file, "utf8")).toBe(`Two people write to you.\n\n${PLAIN_COMMANDS}\n`)
   fs.writeFileSync(path.join(config, "CLAUDE.md"), "Owner says: be brief.\n")
-  const both = claudeSession(p, { claude: fake.claude, configDir: config, prompt: "Two people write to you." })
-  const text2 = fs.readFileSync(both.instructions!, "utf8")
-  expect(text2.startsWith("Two people write to you.\n\n")).toBe(true)
+  const both = claudeSession(p, { claude: fake.claude, configDir: config, promptDir: prompt, prompt: "Two people write to you." })
+  const text2 = fs.readFileSync(both.instructions, "utf8")
+  expect(text2.startsWith(`Two people write to you.\n\n${PLAIN_COMMANDS}\n\n`)).toBe(true)
   expect(text2).toContain("Owner says: be brief.")
+  // Never in a folder its commands reach: the temp folder is refused.
+  expect(() => claudeSession(p, { claude: fake.claude, configDir: config, promptDir: tmp })).toThrow(/instructions folder/)
 })
 
 /** The owner's user-scope MCP servers, two holding a token, as `.claude.json` keeps them. */
@@ -259,14 +301,15 @@ function settingsOf(command: readonly string[]): Obj {
 }
 
 test("the MCP servers an employee may use reach Claude Code in a 0600 file in the office's MCP folder of the start, holding only those defined, each started in its empty folder, never on its command line, and the file goes when Claude Code exits", async () => {
-  const { root, home, fake, permission } = layout()
+  const { root, home, prompt, fake, permission } = layout()
   const mcpHome = mcpFolder(path.join(home, ".opencorp"), "s1")
   const cwd = path.join(mcpHome, "cwd")
   const config = path.join(home, ".claude.json")
   fs.writeFileSync(config, JSON.stringify({ mcpServers: SERVERS, projects: {} }))
   // linear isn't defined: it allows nothing.
   const p = permission({ allowedMcp: ["github", "linear"], mcpHome })
-  const session = claudeSession(p, { claude: fake.claude, configDir: path.join(home, ".claude"), claudeJson: config })
+  const configDir = path.join(home, ".claude")
+  const session = claudeSession(p, { claude: fake.claude, configDir, claudeJson: config, promptDir: prompt })
   const file = path.join(mcpHome, "opencorp.mcp.json")
   expect(session.mcp).toEqual({ file, servers: ["github"], missing: ["linear"] })
   const github = startIn(SERVERS.github, cwd)
@@ -307,18 +350,19 @@ test("the MCP servers an employee may use reach Claude Code in a 0600 file in th
 })
 
 test("with no MCP server allowed, or none of those allowed defined, nothing is written and no server loads", () => {
-  const { home, fake, permission } = layout()
+  const { home, prompt, fake, permission } = layout()
   const mcpHome = mcpFolder(path.join(home, ".opencorp"), "s1")
   const config = path.join(home, ".claude.json")
   fs.writeFileSync(config, JSON.stringify({ mcpServers: SERVERS }))
   const configDir = path.join(home, ".claude")
-  const none = claudeSession(permission(), { claude: fake.claude, configDir, claudeJson: config })
+  const none = claudeSession(permission(), { claude: fake.claude, configDir, claudeJson: config, promptDir: prompt })
   expect(none.mcp).toEqual({ file: null, servers: [], missing: [] })
-  expect(none.command.slice(1)).toEqual(claudeArgs(claudeStart(permission())))
+  expect(none.command.slice(1)).toEqual(claudeArgs(claudeStart(permission()), { instructions: none.instructions }))
   const undefinedOnly = claudeSession(permission({ allowedMcp: ["linear"], mcpHome }), {
     claude: fake.claude,
     configDir,
     claudeJson: config,
+    promptDir: prompt,
   })
   expect(undefinedOnly.mcp).toEqual({ file: null, servers: [], missing: ["linear"] })
   expect(undefinedOnly.command.some((arg) => arg.startsWith("--mcp-config"))).toBe(false)
@@ -326,7 +370,7 @@ test("with no MCP server allowed, or none of those allowed defined, nothing is w
   expect(fs.readdirSync(mcpHome)).toEqual(["cwd"])
   // A config that can't be read loads none of them.
   fs.writeFileSync(config, "{not json")
-  const options = { claude: fake.claude, configDir, claudeJson: config }
+  const options = { claude: fake.claude, configDir, claudeJson: config, promptDir: prompt }
   const unread = claudeSession(permission({ allowedMcp: ["github"], mcpHome }), options)
   expect(unread.mcp).toEqual({ file: null, servers: [], missing: ["github"] })
   // Allowed servers need the office's MCP folder.

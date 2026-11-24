@@ -9,6 +9,8 @@ import {
   INTERRUPTED_TEXT,
   OUTPUT_CUT,
   OUTPUT_MAX_CHARS,
+  REFUSED_CALL_MAX,
+  REFUSED_WHY_MAX,
   Translator,
 } from "../../../src/tools/claude/translate.ts"
 
@@ -267,4 +269,58 @@ test("2.1.330's thinking, its refusals with nobody to ask and its thinking-token
   expect(calls.size).toBe(7)
   expect(tools.filter((p) => p.state === "running")).toHaveLength(7)
   expect(events.some((e) => e.type === "message" && e.message.parts.some((p) => p.type === "error"))).toBe(false)
+})
+
+/** The text parts among `events`, in order. */
+const texts = (events: HarnessEvent[]) =>
+  events.flatMap((e) => (e.type === "part" && e.part.type === "text" ? [e.part.text] : []))
+
+test("a call 2.1.330 refused with nobody to ask shows as one line after it, naming the command or the file, and why in Claude Code's words", () => {
+  const { t, events } = translator()
+  const lines = run("e1")
+  for (const msg of lines) t.line(msg)
+  const refused = lines.filter((msg) => msg.type === "system" && msg.subtype === "permission_denied")
+  expect(refused.map((msg) => msg.decision_reason_type)).toEqual(["asyncAgent", "other"])
+  const call = lines.find((msg) => msg.type === "assistant" && msg.message.content[0]?.id === refused[0].tool_use_id)!
+  const command: string = call.message.content[0].input.command
+  expect(command.length).toBeGreaterThan(REFUSED_CALL_MAX)
+  const shown = texts(events).filter((text) => text.startsWith("Claude Code refused"))
+  expect(shown).toEqual([
+    // Nobody could approve it: why is what required approval, and the command is cut.
+    `Claude Code refused \`${command.slice(0, REFUSED_CALL_MAX)}…\`: sh names '/tmp/opencorp-1000/claude/S1/tmp', ` +
+      "outside the working directories, which the read block does not allow without asking " +
+      "(permissions.blockReadsOutsideWorkingDirectories). Add the directory with /add-dir, or remove that setting.",
+    // A file tool's refusal names the tool and its file, and why is the deciding part's reason.
+    "Claude Code refused Write on `/home/user/proj`: Writes outside the working directories are blocked " +
+      "(permissions.blockWritesOutsideWorkingDirectories). Add the directory with /add-dir, or remove that setting.",
+  ])
+  // Each line follows its call, in the same message, and the turn still reads as no failure.
+  const at = (pred: (e: HarnessEvent) => boolean) => events.findIndex(pred)
+  const callPart = at((e) => e.type === "part" && e.part.type === "tool" && e.part.call_id === refused[0].tool_use_id)
+  const line = at((e) => e.type === "part" && e.part.type === "text" && e.part.text === shown[0])
+  expect(callPart).toBeGreaterThan(-1)
+  expect(line).toBeGreaterThan(callPart)
+  const messageOf = (i: number) => (events[i] as Extract<HarnessEvent, { type: "part" }>).messageId
+  expect(messageOf(line)).toBe(messageOf(callPart))
+})
+
+test("a refusal's line is one line, each part cut, its why from the message when no reason is given, and a subagent's is left out", () => {
+  const { t, events } = translator()
+  const call = (id: string, name: string, input: Obj) => ({ type: "assistant", parent_tool_use_id: null,
+    message: { content: [{ type: "tool_use", id, name, input }] } })
+  const denied = (fields: Obj) => ({ type: "system", subtype: "permission_denied", uuid: "u", session_id: "s", ...fields })
+  t.line(call("toolu_a", "Bash", { command: "OUT=x &&\n  ( time make `which eval` )" }))
+  t.line(denied({ tool_name: "Bash", tool_use_id: "toolu_a", decision_reason_type: "asyncAgent",
+    message: `Denied. What required approval: A group in parentheses\nin this command can't be checked before it runs` }))
+  t.line(call("toolu_b", "Glob", { pattern: "**/*.ts" }))
+  t.line(denied({ tool_name: "Glob", tool_use_id: "toolu_b", decision_reason_type: "rule",
+    message: `Denied ${"by a rule ".repeat(40)}` }))
+  // A subagent's own call, and its refusal, are its own: its call's part shows it.
+  t.line(denied({ tool_name: "Bash", tool_use_id: "toolu_sub", agent_id: "a1", message: "What required approval: x" }))
+  expect(texts(events)).toEqual([
+    // A backtick in the command is quoted by a longer run of them.
+    "Claude Code refused ``OUT=x && ( time make `which eval` )``: A group in parentheses in this command can't be " +
+      "checked before it runs",
+    `Claude Code refused Glob: ${`Denied ${"by a rule ".repeat(40)}`.trim().slice(0, REFUSED_WHY_MAX)}…`,
+  ])
 })

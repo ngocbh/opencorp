@@ -20,6 +20,7 @@ import {
   harnessHomes,
   harnessPath,
   mcpServersOff,
+  promptFolder,
 } from "../../../src/runtime/sandbox/harness_profile.ts"
 import { mcpFolder } from "../../../src/runtime/sandbox/harness_temp.ts"
 import { UnsafeProfile, UnsafeWorkspace } from "../../../src/runtime/sandbox/policy.ts"
@@ -565,7 +566,7 @@ test("a listed folder is mounted as listed, and one covering a credential folder
     [fence]: "deny",
   })
   const start = claudeStart(covered)
-  expect(start.addDirs).toEqual([cargo, envs, ssh, holder, path.join(config, "gh")])
+  expect(start.addDirs).toEqual([cargo, envs, ssh, holder, path.join(config, "gh"), tmp])
   const sandbox = start.settings.sandbox as { filesystem: Record<string, string[]> }
   expect(sandbox.filesystem.denyRead).toEqual(claudeDenies(home, [ssh]))
   expect(sandbox.filesystem.allowRead).toEqual([ws, tmp, cargo, envs, ssh, holder, path.join(config, "gh")])
@@ -703,7 +704,7 @@ test("Claude Code's start turns its sandbox on, fails if it can't start, allows 
       crossSessionInbound: "refuse",
       disableAgentView: true,
     },
-    addDirs: [],
+    addDirs: [tmp],
     env: {
       PATH: SYSTEM.join(":"),
       TMPDIR: tmp,
@@ -712,6 +713,55 @@ test("Claude Code's start turns its sandbox on, fails if it can't start, allows 
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
     },
   })
+})
+
+test("Claude Code's working folders take in the session's own temp folder, with --add-dir, so a command naming it isn't refused; not /tmp, another session's temp folder, the home or the office's", () => {
+  const { root, home, officeHome, tmp, permission, folder } = layout()
+  // Another session's temp folder, beside this one's as the harness's private folder under /tmp keeps them.
+  const other = path.join(root, "tmp-other")
+  fs.mkdirSync(other, { mode: 0o700 })
+  const listed = folder("data")
+  for (const p of [permission(), permission({ writable: false }), permission({ folders: [{ path: listed, access: "write" }] })]) {
+    const { settings, addDirs, env } = claudeStart(p)
+    expect(addDirs).toEqual([...p.folders.map((f) => f.path), tmp])
+    expect(env.TMPDIR).toBe(tmp)
+    // Only --add-dir counts toward the read block among the ways the flags can add one; no settings entry does it.
+    expect((settings.permissions as Record<string, unknown>).additionalDirectories).toBeUndefined()
+    for (const outside of [fs.realpathSync("/tmp"), other, home, officeHome]) expect(addDirs).not.toContain(outside)
+    // Its commands still can't see /tmp, but their own temp folder.
+    const { filesystem } = settings.sandbox as { filesystem: Record<string, string[]> }
+    expect(filesystem.denyRead).toContain(fs.realpathSync("/tmp"))
+    for (const outside of [fs.realpathSync("/tmp"), other]) {
+      expect(filesystem.allowRead).not.toContain(outside)
+      expect(filesystem.allowWrite).not.toContain(outside)
+    }
+  }
+})
+
+test("Claude Code's instructions go in a private folder of the office's that its commands and file tools can neither read nor write; one they reach, a link, or one others may open is refused", () => {
+  const { root, ws, tmp, permission } = layout()
+  const prompt = path.join(root, "tmp.prompt")
+  fs.mkdirSync(prompt, { mode: 0o700 })
+  fs.chmodSync(prompt, 0o700)
+  const p = permission()
+  expect(promptFolder(p, prompt)).toBe(prompt)
+  const { settings, addDirs } = claudeStart(p)
+  const { filesystem } = settings.sandbox as { filesystem: Record<string, string[]> }
+  const reaches = (dir: string) => prompt === dir || prompt.startsWith(dir + "/") || dir.startsWith(prompt + "/")
+  // Not under $TMPDIR, nor a working folder, nor any folder its commands may write or re-open for reads.
+  expect(prompt.startsWith(tmp + "/")).toBe(false)
+  for (const dir of [ws, ...addDirs, ...filesystem.allowWrite!, ...filesystem.allowRead!]) expect(reaches(dir)).toBe(false)
+  // A deny hides it from its commands: /tmp here, where the harness keeps it.
+  expect(filesystem.denyRead!.some((dir) => prompt.startsWith(dir + "/"))).toBe(true)
+  // The temp folder, a folder in the session's folder, a link, and one others may read are refused.
+  const inside = path.join(ws, "prompt")
+  fs.mkdirSync(inside, { mode: 0o700 })
+  const link = path.join(root, "link.prompt")
+  fs.symlinkSync(prompt, link)
+  const open = path.join(root, "open.prompt")
+  fs.mkdirSync(open)
+  fs.chmodSync(open, 0o755)
+  for (const dir of [tmp, inside, link, open]) expect(() => promptFolder(p, dir), dir).toThrow(UnsafeProfile)
 })
 
 test("Claude Code's commands can't reach the owner's sockets: /tmp, /run and /dev/shm are hidden but the session's own folders, unless a listed folder covers one", () => {

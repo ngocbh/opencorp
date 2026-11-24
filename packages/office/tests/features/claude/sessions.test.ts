@@ -5,9 +5,10 @@
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import type { Part } from "@opencorp/protocol"
 import { ClaudeSessions } from "../../../src/features/claude/sessions.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
-import { ClaudeProcess } from "../../../src/tools/claude/claude.ts"
+import { ClaudeProcess, PLAIN_COMMANDS } from "../../../src/tools/claude/claude.ts"
 import { CLAUDE, readClaudeRecord } from "../../../src/tools/claude/instrument.ts"
 import { HarnessRecord } from "../../../src/tools/harness/record.ts"
 import { person } from "../../company/helpers.ts"
@@ -70,9 +71,10 @@ test("a start is the chat's child session, under the employee's permission, told
   const [start] = starts(h)
   expect(start!.flags!["session-id"]).toBe(session.harness_session_id)
   expect(start!.cwd).toBe(h.workspace)
-  // The speakers' instructions, appended to Claude Code's own system prompt.
+  // The speakers' instructions, appended to Claude Code's own system prompt, then the office's words on commands.
   expect(start!.appended).toContain("Two people write to you in this session")
   expect(start!.appended).toContain(OWNER)
+  expect(start!.appended).toContain(PLAIN_COMMANDS)
   // The employee's permission: Claude Code's sandbox, its settings files off, and the session's own temp folder.
   expect(start!.flags!.settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true })
   expect(start!.flags!["setting-sources"]).toBe("")
@@ -81,6 +83,33 @@ test("a start is the chat's child session, under the employee's permission, told
   expect(start!.flags!["strict-mcp-config"]).toBe(true)
   expect(start!.flags!["mcp-config"]).toBeUndefined()
   expect(fs.existsSync(path.join(h.sessions.mcpRoot(), session.id))).toBe(false)
+})
+
+test("each session's Claude Code has a temp folder of its own as TMPDIR and working folder (--add-dir), empty at its start and outside the office's home, its instructions apart from it, and both gone with it", async () => {
+  const h = makeClaude()
+  const first = await started(h)
+  const second = await started(h, "01JA1H0000000000000000CA02")
+  const ids = [first.id, second.id]
+  const folders = starts(h).map((start, i) => {
+    const tmp = start.env!.TMPDIR as string
+    expect(start.flags!["add-dir"]).toEqual([tmp])
+    expect(start.flags!.settings.permissions.additionalDirectories).toBeUndefined()
+    // The instructions are in the session's own folder for them, beside its temp folder, not in it.
+    const prompt = path.join(h.sessions.root(), `${ids[i]}.prompt`)
+    expect(start.flags!["append-system-prompt-file"]).toBe(path.join(prompt, "opencorp.instructions.md"))
+    expect(fs.statSync(prompt).mode & 0o777).toBe(0o700)
+    return tmp
+  })
+  expect(folders).toEqual(ids.map((id) => path.join(h.sessions.root(), id)))
+  for (const tmp of folders) {
+    expect(fs.statSync(tmp).mode & 0o777).toBe(0o700)
+    expect(tmp.startsWith(h.office.paths.home + path.sep)).toBe(false)
+    expect(fs.readdirSync(tmp)).toEqual([])
+  }
+  await h.sessions.end(first.id)
+  expect(fs.existsSync(folders[0]!)).toBe(false)
+  expect(fs.existsSync(`${folders[0]!}.prompt`)).toBe(false)
+  expect(fs.existsSync(folders[1]!)).toBe(true)
 })
 
 /** Commits minh's person file `file` to `h`'s company: its head moves on, the session's commit stays. */
@@ -183,6 +212,27 @@ test("each message goes inside its author's label as next, and a message mid-tur
   expect(h.events.some((e) => e.type === "message.updated" && e.session_id === id)).toBe(true)
   expect(h.store.getSession(id)!.harness_usage).not.toBeNull()
   expect(h.sessions.messages(id).map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"])
+})
+
+test("a command Claude Code refuses, with nobody to ask, shows to the employee and in the owner's pane as one line after it, naming it and why", async () => {
+  const command = "OUT=results/eval make eval"
+  const h = makeClaude({ script: { turns: [[{ tool: "Bash", input: { command } }, { say: "I'll split it." }]] } })
+  const { heard, id } = await started(h)
+  await h.sessions.prompt(id, "Run the eval.", { by: "minh" })
+  await waitFor(() => heard.said().some((text) => text.endsWith("I'll split it.")), { what: "Claude Code's words" })
+  await waitFor(() => status(h, id) === "idle", { what: "the turn's end" })
+  const denied = h.fake.log().find((e) => e.dir === "out" && e.msg?.subtype === "permission_denied")!.msg!
+  expect(denied.message).toEndWith("What required approval: Bash, as the fake's rules read it.")
+  const line = `Claude Code refused \`${command}\`: Bash, as the fake's rules read it.`
+  // The employee's instrument hears it after the call, in Claude Code's message.
+  const [turn] = h.sessions.messages(id).filter((m) => m.role === "assistant")
+  expect(turn!.parts.map((p) => (p.type === "text" ? p.text : p.type))).toEqual(["tool", line, "I'll split it."])
+  expect(heard.events.some((e) => e.type === "part" && e.part.type === "text" && e.part.text === line)).toBe(true)
+  // The owner's pane gets it live, and the turn didn't fail.
+  const live = h.events.flatMap((e) => (e.type === "part.updated" && e.session_id === id ? [e.data.part as Part] : []))
+  expect(live).toContainEqual(expect.objectContaining({ type: "text", text: line }))
+  expect(live.some((part) => part.type === "error")).toBe(false)
+  expect(status(h, id)).toBe("idle")
 })
 
 test("Esc interrupts the running turn, which ends marked interrupted", async () => {
@@ -309,6 +359,7 @@ test("an office stop ends every session, and a restart ends what a crash left li
   new HarnessRecord(CLAUDE, dir, { id: left.id, name: "claude 2", driver: "minh", chat: chat.id, started: left.created_at })
   fs.mkdirSync(path.join(h.sessions.root(), left.id))
   fs.mkdirSync(path.join(h.sessions.root(), `${left.id}.bin`))
+  fs.mkdirSync(path.join(h.sessions.root(), `${left.id}.prompt`))
   fs.mkdirSync(path.join(h.sessions.mcpRoot(), left.id, "cwd"), { recursive: true })
   fs.writeFileSync(path.join(h.sessions.mcpRoot(), left.id, "opencorp.mcp.json"), "{}")
   // Another office's, or one that isn't a session's, stays.
@@ -320,6 +371,7 @@ test("an office stop ends every session, and a restart ends what a crash left li
   expect(readClaudeRecord(dir)!.state).toBe("interrupted")
   expect(fs.existsSync(path.join(h.sessions.root(), left.id))).toBe(false)
   expect(fs.existsSync(path.join(h.sessions.root(), `${left.id}.bin`))).toBe(false)
+  expect(fs.existsSync(path.join(h.sessions.root(), `${left.id}.prompt`))).toBe(false)
   expect(fs.existsSync(path.join(h.sessions.mcpRoot(), left.id))).toBe(false)
   expect(fs.existsSync(path.join(h.sessions.mcpRoot(), "not-a-session"))).toBe(true)
 })

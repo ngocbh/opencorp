@@ -412,7 +412,8 @@ export class ClaudeSessions {
    *  the owner's MCP servers the employee may use, from the owner's `.claude.json`, started in the empty folder of a
    *  fresh MCP folder of the session's in the office's home (`mcpRoot`), which holds their definitions and which the
    *  employee's commands can't read (their temp folder they can), and a log line naming each allowed server that
-   *  loads nothing; the session's instructions; and its environment, the
+   *  loads nothing; the session's instructions, in a fresh folder of their own (`<root>/<session>.prompt`) that its
+   *  commands can neither read nor write; and its environment, the
    *  worker's with Claude Code's fixed variables. A new session starts with its own id; a later start resumes it.
    *  Throws `ClaudeMissing` with no Claude Code, `ClaudeSandboxUnavailable` with no socat where the sandbox needs it,
    *  and as the checks do. */
@@ -456,6 +457,8 @@ export class ClaudeSessions {
       configDir,
       claudeJson: config,
       prompt: live.instrument.instructions,
+      // Beside its temp folder, never in it: its commands can neither read nor write this one.
+      promptDir: freshFolder(root, `${live.sessionId}.prompt`),
       ...(resume ? { resume: id } : { sessionId: id }),
     })
     // Names only, each plain (`employeePermission` keeps no other): never a definition.
@@ -499,12 +502,13 @@ export class ClaudeSessions {
     return proc
   }
 
-  /** Drops `live` once it finished, and its temp, programs and MCP folders. */
+  /** Drops `live` once it finished, and its temp, programs, instructions and MCP folders. */
   dropped(live: ClaudeSession): void {
     if (this.#live.get(live.sessionId) === live) this.#live.delete(live.sessionId)
     try {
       removeFolder(this.root(), live.sessionId)
       removeFolder(this.root(), `${live.sessionId}.bin`)
+      removeFolder(this.root(), `${live.sessionId}.prompt`)
       removeFolder(this.mcpRoot(), live.sessionId)
     } catch (error) {
       this.log(`claude session ${live.sessionId}: its temp folder wasn't removed (${nameOf(error)})`)
@@ -527,7 +531,7 @@ export class ClaudeSessions {
    *  office's sessions with no live Claude Code here, and a doctor probe's whose process is gone. */
   #sweep(): void {
     const ours = (folder: string) => {
-      const name = folder.endsWith(".bin") ? folder.slice(0, -".bin".length) : folder
+      const name = folder.replace(/\.(bin|prompt)$/, "")
       return !this.#live.has(name) && this.store.getSession(name) !== undefined
     }
     for (const [what, root] of [

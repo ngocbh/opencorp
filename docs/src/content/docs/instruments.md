@@ -232,6 +232,14 @@ it. On Linux its sandbox fails every command in a folder your employee may only 
 `harness_policy` keeps the folder read-only can't start it either: make it `workspace-write`, or have them use Codex.
 `opencorp doctor` names them.
 
+Claude Code also refuses a command it can't check before it runs, such as one with a `( )` group or a `$(…)`
+substitution, or one naming a path outside its working folders: the project folder, the listed folders and the
+session's own temp folder (`$TMPDIR`: empty at each start, since OpenCorp keeps nothing of its own there, and gone
+with the session). Nobody can approve such a command there. OpenCorp tells Claude Code so, and asks it for plain
+commands, scratch files in the project folder or `$TMPDIR`, and plain steps in place of a command it refused. Your
+employee and the session's pane see a refusal as one line after the command, in Claude Code's words:
+``Claude Code refused `( time make eval )`: A group in parentheses in this command can't be checked before it runs``.
+
 A project you've trusted in Codex (Codex asks the first time you run it there) loads its own `.codex/config.toml`,
 whose MCP servers and hooks would run as you, outside your employee's permission. So your employee's Codex session
 won't start in such a project, nor take a message once you trust the project while it runs, and says which file it

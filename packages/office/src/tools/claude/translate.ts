@@ -3,11 +3,13 @@
  *
  *  A turn's lines share one assistant message until a user message comes in mid-turn (a steer): what Claude Code
  *  writes after it opens a new message, so what it does after reading the steer follows it. Each text block is a text
- *  part, each tool call a tool part (`claude.<Tool>`) that its result completes. A subagent's own lines are left out:
- *  its call's part shows it. An API error is shown once, from the turn's result, and an interrupted turn ends with
- *  `[interrupted]`. */
+ *  part, each tool call a tool part (`claude.<Tool>`) that its result completes. A call Claude Code refuses before it
+ *  runs (`system`/`permission_denied`) gets a line after it naming the call and why (`refusalLine`). A subagent's own
+ *  lines are left out: its call's part shows it. An API error is shown once, from the turn's result, and an
+ *  interrupted turn ends with `[interrupted]`. */
 import { type ErrorPart, type HarnessUsage, type Message, now, type TextPart, type ToolPart } from "@opencorp/protocol"
 import { newId } from "../../util/ids.ts"
+import { oneLine } from "../../util/lines.ts"
 import type { HarnessEvent } from "../harness/adapter.ts"
 import { type Msg, isObj } from "./stream.ts"
 
@@ -21,6 +23,13 @@ export const INTERRUPTED_TEXT = "\n\n[interrupted]"
 export const TOOL_PREFIX = "claude."
 /** What Claude Code writes as the user when an interrupt stopped the turn. */
 const INTERRUPTED_LINE = "[Request interrupted by user"
+/** The most of a refused command, or a refused tool's file, its line shows, in characters. */
+export const REFUSED_CALL_MAX = 100
+/** The most of why a call was refused its line shows, in characters. */
+export const REFUSED_WHY_MAX = 300
+/** What, in a refusal's message to the model, comes before what required approval, when nobody could give it (as
+ *  2.1.330 writes it with `--permission-prompts=none`). */
+const REQUIRED = "What required approval: "
 
 /** Writes one Claude Code session's lines as live message, part and turn events. */
 export class Translator {
@@ -110,7 +119,19 @@ export class Translator {
       if (msg.state === "running") this.#begin()
       return true
     }
+    if (msg.subtype === "permission_denied") {
+      // A subagent's (`agent_id`) is left out with its other lines.
+      if (typeof msg.agent_id !== "string") this.#refused(msg)
+      return true
+    }
     return false
+  }
+
+  /** A call Claude Code refused before it ran: a line after it saying so. */
+  #refused(msg: Msg): void {
+    this.#begin()
+    const held = typeof msg.tool_use_id === "string" ? this.#tools.get(msg.tool_use_id) : undefined
+    this.#put({ id: newId(), type: "text", text: refusalLine(msg, held?.input ?? {}) })
   }
 
   /** Starts a turn unless one runs. */
@@ -193,6 +214,34 @@ export class Translator {
     this.#tail = part
     this.emit({ type: "part", messageId: this.#message, part: structuredClone(part) })
   }
+}
+
+/** The line for a call Claude Code refused (`permission_denied`, whose call had `input`): `Claude Code refused <call>:
+ *  <why>`. The call is a Bash command, or the tool and the file it names; why is Claude Code's own words, what
+ *  required approval when nobody could give it, else the deciding part's reason, else what the model was told. Each
+ *  is put on one line and cut (`REFUSED_CALL_MAX`, `REFUSED_WHY_MAX`). */
+export function refusalLine(msg: Msg, input: Record<string, unknown>): string {
+  const tool = oneLine(typeof msg.tool_name === "string" ? msg.tool_name : "a tool", REFUSED_CALL_MAX)
+  const file = input.file_path ?? input.notebook_path ?? input.path
+  const call =
+    tool === "Bash" && typeof input.command === "string"
+      ? code(oneLine(input.command, REFUSED_CALL_MAX))
+      : typeof file === "string"
+        ? `${tool} on ${code(oneLine(file, REFUSED_CALL_MAX))}`
+        : tool
+  const told = typeof msg.message === "string" ? msg.message : ""
+  const at = told.indexOf(REQUIRED)
+  const reason = typeof msg.decision_reason === "string" ? msg.decision_reason : ""
+  const why = oneLine(at !== -1 ? told.slice(at + REQUIRED.length) : reason || told, REFUSED_WHY_MAX)
+  return `Claude Code refused ${call}: ${why || "it gave no reason"}`
+}
+
+/** `text` as inline code: between runs of backticks longer than any in it, with a space inside each when it starts
+ *  or ends with one. */
+function code(text: string): string {
+  const ticks = "`".repeat(Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length)) + 1)
+  const pad = text.startsWith("`") || text.endsWith("`") ? " " : ""
+  return `${ticks}${pad}${text}${pad}${ticks}`
 }
 
 /** Whether a line is the session's own, not one of a subagent's. */

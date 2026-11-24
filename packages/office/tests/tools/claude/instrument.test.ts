@@ -19,6 +19,7 @@ import type {
   TurnEnded,
 } from "../../../src/tools/harness/instrument.ts"
 import { MAX_LIVE } from "../../../src/tools/harness/instrument.ts"
+import { Translator } from "../../../src/tools/claude/translate.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 
 const CHAT = "01JA1H00000000000000000CHT"
@@ -163,6 +164,36 @@ test("the record is a claude record, Claude Code's words labelled Claude Code, a
   expect(found.output).toEqual([{ author: "claude", text: "[Bash] $ bun test\n12 pass" }])
   expect(markClaudeInterrupted(dir)).toBe(true)
   expect(readClaudeRecord(dir)!.state).toBe("interrupted")
+})
+
+test("a command Claude Code refused reaches the employee's reply and the record as one line, and the turn completed, not failed", async () => {
+  const m = made()
+  expect((await m.call("start", { message: "Run the eval.", wait: 0 })).status).toBe("running")
+  const [session] = m.host.sessions
+  // Claude Code's lines through the translator, as a session's are.
+  const translator = new Translator(session!.id, (e) => {
+    if (e.type === "message" || e.type === "part") session!.events.event(e)
+  })
+  const command = 'OUT=results/eval && ( time python3 -m robust_location --output "$OUT" )'
+  const why = "A group in parentheses in this command can't be checked before it runs"
+  const told = `Permission for this tool use was denied. What required approval: ${why}`
+  for (const line of [
+    { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command } }] } },
+    { type: "system", subtype: "permission_denied", tool_name: "Bash", tool_use_id: "toolu_1",
+      decision_reason_type: "asyncAgent", message: told },
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_1", is_error: true, content: told }] } },
+    { type: "assistant", message: { content: [{ type: "text", text: "I'll run it in plain steps." }] } },
+  ]) translator.line(line)
+  session!.events.state("idle")
+  const refused = `Claude Code refused \`${command}\`: ${why}`
+  await waitFor(() => m.host.notes.length === 1, { what: "the note" })
+  expect(m.host.notes[0]!.text.split("\n")[0]).toBe("claude 1: the turn on `Run the eval.` completed")
+  const reply = await m.call("history", { claude: "claude 1" })
+  expect(reply.output).toContainEqual({ author: "claude", text: `${refused}\n\nI'll run it in plain steps.` })
+  const dir = m.host.recordDir(session!.id)
+  expect(fs.readFileSync(path.join(dir, "conversation.log"), "utf8")).toContain(refused)
+  // The trace keeps the call and what Claude Code told the model, as it wrote it.
+  expect(fs.readFileSync(path.join(dir, "trace.log"), "utf8")).toContain(`[Bash (error)] $ ${command}\n${told}`)
 })
 
 test("a failed tool call shows why in the trace, and another tool its input whole", () => {
