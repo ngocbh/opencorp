@@ -91,6 +91,12 @@ while a command runs), and a missing `.mcp.json` can still be created.
   draft or a card is open; then press ctrl+x → to type the password there. Esc in the chat stops your employee and
   the command they were waiting on. A command they were told is still running goes on. A message you send while they
   wait has a grey border until they read it before their next step; Esc stops them, and they read it next.
+- **Typing in their shell.** A line you start in your employee's shell is yours until you finish it: their commands
+  and keys wait, and they are told why. The pane's footer says how to give it back,
+  `Enter or Ctrl-C (Ctrl-U at the prompt) gives it to @thanh`, and with your keys in the chat, a line there says the
+  same. Enter or Ctrl-C works anywhere. For a line typed at the shell's own prompt, with no command running, Ctrl-U
+  works too, and so does deleting all you typed, unless you used an arrow, Tab or another editing key on it. Keys you
+  type while a command runs that it never reads are dropped when it ends, so none of them runs at the prompt.
 - **The picker.** ← and → switch its tabs (Sessions, Shell), ↑ and ↓ move, Enter opens in the pane, and Esc or ↑ on
   the first row closes it. It opens on the first tab with something running. Sessions lists the live sessions,
   running or idle, and Shell the shells that run; ctrl+a shows the rest, and stays as you set it until you quit.

@@ -88,6 +88,15 @@ test("a shell's state, output and size reach the registry; keys, Ctrl-C and a cl
   await waitFor(() => screen().includes("30 100"), { what: "the new size" })
   await waitFor(() => registry.list(SESSION)[0]!.status === "idle", { what: "the owner's command to end" })
 
+  // A line the owner is typing holds the shell, and says so, until they delete it.
+  instrument.keys("ec")
+  expect(registry.list(SESSION)[0]!.owner_typing).toBe(true)
+  const lastUpdate = () => events.findLast((e) => e.type === "instrument.updated")
+  expect(lastUpdate()).toMatchObject({ data: { owner_typing: true } })
+  instrument.keys("\x7f\x7f")
+  expect(registry.list(SESSION)[0]!.owner_typing).toBe(false)
+  expect(lastUpdate()).toMatchObject({ data: { owner_typing: false } })
+
   // The owner's command, and their Ctrl-C to it.
   instrument.keys("sleep 30\r")
   await waitFor(() => registry.list(SESSION)[0]!.status === "running", { what: "the owner's command" })

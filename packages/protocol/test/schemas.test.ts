@@ -330,8 +330,9 @@ test("an instrument is a terminal, a Codex or a Claude Code session, and while w
   expect(Schemas.Instrument.shape.profile.options).toEqual(["workspace", "ssh", "harness", "none"])
   // Instruments live in the office's memory, so none is listed after a restart: there is no interrupted one.
   expect(Schemas.Instrument.shape.status.options).toEqual(["starting", "idle", "running", "waiting", "ended", "failed"])
-  const { waiting: _, command: __, error: ___, ...bare } = instrument
-  expect(Schemas.Instrument.parse(bare)).toMatchObject({ waiting: null, command: null, error: null })
+  const { waiting: _, command: __, error: ___, owner_typing: ____, ...bare } = instrument
+  expect(Schemas.Instrument.parse(bare)).toMatchObject({ waiting: null, command: null, error: null, owner_typing: false })
+  expect(Schemas.Instrument.parse({ ...instrument, owner_typing: true }).owner_typing).toBe(true)
   for (const waiting of ["secret", "approval"] as const)
     expect(Schemas.Instrument.parse({ ...instrument, status: "waiting", waiting }).waiting).toBe(waiting)
   expect(Schemas.Instrument.safeParse({ ...instrument, status: "waiting", waiting: "model" }).success).toBe(false)

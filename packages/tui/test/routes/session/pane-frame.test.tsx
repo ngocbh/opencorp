@@ -403,6 +403,43 @@ test("while the owner types into the shell its header says you are driving, in t
   }
 })
 
+test("while the owner's line holds the shell, the pane or the chat says how to give it back; once given back, the employee drives", async () => {
+  const { office, sid, app } = await boot()
+  const giveBack = "Enter or Ctrl-C (Ctrl-U at the prompt) gives it to @minh"
+  // The chat's line wraps; its start names the shell.
+  const inChat = "you're typing in shell 1 · Enter or Ctrl-C"
+  try {
+    const sh = shell(office, sid)
+    await app.until((f) => f.includes("↓ 1 shell"))
+    await openFirst(app)
+    app.input.typeText("git st")
+    await until(() => typed(office, sh.id) === "git st")
+    // The office says the line holds the shell: the pane with the keys says so in its footer, muted.
+    shell(office, sid, { ...sh, owner_typing: true, updated_at: new Date().toISOString() })
+    let f = await app.until((f) => f.includes(giveBack))
+    expect(header(f)).toContain("you are driving")
+    expect(f).not.toContain("ctrl+x ← focus chat")
+    expect(f).not.toContain(inChat)
+    expect(fg(app, giveBack)).toEqual(theme.textMuted)
+    // With the keys in the chat, the chat says it, naming the shell.
+    await leader(app, "left")
+    f = await app.until((f) => f.includes(inChat) && f.includes("ctrl+x → focus pane"))
+    expect(f).toContain("the prompt) gives it to @minh")
+    expect(fg(app, "you're typing")).toEqual(theme.textMuted)
+    await leader(app, "right")
+    await app.until((f) => !f.includes(inChat) && f.includes(giveBack))
+    // The owner deleted what they typed: the line is the employee's again, though no Enter came.
+    app.input.pressBackspace()
+    shell(office, sid, { ...sh, owner_typing: false, updated_at: new Date().toISOString() })
+    f = await app.until((f) => header(f).includes("@minh is driving") && f.includes("ctrl+x ← focus chat"))
+    expect(f).not.toContain(giveBack)
+    expect(boxColor(app)).toEqual(MINH)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a pipes shell shows the employee's commands as $ lines in their colour, and Esc closes it", async () => {
   const { office, sid, app } = await boot()
   try {

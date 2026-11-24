@@ -401,7 +401,9 @@ test("the tools' own refusals come before the gate and hold nothing", async () =
   expect(json(await t.call("type", { shell: "shell 1", text: "a\tb", why: "x" })).refused).toMatch(/printable ASCII/)
   t.terminal.shell("sh_1")!.ownerKeys("ab")
   expect(json(await t.call("type", { shell: "shell 1", text: "x", why: "x" })).refused).toBe(
-    "the owner is typing a line in this shell; call read, and try again once they've finished it",
+    "the owner is typing a line in this shell, which holds it for them until Enter runs it or Ctrl-C gives it back " +
+      "to you; at the shell's prompt, Ctrl-U or deleting what they typed gives it back too. Call read, and try " +
+      "again once they have; if they seem to have stopped, tell them how to give it back",
   )
   expect(held).toEqual([])
   expect(checked).toEqual([])

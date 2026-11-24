@@ -204,6 +204,8 @@ export type SessionProps = {
   onCardLost?: () => void
   /** A line saying the pane holds an instrument it can't show beside the chat, and how to show it. */
   paneNote?: string
+  /** A line saying the owner's line holds one of the chat's shells, and how to give it back. */
+  holdNote?: string
 }
 
 export function Session(props: SessionProps) {
@@ -1378,6 +1380,13 @@ export function Session(props: SessionProps) {
               <Show when={props.paneNote}>
                 {(note) => (
                   <text fg={theme.warning} flexShrink={0} wrapMode="word">
+                    {note()}
+                  </text>
+                )}
+              </Show>
+              <Show when={props.holdNote}>
+                {(note) => (
+                  <text fg={theme.textMuted} flexShrink={0} wrapMode="word">
                     {note()}
                   </text>
                 )}

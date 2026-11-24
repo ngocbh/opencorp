@@ -22,7 +22,7 @@ import { useRoute } from "../context/route"
 import { useBindings, useCommandShortcut, useOpenCorpKeymap } from "../keymap"
 import { Session } from "../routes/session"
 import { childState, familyQuestions } from "../routes/session/composer/tabs"
-import { InstrumentPanel, InstrumentScreen, type Driver } from "../routes/session/instrument-view"
+import { giveBack, InstrumentPanel, InstrumentScreen, type Driver } from "../routes/session/instrument-view"
 import { endsLine } from "../routes/session/keys"
 import { Sidebar } from "../routes/session/sidebar"
 import { sessionOwner } from "../routes/session/speakers"
@@ -146,7 +146,8 @@ export function SessionFrame(props: { sessionID: string }) {
   // acts as.
   const approver = () => sessionOwner(session(), office.state.people)
   const approving = () => !!office.person && office.person === approver()
-  // Whether the owner has typed text into the open shell since their last Enter, Ctrl-C or Ctrl-D.
+  // Whether the owner has typed text into the open shell since their last Enter, Ctrl-C or Ctrl-D, or until the office
+  // gave their line back.
   const [midLine, setMidLine] = createSignal(false)
   // Whether the open instrument opened itself, for a password, and so closes itself once that is done.
   const [itself, setItself] = createSignal(false)
@@ -303,13 +304,33 @@ export function SessionFrame(props: { sessionID: string }) {
     return shells().find((i) => i.name === name && LIVE.includes(i.status))
   })
 
+  // Whether the owner's line holds shell `i`, as the office says (`owner_typing`): only the approver's keys reach it.
+  const held = (i: Instrument | undefined) => approving() && !!i?.owner_typing
+  // The office gives the shell back once the owner deletes or kills their line, with no Enter this view would see.
+  createEffect(
+    on(
+      () => held(panelInstrument()),
+      (now, before) => {
+        if (before && !now) setMidLine(false)
+      },
+    ),
+  )
+  /** The line in the chat while the owner's line holds one of its shells that hasn't their keys in the pane. */
+  const holdNote = () => {
+    const shell = shells().find((i) => held(i) && !(activePane() === "right" && panelInstrument()?.id === i.id))
+    return shell && `you're typing in ${display(shell.name)} · ${giveBack(shell)}`
+  }
+
   // Who is at the controls of the open instrument: the owner while they type into the shell, or while the harness
   // runs a turn the owner's message started; otherwise its driver, the employee.
   const driver = createMemo<Driver | undefined>(() => {
     const instrument = panelInstrument()
     if (!instrument) return undefined
     const owner = approver()
-    const you = instrument.kind === "terminal" ? activePane() === "right" && midLine() : ownersTurn(instrument.id)
+    const you =
+      instrument.kind === "terminal"
+        ? activePane() === "right" && (midLine() || held(instrument))
+        : ownersTurn(instrument.id)
     const handle = you ? owner : instrument.driver
     return { you, handle, color: local.person.color(handle) }
   })
@@ -465,6 +486,7 @@ export function SessionFrame(props: { sessionID: string }) {
             keysDropped={dropping()}
             onCardLost={() => setDropping("card")}
             paneNote={paneNote()}
+            holdNote={holdNote()}
           />
         </InteractivityProvider>
         {/* While the pane has the keys, a click in the chat gives them back. */}

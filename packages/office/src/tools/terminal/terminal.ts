@@ -169,7 +169,9 @@ const MOVED_FOLDER = (was: string | null, now: string | null) =>
 export const SANDBOX_FIX =
   "the shell needs a sandbox: on Linux, install bubblewrap (bwrap) and allow unprivileged user namespaces; on " +
   "macOS, sandbox-exec comes with the system"
-const STARTING: ShellState = { status: "starting", waiting: null, command: null, exit: null, error: null }
+const STARTING: ShellState = {
+  status: "starting", waiting: null, command: null, exit: null, error: null, ownerTyping: false,
+}
 /** How long a cut-off call waits for its stopped command to end before it replies. */
 const STOP_WAIT_MS = 3000
 /** What a note shows of a command's output: its last lines, at most this many, in at most this many bytes. */
