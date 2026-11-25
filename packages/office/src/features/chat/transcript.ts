@@ -9,6 +9,7 @@ import {
   PoolCommitRecord,
   RunLogChangedError,
   type RunLogEntry,
+  takeInboxes,
   TypedValue,
 } from "@ngocbh/yian/run"
 import { Handle, type Message, type Part, type ToolPart } from "@opencorp/protocol"
@@ -525,7 +526,9 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
       const text = message.parts.findLast((part) => part.type === "text") as { text: string } | undefined
       const shown = { author: message.author, parts: text === undefined ? [] : [{ type: "text", text: text.text }] }
       state.sends.set(seq, keep(state, { seq, at, message: shown as Send["message"], key: record.sendKey }))
-    } else if (record.take !== null && record.take.inbox === inbox && MAIN_CHAT.isTurn(record.nodeId)) {
+    } else if (record.take !== null && MAIN_CHAT.isTurn(record.nodeId)
+      && takeInboxes(record.take.inbox).includes(inbox)) {
+      // A take of several inboxes lists all their sends; only the chat inbox's are in `sends`, to show.
       state.takes.set(seq, keep(state, record.take.events.map(Number)))
     }
   } else if (kind === "node_succeeded") {

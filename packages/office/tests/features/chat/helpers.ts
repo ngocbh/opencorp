@@ -61,6 +61,20 @@ export const CHAT_FLOW = fs.readFileSync(
   "utf8",
 )
 
+/** The template's chat flow with a second inbox, `queued`, which each turn's take reads beside `messages` and the
+ *  reply never reads as steers: a queue for the next turn, as yian's inbox docs show one. */
+export const QUEUE_CHAT_FLOW = [
+  ["  messages: !Inbox(Message)  #", "  queued: !Inbox(Message)\n  messages: !Inbox(Message)  #"],
+  ["      messages: !Inbox(Message)\n", "      messages: !Inbox(Message)\n      queued: !Inbox(Message)\n"],
+  ["          from: ${input.messages}\n", "          from:\n            - ${input.messages}\n            - ${input.queued}\n"],
+  ["said: ${heard.output.events}", "said: ${[e.event for e in heard.output.events]}"],
+  ["[heard.output.events + (reply", "[[e.event for e in heard.output.events] + (reply"],
+  ["      messages: ${input.messages}\n      person", "      messages: ${input.messages}\n      queued: ${input.queued}\n      person"],
+].reduce((flow, [from, to]) => {
+  if (flow.split(from!).length !== 2) throw new Error(`the chat flow no longer holds ${JSON.stringify(from)} once`)
+  return flow.replace(from!, to!)
+}, CHAT_FLOW)
+
 /** The template's `compact_history.yaml`, which the chat flow uses. */
 export const COMPACT_HISTORY = fs.readFileSync(
   new URL("../../../src/company/template/shared/flows/compact_history.yaml", import.meta.url),
