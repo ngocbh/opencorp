@@ -568,7 +568,8 @@ test("a held call waits, marked held; a release delivery runs it once, and the a
   ])
   expect(calls).toEqual([])
   const rec = new Gating(() => ({ run: true }), { tools })
-  const release = { id: "r1", op: "release", call_id: held.callId, note: "approved by @ceo" } as const
+  const by = { kind: "user", name: "ceo" } as const
+  const release = { id: "r1", op: "release", call_id: held.callId, note: "approved by @ceo", by } as const
   await run(advanceJob(chat, { deliver: [release] }), rec, { env: fake.env() })
   expect([rec.outcome?.status, rec.outcome?.output], String(rec.outcome?.message)).toEqual(["succeeded", "done"])
   expect(rec.replies).toEqual([{ type: "deliver_reply", id: "r1", seq: expect.any(Number) }])
@@ -577,6 +578,11 @@ test("a held call waits, marked held; a release delivery runs it once, and the a
   expect(calls).toEqual(["first", "second"])
   expect(gatedRecords(chat)[0]).toEqual(["run_started", true])
   expect(toolSteps(chat).some((step) => step.note === "approved by @ceo")).toBe(true)
+  // Who released it, beside the step.
+  const released = [...iterRunRecords(chat.log, { kinds: ["node_step"] })]
+    .map((entry) => entry.envelope.record as unknown as { by: unknown; step: Record<string, unknown> })
+    .filter((record) => record.by !== null)
+  expect(released.map((record) => [record.step.kind, record.by])).toEqual([["released", by]])
 })
 
 test("a gated run that a stop cut off is marked gated again when an advance resumes it", async () => {

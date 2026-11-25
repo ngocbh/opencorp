@@ -224,12 +224,16 @@ function applier(
   return async (delivery) => {
     try {
       switch (delivery.op) {
-        case "send":
-          return { seq: await send(log, delivery.inbox, delivery.event, { ...options, key: delivery.key ?? null }) }
+        case "send": {
+          const sent = { ...options, key: delivery.key ?? null, by: delivery.by ?? null }
+          return { seq: await send(log, delivery.inbox, delivery.event, sent) }
+        }
         case "complete":
-          return { seq: await complete(log, delivery.call_id, delivery.result, options) }
-        case "release":
-          return { seq: await release(log, delivery.call_id, { ...options, note: delivery.note ?? null }) }
+          return { seq: await complete(log, delivery.call_id, delivery.result, { ...options, by: delivery.by ?? null }) }
+        case "release": {
+          const released = { ...options, note: delivery.note ?? null, by: delivery.by ?? null }
+          return { seq: await release(log, delivery.call_id, released) }
+        }
         case "close":
           return { seq: await closeInbox(log, delivery.inbox, options) }
         case "withdraw": {
@@ -738,12 +742,13 @@ async function runJob(
       const replaced = path.basename(path.dirname(job.seed.log))
       const from = new Map(seeded.unread.map(({ seq }, n) => [`moved-${n}`, seq]))
       deliveries.pushFront(
-        seeded.unread.map(({ message, key }, n) => ({
+        seeded.unread.map(({ message, key, by }, n) => ({
           id: `moved-${n}`,
           op: "send",
           inbox: MAIN_CHAT.inbox,
           event: message,
           ...(key === null ? {} : { key }),
+          ...(by === null ? {} : { by }),
         })),
         // The office shows each moved message under its new seq in place of its copy in the replaced run.
         (delivery, seq) => {

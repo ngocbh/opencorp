@@ -15,12 +15,13 @@ import {
 import { errorName } from "./rpc.ts"
 import { MAIN_CHAT } from "../../company/chat_flow.ts"
 
-/** A send of the replaced run that nothing read: its seq there, its message, and the key the office sent it under, if
- *  any. */
+/** A send of the replaced run that nothing read: its seq there, its message, the key the office sent it under, if
+ *  any, and who sent it (`by`), if its record says. */
 export interface UnreadSend {
   readonly seq: number
   readonly message: Message
   readonly key: string | null
+  readonly by: PoolCommitRecord["by"]
 }
 
 /** What a fresh run takes from the run it replaces. */
@@ -95,7 +96,7 @@ function carried(records: FoldedRun["records"]): { summary: string; history: Mes
 
 /**
  * The sends to the main chat's inbox, in log order, that no accepted take, steer step or withdraw consumed, with their
- * keys. A take commit counts once a success names it: an orphan one's events go back to unread, as yian re-offers
+ * keys and senders. A take commit counts once a success names it: an orphan one's events go back to unread, as yian re-offers
  * them. A withdraw's sends are the office's again (Esc sends them anew), so none is moved.
  */
 function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
@@ -107,7 +108,7 @@ function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
     if (record instanceof PoolCommitRecord) {
       if (record.nodeId === START && record.key === SEND_KEY && record.value !== null) {
         const message = TypedValue.fromWire(record.value).toObject() as Message
-        sends.set(entry.seq, { message, key: record.sendKey })
+        sends.set(entry.seq, { message, key: record.sendKey, by: record.by })
       } else if (record.take !== null) {
         takes.set(entry.seq, record.take.events)
       }
