@@ -7,10 +7,11 @@ import { complete, inspectRun, interrupt } from "@ngocbh/yian/run"
 import { now, Question } from "@opencorp/protocol"
 import type { SessionActor } from "../../../src/features/chat/session_actor.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
-import type { LiveCalls } from "../../../src/features/chat/transcript.ts"
+import { type LiveCalls, Transcript } from "../../../src/features/chat/transcript.ts"
 import { YES } from "../../../src/runtime/questions/approval.ts"
 import { formatAnswer } from "../../../src/runtime/questions/format.ts"
 import { COULDNT_RESUME, COULDNT_START, OFFICE_REPLACED } from "../../../src/runtime/runs/outcomes.ts"
+import { SCHEMA } from "../../../src/runtime/runs/reader.ts"
 import { newId } from "../../../src/runtime/store/store.ts"
 import { LLM_CONFIG, type ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
@@ -433,6 +434,36 @@ test("an unreadable run log sleeps and its next message starts a fresh run", asy
   expect(await say(o, actor, sid, "b")).toBe("two")
   expect(o.kinds.slice(before)).toEqual(["chat"])
   // Its log can't be read, so the fresh run has no history to take.
+  expect(o.jobs.at(-1)!.seed).toBeNull()
+  expect(session(o, sid).run_ids).toEqual([old, actor.runId!])
+})
+
+test("a run log of an older schema sleeps, ended couldnt resume, and Run Logs names its schema; the next message starts afresh", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { actor: first, sid } = await startActor(o)
+  expect(await say(o, first, sid, "a")).toBe("one")
+  const old = first.runId!
+  const actor = await reopen(o, first)
+  // As the yian before an update wrote it: yian reads only its own schema.
+  const log = path.join(o.office.paths.runs, old, "log.jsonl")
+  fs.writeFileSync(log, fs.readFileSync(log, "utf8").replaceAll(`"schema":${SCHEMA},`, `"schema":${SCHEMA - 1},`))
+  const before = o.kinds.length
+  await actor.restore()
+  expect(o.kinds.length).toBe(before)
+  expect(status(o, sid)).toBe("idle")
+  expect(o.logs.some((line) => line.includes(sid) && line.includes("(RunLogSchemaError)"))).toBe(true)
+  expect(o.office.store.getRun(old)?.endReason).toBe(COULDNT_RESUME)
+  expect(o.office.runs.page().runs.find((r) => r.run_id === old)).toMatchObject({ status: "failed", reason: COULDNT_RESUME })
+  expect(await o.office.runs.detail(old)).toMatchObject({
+    log_state: "unsupported_schema",
+    log_message: `This log uses run-log schema ${SCHEMA - 1}, which is older than this office supports`,
+  })
+  // Its messages can't be read, so an office started after the update shows none of them.
+  expect(new Transcript(o.office.paths.runs).messages(sid, [old])).toEqual([])
+  expect(await say(o, actor, sid, "b")).toBe("two")
+  expect(o.kinds.slice(before)).toEqual(["chat"])
   expect(o.jobs.at(-1)!.seed).toBeNull()
   expect(session(o, sid).run_ids).toEqual([old, actor.runId!])
 })

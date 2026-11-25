@@ -40,6 +40,7 @@ import { args, killGroup, sameProcess, startTime } from "../../../src/util/proc.
 import { resolveTools } from "../../../src/runtime/service/programs.ts"
 import { selfCommand } from "../../../src/platform.ts"
 import { OFFICE_STOPPED } from "../../../src/runtime/runs/outcomes.ts"
+import { SCHEMA } from "../../../src/runtime/runs/reader.ts"
 import { latestVersion } from "../../../src/runtime/store/migrate.ts"
 import { Store, newId } from "../../../src/runtime/store/store.ts"
 import { LLM_CONFIG } from "../../../src/testing/fake_llm.ts"
@@ -1195,6 +1196,31 @@ test("an index whose table doesn't fit yian's layout is rebuilt at the start, an
   expect(out.text()).not.toContain("the start sweep was skipped")
   expect(out.text()).not.toMatch(/no such table/)
   expect(office.store.getRun(built.open)!.endReason).not.toBeNull()
+})
+
+test("an office whose run logs an older yian wrote starts: the index marks them unreadable, and the sweep ends them", async () => {
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const paths = new OfficePaths(home())
+  const out = collect()
+  const built = officeWithOpenRun(paths, out.write)
+  office = built.office
+  fs.mkdirSync(path.join(paths.runs, built.open), { recursive: true })
+  const first = runStarted(0).toString().replace(`"schema":${SCHEMA},`, `"schema":${SCHEMA - 1},`)
+  fs.writeFileSync(path.join(paths.runs, built.open, "log.jsonl"), first)
+  await office.start()
+  expect(out.text()).not.toMatch(/run index (unusable|update failed)/)
+  expect(out.text()).not.toContain("the start sweep was skipped")
+  const row = readRunIndex(paths.runs).find((r) => r.runId === built.open)
+  expect(row?.unreadable?.reason).toContain(`run log schema ${SCHEMA - 1} predates schema ${SCHEMA}`)
+  expect(office.store.getRun(built.open)!.endReason).toBe(OFFICE_STOPPED)
 })
 
 test("an index that stays broken skips the start sweep and does not stop the office start", async () => {
