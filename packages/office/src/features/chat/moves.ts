@@ -6,10 +6,10 @@ import { replaceFile } from "../../util/private_files.ts"
 
 /**
  * A move of an unread message between a chat's inbox and its queue: its run, the send's seq there, the inbox it was in
- * (`from`), the one it goes to (`to`), and the person who moved it, their own message. A move is a withdraw, then a
- * send, which yian can't do in one step yet (yian#1831): it is recorded before the withdraw and dropped once the
- * message is where it goes or back where it was, so an office stop between the two finishes or reverses it at the next
- * start.
+ * (`from`), the one it goes to (`to`), the person who moved it, their own message, and whether its send there failed
+ * and it goes `back` instead. A move is a withdraw, then a send, which yian can't do in one step yet (yian#1831): it
+ * is recorded before the withdraw, again before a send back, and dropped once the message is where it goes or back
+ * where it was, so an office stop between the steps finishes or reverses it at the next start, never both.
  */
 export const Move = z.strictObject({
   run_id: z.string().min(1),
@@ -17,6 +17,7 @@ export const Move = z.strictObject({
   from: z.string().min(1),
   to: z.string().min(1),
   by: z.string().min(1),
+  back: z.boolean().default(false),
 })
 export type Move = z.output<typeof Move>
 

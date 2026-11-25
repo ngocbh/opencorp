@@ -129,7 +129,7 @@ export interface ActorContext {
   readonly checkMs?: number
   readonly hooks: Hooks
   readonly answers: Answers
-  readonly transcript: Pick<Transcript, "forget" | "unread" | "sentMessage" | "send" | "withdrawnMessage">
+  readonly transcript: Pick<Transcript, "forget" | "unread" | "sentMessage" | "send" | "withdrawn" | "keyed">
   /** The office's live relay, fed each worker's live frames; the actor's `calls` reads it. */
   readonly live: Pick<LiveRelay, "frame" | "detach" | "calls" | "forget" | "unreadShown">
   /** The run spec of `session` (Python's restorers); may throw a `HarnessError`. */
@@ -1167,7 +1167,7 @@ export class SessionActor implements LiveCalls {
       if (found.inbox === to) return null
       // Checked before anything is taken back: a send to a queue the flow doesn't keep is refused.
       if (!(await this.#keepsQueue(session))) throw noQueue()
-      const move: Move = { run_id: found.runId, seq: found.seq, from: found.inbox, to, by }
+      const move: Move = { run_id: found.runId, seq: found.seq, from: found.inbox, to, by, back: false }
       this.#recordMove(move)
       try {
         return { found, move, p: await this.#withdrawOwn(found, by) }
@@ -1182,7 +1182,9 @@ export class SessionActor implements LiveCalls {
     try {
       event = await this.#taken(p, found)
     } catch (error) {
-      this.#dropMove(move)
+      // Dropped only when the withdraw surely took nothing; else, as at an office stop, whose close answers it while
+      // the worker may have applied it, the next start reads the log and finishes or drops the move.
+      if (!this.#closed && tookNothing(error)) this.#dropMove(move)
       throw error
     } finally {
       this.#moving.delete(sendKeyOf(found))
@@ -1244,17 +1246,19 @@ export class SessionActor implements LiveCalls {
       if (!(error instanceof HarnessError) || error.code !== "cant_wake") throw error
       gone = error
     }
-    const logged = this.#ctx.transcript.withdrawnMessage(found.runId, found.inbox, found.seq)
+    const logged = this.#ctx.transcript.withdrawn(found.runId, found.inbox, found.seq)
     if (logged === null) throw gone
     this.#publishRemoved(found.messageId)
-    return logged
+    return logged.message
   }
 
   /**
    * Sends `event`, the message `move` took back, on to `move.to`, else back to `move.from`, each keyed by the move so a
-   * send again (at a restart's `#resumeMoves`) appends nothing; drops the move's record once either took it or both
-   * failed, unless the office stops, which keeps it for the next start and rejects. Resolves with what became of it.
-   * Called outside the actor's queue: each send is a command of its own.
+   * send again (at a restart's `#resumeMoves`) appends nothing. Before a send back the move is recorded as going back,
+   * and a move so recorded only goes back, so it never lands in both inboxes; nor does one whose send there the current
+   * run's log shows though its answer failed. Drops the move's record once either took it or both failed, unless the
+   * office stops, which keeps it for the next start and rejects. Resolves with what became of it. Called outside the
+   * actor's queue: each send is a command of its own.
    */
   async #finishMove(move: Move, event: RunMessage): Promise<Moved> {
     const send = async (inbox: string, key: string) => {
@@ -1265,28 +1269,44 @@ export class SessionActor implements LiveCalls {
       await sent.answer
     }
     const why = (error: unknown) => (error instanceof HarnessError ? error.message : "the run can't take it now")
-    try {
-      await send(move.to, `moved:${move.run_id}:${move.seq}`)
-      this.#dropMove(move)
-      return { moved: true, why: null, text: null }
-    } catch (error) {
-      if (this.#closed) throw error
+    const onward = `moved:${move.run_id}:${move.seq}`
+    let failure: unknown = null
+    if (!move.back) {
       try {
-        await send(move.from, `back:${move.run_id}:${move.seq}`)
+        await send(move.to, onward)
         this.#dropMove(move)
-        return { moved: false, why: why(error), text: null }
-      } catch (again) {
-        if (this.#closed) throw again
-        this.#dropMove(move)
-        const text = event.parts.findLast((part) => part.type === "text") as { text: string } | undefined
-        return { moved: false, why: why(error), text: text?.text ?? "" }
+        return { moved: true, why: null, text: null }
+      } catch (error) {
+        if (this.#closed) throw error
+        // Applied, though its answer was lost: it is where it goes.
+        if (this.#runId !== null && this.#ctx.transcript.keyed(this.#runId, onward)) {
+          this.#dropMove(move)
+          return { moved: true, why: null, text: null }
+        }
+        failure = error
       }
+      try {
+        this.#recordMove({ ...move, back: true })
+      } catch (error) {
+        // The record still sends it on at a restart: only a stop in the next moment could land it in both.
+        this.#log(`session ${this.sessionId}: a move's way back can't be recorded (${errorName(error)})`)
+      }
+    }
+    try {
+      await send(move.from, `back:${move.run_id}:${move.seq}`)
+      this.#dropMove(move)
+      return { moved: false, why: why(failure), text: null }
+    } catch (again) {
+      if (this.#closed) throw again
+      this.#dropMove(move)
+      const text = event.parts.findLast((part) => part.type === "text") as { text: string } | undefined
+      return { moved: false, why: why(failure ?? again), text: text?.text ?? "" }
     }
   }
 
-  /** At restore: each move a stop cut between its withdraw and its send goes on (`#finishMove`) when the log shows
-   *  its withdraw took the message; one whose withdraw it never took is where it was, and is dropped. An ending
-   *  session takes no message: its moves are dropped. */
+  /** At restore: each move a stop cut between its withdraw and its send goes on (`#finishMove`), signed by whoever the
+   *  log says withdrew it, when the log of one of this session's runs shows a person's withdraw took the message; any
+   *  other is dropped, its message where it was. An ending session takes no message: its moves are dropped. */
   #resumeMoves(): void {
     const folder = this.#ctx.paths.sessionDir(this.sessionId)
     const moves = readMoves(folder)
@@ -1297,12 +1317,14 @@ export class SessionActor implements LiveCalls {
       return
     }
     for (const move of moves) {
-      const event = this.#ctx.transcript.withdrawnMessage(move.run_id, move.from, move.seq)
-      if (event === null) {
+      const taken = session.run_ids.includes(move.run_id)
+        ? this.#ctx.transcript.withdrawn(move.run_id, move.from, move.seq)
+        : null
+      if (taken === null || taken.by === null) {
         this.#dropMove(move)
         continue
       }
-      this.#finishMove(move, event).catch((error) =>
+      this.#finishMove({ ...move, by: taken.by }, taken.message).catch((error) =>
         this.#log(`session ${this.sessionId}: a moved message waits for the next start (${errorName(error)})`),
       )
     }
@@ -4270,6 +4292,13 @@ export interface Moved {
   readonly moved: boolean
   readonly why: string | null
   readonly text: string | null
+}
+
+/** Whether `error`, from a person's withdraw of one send, shows the withdraw took nothing: the run refused it, said
+ *  the send was read or taken back already, or the log shows no withdraw of it. An office stop or a run another
+ *  process holds leaves it unknown. */
+function tookNothing(error: unknown): boolean {
+  return error instanceof HarnessError && error.code !== "stopping" && error.code !== "run_busy"
 }
 
 /** The send `found` names, as a key of `#moving`. */

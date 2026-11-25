@@ -555,7 +555,8 @@ function spyTranscript(o: ChatOffice, seen: string[]): ActorContext["transcript"
     unread: (runId, seq) => o.transcript.unread(runId, seq),
     sentMessage: (sessionId, runId, seq) => o.transcript.sentMessage(sessionId, runId, seq),
     send: (runId, seq) => o.transcript.send(runId, seq),
-    withdrawnMessage: (runId, inbox, seq) => o.transcript.withdrawnMessage(runId, inbox, seq),
+    withdrawn: (runId, inbox, seq) => o.transcript.withdrawn(runId, inbox, seq),
+    keyed: (runId, key) => o.transcript.keyed(runId, key),
   }
 }
 
@@ -1241,7 +1242,7 @@ const ROME: RunMessage = { role: "user", parts: [{ type: "text", text: "Also Rom
 
 /**
  * A scripted chat whose reply runs, its transcript showing the owner's steer unread at seq 7 of its run, and the log
- * showing a named withdraw took it once `taken` is set (what `withdrawnMessage` reads). Returns the workers, the
+ * showing the owner's withdraw took it once `taken` is set (what `withdrawn` reads). Returns the workers, the
  * session, the actor, the steer's message id and the session's folder.
  */
 async function movingChat(o: ChatOffice) {
@@ -1253,7 +1254,9 @@ async function movingChat(o: ChatOffice) {
     unread: (runId, seq) => o.transcript.unread(runId, seq),
     sentMessage: (sessionId, runId, seq) => o.transcript.sentMessage(sessionId, runId, seq),
     send: (runId, seq) => (seq === 7 ? { inbox: "messages", by: CEO, state: "unread" } : o.transcript.send(runId, seq)),
-    withdrawnMessage: (_runId, inbox, seq) => (logged.taken && inbox === "messages" && seq === 7 ? ROME : null),
+    withdrawn: (_runId, inbox, seq) =>
+      logged.taken && inbox === "messages" && seq === 7 ? { message: ROME, by: CEO } : null,
+    keyed: (runId, key) => o.transcript.keyed(runId, key),
   }
   const actor = makeActor(o, sid, { transcript })
   await actor.start()
@@ -1324,6 +1327,8 @@ test("a send that fails after the withdraw puts the message back where it was, e
     expect(first.deliveries[1]).toMatchObject({ op: "send", inbox: "queued", event: ROME })
     answerLast(first, { refused: "inbox_closed" })
     await waitFor(() => first.deliveries.length === 3, { what: "the send back" })
+    // Recorded as going back before it went, so a restart now never sends it on as well.
+    expect(readMoves(folder)).toMatchObject([{ seq: 7, back: true }])
     expect(first.deliveries[2]).toMatchObject({
       op: "send",
       inbox: "messages",
@@ -1338,37 +1343,89 @@ test("a send that fails after the withdraw puts the message back where it was, e
   }
 })
 
-test("a move a stop cut between its withdraw and its send goes on at the next start; one never taken back is dropped", async () => {
-  const fake = await fakeLlm()
-  fake.script({ content: "one" }, { content: "two" })
-  const o = await chatOffice(fake)
+/** A started chat at rest, its actor closed as at an office stop and a new one made but not restored, with each of
+ *  `texts` sent to its inbox by the owner, unread: the run's id, each send's seq, the session's folder, and how to
+ *  apply deliveries to the run's log as a worker would. */
+async function stoppedChat(o: ChatOffice, fake: Awaited<ReturnType<typeof fakeLlm>>, texts: string[]) {
   const { actor, sid } = await startActor(o)
   expect(await say(o, actor, sid, "a")).toBe("one")
   const runId = actor.runId!
   const job = o.jobs.at(-1)!
   const next = await reopen(o, actor)
-  // The owner's steer, taken back by the move's withdraw before the office stopped.
+  const apply = async (deliver: Delivery[]) =>
+    (await runJob(advanceJob(job, { advance: false, deliver }), new TemplateOffice(), { env: fake.env() })).replies
   const by = { kind: "user", name: CEO } as const
-  const steer = { id: "s1", op: "send", inbox: "messages", event: message("Also Rome.", CEO), by } as const
-  const sent = await runJob(advanceJob(job, { advance: false, deliver: [steer] }), new TemplateOffice(), { env: fake.env() })
-  const seq = sent.replies[0]!.seq as number
-  const named = { id: "w1", op: "withdraw", inbox: "messages", events: [seq], by } as const
-  await runJob(advanceJob(job, { advance: false, deliver: [named] }), new TemplateOffice(), { env: fake.env() })
-  const folder = o.office.paths.sessionDir(sid)
+  const sent = await apply(texts.map((text, n) => ({ id: `s${n}`, op: "send", inbox: "messages", event: message(text, CEO), by })))
+  const seqs = sent.map((reply) => reply.seq as number)
+  const withdraw = (seq: number): Delivery => ({ id: `w${seq}`, op: "withdraw", inbox: "messages", events: [seq], by })
+  return { sid, runId, next, seqs, apply, withdraw, folder: o.office.paths.sessionDir(sid) }
+}
+
+/** The sends the log of run `runId` holds under a move's key, as their inbox, key and sender. */
+function movedSends(o: ChatOffice, runId: string): [string, string | null, unknown][] {
+  return [...iterRunRecords(path.join(o.office.paths.runs, runId, "log.jsonl"), { kinds: ["pool_commit"] })]
+    .map((entry) => entry.envelope.record as unknown as { key: string; sendKey: string | null; by: unknown })
+    .filter((record) => /^(moved|back):/.test(record.sendKey ?? ""))
+    .map((record) => [record.key, record.sendKey, record.by])
+}
+
+test("a move a stop cut between its withdraw and its send goes on at the next start, by the log's word", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { sid, runId, next, seqs, apply, withdraw, folder } = await stoppedChat(o, fake, ["Also Rome.", "And Florence."])
+  const [rome, florence] = seqs as [number, number]
+  // Both taken back by their moves' withdraws before the office stopped; Florence's move had begun going back.
+  await apply([withdraw(rome), withdraw(florence)])
   writeMoves(folder, [
-    { run_id: runId, seq, from: "messages", to: "queued", by: CEO },
-    { run_id: runId, seq: seq + 50, from: "messages", to: "queued", by: CEO },
+    // The file names someone else: the log's withdraw names who moved it.
+    { run_id: runId, seq: rome, from: "messages", to: "queued", by: "lan", back: false },
+    { run_id: runId, seq: florence, from: "messages", to: "queued", by: CEO, back: true },
+    // Never taken back, and a run that isn't this session's: nothing goes for them.
+    { run_id: runId, seq: rome + 50, from: "messages", to: "queued", by: CEO, back: false },
+    { run_id: "01JZZZZZZZZZZZZZZZZZZZZZZZ", seq: rome, from: "messages", to: "queued", by: CEO, back: false },
   ])
   await next.restore()
-  // The taken message goes to the queue, and the turn reads it; the other was never taken: nothing goes.
-  await waitFor(() => texts(o, sid).includes("two") && status(o, sid) === "idle", { what: "the moved message's turn" })
+  await waitFor(() => texts(o, sid).includes("two") && status(o, sid) === "idle", { what: "the moved messages' turn" })
   expect(JSON.stringify(fake.requests()[1]!.messages)).toContain("Also Rome.")
+  expect(JSON.stringify(fake.requests()[1]!.messages)).toContain("And Florence.")
   expect(readMoves(folder)).toEqual([])
-  const moved = [...iterRunRecords(path.join(o.office.paths.runs, runId, "log.jsonl"), { kinds: ["pool_commit"] })]
-    .map((entry) => entry.envelope.record as unknown as { key: string; sendKey: string | null })
-    .filter((record) => record.sendKey?.startsWith("moved:"))
-  expect(moved.map((record) => [record.key, record.sendKey])).toEqual([["__start__.queued", `moved:${runId}:${seq}`]])
-  expect(texts(o, sid, "user").filter((text) => text === "Also Rome.")).toEqual(["Also Rome."])
+  // Rome goes on to the queue, signed by whoever the log says withdrew it; Florence only goes back.
+  const by = { kind: "user", name: CEO }
+  expect(movedSends(o, runId)).toEqual([
+    ["__start__.queued", `moved:${runId}:${rome}`, by],
+    ["__start__.messages", `back:${runId}:${florence}`, by],
+  ])
+  expect(texts(o, sid, "user").filter((text) => text === "Also Rome." || text === "And Florence.").sort()).toEqual([
+    "Also Rome.",
+    "And Florence.",
+  ])
+})
+
+test("an office stop between a move's withdraw and its send keeps the move, and the next start finishes it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { sid, runId, next, seqs, apply, withdraw, folder } = await stoppedChat(o, fake, ["Also Rome."])
+  const [rome] = seqs as [number]
+  const workers = scriptedWorker(o)
+  await next.restore()
+  const moving = outcome(next.setDelivery(`${runId}:${String(rome).padStart(12, "0")}`, "queue", { by: CEO }))
+  await waitFor(() => workers.some((w) => w.given().some((d) => d.op === "withdraw")), { what: "the withdraw" })
+  // The worker applies the withdraw, then the office stops before its answer comes.
+  await apply([withdraw(rome)])
+  next.close()
+  expect(await moving).toBe("503 stopping")
+  expect(readMoves(folder)).toMatchObject([{ run_id: runId, seq: rome, to: "queued" }])
+  // The next start reads the log: the message was taken back, so it goes on to the queue.
+  const third = makeActor(o, sid)
+  await third.restore()
+  await waitFor(() => workers.some((w) => w.given().some((d) => d.op === "send")), { what: "the send to the queue" })
+  const scripted = workers.find((w) => w.given().some((d) => d.op === "send"))!
+  const send = scripted.given().find((d) => d.op === "send")!
+  expect(send).toMatchObject({ op: "send", inbox: "queued", key: `moved:${runId}:${rome}`, by: { kind: "user", name: CEO } })
+  scripted.handlers.deliverReply(scripted.worker, { type: "deliver_reply", id: send.id, seq: rome + 5 })
+  await waitFor(() => readMoves(folder).length === 0, { what: "the move's record dropped" })
 })
 
 test("end on a chat whose flow keeps no queue ends it: its queue's close is refused, and nothing waits", async () => {

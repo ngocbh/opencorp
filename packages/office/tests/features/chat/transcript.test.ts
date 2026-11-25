@@ -211,13 +211,17 @@ test("a withdraw a person named hides its send, and only Esc's withdraws are the
   expect(messages(runs, newId(), ["r1"])).toEqual([])
   // A named withdraw's message is the run's, whole, by the inbox it left.
   const transcript = new Transcript(runs)
-  const shown = (m: { parts: { type: string; text?: string }[] } | null) => m?.parts.map((p) => p.text)
-  expect([shown(transcript.withdrawnMessage("r1", "messages", a!)), shown(transcript.withdrawnMessage("r1", "queued", b!))])
-    .toEqual([["deleted"], ["moved"]])
-  expect([transcript.withdrawnMessage("r1", "queued", a!), transcript.withdrawnMessage("r1", "messages", c!)]).toEqual([
-    null,
-    null,
+  const shown = (w: ReturnType<Transcript["withdrawn"]>) =>
+    w && [w.message.parts.map((p) => (p.type === "text" ? p.text : p.type)), w.by]
+  expect([shown(transcript.withdrawn("r1", "messages", a!)), shown(transcript.withdrawn("r1", "queued", b!))]).toEqual([
+    [["deleted"], "minh"],
+    [["moved"], "minh"],
   ])
+  // Esc's withdraw named no send and no one.
+  expect([transcript.withdrawn("r1", "queued", a!), transcript.withdrawn("r1", "messages", c!)]).toEqual([null, null])
+  // A keyed send is the run's under its key, read or not.
+  await apply(job, fake, [{ id: "k", op: "send", inbox: "queued", event: message("keyed"), key: "moved:r0:1" }])
+  expect([transcript.keyed("r1", "moved:r0:1"), transcript.keyed("r1", "moved:r0:2")]).toEqual([true, false])
 })
 
 test("a user message can name its author", async () => {
