@@ -153,11 +153,12 @@ export function Profile() {
   })
   const chatSession = () => office.state.sessions.find((s) => s.id === chat())
   const lines = createMemo(() => transcript(office.state.messages[chat() ?? ""] ?? []))
-  // Once per chat: the office keeps a synced session live and re-reads it on reconnect.
+  // Once per chat: the office keeps a synced session live and re-reads it on reconnect. The view shows the whole chat,
+  // so the pages before the newest load too.
   createEffect(
     on(chat, (id) => {
       if (!id) return
-      office.syncSession(id).then(
+      office.syncSession(id).then(() => office.loadOlder(id, { all: true })).then(
         () => setChatError(undefined),
         (e) => {
           // An office that is down loads the chat when it comes back.

@@ -10,6 +10,7 @@ import {
   HqStatus,
   Instrument,
   Message,
+  MessagePage,
   ModelList,
   Person,
   Profile,
@@ -21,8 +22,9 @@ import fs from "node:fs"
 import path from "node:path"
 import { createFakeOffice, type FakeOffice } from "../fixture/fake-office"
 
-/** What a script run keeps: its folder, the chat it started, and the profile version the office gave. */
-type Ctx = { cwd: string; id: string; version: string }
+/** What a script run keeps: its folder, the chat it started, the profile version the office gave, and the cursor
+ *  of its messages' older page. */
+type Ctx = { cwd: string; id: string; version: string; cursor?: string }
 
 type Step = {
   name: string
@@ -89,6 +91,28 @@ const STEPS: Step[] = [
     schema: Message.array(),
     pick: (r) => r.map((m: Message) => [m.role, m.author, m.parts.map((p) => (p.type === "text" ? p.text : p.type))]),
   },
+  {
+    name: "read the newest page of messages",
+    method: "GET",
+    path: (c) => `/sessions/${c.id}/messages?limit=1`,
+    idle: true,
+    schema: MessagePage,
+    keep: (r, c) => (c.cursor = r.next),
+    pick: (r) => [r.messages.map((m: Message) => m.role), r.next === null],
+  },
+  {
+    name: "read the page before it",
+    method: "GET",
+    path: (c) => `/sessions/${c.id}/messages?limit=1&before=${c.cursor}`,
+    schema: MessagePage,
+    pick: (r) => [r.messages.map((m: Message) => m.role), r.next],
+  },
+  {
+    name: "read a page before a cursor no page gave",
+    method: "GET",
+    path: (c) => `/sessions/${c.id}/messages?limit=1&before=nope`,
+  },
+  { name: "read a page of no messages", method: "GET", path: (c) => `/sessions/${c.id}/messages?limit=0` },
   {
     name: "raise a cost cap",
     method: "POST",

@@ -458,7 +458,7 @@ test("quitting while the first send creates its session still sends it, without 
       release()
       await until(() => prompts(office).length === 1)
       expect(prompts(office)[0]).toMatchObject({ path: `/sessions/${fresh()}/prompt`, body: { text: "hello" } })
-      expect(office.requests.some((r) => r.path === `/sessions/${fresh()}/messages`)).toBe(false)
+      expect(office.requests.some((r) => r.path.startsWith(`/sessions/${fresh()}/messages`))).toBe(false)
     } finally {
       release()
       await stdoutOf(() => app.stop())
@@ -523,7 +523,7 @@ test("quitting while the new session's messages load, with an update queued, sti
       await app.until((f) => f.includes("@minh"))
       app.input.typeText("hello")
       app.input.pressEnter()
-      await until(() => office.requests.some((r) => r.method === "GET" && r.path.endsWith("/messages")))
+      await until(() => office.requests.some((r) => r.method === "GET" && r.path.includes("/messages")))
       // An event the TUI queues for its next flush, which the quit then cancels.
       office.updateSession(other, { cost: 0.5 })
       await Bun.sleep(5)

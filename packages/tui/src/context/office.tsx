@@ -34,6 +34,7 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
       cwd: props.cwd,
       state: () => state,
       mutate: flush.mutate,
+      settled: flush.settled,
       // Model output and names are drawn into the terminal, which would act on their control characters.
       clean: display,
       // "online" follows the snapshot it was set after, so readers never see it with stale state.
@@ -46,6 +47,9 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
         )
       },
     })
+
+    // Each session's views that keep their place as older messages go in, whoever loads them.
+    const olderWatchers = new Map<string, Set<(added: number) => void>>()
 
     const [connections, setConnections] = createSignal<ConnectionList>()
     let connectionsRead = 0
@@ -94,6 +98,34 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
         await sync.syncSession(id)
         await flush.settled()
       },
+      /**
+       * Loads the next older page of a synced session's messages, or every older one with `all`, before those `state`
+       * holds; resolves once they are in. `beforePublish` runs as they go in, in the same update, with how many go in
+       * front.
+       */
+      async loadOlder(id: string, opts: { all?: boolean; beforePublish?: (added: number) => void } = {}) {
+        await sync.loadOlder(id, {
+          all: opts.all,
+          beforePublish: (added) => {
+            opts.beforePublish?.(added)
+            runEach(olderWatchers.get(id) ?? [], added)
+          },
+        })
+        await flush.settled()
+      },
+      /** Calls `fn` as older messages of session `id` go in, whoever loads them, in the same update, after the load's
+       *  own `beforePublish`, with how many go in front; returns an unsubscribe. */
+      onOlder(id: string, fn: (added: number) => void) {
+        const set = olderWatchers.get(id) ?? new Set()
+        olderWatchers.set(id, set)
+        set.add(fn)
+        return () => {
+          set.delete(fn)
+          if (set.size === 0) olderWatchers.delete(id)
+        }
+      },
+      /** Whether a synced session has older messages than `state` holds. */
+      hasOlder: (id: string) => state.messageCursor[id] !== undefined,
       /** Re-reads a question into `state`, e.g. after an answer finds it already closed. */
       async refreshQuestion(id: string) {
         await sync.refreshQuestion(id)

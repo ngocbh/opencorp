@@ -6,6 +6,7 @@ import {
   Ack,
   AnswerRequest,
   Message,
+  MessagePage,
   Person,
   PromptRequest,
   Question,
@@ -20,7 +21,7 @@ import { strip } from "../../util/redact.ts"
 import { HttpError, type Params, type Route } from "../http.ts"
 import { eventRoutesOf } from "../routes/events.ts"
 import { instrumentRoutes } from "../routes/instruments.ts"
-import { harnessCall } from "../routes/sessions.ts"
+import { harnessCall, messagesReply } from "../routes/sessions.ts"
 import type { LocalHost } from "./host.ts"
 
 /** What a route sees: the host, who the request acts as (the owner, for the host's token), and the request's abort
@@ -90,11 +91,8 @@ export function localRoutes({ pingMs }: { pingMs?: number } = {}): Route<LocalCo
     {
       method: "GET",
       path: "/sessions/:id/messages",
-      reply: z.array(Message),
-      handler: (ctx, params) => {
-        stored(ctx, params)
-        return ctx.host.messages()
-      },
+      reply: z.union([z.array(Message), MessagePage]),
+      handler: (ctx, params) => messagesReply(ctx.query, stored(ctx, params).id, () => ctx.host.messages()),
     },
     ...(["prompt", "steer"] as const).map(
       (action): Route<LocalContext> => ({

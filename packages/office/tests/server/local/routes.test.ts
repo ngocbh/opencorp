@@ -1,13 +1,16 @@
 /** The no-office host's routes, through the office's own pipeline: only the owner answers cards and sends keys, keys
  *  reach the shell and no log, the office's other routes aren't served, and only the host's token is taken. */
 import { expect, setDefaultTimeout, test } from "bun:test"
+import { type Message, MessagePage } from "@opencorp/protocol"
 import { newToken } from "../../../src/runtime/auth/tokens.ts"
 import { YES } from "../../../src/runtime/questions/approval.ts"
+import type { LocalHost } from "../../../src/server/local/host.ts"
 import { OWNER } from "../../../src/server/local/host.ts"
 import { type LocalContext, localRoutes } from "../../../src/server/local/routes.ts"
 import { serveLocal } from "../../../src/server/local/serve.ts"
 import { fakeLlm } from "../../features/chat/helpers.ts"
 import { shortDir, waitFor } from "../../helpers.ts"
+import { session } from "../../runtime/store/helpers.ts"
 import { bearer, type Reply, request, serve } from "../helpers.ts"
 import { AGENT, cards, startHost, terminalCall, until } from "./helpers.ts"
 
@@ -93,6 +96,33 @@ test("keys reach the shell and are never logged", async () => {
   expect((listed.json() as { size: unknown }[])[0]!.size).toEqual({ cols: 100, rows: 30 })
   await served.close()
   expect(logs.join("\n")).not.toContain("key-7f3a9")
+})
+
+test("the host's messages come whole, or in pages as the office pages them", async () => {
+  const record = session()
+  const messages: Message[] = ["a", "b", "c"].map((text, i) => ({
+    id: `m${i}`,
+    session_id: record.id,
+    role: "user",
+    parts: [{ id: `p${i}`, type: "text", text }],
+    created_at: record.created_at,
+  }))
+  // Only what the messages route reads of the host.
+  const host = {
+    session: (id?: string) => (id === undefined || id === record.id ? record : undefined),
+    messages: async () => messages,
+  }
+  const { sock } = await serve<LocalContext>(localRoutes(), {
+    context: (info) => ({ host: host as unknown as LocalHost, person: OWNER, signal: info.signal, query: info.query }),
+  })
+  const read = (query: string) => request(sock, "GET", `/sessions/${record.id}/messages${query}`)
+  expect((await read("")).json()).toHaveLength(3)
+  const newest = MessagePage.parse((await read("?limit=2")).json())
+  expect(newest.messages.map((m) => m.id)).toEqual(["m1", "m2"])
+  const older = MessagePage.parse((await read(`?limit=2&before=${newest.next}`)).json())
+  expect([older.messages.map((m) => m.id), older.next]).toEqual([["m0"], null])
+  expect(errorOf(await read("?limit=2&before=nope"))).toEqual([400, "bad_cursor"])
+  expect(errorOf(await read("?limit=0"))).toEqual([422, "invalid_body"])
 })
 
 test("an office-only route answers 404 no_route", async () => {

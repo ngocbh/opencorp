@@ -1,7 +1,14 @@
 import { afterEach, expect, test } from "bun:test"
 import type { Message, Question } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "../fixture/fake-office"
-import { createOfficeClient, emptyState, openQuestions, createOfficeSync, type OfficeStatus } from "@opencorp/client"
+import {
+  createOfficeClient,
+  emptyState,
+  MESSAGE_PAGE,
+  openQuestions,
+  createOfficeSync,
+  type OfficeStatus,
+} from "@opencorp/client"
 import { until } from "../fixture/until"
 
 const fast = { minDelayMs: 10, maxDelayMs: 40 }
@@ -34,6 +41,8 @@ function start(
   return { state, sync }
 }
 const count = (o: FakeOffice, what: string) => o.requests.filter((r) => `${r.method} ${r.path}` === what).length
+/** The read of session `id`'s newest page of messages, as the sync sends it. */
+const newest = (id: string) => `GET /sessions/${id}/messages?limit=${MESSAGE_PAGE}`
 
 test("bootstrap: people, folder people, and sessions; then online", async () => {
   office = createFakeOffice()
@@ -74,7 +83,7 @@ test("syncSession buffers that session's live events and replays them", async ()
   ]
   const release = office.hold("GET /sessions/:id/messages")
   const done = sync.syncSession(id)
-  await until(() => count(office!, `GET /sessions/${id}/messages`) === 1)
+  await until(() => count(office!, newest(id)) === 1)
   office.live({ type: "part.delta", session_id: id, data: { message_id: "M", part_id: "p1", text: "lo" } }) // already in the snapshot
   office.live({
     type: "part.updated",
@@ -241,7 +250,7 @@ test("a listener that throws on a session's replayed window still loads the sess
     sync.on("part.updated", boom)
     const release = office!.hold("GET /sessions/:id/messages")
     const done = sync.syncSession(id)
-    await until(() => count(office!, `GET /sessions/${id}/messages`) === 1)
+    await until(() => count(office!, newest(id)) === 1)
     office!.live({
       type: "part.updated",
       session_id: id,
@@ -313,7 +322,7 @@ test("a session load that spans a reconnect still ends up with what happened in 
   const { state, sync } = start(office.socket)
   await until(() => sync.status() === "online")
   const id = office.state.sessions[0].id
-  const messages = `GET /sessions/${id}/messages`
+  const messages = newest(id)
   office.state.messages[id] = [textMessage(id, "M1")]
   const release = office.hold("GET /sessions/:id/messages", "reply")
   const done = sync.syncSession(id)
@@ -351,7 +360,7 @@ test("loading a session twice at once sends one request", async () => {
   await until(() => sync.status() === "online")
   const id = office.state.sessions[0].id
   await Promise.all([sync.syncSession(id), sync.syncSession(id)])
-  expect(count(office, `GET /sessions/${id}/messages`)).toBe(1)
+  expect(count(office, newest(id))).toBe(1)
 })
 
 test("too many events during a bootstrap abandon it and reconnect", async () => {
@@ -375,7 +384,7 @@ test("too many events while a session loads abandon the load's window and reconn
   office.state.messages[id] = [textMessage(id, "M1")]
   const release = office.hold("GET /sessions/:id/messages")
   const done = sync.syncSession(id)
-  await until(() => count(office!, `GET /sessions/${id}/messages`) === 1)
+  await until(() => count(office!, newest(id)) === 1)
   for (let i = 0; i < 10; i++)
     office.live({ type: "part.delta", session_id: id, data: { message_id: "M1", part_id: "M1-p", text: "!" } })
   await until(() => count(office!, "GET /events") === 2)
@@ -416,7 +425,7 @@ test("a session that fails to reload doesn't fail the bootstrap, and retries on 
     await until(() => count(office!, "GET /sessions?limit=50") === 2)
     await until(() => sync.status() === "online" && state.messages[s1.id].some((m) => m.id === "M9"))
     // Once for syncSession, once in the bootstrap, once more on its own after it.
-    await until(() => count(office!, `GET /sessions/${s2}/messages`) === 3)
+    await until(() => count(office!, newest(s2)) === 3)
     // Still failing, so it stops being synced and its stale transcript goes.
     await until(() => state.messages[s2] === undefined)
   })
@@ -449,7 +458,7 @@ test("a session load that times out drops the session's messages", async () => {
   const release = office.hold("GET /sessions/:id/messages")
   office.reset()
   await quietly(async () => {
-    await until(() => count(office!, `GET /sessions/${id}/messages`) === 3, 3000)
+    await until(() => count(office!, newest(id)) === 3, 3000)
     await until(() => state.messages[id] === undefined, 3000)
   })
   release()
@@ -463,12 +472,12 @@ test("a load in flight at stop() neither reads again nor changes state", async (
   office.state.messages[id] = [textMessage(id, "M1")]
   const release = office.hold("GET /sessions/:id/messages")
   const done = sync.syncSession(id)
-  await until(() => count(office!, `GET /sessions/${id}/messages`) === 1)
+  await until(() => count(office!, newest(id)) === 1)
   sync.stop()
   release()
   await done
   await Bun.sleep(50)
-  expect(count(office, `GET /sessions/${id}/messages`)).toBe(1)
+  expect(count(office, newest(id))).toBe(1)
   expect(state.messages[id]).toEqual([])
 })
 
@@ -557,7 +566,7 @@ async function dirtySession(o: FakeOffice, sync: ReturnType<typeof createOfficeS
   ]
   const release = o.hold("GET /sessions/:id/messages")
   const done = sync.syncSession(id)
-  await until(() => count(o, `GET /sessions/${id}/messages`) === 1)
+  await until(() => count(o, newest(id)) === 1)
   // Held back while the session loads, then replayed on top of it.
   o.live({
     type: "message.updated",
@@ -657,4 +666,157 @@ test("without clean, transcript text and names come in exactly as sent", async (
   await until(() => text() === "S\x0eO mo\x1b]0;T\x07re")
   expect(state.messages[id][0].parts[0]).toEqual({ id: "lp", type: "text", text: "load\x07ed" })
   expect(state.messages[id][1].parts[1]).toMatchObject({ tool: "ba\x07sh", input: { command: "ls \x1b[31mred" } })
+})
+
+/** `n` messages of session `id`, from `from`, by ids that sort as the office's: a user message, then its reply. */
+function numbered(id: string, n: number, from = 0): Message[] {
+  return Array.from({ length: n }, (_, i) => {
+    const k = from + i
+    const text = `m${k}`
+    return {
+      id: `M${String(k).padStart(4, "0")}`,
+      session_id: id,
+      role: k % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      parts: [{ id: `p${k}`, type: "text" as const, text }],
+      created_at: "t",
+    }
+  })
+}
+const textsOf = (list: Message[] | undefined) => (list ?? []).map((m) => (m.parts[0] as { text: string }).text)
+const range = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `m${from + i}`)
+const olderReads = (o: FakeOffice, id: string) =>
+  o.requests.filter((r) => r.path.startsWith(`/sessions/${id}/messages?`) && r.path.includes("before=")).length
+
+test("a synced session holds its newest page; older pages load before it, a page or all of them", async () => {
+  office = createFakeOffice()
+  const { state, sync } = start(office.socket)
+  await until(() => sync.status() === "online")
+  const id = office.state.sessions[0].id
+  office.state.messages[id] = numbered(id, 50)
+  await sync.syncSession(id)
+  expect(textsOf(state.messages[id])).toEqual(range(30, 50))
+  expect(state.messageCursor[id]).toEqual(expect.any(String))
+  await sync.loadOlder(id)
+  expect(textsOf(state.messages[id])).toEqual(range(10, 50))
+  await sync.loadOlder(id, { all: true })
+  expect(textsOf(state.messages[id])).toEqual(range(0, 50))
+  expect(state.messageCursor[id]).toBeUndefined()
+  // Every older page at once is as many as the office gives in one.
+  expect(office.requests.filter((r) => r.path.includes("before=")).map((r) => r.path.includes("limit=500"))).toEqual([
+    false,
+    true,
+  ])
+  // Nothing older is left: no read.
+  const reads = olderReads(office, id)
+  await sync.loadOlder(id)
+  expect(olderReads(office, id)).toBe(reads)
+})
+
+test("a live message during an older page's load shows once, after the older messages", async () => {
+  office = createFakeOffice()
+  const { state, sync } = start(office.socket)
+  await until(() => sync.status() === "online")
+  const id = office.state.sessions[0].id
+  office.state.messages[id] = numbered(id, 30)
+  await sync.syncSession(id)
+  const release = office.hold("GET /sessions/:id/messages")
+  const published: number[] = []
+  const loading = sync.loadOlder(id, { beforePublish: () => published.push(state.messages[id]!.length) })
+  await until(() => olderReads(office!, id) === 1)
+  // A reply's message comes and grows, and a held one is sent again, while the page loads.
+  const [late] = numbered(id, 1, 30)
+  office.state.messages[id].push(late!)
+  office.live({ type: "message.updated", session_id: id, data: late as never })
+  office.live({ type: "message.updated", session_id: id, data: numbered(id, 1, 29)[0] as never })
+  await until(() => state.messages[id]!.length === 21)
+  release()
+  await loading
+  expect(textsOf(state.messages[id])).toEqual(range(0, 31))
+  expect(published).toEqual([21])
+})
+
+test("two older loads at once read one page", async () => {
+  office = createFakeOffice()
+  const { state, sync } = start(office.socket)
+  await until(() => sync.status() === "online")
+  const id = office.state.sessions[0].id
+  office.state.messages[id] = numbered(id, 60)
+  await sync.syncSession(id)
+  await Promise.all([sync.loadOlder(id), sync.loadOlder(id)])
+  expect(olderReads(office, id)).toBe(1)
+  expect(textsOf(state.messages[id])).toEqual(range(20, 60))
+})
+
+test("a reload of a synced session keeps the older messages it loaded", async () => {
+  office = createFakeOffice()
+  const { state, sync } = start(office.socket)
+  await until(() => sync.status() === "online")
+  const id = office.state.sessions[0].id
+  office.state.messages[id] = numbered(id, 50)
+  await sync.syncSession(id)
+  await sync.loadOlder(id)
+  const cursor = state.messageCursor[id]
+  office.state.messages[id].push(...numbered(id, 2, 50))
+  // A reconnect reloads it, and opening it again does too.
+  office.reset()
+  await until(() => count(office!, newest(id)) === 2)
+  await until(() => state.messages[id]!.length === 42)
+  await sync.syncSession(id)
+  expect(textsOf(state.messages[id])).toEqual(range(10, 52))
+  expect(state.messageCursor[id]).toBe(cursor)
+})
+
+test("a cursor whose message is gone reloads the newest page in place of what is held", async () => {
+  office = createFakeOffice()
+  const { state, sync } = start(office.socket)
+  await until(() => sync.status() === "online")
+  const id = office.state.sessions[0].id
+  office.state.messages[id] = numbered(id, 30)
+  await sync.syncSession(id)
+  // The office's transcript starts over, as a Codex session's does at its next turn.
+  office.state.messages[id] = numbered(id, 25, 100)
+  await sync.loadOlder(id)
+  expect(textsOf(state.messages[id])).toEqual(range(105, 125))
+  expect(state.messageCursor[id]).toEqual(expect.any(String))
+})
+
+test.each(["request", "reply"] as const)(
+  "a live change to an older message while its page loads goes on the page, whichever the office read first [%s]",
+  async (at) => {
+    office = createFakeOffice()
+    const { state, sync } = start(office.socket)
+    await until(() => sync.status() === "online")
+    const id = office.state.sessions[0].id
+    office.state.messages[id] = numbered(id, 30)
+    await sync.syncSession(id)
+    // With "reply", the office reads the page before the change; with "request", after it.
+    const release = office.hold("GET /sessions/:id/messages", at)
+    const loading = sync.loadOlder(id)
+    await until(() => olderReads(office!, id) === 1)
+    const edited = { ...numbered(id, 1, 5)[0]!, parts: [{ id: "p5", type: "text" as const, text: "m5 edited" }] }
+    office.state.messages[id][5] = edited
+    office.live({ type: "message.updated", session_id: id, data: edited as never })
+    office.state.messages[id].splice(3, 1)
+    office.live({ type: "message.removed", session_id: id, data: { id: "M0003", session_id: id } as never })
+    await Bun.sleep(30)
+    release()
+    await loading
+    expect(textsOf(state.messages[id])).toEqual(["m0", "m1", "m2", "m4", "m5 edited", ...range(6, 30)])
+    // What comes after the page goes on as before.
+    office.live({ type: "message.updated", session_id: id, data: { ...edited, parts: [{ id: "p5", type: "text", text: "m5 again" }] } as never })
+    await until(() => textsOf(state.messages[id]).includes("m5 again"))
+  },
+)
+
+test("every older page, past a cursor whose message is gone, is the whole new transcript", async () => {
+  office = createFakeOffice()
+  const { state, sync } = start(office.socket)
+  await until(() => sync.status() === "online")
+  const id = office.state.sessions[0].id
+  office.state.messages[id] = numbered(id, 30)
+  await sync.syncSession(id)
+  office.state.messages[id] = numbered(id, 45, 100)
+  await sync.loadOlder(id, { all: true })
+  expect(textsOf(state.messages[id])).toEqual(range(100, 145))
+  expect(state.messageCursor[id]).toBeUndefined()
 })

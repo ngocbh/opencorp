@@ -321,6 +321,48 @@ test("a pipes shell shows its output lines", async () => {
   }
 })
 
+test("a pipes shell colours the employee's commands, those of the chat's pages not loaded yet too", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]!
+  /** A turn: the owner's prompt, then the employee's reply running `command` in shell 1, if any. */
+  const turn = (t: number, command?: string): Message[] => [
+    { id: `turn-${String(t).padStart(3, "0")}-1`, session_id: s.id, role: "user", created_at: AT, parts: [{ id: `u${t}`, type: "text", text: `Turn ${t}` }] },
+    {
+      id: `turn-${String(t).padStart(3, "0")}-2`,
+      session_id: s.id,
+      role: "assistant",
+      created_at: AT,
+      parts: command
+        ? [{ id: `c${t}`, type: "tool", call_id: `call_${t}`, tool: "terminal_run", state: "completed", input: { command, shell: "shell 1" }, output: "{}" }]
+        : [{ id: `a${t}`, type: "text", text: `Answer ${t}` }],
+    },
+  ]
+  // The old command's turn is well before the newest page of 20 messages.
+  office.state.messages[s.id] = [turn(0, "make old"), ...Array.from({ length: 30 }, (_, i) => turn(i + 1)), turn(31, "make new")].flat()
+  const app = await bootFrame(createStub(office), { sessionID: s.id }, { width: 120, height: 30 })
+  try {
+    await app.until((f) => f.includes("@minh auto ·"))
+    const shell = add(office, s.id, { interactive: false, size: null, command: "sleep 9" })
+    office.instrumentOutput(s.id, shell.id, "$ make old\r\nold output\r\n$ make new\r\nnew output\r\n")
+    await listed(app, 1)
+    await openShell(app)
+    await app.until((f) => f.includes("$ make old") && f.includes("new output"))
+    const fg = (needle: string) =>
+      app.setup
+        .captureSpans()
+        .lines.flatMap((l) => l.spans)
+        .find((span) => span.text.includes(needle))
+        ?.fg.toInts()
+        .slice(0, 3)
+    await until(() => JSON.stringify(fg("$ make old")) === JSON.stringify(fg("$ make new")))
+    expect(fg("$ make new")).not.toEqual(theme.text.toInts().slice(0, 3))
+    expect(fg("old output")).toEqual(theme.text.toInts().slice(0, 3))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("an ended shell can still be opened until the agent's turn ends, then leaves the list", async () => {
   const { office, sid, app } = await boot()
   try {

@@ -25,6 +25,7 @@ import type {
   InstrumentSizeRequest,
   LoginRequest,
   Message,
+  MessagePage,
   ModelList,
   PairCode,
   PairCodeRequest,
@@ -267,7 +268,15 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
           throw e
         }),
       get: async (id: string) => get<Session>(s(id)),
+      /** The whole transcript; `messagePage` reads it a page at a time. */
       messages: async (id: string) => get<Message[]>(`${s(id)}/messages`),
+      /**
+       * The newest `limit` messages (from 1 to 500; the office's default is 50) before `before`, a page's `next`, or
+       * the newest of all; oldest first. Fails with `bad_cursor` for a cursor whose message the transcript no longer
+       * has.
+       */
+      messagePage: async (id: string, opts: { limit?: number; before?: string } = {}) =>
+        get<MessagePage>(`${s(id)}/messages${query({ limit: opts.limit, before: opts.before })}`),
       prompt: async (id: string, req: PromptRequest) => post<Ack>(`${s(id)}/prompt`, req),
       steer: async (id: string, req: PromptRequest) => post<Ack>(`${s(id)}/steer`, req),
       interrupt: async (id: string) => post<Ack>(`${s(id)}/interrupt`),

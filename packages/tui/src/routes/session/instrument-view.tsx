@@ -1,7 +1,7 @@
 import type { Instrument, Message } from "@opencorp/protocol"
 import { TextAttributes, type RGBA } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
-import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { Spinner } from "../../component/spinner"
 import { useOffice } from "../../context/office"
 import { usePanel } from "../../context/panel"
@@ -267,6 +267,16 @@ function ShellOutput(props: {
   // Escapes go whole, so a colour split across two events leaves nothing behind; a lone CR starts a line.
   const text = createMemo(() => display((output() ?? "").replace(/\r\n?/g, "\n")).replace(/\n+$/, ""))
   const runs = createMemo(() => commandRuns(text(), props.commands))
+  // A `$ ` line that no command in the chat's loaded pages names may be the employee's from an older page: the older
+  // pages load, once per view, so it takes their colour.
+  const office = useOffice()
+  let olderLoaded = false
+  createEffect(() => {
+    if (olderLoaded || !office.hasOlder(props.sessionID)) return
+    if (!runs().some((run) => !run.command && /(^|\n)\$ /.test(run.text))) return
+    olderLoaded = true
+    office.loadOlder(props.sessionID, { all: true }).catch(() => {})
+  })
   let decoder = new TextDecoder()
 
   /** Shows `next`, its newest part when it is longer than a view keeps. */

@@ -164,3 +164,18 @@ test("an Esc before the next send's answer appears hides that answer, past the l
   const f = freeze([A, heldFinal, late, C], sent, { [heldAtEsc.id]: true })
   expect(texts(frozenList(f, [A, heldFinal, late, C, ansC]))).toEqual(["A", "Held " + INTERRUPTED_TEXT, "C"])
 })
+
+test("older messages loaded while frozen show as they are, then and after the next send and Esc", () => {
+  const user = msg("U5", "user", text("u5", "fix it"))
+  const reply = msg("M6", "assistant", text("a6", "Looking"))
+  const f = freeze([user, reply])
+  const older = [msg("U1", "user", text("u1", "hi")), msg("M2", "assistant", text("a2", "Hello"))]
+  const late = msg("L", "assistant", text("l", "late"))
+  expect(frozenList(f, [...older, user, reply, late])).toEqual([...older, user, reply])
+  const after = unfreeze(f, [...older, user, reply, late])
+  expect(frozenList(after, [...older, user, reply, late])).toEqual([...older, user, reply])
+  // A second Esc covers them too; a page older still shows as it is.
+  const second = freeze([...older, user, reply, late], after)
+  const oldest = msg("M0", "assistant", text("a0", "Earlier"))
+  expect(frozenList(second, [oldest, ...older, user, reply, late])).toEqual([oldest, ...older, user, reply])
+})

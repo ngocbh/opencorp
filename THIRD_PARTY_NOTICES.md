@@ -285,7 +285,7 @@ license, the upstream paths and commit, and our paths.
   something finishes, and a click opens it; Medium groups only reads and searches (`Explored: 2 reads, 1 search`);
   High opens those groups. Questions never fold, a call waiting on an approval stays below its group, and the open
   groups are kept per session in memory. The group tree is copied as is, its merge and split included, which only its
-  tests use, since the office sends a transcript whole rather than in pages. Adapted: a run is an assistant message's
+  tests use, since a page of the office's messages never cuts a group. Adapted: a run is an assistant message's
   consecutive tool parts, which a text, file or error part ends (blank text doesn't); the office's tools map to
   upstream's by their view (a Codex or Claude Code call as its subagent call, running while its session runs); no
   thoughts, instruction loads or code-mode scripts; the settings live in `kv.json` and the commands in the palette;
@@ -316,9 +316,8 @@ license, the upstream paths and commit, and our paths.
   and the activity anchor's tests come with them, and the frame tests' cases. Adapted: an
   entry is a message, weighed by the rows it renders; an anchor registers a row's own first node rather than a box
   around it; a reads' group's line keeps its row too; navigation holds the reader's view while the rest mounts; the
-  anchors are kept per renderer rather than in session tabs, for the 50 sessions left most recently; "Jump to latest"
-  sits in the row the transcript's gap leaves rather than a row of its own; and nothing loads from the office, which
-  sends a session's whole transcript at once, so the history prepend isn't ported.
+  anchors are kept per renderer rather than in session tabs, for the 50 sessions left most recently; and "Jump to
+  latest" sits in the row the transcript's gap leaves rather than a row of its own.
 - **Upstream:** `packages/tui/src/routes/session/mount-budget.ts`, `packages/tui/src/routes/session/anchors.ts`,
   `packages/tui/src/routes/session/anchor-view.tsx`, `packages/tui/src/routes/session/group-view.tsx` (its
   `GroupAnchor`s, the toggle's anchor), `packages/tui/src/routes/session/message-parts.tsx` (`InlineToolRow`'s
@@ -337,6 +336,27 @@ license, the upstream paths and commit, and our paths.
   `packages/tui/test/cli/tui/mount-budget.test.ts`, `packages/tui/test/cli/tui/anchors.test.ts`,
   `packages/tui/test/routes/session/paged-transcript-frame.test.tsx`,
   `packages/tui/test/routes/session/activity-anchor-frame.test.tsx`.
+- **What:** ported from current upstream: a transcript read in pages. The office answers a session's messages a page
+  at a time, the newest `limit` before an opaque cursor, oldest first, with the cursor of the page before (base64url
+  JSON naming the message, refused as a bad cursor when it isn't one), as upstream's message list does. The client
+  reads the newest 20 when it syncs a session and the 20 before them on request, or every older one 500 at a time,
+  one load per session at once, putting a page before the messages held unless they moved on meanwhile and dropping
+  those held already; the TUI's history prepend loads the page before when the reader reaches the first message
+  loaded, pinning what is in view, and the previous message waits for it. Adapted: without `limit` or `before` the
+  route answers the whole list; a cursor names its session too; only older pages, as nothing needs newer ones; the
+  cursor is kept in the client's state and a page goes in only while it is still the one held; a load of every page
+  starts over while a reload replaces what is held, and fails rather than stop short; a live change to a message of
+  the page loading waits for it; a reload keeps the older messages loaded before its newest page; a cursor whose
+  message is gone reloads the newest page; one load at a time per transcript, not per view; the mount window shifts
+  by what a page adds; the first message loads every page before going up, with no cancel.
+- **Upstream:** `packages/server/src/handlers/message.ts` (the cursor), `packages/client/src/solid/data.ts`
+  (`messagePageLimit`, `message.sync`, `message.more`, `message.loadMore`), `packages/tui/src/routes/session/history.ts`
+  (`createHistoryPrepend`) and `packages/tui/src/routes/session/index.tsx` (`prependHistory`, `revealOlderRows`,
+  `scrollToMessage`, `session.first`), read at commit `4332e24f` (2026-11-21).
+- **Ours:** `packages/office/src/server/routes/sessions.ts` (`messagesReply`), `packages/protocol/src/schemas/sessions.ts`
+  (`MessagePage`), `packages/client/src/{client,store,sync}.ts`, `packages/tui/src/routes/session/history.ts`,
+  `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/context/office.tsx`,
+  `packages/tui/test/routes/session/paged-transcript-frame.test.tsx`.
 - **What:** ported from current upstream: session links. In a reply's text a session's id shows as a label in the link
   colour, underlined, raw markdown showing the id, and a plain click on it (not one that ends a selection, nor a
   modified one) opens that session; a code span links only when it is exactly an id, and fenced code and table cells

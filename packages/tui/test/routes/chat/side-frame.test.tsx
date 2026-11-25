@@ -285,7 +285,7 @@ test("a side message clears once the side route takes it, before the side sessio
     app.input.pressEnter()
     release()
     const side = office.state.questions[q.id].side_session_id!
-    await app.until(() => office.requests.some((r) => r.path === `/sessions/${side}/messages`))
+    await app.until(() => office.requests.some((r) => r.path.startsWith(`/sessions/${side}/messages`)))
     await Bun.sleep(100)
     expect(posts(office)).toEqual([[`/questions/${q.id}/side`, { text: "why?" }]])
   } finally {

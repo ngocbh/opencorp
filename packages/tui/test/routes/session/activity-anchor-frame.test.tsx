@@ -73,7 +73,7 @@ async function withSession(
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
     await app.until((f) => f.includes(shows))
-    await until(() => office.requests.some((r) => r.path === `/sessions/${s.id}/messages`))
+    await until(() => office.requests.some((r) => r.path.startsWith(`/sessions/${s.id}/messages`)))
     await Bun.sleep(100)
     await app.until((f) => f.includes(shows))
     await run(app)

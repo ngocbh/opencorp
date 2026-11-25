@@ -250,6 +250,7 @@ const body = {} as never
 const GUARDED: [string, (c: Client, bad: string) => Promise<unknown>, (bad: string) => string][] = [
   ["sessions.get", (c, b) => c.sessions.get(b), (b) => `no session ${b}`],
   ["sessions.messages", (c, b) => c.sessions.messages(b), (b) => `no session ${b}`],
+  ["sessions.messagePage", (c, b) => c.sessions.messagePage(b), (b) => `no session ${b}`],
   ["sessions.prompt", (c, b) => c.sessions.prompt(b, body), (b) => `no session ${b}`],
   ["sessions.steer", (c, b) => c.sessions.steer(b, body), (b) => `no session ${b}`],
   ["sessions.interrupt", (c, b) => c.sessions.interrupt(b), (b) => `no session ${b}`],

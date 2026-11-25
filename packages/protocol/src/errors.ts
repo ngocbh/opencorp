@@ -7,6 +7,7 @@ import { z } from "zod"
 export const ERROR_CODES = [
   "approval_card",
   "bad_credentials",
+  "bad_cursor",
   "bad_login",
   "bad_path",
   "bad_target",

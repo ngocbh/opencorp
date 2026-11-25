@@ -11,6 +11,8 @@ export const INTERRUPTED_TEXT = "\n\n[interrupted]"
 export type Freeze = {
   /** Until the next message the user sends, assistant messages that are new are hidden too. */
   active: boolean
+  /** The first message at Esc. The messages before it are older pages loaded since, shown as they are. */
+  first?: string
   /**
    * The stopped turn's last assistant message at Esc. A new assistant message after it and a user
    * message after that answers the user message in a later turn, so it shows.
@@ -31,10 +33,19 @@ export type Freeze = {
  * turn began; without it, every new assistant message stays hidden.
  */
 export function freeze(messages: Message[], prev?: Freeze, turn?: Record<string, true>): Freeze {
-  const f: Freeze = { active: true, messages: {}, parts: {}, texts: {}, hidden: { ...prev?.hidden } }
+  const f: Freeze = {
+    active: true,
+    first: messages[0]?.id,
+    messages: {},
+    parts: {},
+    texts: {},
+    hidden: { ...prev?.hidden },
+  }
   const shown = prev?.active ? revealed(prev, messages) : new Set<string>()
-  for (const m of messages) {
-    if (prev?.active && m.role === "assistant" && !prev.messages[m.id] && !shown.has(m.id)) f.hidden[m.id] = true
+  const start = prev ? covered(prev, messages) : 0
+  for (const [i, m] of messages.entries()) {
+    const fresh = i >= start && m.role === "assistant" && !prev?.messages[m.id] && !shown.has(m.id)
+    if (prev?.active && fresh) f.hidden[m.id] = true
     if (f.hidden[m.id]) continue
     f.messages[m.id] = true
     for (const p of m.parts) {
@@ -56,8 +67,14 @@ export function freeze(messages: Message[], prev?: Freeze, turn?: Record<string,
 export function unfreeze(f: Freeze, messages: Message[]): Freeze {
   const hidden = { ...f.hidden }
   const shown = revealed(f, messages)
-  for (const m of messages) if (m.role === "assistant" && !f.messages[m.id] && !shown.has(m.id)) hidden[m.id] = true
+  for (const m of messages.slice(covered(f, messages)))
+    if (m.role === "assistant" && !f.messages[m.id] && !shown.has(m.id)) hidden[m.id] = true
   return { ...f, active: false, hidden }
+}
+
+/** Where `f` starts in `messages`: at its first message; what comes before it is older pages loaded since. */
+function covered(f: Freeze, messages: Message[]) {
+  return f.first === undefined ? 0 : Math.max(0, messages.findIndex((m) => m.id === f.first))
 }
 
 /**
@@ -82,7 +99,8 @@ function revealed(f: Freeze, messages: Message[]) {
 /** `messages` as the frozen view shows them. */
 export function frozenList(f: Freeze | undefined, messages: Message[]): Message[] {
   const shown = f ? revealed(f, messages) : new Set<string>()
-  return messages.flatMap((m) => (shown.has(m.id) ? [m] : (frozenView(f, m) ?? [])))
+  const start = f ? covered(f, messages) : 0
+  return messages.flatMap((m, i) => (i < start || shown.has(m.id) ? [m] : (frozenView(f, m) ?? [])))
 }
 
 /** `m` as the frozen view shows it, or undefined if it is hidden. */

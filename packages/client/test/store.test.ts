@@ -3,7 +3,7 @@ import type { Event, Instrument, LiveEvent, Message, Question, Session } from "@
 import type { OfficeClient } from "../src/client"
 import { OfficeError } from "../src/errors"
 import type { StreamEvent } from "../src/sse"
-import { applyLive, applyMeta, emptyState, openQuestions, replay, sessionsIn } from "../src/store"
+import { applyLive, applyMeta, emptyState, openQuestions, putNewest, putOlder, replay, sessionsIn } from "../src/store"
 import { createOfficeSync, type OfficeStatus } from "../src/sync"
 
 const S = "S1"
@@ -231,6 +231,78 @@ test("message.removed drops a session's message", () => {
   expect(s.messages[S].map((m) => m.id)).toEqual(["M2"])
 })
 
+const ids = (s: ReturnType<typeof emptyState>) => s.messages[S]!.map((m) => m.id)
+
+test("the newest page is a session's messages, and its next the cursor of the older ones", () => {
+  const s = emptyState()
+  putNewest(s, S, { messages: [msg("M3"), msg("M4")], next: "c3" })
+  expect([ids(s), s.messageCursor[S]]).toEqual([["M3", "M4"], "c3"])
+  putNewest(s, "S2", { messages: [msg("M0")], next: null })
+  expect(s.messageCursor.S2).toBeUndefined()
+})
+
+test("an older page goes before the held messages, once, and drops a message they hold already", () => {
+  const s = emptyState()
+  putNewest(s, S, { messages: [msg("M3"), msg("M4")], next: "c3" })
+  // A live message arrived while the page loaded; the page also holds M3, which stays as held.
+  applyLive(s, live("message.updated", msg("M5")))
+  const held = s.messages[S]![0]
+  expect(putOlder(s, S, { messages: [msg("M1"), msg("M2"), msg("M3", [text("p1", "stale")])], next: "c1" }, "c3")).toBe(
+    true,
+  )
+  expect([ids(s), s.messageCursor[S]]).toEqual([["M1", "M2", "M3", "M4", "M5"], "c1"])
+  expect(s.messages[S]![2]).toBe(held)
+  // The same page again: its cursor is no longer the held one.
+  expect(putOlder(s, S, { messages: [msg("M1"), msg("M2")], next: "c1" }, "c3")).toBe(false)
+  expect(putOlder(s, S, { messages: [msg("M0")], next: null }, "c1")).toBe(true)
+  expect(ids(s)).toEqual(["M0", "M1", "M2", "M3", "M4", "M5"])
+  expect(s.messageCursor[S]).toBeUndefined()
+})
+
+test("an older page runs its publish callback only when it goes in", () => {
+  const s = emptyState()
+  putNewest(s, S, { messages: [msg("M3")], next: "c3" })
+  const calls: string[] = []
+  putOlder(s, S, { messages: [msg("M1")], next: null }, "stale", () => calls.push("stale"))
+  putOlder(s, S, { messages: [msg("M2"), msg("M3")], next: null }, "c3", (added) => calls.push(`put ${added}`))
+  expect(calls).toEqual(["put 1"])
+  expect(putOlder(s, "S9", { messages: [msg("M2")], next: null }, "c3")).toBe(false)
+})
+
+test("a newest page read again keeps the older messages held before it, and their cursor", () => {
+  const s = emptyState()
+  putNewest(s, S, { messages: [msg("M3"), msg("M4")], next: "c3" })
+  putOlder(s, S, { messages: [msg("M1"), msg("M2")], next: "c1" }, "c3")
+  // A reconnect reads the newest page again: M4 changed and M5 came meanwhile.
+  putNewest(s, S, { messages: [msg("M4", [text("p1", "new")]), msg("M5")], next: "c4" })
+  expect(ids(s)).toEqual(["M1", "M2", "M3", "M4", "M5"])
+  expect([s.messageCursor[S], texts(s.messages[S]![3]!)]).toEqual(["c1", ["new"]])
+})
+
+test("a newest page that doesn't reach the held messages replaces them, with its own cursor", () => {
+  const s = emptyState()
+  putNewest(s, S, { messages: [msg("M3"), msg("M4")], next: "c3" })
+  putNewest(s, S, { messages: [msg("M8"), msg("M9")], next: "c8" })
+  expect([ids(s), s.messageCursor[S]]).toEqual([["M8", "M9"], "c8"])
+  putNewest(s, S, { messages: [msg("M7"), msg("M8")], next: "c7" }, { replace: true })
+  expect([ids(s), s.messageCursor[S]]).toEqual([["M7", "M8"], "c7"])
+  // A whole transcript replaces what is held, and leaves no cursor.
+  putNewest(s, S, { messages: [msg("M1")], next: null })
+  expect(ids(s)).toEqual(["M1"])
+  expect(s.messageCursor[S]).toBeUndefined()
+})
+
+test("a live message older than the held page, while older ones aren't loaded, waits for its page", () => {
+  const s = emptyState()
+  putNewest(s, S, { messages: [msg("M3"), msg("M4")], next: "c3" })
+  applyLive(s, live("message.updated", msg("M1")))
+  applyLive(s, live("part.updated", { message_id: "M2", part: text("p9", "x") }))
+  expect(ids(s)).toEqual(["M3", "M4"])
+  putOlder(s, S, { messages: [msg("M1"), msg("M2")], next: null }, "c3")
+  applyLive(s, live("message.updated", msg("M0")))
+  expect(ids(s)).toEqual(["M0", "M1", "M2", "M3", "M4"])
+})
+
 test("an instrument of a kind the client doesn't know isn't kept", () => {
   const s = synced()
   applyLive(s, live("instrument.updated", instrument("I1", { kind: "browser" as Instrument["kind"] })))
@@ -260,7 +332,8 @@ function stubSync(routes: Record<string, () => unknown> = {}) {
     },
     sessions: {
       get: (id: string) => answer(`GET /sessions/${id}`)(),
-      messages: (id: string) => answer(`GET /sessions/${id}/messages`)(),
+      // The whole transcript, as one page.
+      messagePage: async (id: string) => ({ messages: await answer(`GET /sessions/${id}/messages`)(), next: null }),
       instruments: (id: string) => answer(`GET /sessions/${id}/instruments`)(),
     },
     questions: { list: (opts: { session: string }) => answer(`GET /questions?session=${opts.session}`)() },

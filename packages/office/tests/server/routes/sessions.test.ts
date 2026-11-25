@@ -3,7 +3,7 @@ import fs from "node:fs"
 import http from "node:http"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
-import { type LiveEvent, Message } from "@opencorp/protocol"
+import { type LiveEvent, Message, MessagePage } from "@opencorp/protocol"
 import { z } from "zod"
 import { newToken } from "../../../src/runtime/auth/tokens.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
@@ -170,6 +170,128 @@ test("missing session is 404", async () => {
     const r = await get(sock, target)
     expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
   }
+})
+
+/** Message `i` of session `sid`: a user message on even `i`, a reply on odd, by ids that sort as the office's. */
+function numbered(sid: string, i: number): z.input<typeof Message> {
+  const id = `${ULID}:${String(i).padStart(12, "0")}`
+  const role = i % 2 === 0 ? "user" : "assistant"
+  const parts = [{ id: `${id}:0`, type: "text" as const, text: `m${i}` }]
+  return { id, session_id: sid, role, parts, created_at: "2026-11-23T10:00:00.000Z" }
+}
+
+/** An office with session `sid`, whose stand-in harness answers its messages from `list` (as the test changes it)
+ *  and session `other`'s from `others`. */
+async function pagedOffice(count: number) {
+  const office = makeOffice()
+  const sid = office.store.createSession(session()).id
+  const other = office.store.createSession(session()).id
+  const list = Array.from({ length: count }, (_, i) => numbered(sid, i))
+  const others = [numbered(other, 0), numbered(other, 1)]
+  office.harness = standInHarness({ messages: (id) => (id === sid ? list : id === other ? others : []) })
+  const { sock } = await served(office)
+  return { sock, sid, other, list }
+}
+
+/** A page of session `sid`'s messages read with `params`: its texts and its `next`. */
+async function pageOf(sock: string, sid: string, params: [string, string][]) {
+  const r = await get(sock, `/sessions/${sid}/messages` + query(params))
+  expect(r.status).toBe(200)
+  const page = MessagePage.parse(r.json())
+  return { texts: page.messages.map((m) => (m.parts[0] as { text: string }).text), next: page.next }
+}
+
+test("a message page is the newest messages, oldest first, with the cursor of the older ones", async () => {
+  const { sock, sid } = await pagedOffice(5)
+  const page = await pageOf(sock, sid, [["limit", "2"]])
+  expect(page.texts).toEqual(["m3", "m4"])
+  expect(page.next).toEqual(expect.any(String))
+})
+
+test("older pages follow the cursor to the first message, whose page has no next", async () => {
+  const { sock, sid } = await pagedOffice(5)
+  const first = await pageOf(sock, sid, [["limit", "2"]])
+  const second = await pageOf(sock, sid, [["limit", "2"], ["before", first.next!]])
+  expect(second.texts).toEqual(["m1", "m2"])
+  const last = await pageOf(sock, sid, [["limit", "2"], ["before", second.next!]])
+  expect(last).toEqual({ texts: ["m0"], next: null })
+})
+
+test("a page that holds the whole transcript has no next, and an empty one is an empty page", async () => {
+  const { sock, sid, list } = await pagedOffice(5)
+  expect(await pageOf(sock, sid, [["limit", "5"]])).toEqual({ texts: ["m0", "m1", "m2", "m3", "m4"], next: null })
+  list.length = 0
+  expect(await pageOf(sock, sid, [["limit", "20"]])).toEqual({ texts: [], next: null })
+})
+
+test("a message that arrives between pages leaves the older pages as they were", async () => {
+  const { sock, sid, list } = await pagedOffice(5)
+  const first = await pageOf(sock, sid, [["limit", "2"]])
+  list.push(numbered(sid, 5), numbered(sid, 6))
+  expect(await pageOf(sock, sid, [["limit", "2"], ["before", first.next!]])).toMatchObject({ texts: ["m1", "m2"] })
+  expect((await pageOf(sock, sid, [["limit", "2"]])).texts).toEqual(["m5", "m6"])
+})
+
+test("a cursor alone reads a page of up to fifty, and no paging param reads the whole list", async () => {
+  const { sock, sid } = await pagedOffice(60)
+  const first = await pageOf(sock, sid, [["limit", "1"]])
+  const page = await pageOf(sock, sid, [["before", first.next!]])
+  expect(page.texts).toHaveLength(50)
+  expect(page.texts.at(-1)).toBe("m58")
+  const whole = await get(sock, `/sessions/${sid}/messages`)
+  expect(z.array(Message).parse(whole.json())).toHaveLength(60)
+})
+
+/** `value` as JSON in base64url, as a cursor's form. */
+const encoded = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url")
+
+const BAD_CURSORS: [string, (sid: string) => string][] = [
+  ["empty", () => ""],
+  ["not base64url", () => "not a cursor!"],
+  ["not json", () => Buffer.from("{nope").toString("base64url")],
+  ["not an object", () => encoded(["x"])],
+  ["no id", (sid) => encoded({ session: sid })],
+  ["an empty id", (sid) => encoded({ session: sid, id: "" })],
+  ["a message the transcript lacks", (sid) => encoded({ session: sid, id: "sk-planted" })],
+  ["too long", (sid) => encoded({ session: sid, id: "x".repeat(2000) })],
+  ["a key no cursor has", (sid) => encoded({ session: sid, id: `${ULID}:000000000001`, more: 1 })],
+  ["a session that isn't an id", () => encoded({ session: "sk-planted", id: `${ULID}:000000000001` })],
+]
+
+test.each(BAD_CURSORS)("a bad cursor is a 400 that echoes nothing [%s]", async (_case, cursor) => {
+  const { sock, sid } = await pagedOffice(5)
+  const before = cursor(sid)
+  const r = await get(sock, `/sessions/${sid}/messages` + query([["limit", "2"], ["before", before]]))
+  expect([r.status, errorOf(r)]).toEqual([400, "bad_cursor"])
+  if (before !== "") expect(r.text).not.toContain(before)
+  expect(r.text).not.toContain("sk-planted")
+})
+
+test("a cursor from another session is a 400", async () => {
+  const { sock, sid, other } = await pagedOffice(5)
+  const theirs = await pageOf(sock, other, [["limit", "1"]])
+  const r = await get(sock, `/sessions/${sid}/messages` + query([["limit", "2"], ["before", theirs.next!]]))
+  expect([r.status, errorOf(r)]).toEqual([400, "bad_cursor"])
+  expect((r.json() as { message: string }).message).toContain("another session")
+})
+
+test.each(["0", "501", "x", "²", "", "1.5"])("a page limit out of bounds is 422 [%s]", async (limit) => {
+  const { sock, sid } = await pagedOffice(5)
+  const r = await get(sock, `/sessions/${sid}/messages` + query([["limit", limit]]))
+  expect(r.status).toBe(422)
+  expect(r.json()).toEqual({ error: "invalid_body", message: "limit must be an integer from 1 to 500" })
+})
+
+test("a page limit of one and of five hundred are pages", async () => {
+  const { sock, sid } = await pagedOffice(5)
+  expect((await pageOf(sock, sid, [["limit", "1"]])).texts).toEqual(["m4"])
+  expect((await pageOf(sock, sid, [["limit", "500"]])).texts).toHaveLength(5)
+})
+
+test("a page of a missing session is 404", async () => {
+  const { sock } = await pagedOffice(5)
+  const r = await get(sock, `/sessions/${ULID}/messages` + query([["limit", "2"], ["before", "x"]]))
+  expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
 })
 
 test("messages are a live codex sessions current turn then empty", async () => {
@@ -547,6 +669,28 @@ test("messages in order", async () => {
   expect(ids).toEqual([...ids].sort())
   const runs = new Transcript(h.office.paths.runs).messages(sid, h.store.getSession(sid)!.run_ids)
   expect(r.json()).toEqual(JSON.parse(JSON.stringify(runs)))
+})
+
+test("a chat's transcript in pages is its whole list, and a turn after the first page leaves the cursor good", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const { sock } = await served(h.office)
+  fake.script({ content: "hello" }, { content: "ok" }, { content: "bye" })
+  const sid = await open(h, sock)
+  for (const [text, n] of [["hi", 2], ["again", 4]] as const) {
+    expect((await post(sock, `/sessions/${sid}/prompt`, { text })).json()).toEqual({ ok: true })
+    await settled(h, sock, sid, n)
+  }
+  const page = (params: [string, string][]) =>
+    get(sock, `/sessions/${sid}/messages` + query(params)).then((r) => MessagePage.parse(r.json()))
+  const newest = await page([["limit", "3"]])
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "last" })).json()).toEqual({ ok: true })
+  await settled(h, sock, sid, 6)
+  const older = await page([["limit", "3"], ["before", newest.next!]])
+  expect(older.next).toBeNull()
+  const whole = await messagesOf(sock, sid)
+  expect([...older.messages, ...newest.messages]).toEqual(whole.slice(0, 4))
+  expect((await page([["limit", "2"]])).messages).toEqual(whole.slice(4))
 })
 
 test("messages of a log with a bad line show the messages before it", async () => {

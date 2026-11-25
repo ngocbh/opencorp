@@ -419,7 +419,7 @@ test("the chat's history is loaded once; the office's own re-read keeps it on re
   const manager = await client.profiles.manager("minh", { text: "Earlier ask" })
   await run(office, async (app) => {
     await app.until((f) => f.includes("you: Earlier ask"))
-    const loads = () => office.requests.filter((r) => r.path === `/sessions/${manager.id}/messages`).length
+    const loads = () => office.requests.filter((r) => r.path.startsWith(`/sessions/${manager.id}/messages`)).length
     const before = loads()
     office.reset()
     await until(() => loads() > before)
