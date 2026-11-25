@@ -96,8 +96,8 @@ function carried(records: FoldedRun["records"]): { summary: string; history: Mes
 
 /**
  * The sends to the main chat's inbox, in log order, that no accepted take, steer step or withdraw consumed, with their
- * keys and senders. A take commit counts once a success names it: an orphan one's events go back to unread, as yian re-offers
- * them. A withdraw's sends are the office's again (Esc sends them anew), so none is moved.
+ * keys and senders. A take commit counts once a success names it: an orphan one's events go back to unread, as yian
+ * re-offers them. A withdraw's sends are the office's again (Esc sends them anew), so none is moved.
  */
 function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
   const sends = new Map<number, Omit<UnreadSend, "seq">>()

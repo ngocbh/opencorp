@@ -41,9 +41,10 @@ export function byPerson(handle: string | null | undefined): { by?: DeliveryBy }
 
 /** One yian host call the worker makes on the run, with the id its `deliver_reply` answers, and `by`, who makes it,
  *  for a send, a complete or a release. A `send` with a `key` appends nothing when the run already has a send with
- *  that key, value and `by`, so a send retried or sent again by a new worker isn't doubled. A `withdraw` takes back every send of the inbox nothing has read yet, and its reply lists
- *  them (`withdrawn`: each one's seq and value), in send order. A `release` runs a call the office's gate held, once,
- *  with `note` kept in the run log; a second release of it appends nothing (`seq: null`). */
+ *  that key, value and `by`, so a send retried or sent again by a new worker isn't doubled. A `withdraw` takes back
+ *  every send of the inbox nothing has read yet, and its reply lists them (`withdrawn`: each one's seq and value), in
+ *  send order. A `release` runs a call the office's gate held, once, with `note` kept in the run log; a second release
+ *  of it appends nothing (`seq: null`). */
 export const Delivery = z.discriminatedUnion("op", [
   z.strictObject({
     id: deliveryId,
