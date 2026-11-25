@@ -743,7 +743,7 @@ test("end after a held message holds its close for the fresh run", async () => {
   old.handlers.exited(old.worker, 0)
   await waitFor(() => workers.length === 2, { what: "the fresh run's worker" })
   const fresh = workers[1]!
-  expect(fresh.job.deliver.map((d) => d.op)).toEqual(["send", "close"])
+  expect(fresh.job.deliver.map((d) => d.op)).toEqual(["send", "close", "close"])
   fresh.job.deliver.forEach((d, i) => {
     fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: d.id, seq: 3 + i })
   })

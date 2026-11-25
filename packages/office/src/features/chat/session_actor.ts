@@ -474,7 +474,8 @@ export class SessionActor implements LiveCalls {
   #finishedRuns: readonly string[] = []
   #closed = false
   #ending = false
-  /** The inboxes closed while ending, by run: End closes the chat's, and a turn take's others once it waits on them. */
+  /** The inboxes closed while ending, by run: End closes the chat's and its queue, and a turn take's others once it
+   *  waits on them. */
   #endClosed: { runId: string; inboxes: Set<string> } | null = null
   /** Workers that exited with no outcome, or with a `stopped` or `crashed` run, since the last `waiting` or
    *  `succeeded` result. */
@@ -1396,13 +1397,14 @@ export class SessionActor implements LiveCalls {
     this.#closeShells()
     this.#approvals.stop()
     this.#answerCalls()
-    let inbox: string
+    let chat: ChatFlow
     try {
       // Restore may not have built the spec, and a folder gone or unsafe since fails its build.
-      inbox = (await this.#specOf(session)).chat.inbox
+      chat = (await this.#specOf(session)).chat
     } catch (error) {
       throw this.#cantEnd(error)
     }
+    const inbox = chat.inbox
     const run = this.#run
     const capped = this.#capped()
     const rests = this.#rested && !this.#wakesAgent(this.#waits ?? [])
@@ -1413,7 +1415,12 @@ export class SessionActor implements LiveCalls {
       this.#finish("ended", null, ENDED_OVER_CAP)
       return
     }
-    const ops: Delivery[] = [{ id: newId(), op: "close", inbox }]
+    // The turn's take reads the queue too, and ends only once both are closed; it reads what it holds with them, so a
+    // message it holds is never answered. A flow that keeps no queue refuses its close, and a take of other inboxes
+    // gets them closed once it waits on them.
+    const inboxes = [chat.inbox, chat.queue]
+    this.#endClosed = { runId: this.#runId!, inboxes: new Set(inboxes) }
+    const ops: Delivery[] = inboxes.map((name) => ({ id: newId(), op: "close", inbox: name }))
     if (replying || this.#agentWaits()) ops.unshift({ id: newId(), op: "interrupt", inbox })
     let spawn = false
     for (const op of ops) spawn = (await this.#give(new Pending(op))) || spawn
@@ -2046,9 +2053,15 @@ export class SessionActor implements LiveCalls {
         // Its deliveries, which `close` answers through `#starting`.
         run = new WorkerRun(this.#runId!, "chat", pendings, [], this.#lateSend)
         this.#starting = run
-        // A fresh run of an ending session must close too: a close the old run took stays in the old run's log.
-        if (this.#ending && !pendings.some((p) => p.delivery.op === "close")) {
-          pendings.push(new Pending({ id: newId(), op: "close", inbox: spec.chat.inbox }))
+        // A fresh run of an ending session must close too: a close the old run took stays in the old run's log. Both
+        // inboxes, as End closes them, so the fresh run's take reads what it holds with them.
+        if (this.#ending) {
+          const ends = [spec.chat.inbox, spec.chat.queue]
+          for (const inbox of ends) {
+            const carried = pendings.some((p) => p.delivery.op === "close" && p.delivery.inbox === inbox)
+            if (!carried) pendings.push(new Pending({ id: newId(), op: "close", inbox }))
+          }
+          this.#endClosed = { runId: this.#runId!, inboxes: new Set(ends) }
         }
       } else if (kind === "advance") {
         pendings.unshift(...this.#storedAnswers(pendings))
@@ -2873,7 +2886,10 @@ export class SessionActor implements LiveCalls {
       // The reason only: a delivery never names the message's text.
       this.#log(`session ${this.sessionId}: a ${op} was refused (${reply.refused})`)
       if (p.questionId !== null) this.#lostAnswer(p, reply.refused)
-      if (reply.refused !== "not_started") p.reject(refusalOf(reply.refused))
+      // The chat's own inbox is always there; a flow may keep no queue.
+      const queued = p.delivery.op === "send" && p.delivery.inbox === this.#chat.queue
+      if (queued && reply.refused === "unknown_inbox") p.reject(noQueue())
+      else if (reply.refused !== "not_started") p.reject(refusalOf(reply.refused))
     } else {
       const failed = reply.failed as string
       this.#log(`session ${this.sessionId}: a ${op} failed (${failed})`)
@@ -3247,10 +3263,12 @@ export class SessionActor implements LiveCalls {
     await this.#spawnQuietly("advance", { plain: true })
   }
 
-  /** While ending, queues a close of each inbox but the chat's that a turn take in `waits` still waits on, once per
-   *  run: a take of several inboxes waits until each of them is closed, and End closed only the chat's. */
+  /** While ending, queues a close of each inbox but the chat's and its queue that a turn take in `waits` still waits
+   *  on, once per run: a take of several inboxes waits until each of them is closed, and End closed only those two. */
   #closeTurnInboxes(runId: string, waits: readonly Wait[]): void {
-    if (this.#endClosed?.runId !== runId) this.#endClosed = { runId, inboxes: new Set([this.#chat.inbox]) }
+    if (this.#endClosed?.runId !== runId) {
+      this.#endClosed = { runId, inboxes: new Set([this.#chat.inbox, this.#chat.queue]) }
+    }
     const closed = this.#endClosed.inboxes
     for (const wait of waits) {
       if (wait.tool !== "take" || wait.settled || wait.inbox === null || !this.#chat.isTurn(wait.node)) continue
@@ -4094,12 +4112,13 @@ function sameWaits(a: readonly Wait[], b: readonly Wait[]): boolean {
 function refusalOf(reason: string): HarnessError {
   if (reason === "inbox_closed" || reason === "ended") return new HarnessError(409, "ending", "the session is ending")
   if (reason === "too_large") return tooLarge()
-  // The chat's own inbox is always there: only its queue can be missing.
-  if (reason === "unknown_inbox") {
-    return new HarnessError(422, "not_supported", "this chat keeps no queue: its flow has no `queued` inbox")
-  }
   if (reason === "unknown_send") return noSuchSend()
   return new HarnessError(422, "refused", `the run refused it (${reason})`)
+}
+
+/** A message to the queue of a chat whose flow keeps none. */
+function noQueue(): HarnessError {
+  return new HarnessError(422, "not_supported", "this chat keeps no queue: its flow has no `queued` inbox")
 }
 
 /** A message that is no unread send of the acting person's to the session's current run. */

@@ -616,7 +616,7 @@ test("end on a session asleep at a question node stays ending across a restart",
   await third.restore()
   // An ending session is closed again at every start.
   expect(o.kinds.slice(before)).toEqual(["advance"])
-  expect(o.jobs.at(-1)!.deliver.map((d) => d.op)).toEqual(["close"])
+  expect(o.jobs.at(-1)!.deliver.map((d) => d.op)).toEqual(["close", "close"])
   expect(status(o, sid)).toBe("ending")
   await waitFor(() => !third.hasWorker, { what: "the worker to exit" })
   expect(o.office.store.getQuestion(q.id)!.status).toBe("open")

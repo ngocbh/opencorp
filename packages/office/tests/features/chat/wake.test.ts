@@ -312,7 +312,7 @@ test("a wake never resumes a session whose finish is in flight", async () => {
   handlers.event(worker, { type: "event", name: "NodeWaiting", data: { node_id: "chat#0/heard", call_ids: ["c1"] } })
   await waitFor(() => status(o, sid) === "idle", { what: "idle at the turn" })
   await actor.end()
-  expect(deliveries.map((d) => d.op)).toEqual(["close"])
+  expect(deliveries.map((d) => d.op)).toEqual(["close", "close"])
   handlers.deliverReply(worker, { type: "deliver_reply", id: deliveries[0]!.id, seq: 2 })
   const succeeded = { type: "result", status: "succeeded", run_id: actor.runId, output: null, failure: null, waits: [] }
   handlers.result(worker, succeeded)

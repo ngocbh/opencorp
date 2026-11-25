@@ -12,7 +12,7 @@ import type { Office } from "../../../src/server/office.ts"
 import { register } from "../../../src/features/questions/extension.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
-import { fakeLlm, makeHarness, noWorkersLeft, status as chatStatus } from "../../features/chat/helpers.ts"
+import { CHAT_FLOW, fakeLlm, makeHarness, noWorkersLeft, status as chatStatus } from "../../features/chat/helpers.ts"
 import {
   YES,
   allGone,
@@ -978,6 +978,47 @@ test("a queued message is the next turn's, whether the reply ends or Esc stops i
     ["Then book it.", false, false],
     ["And a car.", false, false],
   ])
+})
+
+/** The template's chat flow with no queue: one inbox, which its turn's take and its reply's steers read. */
+const UNQUEUED_FLOW = [
+  ["  queued: !Inbox(Message)  # what people send for the next turn: only each turn's take reads it\n", ""],
+  ["      queued: !Inbox(Message)\n", ""],
+  [
+    "          from:\n            - ${input.messages}\n            - ${input.queued}\n",
+    "          from: ${input.messages}\n",
+  ],
+  ["said: ${[e.event for e in heard.output.events]}", "said: ${heard.output.events}"],
+  ["[[e.event for e in heard.output.events] + (reply", "[heard.output.events + (reply"],
+  ["      queued: ${input.queued}\n", ""],
+].reduce((flow, [from, to]) => {
+  if (flow.split(from!).length !== 2) throw new Error(`the chat flow no longer holds ${JSON.stringify(from)} once`)
+  return flow.replace(from!, to!)
+}, CHAT_FLOW)
+
+test("a chat whose flow keeps no queue refuses a queued message, and a move there leaves the steer a steer", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { files: { "shared/flows/chat.yaml": UNQUEUED_FLOW } })
+  const { sock } = await served(h.office)
+  fake.script({ content: "Working", hold: 30 }, { content: "Done." })
+  const sid = await open(h, sock)
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "hi" })).json()).toEqual({ ok: true })
+  await fake.waitForRequests(1, 30_000)
+  let r = await post(sock, `/sessions/${sid}/queue`, { text: "later" })
+  expect([r.status, errorOf(r)]).toEqual([422, "not_supported"])
+  expect((await post(sock, `/sessions/${sid}/steer`, { text: "Also Rome." })).json()).toEqual({ ok: true })
+  const text = (m: Message) => (m.parts[0] as { text?: string } | undefined)?.text
+  const rome = async () => (await messagesOf(sock, sid)).find((m) => text(m) === "Also Rome.")!
+  const steered = await rome()
+  r = await send(sock, "PATCH", inbox(sid, steered.id), { delivery: "queue" })
+  expect([r.status, errorOf(r)]).toEqual([422, "not_supported"])
+  // Back in the inbox, under a new id, for the reply to read.
+  const back = await rome()
+  expect([back.id === steered.id, back.unread, back.queued]).toEqual([false, true, false])
+  expect((await messagesOf(sock, sid)).map(text)).not.toContain("later")
+  fake.release()
+  const requests = await fake.waitForRequests(2, 30_000)
+  expect(JSON.stringify(requests[1]!.messages)).toContain("Also Rome.")
 })
 
 test("codex sessions keep no queue: queueing, moving or taking back a message is 422 not supported", async () => {

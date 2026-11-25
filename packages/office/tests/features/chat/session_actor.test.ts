@@ -74,6 +74,9 @@ import {
 } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
+
+/** End's closes of a template chat: its inbox, then its queue, which its turn's take reads too. */
+const CLOSES = [{ op: "close", inbox: "messages" }, { op: "close", inbox: "queued" }]
 afterAll(noWorkersLeft)
 
 /** What a command settled with: its value, or the status and code of the error it was refused with. */
@@ -245,7 +248,7 @@ test("End while the reply waits on its flow call interrupts the reply before clo
   frame("NodeStarted", { node_id: REPLY })
   call(REPLY, "c1")
   await actor.end()
-  expect(deliveries.map((d) => d.op)).toEqual(["interrupt", "close"])
+  expect(deliveries.map((d) => d.op)).toEqual(["interrupt", "close", "close"])
 })
 
 /** The template chat with a `lookup` def the reply may call as a tool, whose own agent answers. */
@@ -910,7 +913,7 @@ test("an answer to the model's question during end is refused as ending", async 
   const { actor, q, first } = await askedOnce(o)
   await actor.end()
   await expect(actor.answer(q.id, "A", "text")).rejects.toMatchObject({ status: 409, code: "ending" })
-  expect(first.deliveries.map((d) => d.op)).toEqual(["interrupt", "close"])
+  expect(first.deliveries.map((d) => d.op)).toEqual(["interrupt", "close", "close"])
   expect(o.office.store.getQuestion(q.id)!.status).toBe("open")
 })
 
@@ -989,7 +992,7 @@ test("end interrupts a model call whose question is answered but not taken", asy
   o.office.store.answerQuestion(q.id, "A", "text", null)
   await actor.end()
   await waitFor(() => workers.length === 2, { what: "the end's advance" })
-  expect(workers[1]!.job.deliver.map((d) => d.op).slice(-2)).toEqual(["interrupt", "close"])
+  expect(workers[1]!.job.deliver.map((d) => d.op).slice(-3)).toEqual(["interrupt", "close", "close"])
 })
 
 test("a card answer is completed and consumed", async () => {
@@ -1466,7 +1469,7 @@ test("a message after end is refused as ending", async () => {
   await expect(actor.steer("late")).rejects.toMatchObject({ status: 409, code: "ending" })
   // A second end does nothing more.
   await actor.end()
-  expect(deliveries.map((d) => d.op)).toEqual(["close"])
+  expect(deliveries.map((d) => d.op)).toEqual(["close", "close"])
 })
 
 test("the provider key never reaches a reason a hook a log or the store", async () => {
@@ -1807,7 +1810,7 @@ test("an end its worker never answered resends its interrupt and close when the 
   const first = workers[0]!
   first.handlers.event(first.worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
   await actor.end()
-  expect(first.deliveries.map((d) => d.op)).toEqual(["interrupt", "close"])
+  expect(first.deliveries.map((d) => d.op)).toEqual(["interrupt", "close", "close"])
   first.handlers.exited(first.worker, 1)
   await waitFor(() => workers.length === 2, { what: "the next worker" })
   const second = workers[1]!
@@ -2601,7 +2604,7 @@ test("an end whose advance is not resumed still closes the fresh run", async () 
   await actor.end()
   await waitFor(() => workers.length === 2, { what: "the end's advance" })
   const second = workers[1]!
-  expect(second.job.deliver.map((d) => d.op)).toEqual(["close"])
+  expect(second.job.deliver.map((d) => d.op)).toEqual(["close", "close"])
   // The close reached the old run's log, but the advance was refused.
   second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: second.job.deliver[0]!.id, seq: 2 })
   second.handlers.result(second.worker, notResumed(old))
@@ -2609,7 +2612,7 @@ test("an end whose advance is not resumed still closes the fresh run", async () 
   await waitFor(() => workers.length === 3, { what: "the fresh run" })
   const fresh = workers[2]!
   expect(fresh.job.kind).toBe("chat")
-  expect(fresh.job.deliver.map((d) => d.op)).toEqual(["close"])
+  expect(fresh.job.deliver.map((d) => d.op)).toEqual(["close", "close"])
   expect(status(o, sid)).toBe("ending")
   const ended = { type: "result", status: "succeeded", run_id: fresh.job.run_id, output: null, failure: null, waits: [] }
   fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: fresh.job.deliver[0]!.id, seq: 1 })
@@ -2759,7 +2762,7 @@ test("an ending session whose run is busy twice fails", async () => {
   for (const n of [1, 2]) {
     await waitFor(() => workers.length === n + 1, { what: `worker ${n + 1}` })
     const { worker, handlers, job } = workers[n]!
-    expect(job.deliver.map((d) => d.op)).toEqual(["close"])
+    expect(job.deliver.map((d) => d.op)).toEqual(["close", "close"])
     handlers.error(worker, { type: "error", message: `RunBusyError: run ${runId} is running`, traceback: "" })
     handlers.exited(worker, 1)
   }
@@ -3023,7 +3026,7 @@ test("end over the cap after the start's worker rested closes after the held mes
   await waitFor(() => workers.length === 2, { what: "the ending advance" })
   // The take reads the message and the closed inbox: the flow skips the reply.
   expect(workers[1]!.job).toMatchObject({ kind: "advance", advance: true })
-  expect(ops(workers[1]!)).toEqual(["send", "close"])
+  expect(ops(workers[1]!)).toEqual(["send", "close", "close"])
   const { worker, handlers } = workers[1]!
   for (const d of workers[1]!.given()) handlers.deliverReply(worker, { type: "deliver_reply", id: d.id, seq: 1 })
   expect(await sent).toBe("queued")
@@ -3041,7 +3044,7 @@ test("end after a raise in the start window closes after the held message", asyn
   expect(ops(workers[0]!)).toEqual([])
   rests(workers[0]!, runId)
   await waitFor(() => workers.length === 2, { what: "the ending advance" })
-  expect(ops(workers[1]!)).toEqual(["send", "close"])
+  expect(ops(workers[1]!)).toEqual(["send", "close", "close"])
   rests(workers[1]!, runId)
   expect(await sent).toBe("queued")
 })
@@ -3073,9 +3076,9 @@ test("end over the cost cap on a waiting run closes it without a model call", as
   o.office.store.updateSession(sid, { cost: 6 })
   const before = o.kinds.length
   await actor.end()
-  // The one advance a capped session may run: the take reads the inbox closed and the run succeeds.
+  // The one advance a capped session may run: the take reads both inboxes closed and the run succeeds.
   await waitFor(() => status(o, sid) === "ended", { what: "the end" })
-  expect(o.jobs.slice(before)).toMatchObject([{ kind: "advance", advance: true, deliver: [{ op: "close" }] }])
+  expect(o.jobs.slice(before)).toMatchObject([{ kind: "advance", advance: true, deliver: CLOSES }])
   expect(fake.requests()).toHaveLength(0)
 })
 
@@ -3092,10 +3095,10 @@ test("end over the cost cap after a message sent while capped closes the run wit
   expect(await actor.prompt("hi")).toBe("queued")
   await waitFor(() => !actor.hasWorker, { what: "the delivering worker to exit" })
   expect(o.jobs.slice(before)).toMatchObject([{ kind: "advance", advance: false, deliver: [{ op: "send" }] }])
-  // The message settled the turn's take; the take reads it with the close and the flow skips the reply.
+  // The message settled the turn's take; the take reads it with both closes and the flow skips the reply.
   await actor.end()
   await waitFor(() => status(o, sid) === "ended" && frames.length === 1, { what: "the end" })
-  expect(o.jobs.slice(before + 1)).toMatchObject([{ kind: "advance", advance: true, deliver: [{ op: "close" }] }])
+  expect(o.jobs.slice(before + 1)).toMatchObject([{ kind: "advance", advance: true, deliver: CLOSES }])
   expect(o.office.store.getRun(runId)?.endReason).not.toBe(ENDED_OVER_CAP)
   expect(frames).toMatchObject([{ type: "result", status: "succeeded" }])
   expect(fake.requests()).toHaveLength(0)
@@ -3190,7 +3193,7 @@ test("end while the fresh run of a failed reply is held closes it without a mode
   const requests = fake.requests().length
   await actor.end()
   await waitFor(() => status(o, sid) === "ended", { what: "the end" })
-  expect(o.jobs.slice(before)).toMatchObject([{ kind: "chat", deliver: [{ op: "close" }] }])
+  expect(o.jobs.slice(before)).toMatchObject([{ kind: "chat", deliver: CLOSES }])
   expect(o.office.store.getRun(actor.runId!)?.replacesRunId).toBe(old)
   expect(fake.requests()).toHaveLength(requests)
 })
@@ -3365,7 +3368,7 @@ test("end while a reply runs then a call over the cap ends the session over its 
   const stops = countStops(first)
   first.handlers.event(first.worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
   await actor.end()
-  expect(first.deliveries.map((d) => d.op)).toEqual(["interrupt", "close"])
+  expect(first.deliveries.map((d) => d.op)).toEqual(["interrupt", "close", "close"])
   expect(stops()).toBe(0)
   // The reply's model call crosses the cap before the interrupt cut it.
   modelCall(first, 6)
@@ -3654,7 +3657,10 @@ test("end goes through the parked worker and the session ends", async () => {
   await actor.end()
   await waitFor(() => status(o, sid) === "ended", { what: "the end" })
   expect(o.reused()).toBe(1)
-  expect(o.jobs.at(-1)!.deliver.map((d) => d.op)).toEqual(["close"])
+  expect(o.jobs.at(-1)!.deliver.map((d) => [d.op, (d as { inbox?: string }).inbox])).toEqual([
+    ["close", "messages"],
+    ["close", "queued"],
+  ])
   expect(await parked.wait(10_000)).toBe(0)
   expect(o.registry.get(sid)).toBeUndefined()
 })
