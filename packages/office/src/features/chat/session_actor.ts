@@ -89,6 +89,8 @@ import { HarnessError, notWaiting, runState, SETTLED, writeState } from "../../r
 import { restoreNotes } from "./terminal.ts"
 import { restoreHarnessNotes } from "./instrument.ts"
 import { type LiveCalls, messageId, sentUnread, type Transcript, userMessage, withdrawnSends } from "./transcript.ts"
+import { type Move, readMoves, sameMove, writeMoves } from "./moves.ts"
+import { readFlow } from "../../company/flow_yaml.ts"
 import { type ChatFlow, MAIN_CHAT } from "../../company/chat_flow.ts"
 
 /** What every actor of an office shares. */
@@ -127,7 +129,7 @@ export interface ActorContext {
   readonly checkMs?: number
   readonly hooks: Hooks
   readonly answers: Answers
-  readonly transcript: Pick<Transcript, "forget" | "unread" | "sentMessage" | "send">
+  readonly transcript: Pick<Transcript, "forget" | "unread" | "sentMessage" | "send" | "withdrawnMessage">
   /** The office's live relay, fed each worker's live frames; the actor's `calls` reads it. */
   readonly live: Pick<LiveRelay, "frame" | "detach" | "calls" | "forget" | "unreadShown">
   /** The run spec of `session` (Python's restorers); may throw a `HarnessError`. */
@@ -547,6 +549,10 @@ export class SessionActor implements LiveCalls {
   #notesUnread = false
   /** Esc's withdraw, until its answer comes: a message sent meanwhile waits in `#next`, behind what it takes back. */
   #withdrawal: Pending | null = null
+  /** The sends a person's withdraw or move takes back now, as `sendKeyOf` names them: no second one may start. */
+  readonly #moving = new Set<string>()
+  /** Whether the session's flow keeps a queue (`#keepsQueue`), once read. */
+  #queueKept: boolean | null = null
   /** The sends withdraws took back that went back to the run or wait with the held notes, by run and seq. */
   readonly #rehomed = new Set<string>()
   readonly #heldNotes: Note[] = []
@@ -1052,11 +1058,15 @@ export class SessionActor implements LiveCalls {
       // among them go back after the interrupt (`#withdrawn`).
       if (this.#notesUnread) {
         this.#notesUnread = false
-        const withdrawal = new Pending({ id: newId(), op: "withdraw", inbox: spec.chat.inbox })
+        // The queue's too, so what goes back keeps the order it was sent in: a person's steer sent before a queued
+        // message is read before it. The last withdraw's answer sends them back, and what waits goes on behind it.
+        const inboxes = (await this.#keepsQueue(session)) ? [spec.chat.inbox, spec.chat.queue] : [spec.chat.inbox]
+        const withdraws = inboxes.map((inbox) => new Pending({ id: newId(), op: "withdraw", inbox }))
+        const withdrawal = withdraws.at(-1)!
         this.#withdrawal = withdrawal
         // Refused or never answered: what waited behind it goes on.
         withdrawal.answer.catch(() => this.#post("a withdraw's end", () => this.#withdrawEnded(withdrawal)))
-        await this.#give(withdrawal)
+        for (const p of withdraws) await this.#give(p)
       }
       const p = new Pending({ id: newId(), op: "interrupt", inbox: spec.chat.inbox })
       this.#interrupt = p
@@ -1091,10 +1101,10 @@ export class SessionActor implements LiveCalls {
   /**
    * Takes a message from `by` (the owner when null) for the run's next turn and resolves once the run has it: it goes
    * to the run's queue, which only a turn's take reads, so the running reply never reads it as a steer, and it never
-   * answers the model's open question. The notes held since Esc go to the run with it. The reply is decided when it is
-   * queued: `turn` while the run waits only at its turn, else `queued`. Refused as `prompt` refuses a message, with
-   * `422 refused` for the flow's exit command, which ends the chat only when sent, and `422 not_supported` when the
-   * chat's flow keeps no queue.
+   * answers the model's open question. Anyone who may prompt may queue. The notes held since Esc go to the run with
+   * it. The reply is decided when it is queued: `turn` while the run waits only at its turn, else `queued`. Refused as
+   * `prompt` refuses a message, with `422 refused` for the flow's exit command, which ends the chat only when sent,
+   * and `422 not_supported` when the chat's flow keeps no queue.
    */
   async queue(text: string, { by = null }: { by?: string | null } = {}): Promise<MessageReply> {
     const pending = await this.#command(async () => {
@@ -1106,6 +1116,7 @@ export class SessionActor implements LiveCalls {
       if (text === (await this.#specOf(session)).chat.exit) {
         throw new HarnessError(422, "refused", "the exit command can't be queued; send it to end the chat")
       }
+      if (!(await this.#keepsQueue(session))) throw noQueue()
       if (this.#capped()) this.#ensureCapItem()
       const { delivery, reply } = await this.#message(session, text, by, { queued: true })
       await this.#releaseNotes(session, { spawn: false })
@@ -1119,98 +1130,219 @@ export class SessionActor implements LiveCalls {
    * the queue it waits in, and tells the clients it is gone. Resolves once the run has taken it back. Refused `404
    * not_found` for a message that is no send of `by`'s to this run (another run's, another person's, an instrument's
    * note, or none), `409 already_read` once a turn or a steer has read it, `409 already_withdrawn` once a withdraw took
-   * it back, `409 not_live` or `409 ending` for a session that isn't live, and `503 stopping`.
+   * it back (or one of `by`'s takes it back now), `409 not_live` or `409 ending` for a session that isn't live, and
+   * `503 stopping`.
    */
   async withdraw(messageId: string, { by }: { by: string }): Promise<void> {
-    await this.#takeBack(messageId, by, null)
+    const asked = await this.#command(async () => {
+      const found = this.#ownUnread(messageId, by)
+      return { found, p: await this.#withdrawOwn(found, by) }
+    })
+    try {
+      await this.#taken(asked.p, asked.found)
+    } finally {
+      this.#moving.delete(sendKeyOf(asked.found))
+    }
   }
 
   /**
    * Moves the unread message `messageId`, one `by` sent, to `delivery`: `queue` takes it back from the inbox the
    * running reply steers from and sends it to the queue, for the next turn; `steer` takes it back from the queue and
    * sends it to the inbox, which the running reply reads before its next model call, else the next turn. A message
-   * already there stays as it is. Resolves once the run has it where it goes. Refused as `withdraw` is, and `422
-   * not_supported` when the chat's flow keeps no queue; the message then goes back to the inbox.
+   * already there stays as it is (`moved`). Refused as `withdraw` is, and `422 not_supported`, taking nothing back,
+   * when the chat's flow keeps no queue.
+   *
+   * A move is a withdraw, then a send, which yian can't do in one step yet (yian#1831). The move is recorded in the
+   * session's folder before the withdraw, so a stop between the two finishes it at the next start (`#resumeMoves`); a
+   * send that fails sends the message back where it was, under a new id, and when that fails too the reply gives its
+   * text back for the prompt. Either way the reply says why it didn't move. Rejects only when the office stops, the
+   * move then kept for the next start.
    */
-  async setDelivery(messageId: string, delivery: "steer" | "queue", { by }: { by: string }): Promise<void> {
-    const taken = await this.#takeBack(messageId, by, delivery)
-    if (taken === null) return
-    const send = async (inbox: string) => {
-      const sent = await this.#command(async () => {
-        this.#live()
-        return this.#send({ id: newId(), op: "send", inbox, event: taken.event, ...byPerson(by) }, "queued")
-      })
-      await sent.answer
-    }
+  async setDelivery(messageId: string, delivery: "steer" | "queue", { by }: { by: string }): Promise<Moved> {
+    const asked = await this.#command(async () => {
+      const session = this.#live()
+      const found = this.#ownUnread(messageId, by)
+      const { chat } = await this.#specOf(session)
+      const to = delivery === "queue" ? chat.queue : chat.inbox
+      if (found.inbox === to) return null
+      // Checked before anything is taken back: a send to a queue the flow doesn't keep is refused.
+      if (!(await this.#keepsQueue(session))) throw noQueue()
+      const move: Move = { run_id: found.runId, seq: found.seq, from: found.inbox, to, by }
+      this.#recordMove(move)
+      try {
+        return { found, move, p: await this.#withdrawOwn(found, by) }
+      } catch (error) {
+        this.#dropMove(move)
+        throw error
+      }
+    })
+    if (asked === null) return { moved: true, why: null, text: null }
+    const { found, move, p } = asked
+    let event: RunMessage
     try {
-      await send(taken.to)
+      event = await this.#taken(p, found)
     } catch (error) {
-      if (!(error instanceof HarnessError) || error.code !== "not_supported") throw error
-      // The flow has no queue: the message goes back to the inbox it came from, under its new seq.
-      await send(taken.from)
+      this.#dropMove(move)
       throw error
+    } finally {
+      this.#moving.delete(sendKeyOf(found))
     }
+    return this.#finishMove(move, event)
   }
 
   /**
-   * Takes back the message `messageId` of the current run that `by` sent, for `withdraw` (`to` null) or to send it on
-   * to `to`'s inbox (`setDelivery`): a `withdraw` that names its send, by `by`. Null when there is nothing to send: a
-   * withdraw, or a message already where `to` sends it. Otherwise the inbox it came from, the one it goes to, and its
-   * message as the run held it. A withdraw whose worker went before it answered reads what it took from the log.
+   * The send of the current run that `messageId` names, `by`'s and unread, checked before anything is asked of the run:
+   * `404 not_found` for an id that names no send of `by`'s to the run (another run's, another person's, an
+   * instrument's note, or none), then `409 already_read`, and `409 already_withdrawn` for one taken back or being taken
+   * back now. Refused as a message is for a session that isn't live.
    */
-  async #takeBack(
-    messageId: string,
-    by: string,
-    to: "steer" | "queue" | null,
-  ): Promise<{ from: string; to: string; event: unknown } | null> {
-    const asked = await this.#command(async () => {
-      this.#live()
-      const { chat } = await this.#specOf(this.#session())
-      const at = messageId.lastIndexOf(":")
-      const [runId, digits] = [messageId.slice(0, at), messageId.slice(at + 1)]
-      const seq = /^[0-9]{1,15}$/.test(digits) ? Number(digits) : 0
-      const send = at > 0 && runId === this.#runId && seq > 0 ? this.#ctx.transcript.send(runId, seq) : null
-      if (send === null) throw noSuchSend()
-      const target = to === null ? null : to === "queue" ? chat.queue : chat.inbox
-      if (send.inbox === target) return null
-      if (send.state === "read") throw alreadyRead()
-      if (send.state === "withdrawn") throw alreadyWithdrawn()
-      const delivery: Delivery = { id: newId(), op: "withdraw", inbox: send.inbox, events: [seq], ...byPerson(by) }
-      const p = new Pending(delivery)
+  #ownUnread(messageId: string, by: string): Own {
+    this.#live()
+    const at = messageId.lastIndexOf(":")
+    const [runId, digits] = [messageId.slice(0, at), messageId.slice(at + 1)]
+    const seq = /^[0-9]{1,15}$/.test(digits) ? Number(digits) : 0
+    const send = at > 0 && runId === this.#runId && seq > 0 ? this.#ctx.transcript.send(runId, seq) : null
+    if (send === null || send.by !== by) throw noSuchSend()
+    if (send.state === "read") throw alreadyRead()
+    const found = { messageId, runId, seq, inbox: send.inbox }
+    if (send.state === "withdrawn" || this.#moving.has(sendKeyOf(found))) throw alreadyWithdrawn()
+    return found
+  }
+
+  /** Delivers a withdraw of `found` alone, by `by`, marked in flight until its caller is done with it. */
+  async #withdrawOwn(found: Own, by: string): Promise<Pending> {
+    const delivery: Delivery = { id: newId(), op: "withdraw", inbox: found.inbox, events: [found.seq], ...byPerson(by) }
+    const p = new Pending(delivery)
+    this.#moving.add(sendKeyOf(found))
+    try {
       await this.#deliver(p)
-      return { p, runId, seq, from: send.inbox, to: target }
-    })
-    if (asked === null) return null
-    const { p, runId, seq, from, to: target } = asked
-    let taken: { seq: number; value: unknown }[]
+    } catch (error) {
+      this.#moving.delete(sendKeyOf(found))
+      throw error
+    }
+    return p
+  }
+
+  /**
+   * The message `p`, a withdraw of `found` alone, took back, as the run held it. A worker that went before it answered
+   * either never applied it, and the next worker does (answering `already_withdrawn` when the first had), or the
+   * withdraw goes no further (`cant_wake`): either way the log says whether it took the message, and no other
+   * withdraw of it was in flight. Rejects `409 already_read`, `409 already_withdrawn` when the log shows no withdraw
+   * of it that named it, or what refused or failed the withdraw.
+   */
+  async #taken(p: Pending, found: Own): Promise<RunMessage> {
+    let gone: HarnessError | null = null
     try {
       await p.answer
       const reply = p.reply!
       if (Array.isArray(reply.already_read) && reply.already_read.length > 0) throw alreadyRead()
-      if (Array.isArray(reply.already_withdrawn) && reply.already_withdrawn.length > 0) throw alreadyWithdrawn()
-      taken = Array.isArray(reply.withdrawn) ? (reply.withdrawn as { seq: number; value: unknown }[]) : []
+      const taken = Array.isArray(reply.withdrawn) ? (reply.withdrawn as { seq: number; value: unknown }[]) : []
+      const value = taken.find((send) => send.seq === found.seq)?.value
+      if (value !== undefined) return value as RunMessage
+      gone = alreadyWithdrawn()
     } catch (error) {
-      if (error instanceof HarnessError && error.code !== "cant_wake") throw error
-      // The worker went before it answered: the log says whether the withdraw took it.
-      const logged = this.#namedWithdrawn(runId, from, seq)
-      if (logged === null) throw error
-      taken = [{ seq, value: logged }]
-      this.#publishRemoved(messageId)
+      if (!(error instanceof HarnessError) || error.code !== "cant_wake") throw error
+      gone = error
     }
-    const value = taken.find((send) => send.seq === seq)?.value
-    if (value === undefined) throw alreadyRead()
-    return target === null ? null : { from, to: target, event: value }
+    const logged = this.#ctx.transcript.withdrawnMessage(found.runId, found.inbox, found.seq)
+    if (logged === null) throw gone
+    this.#publishRemoved(found.messageId)
+    return logged
   }
 
-  /** The message of send `seq` of run `runId`'s inbox `inbox` when a withdraw that named it took it back, as the log
-   *  records it; null when none did, or the log can't be read. */
-  #namedWithdrawn(runId: string, inbox: string, seq: number): RunMessage | null {
-    try {
-      return withdrawnSends(this.#logOf(runId), inbox, { named: true }).find((send) => send.seq === seq)?.message ?? null
-    } catch (error) {
-      this.#log(`session ${this.sessionId}: a withdraw's sends can't be read (${errorName(error)})`)
-      return null
+  /**
+   * Sends `event`, the message `move` took back, on to `move.to`, else back to `move.from`, each keyed by the move so a
+   * send again (at a restart's `#resumeMoves`) appends nothing; drops the move's record once either took it or both
+   * failed, unless the office stops, which keeps it for the next start and rejects. Resolves with what became of it.
+   * Called outside the actor's queue: each send is a command of its own.
+   */
+  async #finishMove(move: Move, event: RunMessage): Promise<Moved> {
+    const send = async (inbox: string, key: string) => {
+      const sent = await this.#command(async () => {
+        this.#live()
+        return this.#send({ id: newId(), op: "send", inbox, event, key, ...byPerson(move.by) }, "queued")
+      })
+      await sent.answer
     }
+    const why = (error: unknown) => (error instanceof HarnessError ? error.message : "the run can't take it now")
+    try {
+      await send(move.to, `moved:${move.run_id}:${move.seq}`)
+      this.#dropMove(move)
+      return { moved: true, why: null, text: null }
+    } catch (error) {
+      if (this.#closed) throw error
+      try {
+        await send(move.from, `back:${move.run_id}:${move.seq}`)
+        this.#dropMove(move)
+        return { moved: false, why: why(error), text: null }
+      } catch (again) {
+        if (this.#closed) throw again
+        this.#dropMove(move)
+        const text = event.parts.findLast((part) => part.type === "text") as { text: string } | undefined
+        return { moved: false, why: why(error), text: text?.text ?? "" }
+      }
+    }
+  }
+
+  /** At restore: each move a stop cut between its withdraw and its send goes on (`#finishMove`) when the log shows
+   *  its withdraw took the message; one whose withdraw it never took is where it was, and is dropped. An ending
+   *  session takes no message: its moves are dropped. */
+  #resumeMoves(): void {
+    const folder = this.#ctx.paths.sessionDir(this.sessionId)
+    const moves = readMoves(folder)
+    if (moves.length === 0) return
+    const session = this.#ctx.store.getSession(this.sessionId)
+    if (this.#finished || this.#ending || session === undefined || session.status === "ending") {
+      this.#writeMoves([])
+      return
+    }
+    for (const move of moves) {
+      const event = this.#ctx.transcript.withdrawnMessage(move.run_id, move.from, move.seq)
+      if (event === null) {
+        this.#dropMove(move)
+        continue
+      }
+      this.#finishMove(move, event).catch((error) =>
+        this.#log(`session ${this.sessionId}: a moved message waits for the next start (${errorName(error)})`),
+      )
+    }
+  }
+
+  /** Records `move` before its withdraw; a failed write refuses the move. */
+  #recordMove(move: Move): void {
+    const folder = this.#ctx.paths.sessionDir(this.sessionId)
+    this.#writeMoves([...readMoves(folder).filter((m) => !sameMove(m, move)), move])
+  }
+
+  /** Drops the record of `move`; a failed write is logged, and the next start finds the message where it is. */
+  #dropMove(move: Move): void {
+    const folder = this.#ctx.paths.sessionDir(this.sessionId)
+    try {
+      this.#writeMoves(readMoves(folder).filter((m) => !sameMove(m, move)))
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a move's record can't be dropped (${errorName(error)})`)
+    }
+  }
+
+  #writeMoves(moves: readonly Move[]): void {
+    writeMoves(this.#ctx.paths.sessionDir(this.sessionId), moves)
+  }
+
+  /** Whether the session's flow keeps a queue: it declares the queue as an inbox input. Read once, from the flow at
+   *  the session's pinned commit; a flow that can't be read keeps none. */
+  async #keepsQueue(session: SessionRecord): Promise<boolean> {
+    if (this.#queueKept !== null) return this.#queueKept
+    const spec = await this.#specOf(session)
+    try {
+      const file = path.join(await this.#ctx.git.pin(session.repo_commit), spec.flow)
+      const flow = readFlow(fs.readFileSync(file, "utf8")) as { input?: Record<string, unknown> } | null
+      const declared = flow?.input?.[spec.chat.queue]
+      this.#queueKept = typeof declared === "string" && declared.startsWith("!Inbox(")
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: its flow's queue can't be read (${errorName(error)})`)
+      this.#queueKept = false
+    }
+    return this.#queueKept
   }
 
   /**
@@ -1274,25 +1406,29 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * Esc's withdraw answered: the sends withdraws took back from run `runId`'s inbox, as its log records them (the log
-   * keeps them though a worker died before it answered, and a withdraw sent again then takes nothing), each once. The
-   * clients drop each; the people's messages go back, in order and unchanged, ahead of any message sent since, which
-   * waited for this; the office's notes go back with them once a person has spoken since Esc, else wait with the
-   * held ones. Each goes under a key of its own, since the run keeps the old one.
+   * Esc's withdraws answered: the sends they took back from run `runId`'s inbox and queue, as its log records them (the
+   * log keeps them though a worker died before it answered, and a withdraw sent again then takes nothing), each once.
+   * The clients drop each; the people's messages go back to the inbox each came from, in the order they were sent and
+   * unchanged, ahead of any message sent since, which waited for this; the office's notes go back with them once a
+   * person has spoken since Esc, else wait with the held ones. Each goes under a key of its own, since the run keeps
+   * the old one.
    */
   async #withdrawn(runId: string): Promise<void> {
     this.#withdrawal = null
     if (this.#finished) return
-    const inbox = (await this.#specOf(this.#session())).chat.inbox
-    let taken: ReturnType<typeof withdrawnSends>
+    const { chat } = await this.#specOf(this.#session())
+    let taken: (ReturnType<typeof withdrawnSends>[number] & { inbox: string })[]
     try {
-      taken = withdrawnSends(this.#logOf(runId), inbox)
+      const log = this.#logOf(runId)
+      taken = [chat.inbox, chat.queue]
+        .flatMap((inbox) => withdrawnSends(log, inbox).map((send) => ({ ...send, inbox })))
+        .sort((a, b) => a.seq - b.seq)
     } catch (error) {
       this.#log(`session ${this.sessionId}: a withdraw's sends can't be read (${errorName(error)})`)
       taken = []
     }
     const back: Pending[] = []
-    for (const { seq, message, key: sentAs, by } of taken) {
+    for (const { seq, message, key: sentAs, by, inbox } of taken) {
       if (this.#rehomed.has(`${runId}:${seq}`)) continue
       this.#rehomed.add(`${runId}:${seq}`)
       this.#publishRemoved(messageId(runId, seq))
@@ -1469,6 +1605,7 @@ export class SessionActor implements LiveCalls {
       this.#sinceRestore = true
       try {
         await this.#restore()
+        this.#resumeMoves()
       } catch (error) {
         this.#log(`session ${this.sessionId} can't be restored (${errorName(error)})`)
         // The office stops: the session stays as it was, for the next office.
@@ -2871,7 +3008,10 @@ export class SessionActor implements LiveCalls {
         const { event, key, inbox } = p.delivery
         this.#publishMessage(run.runId, reply.seq as number, event, key, inbox === this.#chat.queue)
       }
-      if (op === "withdraw" && p.delivery.events === undefined) this.#post("withdrawn", () => this.#withdrawn(run.runId))
+      if (op === "withdraw" && p.delivery.events === undefined) {
+        // Esc's: its last withdraw's answer sends back what they all took.
+        if (p === this.#withdrawal) this.#post("withdrawn", () => this.#withdrawn(run.runId))
+      }
       // A person's withdraw of their own message: it shows no more.
       else if (op === "withdraw" && Array.isArray(reply.withdrawn)) {
         for (const { seq } of reply.withdrawn as { seq: number }[]) this.#publishRemoved(messageId(run.runId, seq))
@@ -4114,6 +4254,27 @@ function refusalOf(reason: string): HarnessError {
   if (reason === "too_large") return tooLarge()
   if (reason === "unknown_send") return noSuchSend()
   return new HarnessError(422, "refused", `the run refused it (${reason})`)
+}
+
+/** A person's unread send of the current run, as `SessionActor`'s `#ownUnread` found it: the message's id, its run
+ *  and seq, and the inbox it waits in. */
+interface Own {
+  readonly messageId: string
+  readonly runId: string
+  readonly seq: number
+  readonly inbox: string
+}
+
+/** What a move did, as the route answers it (`DeliveryReply`). */
+export interface Moved {
+  readonly moved: boolean
+  readonly why: string | null
+  readonly text: string | null
+}
+
+/** The send `found` names, as a key of `#moving`. */
+function sendKeyOf(found: Pick<Own, "runId" | "seq">): string {
+  return `${found.runId}:${found.seq}`
 }
 
 /** A message to the queue of a chat whose flow keeps none. */

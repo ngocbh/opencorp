@@ -12,7 +12,13 @@ import type { Office } from "../../../src/server/office.ts"
 import { register } from "../../../src/features/questions/extension.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
-import { CHAT_FLOW, fakeLlm, makeHarness, noWorkersLeft, status as chatStatus } from "../../features/chat/helpers.ts"
+import {
+  fakeLlm,
+  makeHarness,
+  noWorkersLeft,
+  status as chatStatus,
+  UNQUEUED_CHAT_FLOW,
+} from "../../features/chat/helpers.ts"
 import {
   YES,
   allGone,
@@ -920,19 +926,23 @@ test("a queued message waits for the next turn, and its approver steers it now, 
   r = await send(sock, "PATCH", inbox(sid, queued.id), { delivery: "sideways" }, bearer(ceo))
   expect([r.status, errorOf(r)]).toEqual([422, "invalid_body"])
   // Steer now: it leaves the queue for the inbox, under a new id.
+  const MOVED = { moved: true, why: null, text: null }
   r = await send(sock, "PATCH", inbox(sid, queued.id), { delivery: "steer" }, bearer(ceo))
-  expect([r.status, r.json()]).toEqual([200, { ok: true }])
+  expect([r.status, r.json()]).toEqual([200, MOVED])
   const steered = await find("later")
   expect(steered).toMatchObject({ unread: true, queued: false })
   expect(steered.id).not.toBe(queued.id)
+  // The old id was taken back: it is moved no more, even to where it went.
   r = await send(sock, "DELETE", inbox(sid, queued.id), null, bearer(ceo))
+  expect([r.status, errorOf(r)]).toEqual([409, "already_withdrawn"])
+  r = await send(sock, "PATCH", inbox(sid, queued.id), { delivery: "steer" }, bearer(ceo))
   expect([r.status, errorOf(r)]).toEqual([409, "already_withdrawn"])
   // A message already where it goes stays.
   r = await send(sock, "PATCH", inbox(sid, steered.id), { delivery: "steer" }, bearer(ceo))
-  expect([r.status, (await find("later")).id]).toEqual([200, steered.id])
+  expect([r.status, r.json(), (await find("later")).id]).toEqual([200, MOVED, steered.id])
   // Back to the queue, then taken back.
   r = await send(sock, "PATCH", inbox(sid, steered.id), { delivery: "queue" }, bearer(ceo))
-  expect(r.status).toBe(200)
+  expect([r.status, r.json()]).toEqual([200, MOVED])
   const again = await find("later")
   expect(again).toMatchObject({ unread: true, queued: true })
   r = await send(sock, "DELETE", inbox(sid, again.id), null, bearer(ceo))
@@ -943,7 +953,9 @@ test("a queued message waits for the next turn, and its approver steers it now, 
   await waitFor(async () => (await users()).every((m) => !m.unread), { what: "the steers read" })
   expect(JSON.stringify(fake.requests())).not.toContain("later")
   const rome = await find("also Rome")
-  for (const [method, body] of [["DELETE", null], ["PATCH", { delivery: "queue" }]] as const) {
+  // Read already: refused, even where it is.
+  const late = [["DELETE", null], ["PATCH", { delivery: "queue" }], ["PATCH", { delivery: "steer" }]] as const
+  for (const [method, body] of late) {
     r = await send(sock, method, inbox(sid, rome.id), body, bearer(ceo))
     expect([r.status, errorOf(r)]).toEqual([409, "already_read"])
   }
@@ -980,25 +992,9 @@ test("a queued message is the next turn's, whether the reply ends or Esc stops i
   ])
 })
 
-/** The template's chat flow with no queue: one inbox, which its turn's take and its reply's steers read. */
-const UNQUEUED_FLOW = [
-  ["  queued: !Inbox(Message)  # what people send for the next turn: only each turn's take reads it\n", ""],
-  ["      queued: !Inbox(Message)\n", ""],
-  [
-    "          from:\n            - ${input.messages}\n            - ${input.queued}\n",
-    "          from: ${input.messages}\n",
-  ],
-  ["said: ${[e.event for e in heard.output.events]}", "said: ${heard.output.events}"],
-  ["[[e.event for e in heard.output.events] + (reply", "[heard.output.events + (reply"],
-  ["      queued: ${input.queued}\n", ""],
-].reduce((flow, [from, to]) => {
-  if (flow.split(from!).length !== 2) throw new Error(`the chat flow no longer holds ${JSON.stringify(from)} once`)
-  return flow.replace(from!, to!)
-}, CHAT_FLOW)
-
 test("a chat whose flow keeps no queue refuses a queued message, and a move there leaves the steer a steer", async () => {
   const fake = await fakeLlm()
-  const h = await makeHarness(fake, { files: { "shared/flows/chat.yaml": UNQUEUED_FLOW } })
+  const h = await makeHarness(fake, { files: { "shared/flows/chat.yaml": UNQUEUED_CHAT_FLOW } })
   const { sock } = await served(h.office)
   fake.script({ content: "Working", hold: 30 }, { content: "Done." })
   const sid = await open(h, sock)
@@ -1012,9 +1008,9 @@ test("a chat whose flow keeps no queue refuses a queued message, and a move ther
   const steered = await rome()
   r = await send(sock, "PATCH", inbox(sid, steered.id), { delivery: "queue" })
   expect([r.status, errorOf(r)]).toEqual([422, "not_supported"])
-  // Back in the inbox, under a new id, for the reply to read.
-  const back = await rome()
-  expect([back.id === steered.id, back.unread, back.queued]).toEqual([false, true, false])
+  // Refused before anything was taken back: it is where it was, for the reply to read.
+  const kept = await rome()
+  expect([kept.id, kept.unread, kept.queued]).toEqual([steered.id, true, false])
   expect((await messagesOf(sock, sid)).map(text)).not.toContain("later")
   fake.release()
   const requests = await fake.waitForRequests(2, 30_000)

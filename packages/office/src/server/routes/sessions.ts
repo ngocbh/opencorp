@@ -3,6 +3,7 @@ import {
   Ack,
   CostCapRequest,
   CreateSessionRequest,
+  DeliveryReply,
   type ErrorCode,
   Message,
   MessagePage,
@@ -180,7 +181,7 @@ export async function steer(ctx: RequestContext, params: Params, body: unknown) 
   return { ok: true }
 }
 
-/** Queue a message for the next turn: the running reply never reads it. Anyone who may chat may queue. */
+/** Queue a message for the next turn: the running reply never reads it. Anyone who may prompt may queue. */
 export async function queue(ctx: RequestContext, params: Params, body: unknown) {
   const { text } = body as z.output<typeof PromptRequest>
   const actor = harness(ctx, "POST /sessions/:id/queue")
@@ -191,14 +192,14 @@ export async function queue(ctx: RequestContext, params: Params, body: unknown) 
 }
 
 /** Move one of the acting person's unread messages to steer the running reply or to wait for the next turn; only the
- *  chat's approver may. */
+ *  chat's approver may. A send there that fails is a reply that says why, with the text when the message went back
+ *  nowhere. */
 export async function setDelivery(ctx: RequestContext, params: Params, body: unknown) {
   const { delivery } = body as z.output<typeof SetDeliveryRequest>
   const actor = harness(ctx, "PATCH /sessions/:id/inbox/:message")
   const by = actingPerson(ctx)
   if (actor.setDelivery === undefined) throw new HttpError(422, "not_supported", "this office's sessions keep no queue")
-  await harnessCall(() => actor.setDelivery!(params.id!, params.message!, delivery, { by }))
-  return { ok: true }
+  return harnessCall(() => actor.setDelivery!(params.id!, params.message!, delivery, { by }))
 }
 
 /** Take back one of the acting person's unread messages, steer or queued, before the run reads it; only the chat's
@@ -271,7 +272,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
     method: "PATCH",
     path: "/sessions/:id/inbox/:message",
     body: SetDeliveryRequest,
-    reply: Ack,
+    reply: DeliveryReply,
     handler: setDelivery,
   },
   { method: "DELETE", path: "/sessions/:id/inbox/:message", reply: Ack, handler: withdraw },

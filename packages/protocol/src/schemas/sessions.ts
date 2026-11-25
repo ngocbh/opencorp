@@ -239,6 +239,16 @@ export const SetDeliveryRequest = z.strictObject({
 })
 export type SetDeliveryRequest = z.input<typeof SetDeliveryRequest>
 
+/** What a move of an unread message did. `moved`: it went where it was asked to, or was there already. Otherwise the
+ *  run took it back but the send there failed (`why`, in words for a person): it went back where it was, under a new
+ *  id, or, when that failed too, nowhere, and `text` gives it back for the prompt. */
+export const DeliveryReply = z.strictObject({
+  moved: z.boolean(),
+  why: z.string().nullable().default(null),
+  text: z.string().nullable().default(null),
+})
+export type DeliveryReply = z.input<typeof DeliveryReply>
+
 export const SetModeRequest = z.strictObject({
   mode: SessionMode,
 })

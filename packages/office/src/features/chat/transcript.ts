@@ -62,13 +62,15 @@ export function tooLargeText(size: number): string {
 }
 
 /** A message sent to the chat's inbox or its queue: its send commit's seq and time, what the transcript shows of it,
- *  the key the office sent it under, if any, and whether it went to the queue. */
+ *  the key the office sent it under, if any, whether it went to the queue, and the person who sent it (`by`), if its
+ *  record names one. */
 interface Send {
   seq: number
   at: string
   message: Pick<RunMessage, "author" | "parts">
   key?: string | null
   queued?: boolean
+  by?: string | null
 }
 
 /** The key of an instrument's note, as the office sends it: the shell's or the Codex or Claude Code session's id, the
@@ -92,8 +94,8 @@ interface Fold {
   sends: Map<number, Send>
   /** The seqs of the sends an accepted take consumed. */
   read: Set<number>
-  /** The sends a withdraw took back, by seq: whether each had gone to the queue. */
-  withdrawn: Map<number, boolean>
+  /** The sends a withdraw took back, by seq: whether each had gone to the queue, and who sent it. */
+  withdrawn: Map<number, { queued: boolean; by: string | null }>
   /** Take commits no success has accepted yet: the send seqs each consumed, by commit seq. */
   takes: Map<number, readonly number[]>
   /** What the render walks, in log order. */
@@ -194,18 +196,36 @@ export class Transcript {
     return out
   }
 
-  /** The send at `seq` of the run `runId`, read on from its log: the inbox it went to (the chat's or its queue), and
-   *  whether it waits there `unread`, a take or a steer has `read` it, or a withdraw took it back (`withdrawn`); null
-   *  when the log holds no such send. */
-  send(runId: string, seq: number): { inbox: string; state: "unread" | "read" | "withdrawn" } | null {
+  /** The send at `seq` of the run `runId`, read on from its log: the inbox it went to (the chat's or its queue), the
+   *  person who sent it (`by`, null when its record names none, as an instrument's note), and whether it waits there
+   *  `unread`, a take or a steer has `read` it, or a withdraw took it back (`withdrawn`); null when the log holds no
+   *  such send. */
+  send(
+    runId: string,
+    seq: number,
+  ): { inbox: string; by: string | null; state: "unread" | "read" | "withdrawn" } | null {
     if (!safeRunId(runId)) return null
     const fold = this.read(runId)
     const inboxOf = (queued: boolean) => (queued ? MAIN_CHAT.queue : MAIN_CHAT.inbox)
     const withdrawn = fold.withdrawn.get(seq)
-    if (withdrawn !== undefined) return { inbox: inboxOf(withdrawn), state: "withdrawn" }
+    if (withdrawn !== undefined) return { inbox: inboxOf(withdrawn.queued), by: withdrawn.by, state: "withdrawn" }
     const send = fold.sends.get(seq)
     if (send === undefined) return null
-    return { inbox: inboxOf(send.queued === true), state: fold.read.has(seq) ? "read" : "unread" }
+    const state = fold.read.has(seq) ? "read" : "unread"
+    return { inbox: inboxOf(send.queued === true), by: send.by ?? null, state }
+  }
+
+  /** The message of send `seq` of the run `runId`'s inbox `inbox` as the run held it, when a withdraw that named it
+   *  took it back, read from its log; null when none did, or the log can't be read. */
+  withdrawnMessage(runId: string, inbox: string, seq: number): RunMessage | null {
+    if (!safeRunId(runId)) return null
+    try {
+      const log = path.join(this.runs, runId, "log.jsonl")
+      return withdrawnSends(log, inbox, { named: true }).find((send) => send.seq === seq)?.message ?? null
+    } catch (error) {
+      this.log(`run ${runId}: a withdraw's sends can't be read (${errorName(error)})`)
+      return null
+    }
   }
 
   /** Whether the send at `seq` of the run `runId` waits unread in its inbox (its log holds it, no take or steer has
@@ -544,7 +564,16 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
       // Its last text part is all that shows: earlier ones are the turn's context.
       const text = message.parts.findLast((part) => part.type === "text") as { text: string } | undefined
       const shown = { author: message.author, parts: text === undefined ? [] : [{ type: "text", text: text.text }] }
-      const send: Send = { seq, at, message: shown as Send["message"], key: record.sendKey, ...(queued ? { queued } : {}) }
+      // Only a person's: a note names no one, and a send by anything else is no one's to move.
+      const by = record.by?.kind === "user" ? record.by.name : null
+      const send: Send = {
+        seq,
+        at,
+        message: shown as Send["message"],
+        key: record.sendKey,
+        ...(queued ? { queued } : {}),
+        ...(by === null ? {} : { by }),
+      }
       state.sends.set(seq, keep(state, send))
     } else if (record.take !== null && MAIN_CHAT.isTurn(record.nodeId)
       && takeInboxes(record.take.inbox).includes(inbox)) {
@@ -584,8 +613,9 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
     const { inbox: from, events } = record as { inbox: string; events: readonly number[] }
     if (from !== inbox && from !== queue) return
     for (const event of events) {
+      const by = state.sends.get(Number(event))?.by ?? null
       state.sends.delete(Number(event))
-      state.withdrawn.set(Number(event), from === queue)
+      state.withdrawn.set(Number(event), { queued: from === queue, by })
       state.held += OVERHEAD
     }
   }

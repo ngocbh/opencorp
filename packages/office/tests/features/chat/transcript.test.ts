@@ -174,11 +174,11 @@ test("a queued send shows unread and queued until a turn takes it, and the reply
   ])
   const taken = messages(runs, sid, ["r1"], { transcript }).find((m) => m.role === "user" &&
     (m.parts[0] as { text: string }).text === "Then book it.")!
-  expect(transcript.send("r1", Number(taken.id.split(":")[1]))).toEqual({ inbox: "queued", state: "read" })
+  expect(transcript.send("r1", Number(taken.id.split(":")[1]))).toEqual({ inbox: "queued", by: null, state: "read" })
   await apply(job, fake, [queue("q2", "And a car.")])
   const sent = Number(messages(runs, sid, ["r1"], { transcript }).at(-1)!.id.split(":")[1])
   expect(transcript.sentMessage(sid, "r1", sent)).toMatchObject({ unread: true, queued: true })
-  expect(transcript.send("r1", sent)).toEqual({ inbox: "queued", state: "unread" })
+  expect(transcript.send("r1", sent)).toEqual({ inbox: "queued", by: null, state: "unread" })
   expect(transcript.send("r1", sent + 1000)).toBeNull()
 })
 
@@ -196,19 +196,28 @@ test("a withdraw a person named hides its send, and only Esc's withdraws are the
     { env: fake.env() },
   )
   const [a, b, c] = sends.replies.map((reply) => reply.seq as number)
-  expect(new Transcript(runs).send("r1", a!)).toEqual({ inbox: "messages", state: "unread" })
+  expect(new Transcript(runs).send("r1", a!)).toEqual({ inbox: "messages", by: "minh", state: "unread" })
   const named = (id: string, inbox: string, seq: number) => ({ id, op: "withdraw", inbox, events: [seq], by }) as const
   await apply(job, fake, [named("w1", "messages", a!), named("w2", "queued", b!)])
   expect(texts(messages(runs, newId(), ["r1"]))).toEqual([["user", ["kept"]]])
   expect([new Transcript(runs).send("r1", a!), new Transcript(runs).send("r1", b!)]).toEqual([
-    { inbox: "messages", state: "withdrawn" },
-    { inbox: "queued", state: "withdrawn" },
+    { inbox: "messages", by: "minh", state: "withdrawn" },
+    { inbox: "queued", by: "minh", state: "withdrawn" },
   ])
   // Esc's withdraw takes the rest; only its sends go back.
   await apply(job, fake, [{ id: "w3", op: "withdraw", inbox: "messages" }])
   expect(withdrawnSends(job.log, "messages").map((send) => send.seq)).toEqual([c])
   expect(withdrawnSends(job.log, "queued")).toEqual([])
   expect(messages(runs, newId(), ["r1"])).toEqual([])
+  // A named withdraw's message is the run's, whole, by the inbox it left.
+  const transcript = new Transcript(runs)
+  const shown = (m: { parts: { type: string; text?: string }[] } | null) => m?.parts.map((p) => p.text)
+  expect([shown(transcript.withdrawnMessage("r1", "messages", a!)), shown(transcript.withdrawnMessage("r1", "queued", b!))])
+    .toEqual([["deleted"], ["moved"]])
+  expect([transcript.withdrawnMessage("r1", "queued", a!), transcript.withdrawnMessage("r1", "messages", c!)]).toEqual([
+    null,
+    null,
+  ])
 })
 
 test("a user message can name its author", async () => {

@@ -61,6 +61,22 @@ export const CHAT_FLOW = fs.readFileSync(
   "utf8",
 )
 
+/** The template's chat flow with no queue: one inbox, which its turn's take and its reply's steers read. */
+export const UNQUEUED_CHAT_FLOW = [
+  ["  queued: !Inbox(Message)  # what people send for the next turn: only each turn's take reads it\n", ""],
+  ["      queued: !Inbox(Message)\n", ""],
+  [
+    "          from:\n            - ${input.messages}\n            - ${input.queued}\n",
+    "          from: ${input.messages}\n",
+  ],
+  ["said: ${[e.event for e in heard.output.events]}", "said: ${heard.output.events}"],
+  ["[[e.event for e in heard.output.events] + (reply", "[heard.output.events + (reply"],
+  ["      queued: ${input.queued}\n", ""],
+].reduce((flow, [from, to]) => {
+  if (flow.split(from!).length !== 2) throw new Error(`the chat flow no longer holds ${JSON.stringify(from)} once`)
+  return flow.replace(from!, to!)
+}, CHAT_FLOW)
+
 /** The template's `compact_history.yaml`, which the chat flow uses. */
 export const COMPACT_HISTORY = fs.readFileSync(
   new URL("../../../src/company/template/shared/flows/compact_history.yaml", import.meta.url),

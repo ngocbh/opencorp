@@ -14,6 +14,7 @@ import type {
   CostCapRequest,
   CostReport,
   CreateSessionRequest,
+  DeliveryReply,
   Health,
   HireRequest,
   HireResponse,
@@ -285,10 +286,12 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       queue: async (id: string, req: PromptRequest) => post<Ack>(`${s(id)}/queue`, req),
       /**
        * Moves one of your messages still unread to steer the running reply (`steer`) or to wait for the next turn
-       * (`queue`); only the chat's approver may. Fails with `already_read` or `already_withdrawn` when it is too late.
+       * (`queue`); only the chat's approver may. Fails with `already_read` or `already_withdrawn` when it is too late;
+       * a send there that failed after the run took it back is `moved: false`, with `why` and, when the message went
+       * back nowhere, its `text`.
        */
       setDelivery: async (id: string, messageId: string, req: SetDeliveryRequest) =>
-        call<Ack>("PATCH", waiting(id, messageId), req),
+        call<DeliveryReply>("PATCH", waiting(id, messageId), req),
       /** Takes back one of your messages still unread, steer or queued; only the chat's approver may. Fails with
        *  `already_read` or `already_withdrawn` when it is too late. */
       withdraw: async (id: string, messageId: string) => call<Ack>("DELETE", waiting(id, messageId)),

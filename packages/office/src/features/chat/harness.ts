@@ -5,7 +5,16 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { type Scheduler, realScheduler } from "@ngocbh/yian/platform"
-import { type Message, OFFICE, type RemoveRuleRequest, type RuleList, Session, WorkItem, now } from "@opencorp/protocol"
+import {
+  type DeliveryReply,
+  type Message,
+  OFFICE,
+  type RemoveRuleRequest,
+  type RuleList,
+  Session,
+  WorkItem,
+  now,
+} from "@opencorp/protocol"
 import type { CompanyGit } from "../../company/git.ts"
 import { loadRepo, missingPerson } from "../../company/loader.ts"
 import { readRules, removeRule as removeAgentRule, RulesRefused } from "../../company/rules.ts"
@@ -466,8 +475,8 @@ export class ChatHarness implements SessionHarness {
     return codex ? codex.steer(sessionId, text, { by }) : this.#actor(sessionId).steer(text, { by })
   }
 
-  /** A message from `by` for the chat's next turn (`SessionActor.queue`); a Codex or Claude Code session keeps no
-   *  queue, and refuses it `422 not_supported`. */
+  /** A message from `by` for the chat's next turn (`SessionActor.queue`); anyone who may prompt may queue. A Codex or
+   *  Claude Code session keeps no queue, and refuses it `422 not_supported`. */
   async queue(sessionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<string> {
     this.#chatOnly(sessionId)
     return this.#actor(sessionId).queue(text, { by })
@@ -487,7 +496,7 @@ export class ChatHarness implements SessionHarness {
     messageId: string,
     delivery: "steer" | "queue",
     { by }: { by: string },
-  ): Promise<void> {
+  ): Promise<DeliveryReply> {
     await this.#approverOnly(sessionId, by, delivery === "queue" ? "queue a message" : "steer with a message")
     return this.#actor(sessionId).setDelivery(messageId, delivery, { by })
   }

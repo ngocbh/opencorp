@@ -20,7 +20,7 @@ const NAMES = [
   "QuestionPage",
   "AnswerField", "DiscussionEntry", "Approval", "Question", "Profile", "ProfileProposal", "Event", "LiveEvent",
   "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "SetModeRequest", "SetDeliveryRequest",
-  "RepoIssue", "CompanyView", "CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile", "RunSummary",
+  "DeliveryReply", "RepoIssue", "CompanyView", "CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile", "RunSummary",
   "RunPage", "RunUsage", "RunDetail", "RunNode", "RunDivider", "RunNodePage", "RunEvent", "RunEventPage",
   "RunLiveRecord", "RunLiveCall", "RunLiveStart", "RunLiveChunk", "RunLiveEnd", "RunUpdated", "RunCallEntry",
   "RunCallList", "RunCallUsage", "RunCallAttempt", "RunCallPart", "RunCallMessage", "RunCallTool", "RunCallRequest",
@@ -133,7 +133,7 @@ const BODIES = [
   "CompanyView", "CostReport", "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
   "HqLoginRequest", "CompanyTree", "CompanyFile", "RunPage", "RunDetail", "RunNodePage", "RunEventPage",
   "RunEvent", "RunCallList", "RunCall", "OfficeInfo", "RuleList", "RemoveRuleRequest", "InstrumentKeysRequest",
-  "InstrumentSizeRequest", "InstrumentScreen", "MessagePage", "SetDeliveryRequest",
+  "InstrumentSizeRequest", "InstrumentScreen", "MessagePage", "SetDeliveryRequest", "DeliveryReply",
 ]
 
 test("every route body has a fixture", () => {
