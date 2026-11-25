@@ -567,6 +567,53 @@ test("a call whose steer already waits as it starts acts, then replies at once, 
   await waitFor(() => t.notes.length === 1, { what: "the note" })
 })
 
+/** A terminal on plain PTYs, in dontAsk, that may run the prompt tests' commands, keeping each note of a command. */
+function promptTerminal() {
+  const rules = ["sleep *", "stty *", "read *", "echo *"].map((pattern) => rule("allow", "command", pattern))
+  return openTerminal({ perms: permissions({ mode: "dontAsk", rules }).perms, notes: true })
+}
+
+/** What a reply or note says of a secret prompt in dontAsk. */
+const SECRET_DONT_ASK =
+  "Only the owner can answer this prompt, and this session doesn't ask. Unless the owner answers it, close this " +
+  "shell; don't poll read."
+
+test("a call whose steer already waits gives a PTY shell its prompt check first, so a secret prompt shows in its reply", async () => {
+  const t = promptTerminal()
+  const command = "stty -echo; read x; stty echo; echo after"
+  const reply = json(await t.call("run", { command, why: "x", wait: 120 }, { steered: AbortSignal.abort() }))
+  // The reply says the owner must type, never that a note will come when the command ends.
+  expect(reply).toMatchObject({ status: "waiting", waiting: "secret" })
+  expect(reply.note).toBe(SECRET_DONT_ASK)
+  t.terminal.shell("sh_1")!.ownerKeys("pw\r")
+  expect(json(await t.call("read", { shell: "shell 1", wait: 10 }))).toMatchObject({ status: "idle", exit: 0 })
+})
+
+test("a secret prompt that shows after a reply ended early gets the agent one note; the command's end gets its own", async () => {
+  const t = promptTerminal()
+  const command = "sleep 0.6; stty -echo; read x; stty echo; echo after"
+  const reply = json(await t.call("run", { command, why: "x", wait: 120 }, { steered: AbortSignal.abort() }))
+  expect(reply).toMatchObject({ status: "running" })
+  expect(reply.note).toStartWith("Your wait ended early")
+  await waitFor(() => t.notes.length === 1, { what: "the prompt's note" })
+  expect(t.notes[0]).toEqual({
+    key: "terminal:sh_1:1:secret",
+    shell: "shell 1",
+    text: `shell 1: \`${command}\` is waiting for the owner to type at a password prompt.\n${SECRET_DONT_ASK}`,
+  })
+  t.terminal.shell("sh_1")!.ownerKeys("pw\r")
+  await waitFor(() => t.notes.length === 2, { what: "the end's note" })
+  expect(headings(t)[1]).toBe(`shell 1: \`${command}\` ended, exit 0`)
+  // A reply that waited its time out promised nothing early, and gets no such note.
+  const later = json(await t.call("run", { command, why: "x", wait: 0, shell: "shell 1" }))
+  expect(later).toMatchObject({ status: "running" })
+  await waitFor(() => t.terminal.shell("sh_1")!.state().status === "waiting", { what: "the second prompt" })
+  await Bun.sleep(300)
+  expect(t.notes).toHaveLength(2)
+  t.terminal.shell("sh_1")!.ownerKeys("pw\r")
+  await waitFor(() => t.notes.length === 3, { what: "the second end's note" })
+})
+
 test("a steer for the agent ends an approved call's wait too, its command running on", async () => {
   const { perms, held } = permissions({ mode: "ask" })
   let fake!: ReturnType<typeof fakePipes>

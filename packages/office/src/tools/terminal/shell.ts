@@ -230,7 +230,10 @@ const ARGV = { bash: ["/bin/bash", "--noprofile", "--norc", "--noediting", "-i"]
 /** Variables the shell never takes from its host: they would run code at its start or turn options back on. */
 const DROPPED = new Set(["ENV", "BASH_ENV", "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS"])
 
+/** How often a running command's screen is checked for a secret prompt, beside after each chunk of its output. */
 const GUARD_MS = 200
+/** Two of those checks: how long a command gets to show a secret prompt before a reply a steer ends early. */
+export const PROMPT_CHECK_MS = 2 * GUARD_MS
 /** How long a Ctrl-C to the agent's command waits for its end before it goes again, and how many times it does: bash
  *  drops a Ctrl-C that comes while it waits on a child that then exits normally, as at the command's start. */
 const CTRL_C_AGAIN_MS = 300

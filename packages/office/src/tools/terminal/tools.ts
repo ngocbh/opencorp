@@ -275,7 +275,7 @@ export function replyText(
   },
 ): string {
   const { status, exit, waiting, output, next, more, skipped, refused } = reply
-  const said = waiting === "secret" ? (o.dontAsk ? SECRET_DONT_ASK : SECRET_ASKED) : o.runsOn ? RUNS_ON : o.note
+  const said = waiting === "secret" ? secretNote(o.dontAsk) : o.runsOn ? RUNS_ON : o.note
   const early = o.early === true && status === "running" && waiting !== "secret" && refused === undefined
   const note = early ? [EARLY, said].filter(Boolean).join(" ") : said
   return JSON.stringify({
@@ -291,6 +291,11 @@ export function replyText(
     ...(note ? { note } : {}),
     ...(refused === undefined ? {} : { refused }),
   })
+}
+
+/** What a reply, or a note, says of a secret prompt that waits for the owner: in `dontAsk` nobody asks them. */
+export function secretNote(dontAsk: boolean): string {
+  return dontAsk ? SECRET_DONT_ASK : SECRET_ASKED
 }
 
 /** A refusal that names no shell, as the model reads it. */
