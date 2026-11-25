@@ -87,6 +87,8 @@ const CALLS: GatedCall[] = [
   tool: "tool_" + i,
   source: source as GatedCall["source"],
   arguments: { text: "hi", n: i, nested: { list: [1, "two", null] } },
+  // What a tool's gateTarget says its call acts on; none for most.
+  target: i === 1 ? { run: "r2", call: { tool: "lookup" } } : null,
   scopes: i % 2 === 0 ? [] : [{ scope: "outer/helper#0", callId: "r1/outer/1/0" }],
   attempt: 1 + (i % 3),
 }))
@@ -108,6 +110,7 @@ test("the hook sends each call as one gate_call request, and the office gets it 
       tool: "tool_0",
       source: { kind: "host", group: "toolbox", tool: "shout" },
       arguments: { text: "hi", n: 0, nested: { list: [1, "two", null] } },
+      target: null,
       scopes: [],
       attempt: 1,
     },
@@ -255,6 +258,7 @@ test("a gate request whose call isn't this run's, or is malformed, is refused be
     { call: { ...wire(CALLS[0]!), source: { kind: "shell", tool: "x" } } },
     { call: { ...wire(CALLS[0]!), attempt: 0 } },
     { call: { ...wire(CALLS[0]!), arguments: [1] } },
+    { call: { ...wire(CALLS[0]!), target: [1] } },
     { call: { ...wire(CALLS[0]!), scopes: [{ scope: "s" }] } },
     { call: { ...wire(CALLS[0]!), extra: true } },
   ]
@@ -648,6 +652,7 @@ function wire(call: GatedCall): Frame {
     tool: call.tool,
     source: call.source,
     arguments: call.arguments,
+    target: call.target,
     scopes: call.scopes.map(({ scope, callId }) => ({ scope, call_id: callId })),
     attempt: call.attempt,
   }

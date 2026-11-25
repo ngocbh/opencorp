@@ -92,7 +92,7 @@ async function approvals(mode: "auto" | "default" | "ask" = "auto", plans: Recor
 function held(n: number, args: Record<string, unknown> | null): PendingCall {
   return {
     callId: `${RUN}/chat#0/reply/1/${n}`, node: "chat#0/reply", tool: "terminal_run", arguments: args as never,
-    pendingSeq: 1, deadline: null, ask: null, held: true, source: TERMINAL,
+    pendingSeq: 1, deadline: null, ask: null, held: true, source: TERMINAL, target: null,
   }
 }
 
@@ -100,7 +100,7 @@ function held(n: number, args: Record<string, unknown> | null): PendingCall {
 function call(command: string, n = 0, reply = 1): GatedCall {
   return {
     callId: `${RUN}/chat#0/reply/${reply}/${n}`, node: "chat#0/reply", tool: "terminal_run", source: TERMINAL,
-    arguments: { command, why: "as asked" }, scopes: [], attempt: 1,
+    arguments: { command, why: "as asked" }, target: null, scopes: [], attempt: 1,
   }
 }
 
