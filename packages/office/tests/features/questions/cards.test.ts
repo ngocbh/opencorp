@@ -1484,6 +1484,11 @@ test("a side chat uses its askers model", async () => {
   expect((await fake.waitForRequests(2))[1]!.model).toBe("stub-5")
 })
 
+/** The parent a side chat's run records: the card's run and node. It reports to no inbox, so it has no label. */
+function sideParent(q: { run_id: string; node_id: string | null }) {
+  return { runId: q.run_id, node: q.node_id, inbox: null, label: null }
+}
+
 test("each side chat run nests under the cards run with its opener as driver", async () => {
   const fake = await fakeLlm()
   fake.script(ASK, { content: "Quota." }, { content: "Per hour." })
@@ -1505,7 +1510,7 @@ test("each side chat run nests under the cards run with its opener as driver", a
     const [started] = iterRunRecords(log, { payloads: true })
     expect(started!.kind).toBe("run_started")
     const record = started!.envelope.record as unknown as { parent: unknown }
-    expect(record.parent).toEqual({ runId: q.run_id, node: q.node_id })
+    expect(record.parent).toEqual(sideParent(q))
   }
   // The first run finished at its end; the reopened one runs on.
   expect(ended.map((result) => [result?.run_id, result?.status])).toEqual([[runs[0]!.runId, "succeeded"]])
@@ -2089,7 +2094,7 @@ test("a restored or woken side chat keeps the cards run as its parent", async ()
     const [started] = iterRunRecords(job.log, { payloads: true })
     expect(started!.kind).toBe("run_started")
     const record = started!.envelope.record as unknown as { parent: unknown }
-    expect(record.parent).toEqual({ runId: q.run_id, node: q.node_id })
+    expect(record.parent).toEqual(sideParent(q))
   }
 })
 
@@ -2136,10 +2141,7 @@ test("a side chat survives a restart", async () => {
   for (const job of advances) expect([job.run_id, job.log]).toEqual([runs[0], chats[0]!.log])
   const [started] = iterRunRecords(chats[0]!.log, { payloads: true })
   expect(started!.kind).toBe("run_started")
-  expect((started!.envelope.record as unknown as { parent: unknown }).parent).toEqual({
-    runId: q.run_id,
-    node: q.node_id,
-  })
+  expect((started!.envelope.record as unknown as { parent: unknown }).parent).toEqual(sideParent(q))
 })
 
 test("a side chat survives a restart during its first reply", async () => {
@@ -2165,10 +2167,7 @@ test("a side chat survives a restart during its first reply", async () => {
   const runs = h.store.getSession(side.id)!.run_ids
   expect(runs).toHaveLength(1)
   const [started] = iterRunRecords(path.join(h.office.paths.runs, runs[0]!, "log.jsonl"), { payloads: true })
-  expect((started!.envelope.record as unknown as { parent: unknown }).parent).toEqual({
-    runId: q.run_id,
-    node: q.node_id,
-  })
+  expect((started!.envelope.record as unknown as { parent: unknown }).parent).toEqual(sideParent(q))
 })
 
 test("a side session whose wake for its end fails stays failed", async () => {
