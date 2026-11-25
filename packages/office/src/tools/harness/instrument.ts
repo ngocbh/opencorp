@@ -13,8 +13,9 @@
  *  `{author, text}`, its author the one the office knows (the driver, the owner by the approver's identity, or the
  *  harness by its kind), never one read from a text, so neither the harness nor a file it reads can pose as the owner.
  *  It comes when the turn that took the driver's message ends, when the harness waits for the owner, after the call's
- *  wait (5 seconds unless the call says, at most two minutes), or at once when a message for the driver arrives while
- *  it waits (`messageArrived`), with the harness still working. A long one comes in pages.
+ *  wait (5 seconds unless the call says, at most two minutes), or at once when a steer waits for the driver (yian's
+ *  `ctx.steered`: a message it hasn't read, one sent while its model wrote the call included), with the harness still
+ *  working; a call that starts with one waiting still sends its message first. A long one comes in pages.
  *
  *  **Notes.** A turn a reply said runs on gets one note when it ends, for the host to give the chat
  *  (`HarnessHost.ended`): the session, the turn, how it ended (completed, interrupted or failed) and the end of the
@@ -146,11 +147,15 @@ export interface HarnessHost {
   ended(note: TurnEnded): void
 }
 
-/** A tool as the model calls it: an `OfficeTool`, by its shape. `interrupted` is the owner's Esc in the chat. */
+/** A tool as the model calls it: an `OfficeTool`, by its shape. `interrupted` is the owner's Esc in the chat, and
+ *  `steered` a steer waiting for the driver. */
 export interface HarnessTool {
   readonly description: string
   readonly parameters: Record<string, unknown>
-  call(args: Record<string, unknown>, options?: { readonly interrupted?: AbortSignal }): Promise<unknown>
+  call(
+    args: Record<string, unknown>,
+    options?: { readonly interrupted?: AbortSignal; readonly steered?: AbortSignal },
+  ): Promise<unknown>
 }
 
 /** The most of a record one reply carries, in UTF-16 code units. */
@@ -245,7 +250,7 @@ interface Owed {
 }
 
 /** How a wait ended. */
-type Ended = "done" | "timeout" | "interrupted" | "cut" | "early"
+type Ended = "done" | "timeout" | "interrupted" | "cut" | "steered"
 
 /** One chat's sessions of one harness, as its host binds them, and the tools the agent works them with. */
 export class HarnessInstrument {
@@ -253,8 +258,6 @@ export class HarnessInstrument {
   private readonly notes: ReturnType<typeof notes>
   /** The waits of the calls running now: `cutCalls` and `close` end them, saying why as the abort's reason. */
   private readonly cuts = new Set<AbortController>()
-  /** The same waits, which a message for the driver ends early (`messageArrived`). */
-  private readonly earlies = new Set<AbortController>()
   private made = 0
   private closed = false
   /** Whether the chat's records have been taken (`load`). */
@@ -271,7 +274,7 @@ export class HarnessInstrument {
     this.load()
   }
 
-  /** The model-facing tools: description, parameters, `call(args, { interrupted })`. */
+  /** The model-facing tools: description, parameters, `call(args, { interrupted, steered })`. */
   tools(): Record<ToolName, HarnessTool> {
     const specs = toolSpecs(this.harness)
     const tool = (name: ToolName): HarnessTool => ({
@@ -289,13 +292,6 @@ export class HarnessInstrument {
 
   private cut(why: CutWhy): void {
     for (const cut of [...this.cuts]) cut.abort(why)
-  }
-
-  /** A message for the driver arrived: every reply its calls wait on comes now, so it reads the message at its next
-   *  step. The turns go on, and each one's note still comes. A call that starts after it, as one the model asked for
-   *  while the message came, waits on: nothing here knows whether the driver has read it (yian#1806). */
-  messageArrived(): void {
-    for (const early of [...this.earlies]) early.abort()
   }
 
   /** The run has the note under `key` (`<kind>:<session id>:<n>`): the session's record owes it no more, so a restart
@@ -431,7 +427,7 @@ export class HarnessInstrument {
   private async call(
     tool: ToolName,
     args: Record<string, unknown>,
-    options: { readonly interrupted?: AbortSignal },
+    options: { readonly interrupted?: AbortSignal; readonly steered?: AbortSignal },
   ): Promise<string> {
     if (this.closed) return refusalText(this.notes.closed)
     const parsed = parseArgs(this.harness, tool, args)
@@ -439,9 +435,7 @@ export class HarnessInstrument {
     this.load()
     const cut = new AbortController()
     this.cuts.add(cut)
-    const early = new AbortController()
-    this.earlies.add(early)
-    const signals = { interrupted: options.interrupted, cut: cut.signal, early: early.signal }
+    const signals = { interrupted: options.interrupted, cut: cut.signal, steered: options.steered }
     try {
       if (parsed.tool === "start") return await this.start(parsed, signals)
       const entry = this.entries.find((e) => e.name === parsed.session)
@@ -460,7 +454,6 @@ export class HarnessInstrument {
       })
     } finally {
       this.cuts.delete(cut)
-      this.earlies.delete(early)
     }
   }
 
@@ -601,7 +594,7 @@ export class HarnessInstrument {
     return await this.waiting(entry, () => this.waitTurn(entry, taken, waitMs, signals))
   }
 
-  /** Waits until `taken`, the wait, a message for the driver or a signal. On the owner's Esc, and when the chat's run
+  /** Waits until `taken`, the wait, a steer for the driver or a signal. On the owner's Esc, and when the chat's run
    *  stopped, interrupts the turn (on a cut, only one the driver started) and waits for it to stop; nobody is then told
    *  of the turn's end later. */
   private async waitTurn(entry: Entry, taken: () => boolean, waitMs: number, signals: Signals): Promise<string> {
@@ -610,7 +603,7 @@ export class HarnessInstrument {
       await this.stopTurn(entry, { cut: signals.cut })
       return this.reply(entry, { note: this.notes.interrupted, tell: false })
     }
-    if (ended !== "cut") return this.reply(entry, { early: ended === "early" })
+    if (ended !== "cut") return this.reply(entry, { early: ended === "steered" })
     if (signals.cut.reason === "close") return this.reply(entry, { note: this.notes.ended, tell: false })
     if (signals.cut.reason === "stop") return this.reply(entry, { note: this.notes.stopping, tell: false })
     if (!running(entry)) return this.reply(entry, { tell: false })
@@ -694,7 +687,7 @@ export class HarnessInstrument {
     return await this.waiting(entry, async () => {
       const ended = await this.waitFor(entry, fresh, parsed.waitMs, signals)
       if (ended === "interrupted") return this.reply(entry, { from, note: this.notes.interrupted, tell: false })
-      if (ended !== "cut") return this.reply(entry, { from, early: ended === "early" })
+      if (ended !== "cut") return this.reply(entry, { from, early: ended === "steered" })
       const cut = signals.cut.reason as CutWhy
       const note = cut === "close" ? this.notes.ended : cut === "stop" ? this.notes.stopping : this.notes.readGoesOn
       return this.reply(entry, { from, note, tell: false })
@@ -703,7 +696,7 @@ export class HarnessInstrument {
 
   /** The reply for `entry`: the conversation from `from` (where the driver last read, which moves past what it now
    *  reads, and is kept in the record), or the given page of the trace; a note on what to do next, unless one is
-   *  given, after saying a message ended the wait when `early`. A reply that says a turn runs on owes its note, unless
+   *  given, after saying a steer ended the wait when `early`. A reply that says a turn runs on owes its note, unless
    *  nobody reads it (`tell: false`). */
   private reply(
     entry: Entry,
@@ -914,14 +907,14 @@ export class HarnessInstrument {
     if (done()) return Promise.resolve("done")
     if (signals.cut?.aborted) return Promise.resolve("cut")
     if (signals.interrupted?.aborted) return Promise.resolve("interrupted")
-    if (signals.early?.aborted) return Promise.resolve("early")
+    if (signals.steered?.aborted) return Promise.resolve("steered")
     return new Promise((resolve) => {
       const finish = (how: Ended) => {
         cancel()
         entry.waiters.delete(check)
         signals.cut?.removeEventListener("abort", onCut)
         signals.interrupted?.removeEventListener("abort", onInterrupt)
-        signals.early?.removeEventListener("abort", onEarly)
+        signals.steered?.removeEventListener("abort", onSteered)
         resolve(how)
       }
       const check = () => {
@@ -929,12 +922,12 @@ export class HarnessInstrument {
       }
       const onCut = () => finish("cut")
       const onInterrupt = () => finish("interrupted")
-      const onEarly = () => finish("early")
+      const onSteered = () => finish("steered")
       const cancel = this.clock.after(ms, () => finish("timeout"))
       entry.waiters.add(check)
       signals.cut?.addEventListener("abort", onCut, { once: true })
       signals.interrupted?.addEventListener("abort", onInterrupt, { once: true })
-      signals.early?.addEventListener("abort", onEarly, { once: true })
+      signals.steered?.addEventListener("abort", onSteered, { once: true })
     })
   }
 
@@ -957,8 +950,8 @@ export class HarnessInstrument {
 }
 
 /** What ends a call's wait: the owner's Esc in the chat, the instrument's cut, whose reason is a `CutWhy`, and a
- *  message for the driver (`early`), after which the turn goes on. */
-type Signals = { readonly interrupted?: AbortSignal; readonly cut: AbortSignal; readonly early?: AbortSignal }
+ *  steer waiting for the driver (`steered`, yian's `ctx.steered`), after which the turn goes on. */
+type Signals = { readonly interrupted?: AbortSignal; readonly cut: AbortSignal; readonly steered?: AbortSignal }
 
 /** Whether a turn runs, or a message waits for the thread to load. */
 function running(entry: Entry): boolean {

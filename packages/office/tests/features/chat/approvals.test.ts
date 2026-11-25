@@ -567,9 +567,9 @@ sandboxed("Esc while an approved command runs stops it, and the agent's turn end
   expect(fake.requests()).toHaveLength(1)
 })
 
-sandboxed("a message sent while an approval card is open leaves the card open; the agent reads it after the card is answered", async () => {
+sandboxed("a message sent while an approval card is open leaves the card open; the agent reads it as soon as the approved command runs", async () => {
   const fake = await fakeLlm()
-  fake.script(shell("ls"), says("Listed, and noted.", "check the README too"))
+  fake.script(shell("ls"), says("Listed, and noted.", "check the README too"), says("It ended."))
   const h = await makeHarness(fake)
   const id = await chat(h, "ask")
   const [q] = await held(h, id, "list it")
@@ -578,10 +578,16 @@ sandboxed("a message sent while an approval card is open leaves the card open; t
   expect(h.store.getQuestion(q!.id)!.status).toBe("open")
   expect(fake.requests()).toHaveLength(1)
   await h.harness.answer(q!.id, YES, "option", { by: CEO })
-  await replied(h, id, "Listed, and noted.")
-  const last = chats(fake).at(-1)!
-  expect(last).toContain(exited())
-  expect(last).toContain("check the README too")
+  const ended = inReply("shell 1: `ls` ended, exit 0")
+  await waitFor(() => chats(fake).some((text) => text.includes(ended)) && status(h, id) === "idle", {
+    what: "the note of the command's end",
+  })
+  // The message waits unread as the released call starts, so yian's steer signal ends its wait at once: the command
+  // runs on, and its end comes as the shell's note, with the message or after it.
+  const read = chats(fake).find((text) => text.includes("check the README too"))!
+  expect(read).toContain("Your wait ended early")
+  expect(texts(h, id)).toContain("Listed, and noted.")
+  expect(await calls(h, id)).toEqual([["released", `approved by @${CEO}`]])
 })
 
 sandboxed("always adds the rules to the agent's file, and a new session of the agent runs the command without a card", async () => {

@@ -151,11 +151,6 @@ export class EmployeeInstrument {
     this.#instrument.delivered(key)
   }
 
-  /** A message for the employee arrived: the replies its calls wait on come now, the turns going on. */
-  messageArrived(): void {
-    this.#instrument.messageArrived()
-  }
-
   /** The model-facing tools: the harness's group. */
   tools(): ReturnType<HarnessInstrument["tools"]> {
     return this.#instrument.tools()

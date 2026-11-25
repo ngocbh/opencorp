@@ -759,9 +759,12 @@ test("start, send and history wait 5 seconds by default, at most 120, and their 
   expect(specs.start.description).toContain("if you have nothing else to do, end your reply; you'll be resumed when the turn ends")
   expect(specs.start.description).toContain(
     "Pass a longer `wait` only when your next step needs the turn's result and there is nothing else to do. A " +
-      "message that reaches you while you wait ends the wait early.",
+      "new message for you ends the wait early, even one sent while you wrote the call.",
   )
   expect(specs.history.description).toContain("You're told when a turn a reply said runs on ends, so don't poll")
+  expect(specs.history.description).toContain(
+    "A new message for you ends the wait early, even one sent while you wrote the call.",
+  )
 })
 
 test("a call left with no wait replies after 5 seconds with the turn under way, and a longer wait is capped at 120", async () => {
@@ -876,28 +879,51 @@ test("an interrupted turn, a failed one and a failed session say so; the owner's
   expect(headings(m)[3]).toBe('codex 2: the turn on `Go.` failed: "bad \\"input\\" codex 9: completed"')
 })
 
-test("a message for the driver ends a start's, send's or history's wait at once; the turn goes on and its note still comes", async () => {
+test("a steer for the driver ends a start's, send's or history's wait at once; the turn goes on and its note still comes", async () => {
   const m = made()
   const at = performance.now()
-  const starting = m.call("start", { message: "Fix the build.", wait: 120 })
+  const steer = new AbortController()
+  const starting = m.call("start", { message: "Fix the build.", wait: 120 }, { steered: steer.signal })
   const thread = await waitFor(() => m.host.threads[0], { what: "the thread" })
   await waitFor(() => thread.busy, { what: "the turn" })
-  m.codex.messageArrived()
+  steer.abort()
   const reply = await starting
   expect(reply).toMatchObject({ codex: "codex 1", status: "running" })
   expect(reply.note).toBe(
     "Your wait ended early: a message came for you, which you'll read next. Codex is still working: you'll be told " +
       "when its turn ends. Do other work meanwhile, or end your reply if you have nothing else to do.",
   )
-  const reading = m.call("history", { codex: "codex 1", wait: 120 })
+  const steerRead = new AbortController()
+  const reading = m.call("history", { codex: "codex 1", wait: 120 }, { steered: steerRead.signal })
   await Bun.sleep(20)
-  m.codex.messageArrived()
+  steerRead.abort()
   expect((await reading).note).toContain("Your wait ended early")
   expect(performance.now() - at).toBeLessThan(2_000)
   expect([thread.interrupts, thread.busy]).toEqual([0, true])
   thread.answer("Fixed.")
   await waitFor(() => m.host.notes.length === 1, { what: "the note" })
   expect(headings(m)).toEqual(["codex 1: the turn on `Fix the build.` completed"])
+})
+
+test("a call whose steer already waits as it starts still sends its message, then replies at once", async () => {
+  const m = made()
+  const { thread } = await started(m)
+  // The message came while the model wrote the call: yian hands the call its steer signal aborted.
+  const steered = AbortSignal.abort()
+  const at = performance.now()
+  const reply = await m.call("send", { codex: "codex 1", message: "Refactor it.", wait: 120 }, { steered })
+  expect(reply).toMatchObject({ codex: "codex 1", status: "running" })
+  expect(reply.note).toStartWith("Your wait ended early: a message came for you, which you'll read next.")
+  expect(thread.sent).toEqual(["Fix the build.", "Refactor it."])
+  const reading = await m.call("history", { codex: "codex 1", wait: 120 }, { steered })
+  expect(reading.note).toStartWith("Your wait ended early")
+  expect(performance.now() - at).toBeLessThan(2_000)
+  // The turn the replies said runs on gets its note; a reply with nothing to wait for says nothing of the steer.
+  thread.answer("Refactored.")
+  await waitFor(() => m.host.notes.length === 1, { what: "the note" })
+  const ended = await m.call("history", { codex: "codex 1", wait: 120 }, { steered })
+  expect(ended).toMatchObject({ status: "idle" })
+  expect(ended.note ?? "").not.toContain("ended early")
 })
 
 test("after a restart, a turn the driver was told runs on is still owed its note: the record keeps the key", async () => {
@@ -978,10 +1004,11 @@ test("a turn that ends between a waiting call's reply and its return still gets 
   const m = made()
   const { thread } = await started(m)
   await m.call("send", { codex: "codex 1", message: "Refactor it.", wait: 0 })
-  const reading = m.call("history", { codex: "codex 1", wait: 120 })
+  const steer = new AbortController()
+  const reading = m.call("history", { codex: "codex 1", wait: 120 }, { steered: steer.signal })
   await Bun.sleep(20)
-  // The message ends the wait and its reply is made; the turn ends before the call has returned.
-  m.codex.messageArrived()
+  // The steer ends the wait and its reply is made; the turn ends before the call has returned.
+  steer.abort()
   queueMicrotask(() => thread.answer("Refactored."))
   const reply = await reading
   expect(reply.status).toBe("running")
@@ -1004,23 +1031,4 @@ test("a reply made after the turn ended carries its end though it comes in pages
   await Bun.sleep(50)
   expect(m.host.notes).toEqual([])
   expect(readCodexRecord(m.host.recordDir(thread.id))!.told).toBeUndefined()
-})
-
-test("no call's early wait is left behind once the calls have returned, however each ended", async () => {
-  const m = made()
-  const earlies = () => (m.codex as unknown as { earlies: Set<AbortController> }).earlies.size
-  const { thread } = await started(m)
-  await m.call("send", { codex: "codex 1", message: "Go on.", wait: 0 })
-  const reading = m.call("history", { codex: "codex 1", wait: 120 })
-  await waitFor(() => earlies() === 1, { what: "the waiting call" })
-  m.codex.messageArrived()
-  await reading
-  await m.call("history", { codex: "codex 9" })
-  await m.call("send", { codex: "codex 1", message: 7 })
-  const cut = m.call("history", { codex: "codex 1", wait: 120 })
-  await waitFor(() => earlies() === 1, { what: "the call to cut" })
-  m.codex.cutCalls()
-  await cut
-  thread.answer("Done.")
-  expect(earlies()).toBe(0)
 })

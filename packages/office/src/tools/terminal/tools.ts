@@ -48,7 +48,7 @@ const SECRET_ASKED =
 const RUNS_ON =
   "No exit yet: the command is still running, and you'll be told when it ends, with its exit code and last lines. " +
   "Don't poll it with read; do other work, or end your reply if you have nothing else to do."
-/** What a reply says first when a message for the agent ended its wait while its command ran on. */
+/** What a reply says first when a steer waiting for the agent ended its wait while its command ran on. */
 const EARLY = "Your wait ended early: a message came for you, which you'll read next."
 
 const REPLY =
@@ -77,7 +77,7 @@ const RUNNING = {
     "long command: keep working on what doesn't need its result, and if you have nothing else to do, end your " +
     "reply; you'll be resumed when it ends. DO NOT poll it with read or sleep: read its output so far only if that " +
     "lets you do useful work now. Pass a longer `wait` only when your next step needs the result and there is " +
-    "nothing else to do. A message that reaches you while you wait ends the wait early.",
+    "nothing else to do. A new message for you ends the wait early, even one sent while you wrote the call.",
 }
 
 /** What read's description says of its wait, by whether the host tells the session of a command's end. */
@@ -85,8 +85,8 @@ const READ_WAIT = {
   read: "use a long wait, not polling with short ones.",
   notes:
     "you're told when a command whose reply said it runs on ends, so don't poll: read only when its output lets you " +
-    "do useful work now, and pass a longer `wait` only when your next step needs the result. A message that reaches " +
-    "you while you wait ends the wait early.",
+    "do useful work now, and pass a longer `wait` only when your next step needs the result. A new message for you " +
+    "ends the wait early, even one sent while you wrote the call.",
 }
 
 const runDescription = (shells: string, running: string) =>

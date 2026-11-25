@@ -24,9 +24,10 @@
  *
  *  **Waits.** A reply waits at most two minutes; a held call waits in yian for its card instead. Each call's wait ends
  *  with the call's signal, with its interrupt (the agent's, as yian passes it, which reaches a call that came after
- *  `interruptWaits` too) and with `interruptWaits`, and a call stopped before it acts types nothing. A message for the
- *  agent while a call waits (`messageArrived`) ends that wait too, with its command running on, so the agent reads it
- *  at its next step. Calls on one shell queue; calls on different shells run together.
+ *  `interruptWaits` too) and with `interruptWaits`, and a call stopped before it acts types nothing. A steer waiting
+ *  for the agent (yian's `ctx.steered`: a message it hasn't read, one sent while its model wrote the call included)
+ *  ends the wait too, once the call has acted, with its command running on, so the agent reads it at its next step.
+ *  Calls on one shell queue; calls on different shells run together.
  *
  *  **A call cut off stops its command.** A `run` whose signal aborts before its reply
  *  returns stops the command it waits on, as the owner's Ctrl-C does, and replies once it has ended (or after a few
@@ -138,15 +139,24 @@ export function decidedFor(plan: CommandPlan & { decide: true }, approved: boole
 export type TerminalShell = PtyShell | PipeShell
 
 /** A tool as the model calls it: an `OfficeTool`, declared here by its shape. `callId` is the yian call's, which a
- *  held call's card names; `signal` stops the call, and so does `interrupted`, the agent's interrupt while it runs. */
+ *  held call's card names; `signal` stops the call, and so does `interrupted`, the agent's interrupt while it runs;
+ *  `steered`, a steer waiting for the agent, ends its reply's wait. */
 export interface TerminalTool {
   readonly description: string
   readonly parameters: Record<string, unknown>
-  call(
-    args: Record<string, unknown>,
-    options?: { readonly callId?: string; readonly signal?: AbortSignal; readonly interrupted?: AbortSignal },
-  ): Promise<unknown>
+  call(args: Record<string, unknown>, options?: CallOptions): Promise<unknown>
 }
+
+/** What a call gets beside its arguments, as yian's `ToolContext` gives them (see `TerminalTool`). */
+interface CallOptions {
+  readonly callId?: string
+  readonly signal?: AbortSignal
+  readonly interrupted?: AbortSignal
+  readonly steered?: AbortSignal
+}
+
+/** The steer signal of a call made without one: it never aborts. */
+const NEVER_STEERED = new AbortController().signal
 
 /** What a call returns when its stop came after the gate let it run, before it started. */
 const STOPPED = "Not run: stopped before it started."
@@ -241,11 +251,12 @@ interface Running {
 }
 
 /** How one call runs: the yian call's id, its signal, and what the gate decided for it (null: nothing), taken as the
- *  call started. Its reply's wait also ends early on `early`, a message for the agent, with its command running on. */
+ *  call started. Its reply's wait also ends early on `steered`, a steer waiting for the agent, with its command
+ *  running on. */
 interface Call {
   readonly callId: string | undefined
   readonly signal: AbortSignal
-  readonly early: AbortSignal
+  readonly steered: AbortSignal
   readonly decided: Decided | null
 }
 
@@ -267,9 +278,6 @@ export class Terminal {
   private readonly entries: Entry[] = []
   /** The calls running now, each stopped by its controller: `interruptWaits` ends them. */
   private readonly calls = new Set<AbortController>()
-  /** The agent's calls running now, a held one the owner approved among them, each one's wait ended early by its
-   *  controller: `messageArrived` ends them. */
-  private readonly early = new Set<AbortController>()
   private made = 0
   private closed = false
 
@@ -388,14 +396,6 @@ export class Terminal {
     for (const call of [...this.calls]) call.abort()
   }
 
-  /** A message for the agent arrived: every reply the agent's calls wait on comes now, a held call the owner approved
-   *  included, so the agent reads the message at its next step. Their commands run on, as after the wait, and a call
-   *  queued behind another goes on. A call that starts after it, as one the model asked for while the message came,
-   *  waits on: nothing here knows whether the agent has read it (yian#1806). */
-  messageArrived(): void {
-    for (const call of [...this.early]) call.abort()
-  }
-
   /** The owner, `by`, closes shell `id` from their client, as the agent's close does: the shell ends, and so does its
    *  command. Its record says who closed it, and the host gets one quiet note of it, signed by the shell, which names
    *  the command it stopped in place of that command's own note. Nothing for a shell still starting, or one that has
@@ -447,11 +447,7 @@ export class Terminal {
     )
   }
 
-  private async call(
-    tool: ToolName,
-    args: Record<string, unknown>,
-    options: { readonly callId?: string; readonly signal?: AbortSignal; readonly interrupted?: AbortSignal },
-  ): Promise<unknown> {
+  private async call(tool: ToolName, args: Record<string, unknown>, options: CallOptions): Promise<unknown> {
     // Taken first, whatever the call does next: a refused call leaves no decision behind.
     const decided = this.host.permissions.decided(options.callId)
     if (this.closed) return refusalText(CLOSED)
@@ -459,14 +455,12 @@ export class Terminal {
     if (typeof parsed === "string") return refusalText(parsed)
     const own = new AbortController()
     this.calls.add(own)
-    const early = new AbortController()
-    this.early.add(early)
     // The agent's interrupt reaches a call that came after `interruptWaits` cut off the ones it found: Esc, say, while
     // the call was on its way.
     const stops = [own.signal, options.signal, options.interrupted].filter((s) => s !== undefined)
     const signal = AbortSignal.any(stops)
     try {
-      const call: Call = { callId: options.callId, signal, early: early.signal, decided }
+      const call: Call = { callId: options.callId, signal, steered: options.steered ?? NEVER_STEERED, decided }
       if (parsed.tool === "run") return await this.run(parsed, call)
       const entry = this.find(parsed.shell)
       if (entry === undefined) return refusalText(this.unknown(parsed.shell))
@@ -502,7 +496,6 @@ export class Terminal {
       })
     } finally {
       this.calls.delete(own)
-      this.early.delete(early)
     }
   }
 
@@ -770,7 +763,7 @@ export class Terminal {
   }
 
   /** `reply` as the model reads it; with `told`, the note that the agent will be told of its command's end, and with
-   *  `early`, that a message ended its wait. A reply that shows the shell's command has ended carries the end of one
+   *  `early`, that a steer ended its wait. A reply that shows the shell's command has ended carries the end of one
    *  whose note waited on it. */
   private text(entry: Entry, shell: TerminalShell, reply: Reply, told = false, early = false): string {
     if (entry.untold !== null && !runsOn(reply)) {
@@ -783,14 +776,14 @@ export class Terminal {
   }
 }
 
-/** What ends `call`'s reply's wait: its signal, and a message for the agent. */
+/** What ends `call`'s reply's wait: its signal, and a steer waiting for the agent. */
 function waitSignal(call: Call): AbortSignal {
-  return AbortSignal.any([call.signal, call.early])
+  return AbortSignal.any([call.signal, call.steered])
 }
 
-/** Whether a message for the agent, not the call's own end, ended `call`'s wait. */
+/** Whether a steer waiting for the agent, not the call's own end, ended `call`'s wait. */
 function endedEarly(call: Call): boolean {
-  return call.early.aborted && !call.signal.aborted
+  return call.steered.aborted && !call.signal.aborted
 }
 
 /** Why `reply`'s exit is null, for its note: the command still runs, or how the last command the terminal ran ended
