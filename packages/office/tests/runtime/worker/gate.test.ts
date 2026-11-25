@@ -87,6 +87,8 @@ const CALLS: GatedCall[] = [
   tool: "tool_" + i,
   source: source as GatedCall["source"],
   arguments: { text: "hi", n: i, nested: { list: [1, "two", null] } },
+  // What a tool's gateTarget says its call acts on; none for most.
+  target: i === 1 ? { run: "r2", call: { tool: "lookup" } } : null,
   scopes: i % 2 === 0 ? [] : [{ scope: "outer/helper#0", callId: "r1/outer/1/0" }],
   attempt: 1 + (i % 3),
 }))
@@ -108,6 +110,7 @@ test("the hook sends each call as one gate_call request, and the office gets it 
       tool: "tool_0",
       source: { kind: "host", group: "toolbox", tool: "shout" },
       arguments: { text: "hi", n: 0, nested: { list: [1, "two", null] } },
+      target: null,
       scopes: [],
       attempt: 1,
     },
@@ -255,6 +258,7 @@ test("a gate request whose call isn't this run's, or is malformed, is refused be
     { call: { ...wire(CALLS[0]!), source: { kind: "shell", tool: "x" } } },
     { call: { ...wire(CALLS[0]!), attempt: 0 } },
     { call: { ...wire(CALLS[0]!), arguments: [1] } },
+    { call: { ...wire(CALLS[0]!), target: [1] } },
     { call: { ...wire(CALLS[0]!), scopes: [{ scope: "s" }] } },
     { call: { ...wire(CALLS[0]!), extra: true } },
   ]
@@ -564,7 +568,8 @@ test("a held call waits, marked held; a release delivery runs it once, and the a
   ])
   expect(calls).toEqual([])
   const rec = new Gating(() => ({ run: true }), { tools })
-  const release = { id: "r1", op: "release", call_id: held.callId, note: "approved by @ceo" } as const
+  const by = { kind: "user", name: "ceo" } as const
+  const release = { id: "r1", op: "release", call_id: held.callId, note: "approved by @ceo", by } as const
   await run(advanceJob(chat, { deliver: [release] }), rec, { env: fake.env() })
   expect([rec.outcome?.status, rec.outcome?.output], String(rec.outcome?.message)).toEqual(["succeeded", "done"])
   expect(rec.replies).toEqual([{ type: "deliver_reply", id: "r1", seq: expect.any(Number) }])
@@ -573,6 +578,11 @@ test("a held call waits, marked held; a release delivery runs it once, and the a
   expect(calls).toEqual(["first", "second"])
   expect(gatedRecords(chat)[0]).toEqual(["run_started", true])
   expect(toolSteps(chat).some((step) => step.note === "approved by @ceo")).toBe(true)
+  // Who released it, beside the step.
+  const released = [...iterRunRecords(chat.log, { kinds: ["node_step"] })]
+    .map((entry) => entry.envelope.record as unknown as { by: unknown; step: Record<string, unknown> })
+    .filter((record) => record.by !== null)
+  expect(released.map((record) => [record.step.kind, record.by])).toEqual([["released", by]])
 })
 
 test("a gated run that a stop cut off is marked gated again when an advance resumes it", async () => {
@@ -648,6 +658,7 @@ function wire(call: GatedCall): Frame {
     tool: call.tool,
     source: call.source,
     arguments: call.arguments,
+    target: call.target,
     scopes: call.scopes.map(({ scope, callId }) => ({ scope, call_id: callId })),
     attempt: call.attempt,
   }

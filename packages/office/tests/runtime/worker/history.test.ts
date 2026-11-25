@@ -318,6 +318,24 @@ test("a moved send keeps its key and author, so the same send to the fresh run a
   expect(userTexts(fake, 0)).toEqual(['<authored_message author="shell 1">\nmake ended\n</authored_message>'])
 })
 
+test("a moved message keeps who sent it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "ok" })
+  const r1 = await waitingChat(fake)
+  const by = { kind: "user", name: "minh" } as const
+  const sent = { id: "m1", op: "send", inbox: "messages", event: message("hello", "minh"), by } as const
+  const unread = advanceJob(r1, { advance: false, deliver: [sent] })
+  expect(waitingAt(await run(unread, new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#0/heard"])
+  const r2 = nextRun(r1, { seed: seedOf(r1, fake) })
+  expect(waitingAt(await run(r2, new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#1/heard"])
+  const moved = fs
+    .readFileSync(r2.log, "utf8")
+    .split("\n")
+    .filter((line) => line.includes('"key":"__start__.messages"'))
+    .map((line) => (JSON.parse(line) as { payload: { by?: unknown } }).payload.by)
+  expect(moved).toEqual([by])
+})
+
 test("a send a withdraw took back is not moved", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "ok" })

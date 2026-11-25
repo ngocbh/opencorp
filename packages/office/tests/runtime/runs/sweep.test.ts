@@ -70,6 +70,8 @@ function inspection(status: RunStatus): RunInspection {
     waits: [],
     ready: false,
     wakeAt: null,
+    unread: [],
+    closedInboxes: [],
   }
 }
 

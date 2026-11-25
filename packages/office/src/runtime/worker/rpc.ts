@@ -348,6 +348,7 @@ function wireCall(call: GatedCall): Frame {
     tool: call.tool,
     source: call.source,
     arguments: call.arguments,
+    target: call.target,
     scopes: call.scopes.map(({ scope, callId }) => ({ scope, call_id: callId })),
     attempt: call.attempt,
   }
@@ -392,13 +393,15 @@ const WireSource = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("memory"), input: nonEmpty, tool: nonEmpty }),
   z.strictObject({ kind: z.literal("flow"), flow: nonEmpty, library: nonEmpty.nullable() }),
 ])
-/** A `gate_call` request's `call`. `arguments` is the model's, kept as sent. */
+/** A `gate_call` request's `call`. `arguments` is the model's, kept as sent; `target` is what the tool's `gateTarget`
+ *  says the call acts on, null when it says nothing. */
 const WireCall = z.strictObject({
   call_id: z.string(),
   node: z.string(),
   tool: z.string(),
   source: WireSource,
   arguments: z.custom<Record<string, unknown>>(isPlainObject),
+  target: z.custom<Record<string, unknown>>(isPlainObject).nullable(),
   scopes: z.array(z.strictObject({ scope: z.string(), call_id: z.string() })),
   attempt: z.int().positive(),
 })
@@ -418,6 +421,7 @@ function gatedCall(raw: unknown): GatedCall {
     tool: call.tool,
     source: call.source,
     arguments: call.arguments as GatedCall["arguments"],
+    target: call.target as GatedCall["target"],
     scopes: call.scopes.map(({ scope, call_id }) => ({ scope, callId: call_id })),
     attempt: call.attempt,
   }

@@ -98,7 +98,8 @@ async function gated(
   const callId = (n: number) => `${runId}/chat#0/reply/1/${n}`
   const gate = (source: ToolSource, n = 0, args: GatedCall["arguments"] = { title: "Fix" }, attempt = 1) => {
     const call: GatedCall = {
-      callId: callId(n), node: "chat#0/reply", tool: `tool_${n}`, source, arguments: args, scopes: [], attempt,
+      callId: callId(n), node: "chat#0/reply", tool: `tool_${n}`, source, arguments: args, target: null, scopes: [],
+      attempt,
     }
     return handlers.gateCall(worker, call)
   }

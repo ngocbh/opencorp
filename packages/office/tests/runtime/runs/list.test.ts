@@ -86,6 +86,8 @@ function inspection(over: Partial<RunInspection> = {}): RunInspection {
     waits: [],
     ready: false,
     wakeAt: null,
+    unread: [],
+    closedInboxes: [],
     ...over,
   }
 }

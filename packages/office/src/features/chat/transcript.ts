@@ -9,6 +9,7 @@ import {
   PoolCommitRecord,
   RunLogChangedError,
   type RunLogEntry,
+  takeInboxes,
   TypedValue,
 } from "@ngocbh/yian/run"
 import { Handle, type Message, type Part, type ToolPart } from "@opencorp/protocol"
@@ -525,7 +526,9 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
       const text = message.parts.findLast((part) => part.type === "text") as { text: string } | undefined
       const shown = { author: message.author, parts: text === undefined ? [] : [{ type: "text", text: text.text }] }
       state.sends.set(seq, keep(state, { seq, at, message: shown as Send["message"], key: record.sendKey }))
-    } else if (record.take !== null && record.take.inbox === inbox && MAIN_CHAT.isTurn(record.nodeId)) {
+    } else if (record.take !== null && MAIN_CHAT.isTurn(record.nodeId)
+      && takeInboxes(record.take.inbox).includes(inbox)) {
+      // A take of several inboxes lists all their sends; only the chat inbox's are in `sends`, to show.
       state.takes.set(seq, keep(state, record.take.events.map(Number)))
     }
   } else if (kind === "node_succeeded") {
@@ -728,12 +731,13 @@ export function sentUnread(
   }
 }
 
-/** A send Esc's withdraw took back from a run's inbox, as its log records it: its seq, its message, and the key it
- *  was sent under, if any. */
+/** A send Esc's withdraw took back from a run's inbox, as its log records it: its seq, its message, the key it was
+ *  sent under, if any, and who sent it (`by`), if its record says. */
 export interface WithdrawnSend {
   readonly seq: number
   readonly message: RunMessage
   readonly key: string | null
+  readonly by: PoolCommitRecord["by"]
 }
 
 /**
@@ -742,14 +746,15 @@ export interface WithdrawnSend {
  * what a withdraw took, even when its worker died before it answered. A send whose value isn't a message is left out.
  */
 export function withdrawnSends(log: string, inbox: string): WithdrawnSend[] {
-  const sends = new Map<number, { message: RunMessage; key: string | null }>()
+  const sends = new Map<number, Omit<WithdrawnSend, "seq">>()
   const taken: number[] = []
   for (const entry of iterRunRecords(log)) {
     const record = entry.envelope.record
     if (entry.kind === "pool_commit" && record instanceof PoolCommitRecord && record.value !== null) {
       if (record.key !== `${record.nodeId}.${inbox}`) continue
       try {
-        sends.set(entry.seq, { message: checkMessage(TypedValue.fromWire(record.value).toObject()), key: record.sendKey })
+        const message = checkMessage(TypedValue.fromWire(record.value).toObject())
+        sends.set(entry.seq, { message, key: record.sendKey, by: record.by })
       } catch (error) {
         if (!(error instanceof RangeError)) throw error
       }

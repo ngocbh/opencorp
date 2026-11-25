@@ -1,12 +1,13 @@
 /** `opencorp doctor`: check the office home (there and private), company repo, provider and connections, the run and
- *  session folders (writable), service, daemon, HQ, sandbox and its terminals, worked folders, Codex and Claude
- *  Code, and the MCP servers employees may use. */
+ *  session folders (writable) and the run logs (of a schema this office reads), service, daemon, HQ, sandbox and its
+ *  terminals, worked folders, Codex and Claude Code, and the MCP servers employees may use. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type { HqStatus, OfficeInfo } from "@opencorp/protocol"
 import { VERSION } from "@opencorp/protocol/version"
 import { FileLockError, isLocked, openSqlite, type Sqlite, sqliteErrorCode } from "@ngocbh/yian/platform"
+import { iterRunRecords, RunLogSchemaError } from "@ngocbh/yian/run"
 import { type Identity, IdentityUnreadable, identityPath, loadIdentity } from "../../runtime/auth/identity.ts"
 import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
 import { ConnectionFile, Connections, isSubscription } from "../../models/connections.ts"
@@ -37,6 +38,7 @@ import { claudeJson, ownerMcpServers } from "../../tools/claude/mcp.ts"
 import { probeStart } from "../../tools/claude/probe.ts"
 import { SocatUnusable } from "../../tools/claude/socat.ts"
 import { type Probed, threadProbe } from "../codex/thread.ts"
+import { LINE_CAP as LOG_LINE_CAP, SCHEMA } from "../../runtime/runs/reader.ts"
 import { writableFolders } from "../../runtime/sessions/permission.ts"
 import { type HarnessInstall, checkHarnessBinary } from "../../runtime/sandbox/harness_profile.ts"
 import { SANDBOX_FIX } from "../../tools/terminal/terminal.ts"
@@ -475,6 +477,48 @@ function writableFolderCheck(name: string, folder: string, home: string): Check 
     return fail(`can't write ${folder}: ${strerror(error) ?? code}`)
   }
   return { name, status: "ok", detail: folder }
+}
+
+/**
+ * A warning for the run logs in `runs` that yian refuses as older than the run-log schema this office reads
+ * (`SCHEMA`), as an update leaves them: how many, and how to start clean, since there's no migration. Null when there
+ * are none, or no runs folder (the runs line says why one can't be read). Only each regular file's first record is
+ * read; a log that can't be read for any other reason is no concern of this check.
+ */
+export function runLogsCheck(runs: string): Check | null {
+  let ids: string[]
+  try {
+    ids = fs.readdirSync(runs)
+  } catch {
+    return null
+  }
+  const schemas = new Set<number>()
+  let old = 0
+  for (const id of ids) {
+    const log = path.join(runs, id, "log.jsonl")
+    try {
+      // Never a FIFO or a symlink, which could hang the read or lead out of the folder.
+      if (!fs.lstatSync(log).isFile()) continue
+      for (const _ of iterRunRecords(log, { maxLineBytes: LOG_LINE_CAP })) break
+    } catch (error) {
+      if (!(error instanceof RunLogSchemaError) || error.schema === null || error.schema >= SCHEMA) continue
+      schemas.add(error.schema)
+      old += 1
+    }
+  }
+  if (old === 0) return null
+  const named = [...schemas].sort((a, b) => a - b).join(" or ")
+  const logs = old === 1 ? `1 run log in ${runs} uses` : `${old} run logs in ${runs} use`
+  const them = old === 1 ? "it and its session starts" : "them and their sessions start"
+  return {
+    name: "run logs",
+    status: "warn",
+    detail:
+      `${logs} run-log schema ${named}, older than the ${SCHEMA} this office reads, so Run Logs can't show ${them}` +
+      " over without that history. There's no migration while OpenCorp isn't deployed: to start clean," +
+      " re-initialise the office (`opencorp offboard`, then `opencorp init`, or `opencorp onboard --from URL` for a" +
+      " company you pushed)",
+  }
 }
 
 /** Whether systemd keeps this user's services running after logout; null if `loginctl` can't say. */
@@ -1442,6 +1486,8 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
     const writable = writableFolderCheck(name, folder, paths.home)
     if (writable !== null) found.push(writable)
   }
+  const logs = runLogsCheck(paths.runs)
+  if (logs !== null) found.push(logs)
   found.push(await serviceCheck(run, host))
   const sock = lstatOrNull(lstat, run.socket)
   if (sock !== null && !sock.isSocket()) {

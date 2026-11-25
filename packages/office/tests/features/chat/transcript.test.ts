@@ -18,7 +18,10 @@ import {
   fakeLlm,
   interruptMidReply,
   logPrefix,
+  message,
   PERSON,
+  QUEUE_CHAT_FLOW,
+  ROOT,
   send,
   TemplateOffice,
   templateJob,
@@ -113,6 +116,29 @@ test("a user message comes from its turns take commit", async () => {
     expect(read[i]!.parts[0]!.id).toBe(`${read[i]!.id}:0`)
     expect(read[i]!.created_at).toBe(entry.at)
   })
+})
+
+test("a turn whose take reads several inboxes shows the messages it took from the chat's", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Hello." })
+  const root = tempDir()
+  const base = { pin: path.join(root, "pin"), runs: path.join(root, "runs") }
+  fs.cpSync(ROOT, base.pin, { recursive: true })
+  fs.writeFileSync(path.join(base.pin, "shared/flows/chat.yaml"), QUEUE_CHAT_FLOW)
+  const rec = new TemplateOffice()
+  const job = templateJob("chat", rec, {}, { base })
+  await run(job, rec, { env: fake.env() })
+  expect(waitingAt(rec)).toEqual(["chat#0/heard"])
+  const later: Delivery = { id: "q1", op: "send", inbox: "queued", event: message("later") }
+  await advance(job, fake, [send("s1", "one"), later])
+  const take = [...iterRunRecords(job.log, { kinds: ["pool_commit"] })]
+    .map((entry) => (entry.envelope.record as PoolCommitRecord).take)
+    .find((commit) => commit != null)
+  expect(take?.inbox).toEqual(["messages", "queued"])
+  // The office sends only to the chat's inbox, so only its messages show; each as read, before the reply.
+  const read = messages(base.runs, newId(), ["r1"])
+  expect(texts(read)).toEqual([["user", ["one"]], ["assistant", ["Hello."]]])
+  expect(read[0]!.unread ?? false).toBe(false)
 })
 
 test("a user message can name its author", async () => {

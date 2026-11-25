@@ -670,6 +670,33 @@ test("one advance job with send and complete deliveries runs a turn", async () =
   expect(request).toContain("Paris")
 })
 
+test("a send and an answer record who made them, and a keyed send again by another is refused", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Off we go." })
+  const chat = makeJob(base(), "flows/turn.yaml", { inputs: {} })
+  const asking = await run(chat, new Pending(), { env: fake.env() })
+  expect(asking.outcome?.status, String(asking.outcome?.message)).toBe("waiting")
+  const ask = waitsOf(asking).find((wait) => wait.tool === "ask")!
+  const by = { kind: "user", name: "ada" } as const
+  const send = { id: "s1", op: "send", inbox: "messages", event: "to Rome", key: "k1", by } as const
+  const again = { ...send, id: "s2", by: { kind: "user", name: "bob" } } as const
+  const rec = await run(
+    advanceJob(chat, {
+      deliver: [send, again, { id: "c1", op: "complete", call_id: String(ask.call_id), result: { output: "Paris" }, by }],
+    }),
+    new Recorder(),
+    { env: fake.env() },
+  )
+  expect([rec.outcome?.status, rec.outcome?.output], String(rec.outcome?.message)).toEqual(["succeeded", "Off we go."])
+  expect(rec.replies.map((reply) => reply.refused ?? null)).toEqual([null, "key_reused", null])
+  expect(logPayloads(chat, "pool_commit").filter((payload) => payload.key === "__start__.messages")).toEqual([
+    expect.objectContaining({ value: "to Rome", send_key: "k1", by }),
+  ])
+  expect(logPayloads(chat, "node_step").filter((payload) => payload.by !== undefined)).toEqual([
+    expect.objectContaining({ node_id: "asked", by }),
+  ])
+})
+
 test("an offline interrupt reply lists the closed calls", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "", tool_calls: [{ name: "ask_user", arguments: { question: "Which city?" } }] })

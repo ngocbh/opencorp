@@ -6,6 +6,7 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { type FileLock, FileLockError, lockFile } from "@ngocbh/yian/platform"
+import { type TakeInbox, takeInboxes } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import {
   type Event,
@@ -43,7 +44,7 @@ import { Instruments, type LiveInstrument } from "../../runtime/sessions/instrum
 import { HarnessError } from "../../runtime/sessions/state.ts"
 import type { QuestionRecord, SessionRecord } from "../../runtime/store/store.ts"
 import type { Frame } from "../../runtime/worker/channel.ts"
-import { type Delivery, groupSpecs, type Job, parseJob } from "../../runtime/worker/job.ts"
+import { byPerson, type Delivery, groupSpecs, type Job, parseJob } from "../../runtime/worker/job.ts"
 import {
   type AskRequest,
   BaseHandlers,
@@ -273,6 +274,8 @@ export class LocalHost {
   #waits = ""
   #plainFrom: string | null = null
   #ending = false
+  /** The inboxes closed while ending: End closes the chat's, and a turn take's others once it waits on them. */
+  readonly #endClosed = new Set<string>([MAIN_CHAT.inbox])
   #finished = false
   /** The session's end, once it started. */
   #finishing: Promise<void> | null = null
@@ -521,7 +524,7 @@ export class LocalHost {
   async prompt(text: string, by: string): Promise<void> {
     this.#live()
     const event = { role: "user", parts: [{ type: "text" as const, text }], author: by }
-    await this.#deliver({ id: newId(), op: "send", inbox: MAIN_CHAT.inbox, event }, (frame) => {
+    await this.#deliver({ id: newId(), op: "send", inbox: MAIN_CHAT.inbox, event, ...byPerson(by) }, (frame) => {
       if (typeof frame.seq !== "number") return
       const unread = sentUnread(this.#transcript, this.#runId, frame.seq, this.#log)
       const message = userMessage(this.id, this.#runId, { seq: frame.seq, at: now(), message: event }, unread)
@@ -700,6 +703,20 @@ export class LocalHost {
     await this.#flush()
   }
 
+  /** While ending, queues a close of each inbox but the chat's that an unsettled turn take in `waits` (a result's)
+   *  still reads, once: a take of several inboxes waits until each of them is closed, and End closed only the chat's.
+   *  The worker's park sends them. */
+  #closeTurnInboxes(waits: readonly Frame[]): void {
+    for (const wait of waits) {
+      if (wait?.tool !== "take" || wait.settled === true || !MAIN_CHAT.isTurn(wait.node as string)) continue
+      for (const inbox of wait.inbox == null ? [] : takeInboxes(wait.inbox as TakeInbox)) {
+        if (this.#endClosed.has(inbox)) continue
+        this.#endClosed.add(inbox)
+        this.#queue.push({ id: newId(), op: "close", inbox })
+      }
+    }
+  }
+
   /** Hands the queued deliveries to the parked worker as its next `advance` job; with none, moves the run on when it
    *  must (`#readvance`). */
   async #flush(): Promise<void> {
@@ -765,6 +782,7 @@ export class LocalHost {
           host.#waits = JSON.stringify(waits)
           // A plain re-advance that left the run on the same settled calls made no progress: it waits for the owner.
           if (waits.some((wait) => wait?.settled === true) && host.#plainFrom !== host.#waits) host.#readvance = true
+          if (host.#ending) host.#closeTurnInboxes(waits)
         }
         if (frame.kept !== true && frame.status !== "succeeded") {
           const status = typeof frame.status === "string" ? frame.status : "badly"
@@ -973,7 +991,9 @@ export class LocalHost {
   /** Completes `question`'s call with `output`: consumed once the run takes it, stale when it can't. */
   async #complete(question: QuestionRecord, output: unknown): Promise<void> {
     if (this.#finished || question.call_id === null) return
-    const delivery: Delivery = { id: newId(), op: "complete", call_id: question.call_id, result: { output } }
+    const delivery: Delivery = {
+      id: newId(), op: "complete", call_id: question.call_id, result: { output }, ...byPerson(question.answered_by),
+    }
     await this.#deliver(delivery, (frame) => {
       const held = this.#held.get(question.id)
       if (held === undefined || held.question.status !== "answered") return
@@ -985,7 +1005,9 @@ export class LocalHost {
    *  consumed once the run takes it, stale when it can't. */
   async #release(callId: string, note: string | null, card: QuestionRecord | null): Promise<void> {
     if (this.#finished) return
-    const delivery: Delivery = { id: newId(), op: "release", call_id: callId, ...(note === null ? {} : { note }) }
+    const delivery: Delivery = {
+      id: newId(), op: "release", call_id: callId, ...(note === null ? {} : { note }), ...byPerson(card?.answered_by),
+    }
     await this.#deliver(delivery, (frame) => {
       const held = card === null ? undefined : this.#held.get(card.id)
       if (held === undefined || held.question.status !== "answered") return

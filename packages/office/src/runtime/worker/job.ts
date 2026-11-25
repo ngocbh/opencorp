@@ -24,11 +24,27 @@ const absolute = z.string().refine((p) => path.posix.isAbsolute(p), "must be an 
 const deliveryId = z.string().min(1)
 const present = z.custom<unknown>((value) => value !== undefined, "is required")
 
-/** One yian host call the worker makes on the run, with the id its `deliver_reply` answers. A `send` with a `key`
- *  appends nothing when the run already has a send with that key and value, so a send retried or sent again by a new
- *  worker isn't doubled. A `withdraw` takes back every send of the inbox nothing has read yet, and its reply lists
- *  them (`withdrawn`: each one's seq and value), in send order. A `release` runs a call the office's gate held, once,
- *  with `note` kept in the run log; a second release of it appends nothing (`seq: null`). */
+/** Who makes a host call, as yian's run log records it (`by`, yian's `Author`): the office passes the person whose
+ *  message, answer or approval it is. No model reads it. */
+export const DeliveryBy = z.strictObject({
+  kind: z.enum(["user", "agent", "tool", "host", "run"]),
+  name: z.string().min(1),
+  run: z.string().min(1).optional(),
+  node: z.string().min(1).optional(),
+})
+export type DeliveryBy = z.output<typeof DeliveryBy>
+
+/** `{by}` naming person `handle`, to spread into a delivery; nothing when there is none. */
+export function byPerson(handle: string | null | undefined): { by?: DeliveryBy } {
+  return handle ? { by: { kind: "user", name: handle } } : {}
+}
+
+/** One yian host call the worker makes on the run, with the id its `deliver_reply` answers, and `by`, who makes it,
+ *  for a send, a complete or a release. A `send` with a `key` appends nothing when the run already has a send with
+ *  that key, value and `by`, so a send retried or sent again by a new worker isn't doubled. A `withdraw` takes back
+ *  every send of the inbox nothing has read yet, and its reply lists them (`withdrawn`: each one's seq and value), in
+ *  send order. A `release` runs a call the office's gate held, once, with `note` kept in the run log; a second release
+ *  of it appends nothing (`seq: null`). */
 export const Delivery = z.discriminatedUnion("op", [
   z.strictObject({
     id: deliveryId,
@@ -36,14 +52,22 @@ export const Delivery = z.discriminatedUnion("op", [
     inbox: z.string(),
     event: present,
     key: z.string().min(1).optional(),
+    by: DeliveryBy.optional(),
   }),
   z.strictObject({
     id: deliveryId,
     op: z.literal("complete"),
     call_id: z.string(),
     result: z.union([z.strictObject({ output: present }), z.strictObject({ error: z.string() })]),
+    by: DeliveryBy.optional(),
   }),
-  z.strictObject({ id: deliveryId, op: z.literal("release"), call_id: z.string(), note: z.string().min(1).optional() }),
+  z.strictObject({
+    id: deliveryId,
+    op: z.literal("release"),
+    call_id: z.string(),
+    note: z.string().min(1).optional(),
+    by: DeliveryBy.optional(),
+  }),
   z.strictObject({ id: deliveryId, op: z.literal("close"), inbox: z.string() }),
   z.strictObject({ id: deliveryId, op: z.literal("withdraw"), inbox: z.string() }),
   z.strictObject({ id: deliveryId, op: z.literal("interrupt"), inbox: z.string() }),

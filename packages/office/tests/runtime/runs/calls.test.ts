@@ -141,3 +141,28 @@ test("yian's ints are numbers, or their digits past the safe integers", () => {
   }))
   expect(call.tool_results![0]!.arguments).toEqual({ count: 5, huge: "1152921504606846976" })
 })
+
+test("a person's action the model read shows as the line it read, its ints as numbers", () => {
+  const action = {
+    type: "action" as const,
+    tool: "terminal_type",
+    summary: "Ada typed into shell 1",
+    arguments: { shell: "shell 1", lines: 2n as unknown as number },
+    result: null,
+  }
+  const call = callWire(view({
+    request: {
+      model: "stub", params: {}, system: null, tools: [], toolChoice: null, parallelToolCalls: null, outputFormat: null,
+      messages: [{ role: "user", author: "Ada", parts: [action, { type: "text", text: "and this" }] }],
+    },
+  }))
+  expect(call.request!.messages).toEqual([{
+    role: "user",
+    author: "Ada",
+    parts: [
+      { type: "text", text: 'action: {"tool":"terminal_type","summary":"Ada typed into shell 1","arguments":{"shell":"shell 1","lines":2}}' },
+      { type: "text", text: "and this" },
+    ],
+  }])
+  expect(RunCall.safeParse(call).success).toBe(true)
+})

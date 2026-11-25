@@ -10,6 +10,8 @@ import {
   type RunInspection,
   type Message as RunMessage,
   staticPathOf,
+  type TakeInbox,
+  takeInboxes,
 } from "@ngocbh/yian/run"
 import {
   CompanyDefaults, type Message, now, OFFICE, type RemoveRuleRequest, type RuleFileError, WorkItem,
@@ -54,7 +56,7 @@ import {
 import type { Env } from "../../util/env.ts"
 import type { OfficePaths } from "../../util/home.ts"
 import { type Frame, FrameTooLarge } from "../../runtime/worker/channel.ts"
-import { type Delivery, type Job, MESSAGE_MOVED, type Seed, STOP_REASON } from "../../runtime/worker/job.ts"
+import { byPerson, type Delivery, type Job, MESSAGE_MOVED, type Seed, STOP_REASON } from "../../runtime/worker/job.ts"
 import {
   type AskRequest,
   BaseHandlers,
@@ -265,7 +267,8 @@ export interface Wait {
   node: string
   call_id: string
   tool: string
-  inbox: string | null
+  /** The inbox a take reads, or the inboxes a take of several reads; null for any other call. */
+  inbox: TakeInbox | null
   deadline: string | null
   settled: boolean
   /** A call the office's gate held: it waits on its card, or on Auto's check. */
@@ -471,6 +474,8 @@ export class SessionActor implements LiveCalls {
   #finishedRuns: readonly string[] = []
   #closed = false
   #ending = false
+  /** The inboxes closed while ending, by run: End closes the chat's, and a turn take's others once it waits on them. */
+  #endClosed: { runId: string; inboxes: Set<string> } | null = null
   /** Workers that exited with no outcome, or with a `stopped` or `crashed` run, since the last `waiting` or
    *  `succeeded` result. */
   #deaths = 0
@@ -575,6 +580,7 @@ export class SessionActor implements LiveCalls {
         release: (callId, note, card) => {
           const delivery: Delivery = {
             id: newId(), op: "release", call_id: callId, ...(note === null ? {} : { note }),
+            ...byPerson(card?.answered_by),
           }
           return this.#deliver(new Pending(delivery, undefined, card === null ? {} : { questionId: card.id }))
         },
@@ -784,7 +790,7 @@ export class SessionActor implements LiveCalls {
       if (typeof context === "string") parts.unshift({ type: "text", text: context })
     }
     const event = { role: "user", parts, ...(author ? { author } : {}) }
-    return { delivery: { id: newId(), op: "send", inbox: spec.chat.inbox, event }, reply }
+    return { delivery: { id: newId(), op: "send", inbox: spec.chat.inbox, event, ...byPerson(author) }, reply }
   }
 
   /** Delivers the `send` `delivery`, answering its caller with `reply` once the run has it. */
@@ -801,13 +807,17 @@ export class SessionActor implements LiveCalls {
     if (question.approval != null && (read === "yes" || read === "session" || read === "always")) {
       // A card's Yes runs the call where yian holds it, at most once.
       const note = question.answered_by ? `approved by @${question.answered_by}` : "approved"
-      const delivery: Delivery = { id: newId(), op: "release", call_id: question.call_id!, note }
+      const delivery: Delivery = {
+        id: newId(), op: "release", call_id: question.call_id!, note, ...byPerson(question.answered_by),
+      }
       return new Pending(delivery, acked, { questionId: question.id, fallback })
     }
     // An approval card's call gets its action's own output only from its approvals: anything else is what it says.
     const carried = () => this.#ctx.answers.carried(question)
     const output = question.source === "approval" ? approvalResult(question) : formatAnswer(question, carried())
-    const delivery: Delivery = { id: newId(), op: "complete", call_id: question.call_id!, result: { output } }
+    const delivery: Delivery = {
+      id: newId(), op: "complete", call_id: question.call_id!, result: { output }, ...byPerson(question.answered_by),
+    }
     return new Pending(delivery, acked, { questionId: question.id, fallback })
   }
 
@@ -1152,14 +1162,15 @@ export class SessionActor implements LiveCalls {
       taken = []
     }
     const back: Pending[] = []
-    for (const { seq, message, key: sentAs } of taken) {
+    for (const { seq, message, key: sentAs, by } of taken) {
       if (this.#rehomed.has(`${runId}:${seq}`)) continue
       this.#rehomed.add(`${runId}:${seq}`)
       this.#publishRemoved(messageId(runId, seq))
       // A note was sent under its instrument's key: it goes back under that key too, so it stays the instrument's.
       const owed = sentAs === null ? null : (OWED_KEY.exec(sentAs)?.[0] ?? null)
       if (owed === null) {
-        back.push(new Pending({ id: newId(), op: "send", inbox, event: message, key: `withdrawn:${runId}:${seq}` }))
+        const again = { id: newId(), op: "send", inbox, event: message, key: `withdrawn:${runId}:${seq}` } as const
+        back.push(new Pending({ ...again, ...(by === null ? {} : { by }) }))
         continue
       }
       const text = message.parts.findLast((part) => part.type === "text") as { text: string } | undefined
@@ -3073,6 +3084,7 @@ export class SessionActor implements LiveCalls {
     this.#carry(run)
     // Armed before the spawn, which disarms it once its worker starts: a spawn that fails leaves the timer.
     this.#arm(waits)
+    if (this.#ending) this.#closeTurnInboxes(run.runId, waits)
     // An answer no reply settled yet, sent again once: a reply that failed leaves it for the next spawn.
     const resend = this.#unreadAnswers(this.#next).some((q) => !this.#resent.has(q.id))
     if (!this.#ending && this.#capped()) {
@@ -3094,6 +3106,21 @@ export class SessionActor implements LiveCalls {
       return
     }
     await this.#spawnQuietly("advance", { plain: true })
+  }
+
+  /** While ending, queues a close of each inbox but the chat's that a turn take in `waits` still waits on, once per
+   *  run: a take of several inboxes waits until each of them is closed, and End closed only the chat's. */
+  #closeTurnInboxes(runId: string, waits: readonly Wait[]): void {
+    if (this.#endClosed?.runId !== runId) this.#endClosed = { runId, inboxes: new Set([this.#chat.inbox]) }
+    const closed = this.#endClosed.inboxes
+    for (const wait of waits) {
+      if (wait.tool !== "take" || wait.settled || wait.inbox === null || !this.#chat.isTurn(wait.node)) continue
+      for (const inbox of takeInboxes(wait.inbox)) {
+        if (closed.has(inbox)) continue
+        closed.add(inbox)
+        this.#next.push(new Pending({ id: newId(), op: "close", inbox }))
+      }
+    }
   }
 
   /** Whether a call in `waits` other than a turn's take is settled: advancing would wake the agent and spend. */

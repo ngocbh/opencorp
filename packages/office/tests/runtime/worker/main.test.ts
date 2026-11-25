@@ -308,7 +308,9 @@ test("a chat jobs parent is in its run started record", async () => {
   expect(rec.outcome?.status).toBe("succeeded")
   const [first] = iterRunRecords(job.log, { payloads: true })
   expect(first!.kind).toBe("run_started")
-  expect((first!.envelope.record as unknown as { parent: unknown }).parent).toEqual({ runId: "run-card", node: "ask" })
+  // The office sends a child run's reports nowhere, so its parent names no inbox and no label.
+  const parent = { runId: "run-card", node: "ask", inbox: null, label: null }
+  expect((first!.envelope.record as unknown as { parent: unknown }).parent).toEqual(parent)
 })
 
 test("a stop frame stops the run", async () => {

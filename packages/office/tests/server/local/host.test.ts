@@ -4,6 +4,7 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { inspectRun, iterRunRecords } from "@ngocbh/yian/run"
 import { isPending } from "@ngocbh/yian/tools"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { type Instrument, now } from "@opencorp/protocol"
@@ -382,6 +383,39 @@ test("End closes the inbox, the run and its worker end, and the host's instrumen
   expect(readRecord(path.join(folder, "terminal", shell!.id))?.state).toBe("ended")
   expect(feature.calls).toEqual([])
   await expect(host.prompt("more", OWNER)).rejects.toMatchObject({ status: 409, code: "not_live" })
+})
+
+/** The host's chat flow with a second inbox, `queued`, which each turn's take reads beside `messages`. */
+const QUEUE_FLOW = [
+  ["input:\n  messages: !Inbox(Message)", "input:\n  queued: !Inbox(Message)\n  messages: !Inbox(Message)"],
+  ["      messages: !Inbox(Message)\n", "      messages: !Inbox(Message)\n      queued: !Inbox(Message)\n"],
+  ["          from: ${input.messages}\n", "          from:\n            - ${input.messages}\n            - ${input.queued}\n"],
+  ["said: ${heard.output.events}", "said: ${[e.event for e in heard.output.events]}"],
+  ["history + heard.output.events +", "history + [e.event for e in heard.output.events] +"],
+  ["      messages: ${input.messages}\n      history: []", "      messages: ${input.messages}\n      queued: ${input.queued}\n      history: []"],
+].reduce((flow, [from, to]) => {
+  if (flow.split(from!).length !== 2) throw new Error(`the host's flow no longer holds ${JSON.stringify(from)} once`)
+  return flow.replace(from!, to!)
+}, FLOW)
+
+test("End closes each inbox its turn's take reads, the chat's first, and the session ends", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Hi.", match: AGENT })
+  const { host, folder } = await startHost(fake, { flow: QUEUE_FLOW })
+  await until(host, "idle")
+  await host.prompt("hello", OWNER)
+  await replied(host, "Hi.")
+  await host.end()
+  await host.ended
+  expect(host.session()!.status).toBe("ended")
+  // The take waits on queued once messages is closed; the run ends once both are.
+  const runs = fs.readdirSync(path.join(folder, "runs"))
+  expect(runs).toHaveLength(1)
+  const log = path.join(folder, "runs", runs[0]!, "log.jsonl")
+  const closed = [...iterRunRecords(log, { kinds: ["inbox_closed"] })]
+    .map((entry) => (entry.envelope.record as unknown as { inbox: string }).inbox)
+  expect(closed).toEqual(["messages", "queued"])
+  expect(inspectRun(log).status).toBe("succeeded")
 })
 
 /** What `call` throws, or null. */

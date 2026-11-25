@@ -17,6 +17,12 @@ when any check fails. On a terminal the marks are coloured, unless `NO_COLOR` is
 ⚠ provider     no /home/you/.opencorp/office/connections/office.json; runs use the login `yian auth` saved. `opencorp onboard` asks for one
 ```
 
+Yian reads only the run-log schema it writes, so an update can leave run logs the office can't read,
+and doctor warns how many there are. The office still starts: Run Logs names such a log's schema but
+can't show it, and its session starts over at its next message, without that history. There's no
+migration. To start clean, run `opencorp offboard`, then `opencorp init`, or
+`opencorp onboard --from URL` for a company you pushed.
+
 OpenCorp needs Codex 0.167.0 or later. For an older one doctor fails and says to update Codex:
 `npm install -g @openai/codex@latest` (or `brew upgrade codex`), then `opencorp doctor`. With Codex
 signed in, doctor also starts a thread under an employee's permission, checks that Codex can use

@@ -148,7 +148,20 @@ function partWire(part: MessagePart): RunCallPart {
       return { type: "tool_result", call_id: part.call_id, name: part.name, content: part.content, is_error: part.is_error ?? null }
     case "media":
       return { type: "media", mime: part.mime, name: part.name ?? null }
+    case "action": {
+      // A person's action on one of the agent's tools: the protocol has no part for it, so it shows as the line the
+      // model read. The office sends no actions yet.
+      const { tool, summary, arguments: args, result } = part
+      const fields = { tool, summary: summary ?? undefined, arguments: args ?? undefined, result: result ?? undefined }
+      const line = JSON.stringify(fields, (_key, value: unknown) => typeof value === "bigint" ? jsonInt(value) : value)
+      return { type: "text", text: `action: ${line}` }
+    }
   }
+}
+
+/** yian's int as JSON: a number, or its digits past the safe integers. */
+function jsonInt(value: bigint): number | string {
+  return Number.isSafeInteger(Number(value)) ? Number(value) : String(value)
 }
 
 /** `text` as one JSON pointer token. */
@@ -160,7 +173,7 @@ const token = (text: string) => text.replaceAll("~", "~0").replaceAll("/", "~1")
  * `cut`.
  */
 function plain(value: unknown, at: string, cut: string[], depth: number): unknown {
-  if (typeof value === "bigint") return Number.isSafeInteger(Number(value)) ? Number(value) : String(value)
+  if (typeof value === "bigint") return jsonInt(value)
   if (typeof value === "string") {
     if (value.length <= CALL_TEXT_CHARS) return value
     cut.push(at)

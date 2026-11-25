@@ -537,6 +537,17 @@ test("a message sent just after Esc goes after the owner's messages Esc took bac
   // The message after Esc takes the note with it.
   expect(asked(fake, 3, heading("shell 1", "make all", 0))).toBe(true)
   expect(texts(o, sid, "user").filter((text) => text === "first" || text === "second")).toEqual(["first", "second"])
+  // What Esc took back goes again as its sender's: each of the owner's sends names who sent it, a note no one.
+  const sends = fs
+    .readFileSync(path.join(o.office.paths.runs, actor.runId!, "log.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line.includes('"key":"__start__.messages"'))
+    .map((line) => (JSON.parse(line) as { payload: { send_key?: string; by?: { name: string } } }).payload)
+  const kind = (key: string | undefined) => (key === undefined ? "message" : key.startsWith("terminal:") ? "note" : key)
+  const owner = sends[0]!.by!.name
+  expect(sends.map((send) => [kind(send.send_key?.replace(/:.*/, ":")), send.by?.name ?? null])).toEqual([
+    ["message", owner], ["note", null], ["message", owner], ["note", null], ["withdrawn:", owner], ["message", owner],
+  ])
 })
 
 test("a worker that dies between applying Esc's withdraw and answering it loses none of the owner's messages", async () => {
