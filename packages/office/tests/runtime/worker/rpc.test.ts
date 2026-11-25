@@ -936,6 +936,40 @@ test("a tool steer aborts only the steered signal of the tool call it names, and
   expect(first!.steered.aborted).toBe(true)
 })
 
+test("a tool steer for a call that has finished, or with a malformed id, is ignored, as is a steered that isn't true", async () => {
+  const { seen, tool: wait } = interruptible("steered")
+  const handlers = new BaseHandlers({ tools: { g: { wait } } })
+  const sent: Frame[] = []
+  const requests = new OfficeRequests({ send: async (frame) => void sent.push(frame) }, { log: () => {} })
+  const worker = workerFor(handlers)
+  const frame = (id: number, extra: Frame = {}) => ({
+    type: "tool_call", id, group: "g", name: "wait", args: {}, call_id: `r1/n/1/${id}`, ...extra,
+  })
+  // Only `steered: true` starts a call with its steer aborted.
+  expect(requests.take(frame(1, { steered: "yes" }), handlers, worker)).toBe(true)
+  expect(requests.take(frame(2, { steered: 1 }), handlers, worker)).toBe(true)
+  await waitFor(() => seen.length === 2, { timeout: 5000, what: "both calls to run" })
+  const [first, second] = seen as { steered: AbortSignal }[]
+  expect([first!.steered.aborted, second!.steered.aborted]).toEqual([false, false])
+  // A steer whose id isn't a request's number names no call.
+  for (const id of ["1", 1.5, null, { id: 1 }]) {
+    expect(requests.take({ type: "tool_steer", id }, handlers, worker)).toBe(true)
+  }
+  expect(requests.take({ type: "tool_steer" }, handlers, worker)).toBe(true)
+  expect([first!.steered.aborted, second!.steered.aborted]).toEqual([false, false])
+  expect(sent).toEqual([])
+  // The first call ends on its steer; one for it after it has replied finds no call, and nothing else moves.
+  requests.take({ type: "tool_steer", id: 1 }, handlers, worker)
+  await waitFor(() => sent.length === 1, { timeout: 5000, what: "the first call's reply" })
+  expect(sent[0]).toMatchObject({ type: "tool_result", id: 1, result: "stopped" })
+  expect(requests.take({ type: "tool_steer", id: 1 }, handlers, worker)).toBe(true)
+  await Bun.sleep(20)
+  expect(sent).toHaveLength(1)
+  expect(second!.steered.aborted).toBe(false)
+  requests.take({ type: "tool_steer", id: 2 }, handlers, worker)
+  await waitFor(() => sent.length === 2, { timeout: 5000, what: "the second call's reply" })
+})
+
 test("a tool interrupt aborts only the tool call it names, and one for no call in flight is ignored", async () => {
   const { seen, tool: wait } = interruptible()
   const handlers = new BaseHandlers({ tools: { g: { wait } } })
