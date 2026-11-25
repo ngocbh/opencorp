@@ -173,6 +173,12 @@ export const Message = z.strictObject({
    * False for every other message.
    */
   unread: z.boolean().default(false),
+  /**
+   * A user message of a yian chat that waits unread in its run's queue: the next turn takes it, and the running reply
+   * never reads it as a steer; `unread` is true too. Once a turn takes it, `message.updated` sends it again with both
+   * false, under the same id. False for every other message.
+   */
+  queued: z.boolean().default(false),
   parts: z.array(Part),
   created_at: Timestamp,
 })
