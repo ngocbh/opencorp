@@ -355,6 +355,45 @@ test("a withdraw takes back every unread send, in order, with its seq and value,
   expect((advanced.outcome?.output as { events: unknown[] }).events).toEqual(["c"])
 })
 
+test("a withdraw that names sends takes back those of its sender still unread, and says which were gone", async () => {
+  const chat = makeJob(base(), "flows/inbox.yaml", { inputs: {} })
+  expect((await run(chat, new Recorder())).outcome?.status).toBe("waiting")
+  const [minh, lan] = [{ kind: "user", name: "minh" }, { kind: "user", name: "lan" }] as const
+  const send = (id: string, event: string, by: typeof minh | typeof lan) =>
+    ({ id, op: "send", inbox: "messages", event, by }) as const
+  const sends = await run(
+    advanceJob(chat, { advance: false, deliver: [send("s1", "a", minh), send("s2", "b", minh), send("s3", "c", lan)] }),
+    new Recorder(),
+  )
+  const [a, b, c] = sends.replies.map((reply) => reply.seq as number)
+  const withdraw = (id: string, events: number[], by: typeof minh | typeof lan) =>
+    ({ id, op: "withdraw", inbox: "messages", events, by }) as const
+  const rec = await run(
+    advanceJob(chat, {
+      advance: false,
+      deliver: [
+        withdraw("w1", [a!], minh),
+        withdraw("w2", [b!, a!], minh),
+        // Another sender's send, and a seq that is no send, are refused: nothing is taken back.
+        withdraw("w3", [c!], minh),
+        withdraw("w4", [c! + 100], minh),
+      ],
+    }),
+    new Recorder(),
+  )
+  expect(rec.replies).toEqual([
+    { type: "deliver_reply", id: "w1", seq: null, withdrawn: [{ seq: a, value: "a" }], already_read: [],
+      already_withdrawn: [] },
+    { type: "deliver_reply", id: "w2", seq: null, withdrawn: [{ seq: b, value: "b" }], already_read: [],
+      already_withdrawn: [a] },
+    { type: "deliver_reply", id: "w3", refused: "unknown_send" },
+    { type: "deliver_reply", id: "w4", refused: "unknown_send" },
+  ])
+  // The take reads only what is left.
+  const advanced = await run(advanceJob(chat), new Recorder())
+  expect((advanced.outcome?.output as { events: unknown[] }).events).toEqual(["c"])
+})
+
 test("a deliver to a run that ended is refused", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Done." })

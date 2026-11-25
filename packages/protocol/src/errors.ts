@@ -5,6 +5,8 @@ import { z } from "zod"
  * so a client ignores a code it doesn't know.
  */
 export const ERROR_CODES = [
+  "already_read",
+  "already_withdrawn",
   "approval_card",
   "bad_credentials",
   "bad_cursor",

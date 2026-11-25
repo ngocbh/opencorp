@@ -253,6 +253,12 @@ const GUARDED: [string, (c: Client, bad: string) => Promise<unknown>, (bad: stri
   ["sessions.messagePage", (c, b) => c.sessions.messagePage(b), (b) => `no session ${b}`],
   ["sessions.prompt", (c, b) => c.sessions.prompt(b, body), (b) => `no session ${b}`],
   ["sessions.steer", (c, b) => c.sessions.steer(b, body), (b) => `no session ${b}`],
+  ["sessions.queue", (c, b) => c.sessions.queue(b, body), (b) => `no session ${b}`],
+  ["sessions.setDelivery", (c, b) => c.sessions.setDelivery(b, "M1", body), (b) => `no session ${b}`],
+  ["sessions.setDelivery (message)", (c, b) => c.sessions.setDelivery("S1", b, body), (b) =>
+    `no message ${b} waits in session S1`],
+  ["sessions.withdraw", (c, b) => c.sessions.withdraw(b, "M1"), (b) => `no session ${b}`],
+  ["sessions.withdraw (message)", (c, b) => c.sessions.withdraw("S1", b), (b) => `no message ${b} waits in session S1`],
   ["sessions.interrupt", (c, b) => c.sessions.interrupt(b), (b) => `no session ${b}`],
   ["sessions.end", (c, b) => c.sessions.end(b), (b) => `no session ${b}`],
   ["sessions.continue", (c, b) => c.sessions.continue(b), (b) => `no session ${b}`],
@@ -385,6 +391,18 @@ test("a session's instruments, an instrument's screen, and the owner's keys, siz
     ["POST", "/sessions/S1/instruments/I1/keys", JSON.stringify({ data: "\u0003" })],
     ["POST", "/sessions/S1/instruments/I1/size", JSON.stringify({ cols: 120, rows: 40 })],
     ["POST", "/sessions/S1/instruments/I1/close", ""],
+  ])
+})
+
+test("a queued message, a move of an unread message and its withdraw go to the session's queue and inbox routes", async () => {
+  const { client, seen } = socketClient()
+  await client.sessions.queue("S1", { text: "later" })
+  await client.sessions.setDelivery("S1", "R1:000000000007", { delivery: "steer" })
+  await client.sessions.withdraw("S1", "R1:000000000007")
+  expect(seen.map((r) => [r.method, r.path, r.body])).toEqual([
+    ["POST", "/sessions/S1/queue", JSON.stringify({ text: "later" })],
+    ["PATCH", "/sessions/S1/inbox/R1%3A000000000007", JSON.stringify({ delivery: "steer" })],
+    ["DELETE", "/sessions/S1/inbox/R1%3A000000000007", ""],
   ])
 })
 

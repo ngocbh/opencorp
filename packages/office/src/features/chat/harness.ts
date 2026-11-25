@@ -5,7 +5,16 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { type Scheduler, realScheduler } from "@ngocbh/yian/platform"
-import { type Message, OFFICE, type RemoveRuleRequest, type RuleList, Session, WorkItem, now } from "@opencorp/protocol"
+import {
+  type DeliveryReply,
+  type Message,
+  OFFICE,
+  type RemoveRuleRequest,
+  type RuleList,
+  Session,
+  WorkItem,
+  now,
+} from "@opencorp/protocol"
 import type { CompanyGit } from "../../company/git.ts"
 import { loadRepo, missingPerson } from "../../company/loader.ts"
 import { readRules, removeRule as removeAgentRule, RulesRefused } from "../../company/rules.ts"
@@ -464,6 +473,51 @@ export class ChatHarness implements SessionHarness {
     if (claude) return claude.steer(sessionId, text, { by })
     const codex = this.#codexFor(sessionId)
     return codex ? codex.steer(sessionId, text, { by }) : this.#actor(sessionId).steer(text, { by })
+  }
+
+  /** A message from `by` for the chat's next turn (`SessionActor.queue`); anyone who may prompt may queue. A Codex or
+   *  Claude Code session keeps no queue, and refuses it `422 not_supported`. */
+  async queue(sessionId: string, text: string, { by = null }: { by?: string | null } = {}): Promise<string> {
+    this.#chatOnly(sessionId)
+    return this.#actor(sessionId).queue(text, { by })
+  }
+
+  /** Takes back `by`'s unread message `messageId` (`SessionActor.withdraw`), as `by`, who must be the chat's approver:
+   *  403 `forbidden` for anyone else, 422 `not_supported` for a Codex or Claude Code session. */
+  async withdraw(sessionId: string, messageId: string, { by }: { by: string }): Promise<void> {
+    await this.#approverOnly(sessionId, by, "take back a message")
+    return this.#actor(sessionId).withdraw(messageId, { by })
+  }
+
+  /** Moves `by`'s unread message `messageId` to steer the reply or to wait for the next turn
+   *  (`SessionActor.setDelivery`), as `by`, who must be the chat's approver; refused as `withdraw` is. */
+  async setDelivery(
+    sessionId: string,
+    messageId: string,
+    delivery: "steer" | "queue",
+    { by }: { by: string },
+  ): Promise<DeliveryReply> {
+    await this.#approverOnly(sessionId, by, delivery === "queue" ? "queue a message" : "steer with a message")
+    return this.#actor(sessionId).setDelivery(messageId, delivery, { by })
+  }
+
+  /** 404 for no session, 422 `not_supported` unless it is a yian chat: only a chat's flow keeps a queue. */
+  #chatOnly(sessionId: string): SessionRecord {
+    this.#running()
+    const session = this.store.getSession(sessionId)
+    if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    if (session.harness !== "yian") throw new HarnessError(422, "not_supported", "only a chat keeps a queue")
+    return session
+  }
+
+  /** As `#chatOnly`, then 409 `not_live` for a session that ended, and 403 `forbidden` unless `by` is its approver,
+   *  who alone may `what`. */
+  async #approverOnly(sessionId: string, by: string, what: string): Promise<void> {
+    const session = this.#chatOnly(sessionId)
+    if (!LIVE.includes(session.status)) throw new HarnessError(409, "not_live", `session ${sessionId} has ended`)
+    const approver = await this.#approverOf(session)
+    if (approver === null) throw new HarnessError(403, "forbidden", `nobody may ${what} in this chat`)
+    if (by !== approver) throw new HarnessError(403, "forbidden", `only @${approver} may ${what} in this chat`)
   }
 
   async end(sessionId: string): Promise<void> {

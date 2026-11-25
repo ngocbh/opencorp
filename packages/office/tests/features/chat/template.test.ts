@@ -13,8 +13,10 @@ import { advanceJob, run, type TestWorker } from "../../runtime/worker/helpers.t
 import {
   advance,
   CLOSE,
+  CLOSE_QUEUE,
   fakeLlm,
   interruptMidReply,
+  queue,
   TemplateOffice as Office,
   ROOT,
   send,
@@ -67,17 +69,24 @@ test.each([
   expect((await loadConfined(ROOT, file)).name).toBe(flow.name)
 })
 
-test("every chat template takes its turns and steers from its messages inbox", () => {
+test("every chat template takes its turns from its messages and queued inboxes and steers from messages", () => {
   for (const file of [CHAT, SIDE, MANAGER]) {
     const flow = read(file)
     const turn = flow.defs.turn
     const reply = turn.nodes.reply
-    expect([flow.input.messages, turn.input.messages, flow.nodes.chat.input.messages]).toEqual([
-      "!Inbox(Message)",
-      "!Inbox(Message)",
-      "${input.messages}",
+    for (const inbox of ["messages", "queued"]) {
+      expect([flow.input[inbox], turn.input[inbox], flow.nodes.chat.input[inbox]]).toEqual([
+        "!Inbox(Message)",
+        "!Inbox(Message)",
+        `\${input.${inbox}}`,
+      ])
+    }
+    const from = ["${input.messages}", "${input.queued}"]
+    expect(turn.nodes.heard).toEqual({ kind: "call", call: "take", input: { from, take: "all" } })
+    expect([reply.input.said, turn.output.history]).toEqual([
+      "${[e.event for e in heard.output.events]}",
+      "${(context.output?.history :- input.history) + [[e.event for e in heard.output.events] + (reply.new_messages :- [])]}",
     ])
-    expect(turn.nodes.heard).toEqual({ kind: "call", call: "take", input: { from: "${input.messages}", take: "all" } })
     expect([reply.steer_inbox, reply.output, reply.prompt]).toEqual([
       "${input.messages}",
       "!Optional(str)",
@@ -223,6 +232,52 @@ test("a message sent during the reply reaches its next model call and the histor
   expect(waitingAt(rec)).toEqual(["chat#1/heard"])
 })
 
+test("a queued message sent during the reply waits for the next turn, which reads it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Looking.", tool_calls: [{ name: "toolbox_stub" }] }, { content: "Done." }, { content: "Next." })
+  const job = await waitingChat(fake)
+  // The tool returns only once the worker has applied the send, so the reply's next model call would read a steer.
+  class QueueDuringTool extends Office {
+    override async toolCall(worker: TestWorker, group: string, name: string, args: Record<string, unknown>) {
+      await worker.deliver(queue("during", "Then book the hotel."))
+      await waitFor(() => this.replies.some((reply) => reply.id === "during"), { timeout: 10_000, what: "the reply" })
+      return await super.toolCall(worker, group, name, args)
+    }
+  }
+  const during = advanceJob(job, { deliver: [send("s1", "Plan the trip.")] })
+  const rec = await run(during, new QueueDuringTool(), { env: fake.env() })
+  // The reply never read it; the next turn took it at once, alone.
+  expect(fake.requests().length).toBe(3)
+  expect(json(requestMessages(fake, 1))).not.toContain("Then book the hotel.")
+  const [first, second] = succeeded(rec, "chat#0/__end__").concat(succeeded(rec, "chat#1/__end__"))
+  expect(json(first!.output.history)).not.toContain("Then book the hotel.")
+  expect(said(first!.output.history.at(-1)).filter(([role]) => role !== "tool")).toEqual([
+    ["user", "Plan the trip."],
+    ["assistant", "Looking."],
+    ["assistant", "Done."],
+  ])
+  expect(said(second!.output.history.at(-1))).toEqual([
+    ["user", "Then book the hotel."],
+    ["assistant", "Next."],
+  ])
+  expect(requestMessages(fake, 2).at(-1)).toEqual({ role: "user", content: "Then book the hotel." })
+  expect(waitingAt(rec)).toEqual(["chat#2/heard"])
+})
+
+test("a turn reads its messages and its queued ones together, in the order they were sent", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "All three." })
+  const job = await waitingChat(fake)
+  const rec = await advance(job, fake, [send("s1", "one"), queue("q1", "two"), send("s2", "three")])
+  expect(fake.requests().length).toBe(1)
+  expect(requestMessages(fake, 0).slice(-3)).toEqual([
+    { role: "user", content: "one" },
+    { role: "user", content: "two" },
+    { role: "user", content: "three" },
+  ])
+  expect(waitingAt(rec)).toEqual(["chat#1/heard"])
+})
+
 test("a message sent after the replys last model call is the next turn at once", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "First." }, { content: "Second." })
@@ -301,13 +356,15 @@ test("one turn below max turns answers one turn with two messages queued then su
 })
 
 test.each([["chat"], ["side_chat"], ["profile_manager"]])(
-  "a template chat ends when its inbox closes [%s]",
+  "a template chat ends once both its inboxes close [%s]",
   async (name) => {
     const fake = await fakeLlm()
     fake.script({ content: "Hello." }, { content: "Unused." })
     const job = await waitingChat(fake, name)
     expect(waitingAt(await advance(job, fake, [send("s1", "hi")], name))).toEqual(["chat#1/heard"])
-    const rec = await advance(job, fake, [CLOSE], name)
+    // With one closed, the turn's take waits on the other.
+    expect(waitingAt(await advance(job, fake, [CLOSE], name))).toEqual(["chat#1/heard"])
+    const rec = await advance(job, fake, [CLOSE_QUEUE], name)
     expect(rec.outcome?.status).toBe("succeeded")
     expect(fake.requests().length).toBe(1)
     expect(said((rec.outcome?.output as Record<string, any>).history)).toEqual([
@@ -321,7 +378,7 @@ test("a message read along with the close is kept unanswered", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Unused." })
   const job = await waitingChat(fake)
-  const rec = await advance(job, fake, [send("s1", "bye"), CLOSE])
+  const rec = await advance(job, fake, [send("s1", "bye"), CLOSE, CLOSE_QUEUE])
   expect(fake.requests()).toEqual([])
   expect(rec.outcome?.status).toBe("succeeded")
   expect(said((rec.outcome?.output as Record<string, any>).history)).toEqual([["user", "bye"]])
@@ -390,7 +447,7 @@ test("a close with a long history makes no model call", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Unused." })
   const job = await waitingChat(fake, "chat", { history: LONG })
-  const rec = await advance(job, fake, [CLOSE])
+  const rec = await advance(job, fake, [CLOSE, CLOSE_QUEUE])
   expect(fake.requests()).toEqual([])
   expect(rec.outcome?.status).toBe("succeeded")
 })

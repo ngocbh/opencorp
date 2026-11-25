@@ -19,8 +19,8 @@ const NAMES = [
   "MessagePage", "MessageRemoved", "Part", "TextPart", "FilePart", "ToolPart", "ErrorPart", "Permission", "QuestionOption",
   "QuestionPage",
   "AnswerField", "DiscussionEntry", "Approval", "Question", "Profile", "ProfileProposal", "Event", "LiveEvent",
-  "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "SetModeRequest",
-  "RepoIssue", "CompanyView", "CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile", "RunSummary",
+  "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "SetModeRequest", "SetDeliveryRequest",
+  "DeliveryReply", "RepoIssue", "CompanyView", "CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile", "RunSummary",
   "RunPage", "RunUsage", "RunDetail", "RunNode", "RunDivider", "RunNodePage", "RunEvent", "RunEventPage",
   "RunLiveRecord", "RunLiveCall", "RunLiveStart", "RunLiveChunk", "RunLiveEnd", "RunUpdated", "RunCallEntry",
   "RunCallList", "RunCallUsage", "RunCallAttempt", "RunCallPart", "RunCallMessage", "RunCallTool", "RunCallRequest",
@@ -133,7 +133,7 @@ const BODIES = [
   "CompanyView", "CostReport", "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
   "HqLoginRequest", "CompanyTree", "CompanyFile", "RunPage", "RunDetail", "RunNodePage", "RunEventPage",
   "RunEvent", "RunCallList", "RunCall", "OfficeInfo", "RuleList", "RemoveRuleRequest", "InstrumentKeysRequest",
-  "InstrumentSizeRequest", "InstrumentScreen", "MessagePage",
+  "InstrumentSizeRequest", "InstrumentScreen", "MessagePage", "SetDeliveryRequest", "DeliveryReply",
 ]
 
 test("every route body has a fixture", () => {
@@ -195,6 +195,14 @@ test("a session has a mode, auto by default, and a mode request takes only auto,
     expect(Schemas.SetModeRequest.safeParse({ mode }).success).toBe(true)
   expect(Schemas.SetModeRequest.safeParse({ mode: "yolo" }).success).toBe(false)
   expect(Schemas.SetModeRequest.safeParse({ mode: "dontask" }).success).toBe(false)
+})
+
+test("a delivery request takes only steer or queue", () => {
+  for (const delivery of ["steer", "queue"]) expect(Schemas.SetDeliveryRequest.safeParse({ delivery }).success).toBe(true)
+  for (const delivery of ["cancel", "Steer", null]) {
+    expect(Schemas.SetDeliveryRequest.safeParse({ delivery }).success).toBe(false)
+  }
+  expect(Schemas.SetDeliveryRequest.safeParse({}).success).toBe(false)
 })
 
 test("a question may be an approval card, holding what it would allow", () => {

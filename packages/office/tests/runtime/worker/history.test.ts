@@ -150,7 +150,8 @@ test("a trailing empty turn is dropped", async () => {
   const first = new TemplateOffice()
   const r1 = templateJob("chat", first, {}, { deliver: [send("n1", "hi")] })
   expect((await run(r1, first, { env: fake.env() })).outcome?.status).toBe("waiting")
-  const close = advanceJob(r1, { deliver: [{ id: "close", op: "close", inbox: "messages" }] })
+  const closes = ["messages", "queued"].map((inbox) => ({ id: `close-${inbox}`, op: "close", inbox }) as const)
+  const close = advanceJob(r1, { deliver: closes })
   const closed = await run(close, new TemplateOffice(), { env: fake.env() })
   expect(closed.outcome?.status).toBe("succeeded")
   const r2 = nextRun(r1, { seed: seedOf(r1, fake) })
@@ -347,6 +348,66 @@ test("a send a withdraw took back is not moved", async () => {
   const r2 = nextRun(r1, { seed: seedOf(r1, fake) })
   expect(waitingAt(await run(r2, new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#1/heard"])
   expect(userTexts(fake, 0)).toEqual(["kept"])
+})
+
+test("an unread queued send is moved into the fresh run's queue, keeping who sent it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "ok" })
+  const r1 = await waitingChat(fake)
+  const by = { kind: "user", name: "minh" } as const
+  const later = { id: "q1", op: "send", inbox: "queued", event: message("later"), by } as const
+  const unread = advanceJob(r1, { advance: false, deliver: [send("m1", "now"), later] })
+  expect(waitingAt(await run(unread, new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#0/heard"])
+  const r2 = nextRun(r1, { seed: seedOf(r1, fake) })
+  expect(waitingAt(await run(r2, new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#1/heard"])
+  const moved = fs
+    .readFileSync(r2.log, "utf8")
+    .split("\n")
+    .filter((line) => line.includes('"key":"__start__.'))
+    .map((line) => JSON.parse(line) as { payload: { key: string; by?: unknown } })
+    .map(({ payload }) => [payload.key, payload.by ?? null])
+  expect(moved).toEqual([["__start__.messages", null], ["__start__.queued", by]])
+  expect(userTexts(fake, 0)).toEqual(["now", "later"])
+})
+
+test("a send a named withdraw took back is not moved, and one its turn read can't be taken back", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "ok" }, { content: "ok" })
+  const r1 = await waitingChat(fake)
+  const by = { kind: "user", name: "minh" } as const
+  const mine = (id: string, inbox: string, text: string) =>
+    ({ id, op: "send", inbox, event: message(text), by }) as const
+  const sends = advanceJob(r1, { advance: false, deliver: [mine("a", "messages", "taken"), mine("b", "queued", "kept")] })
+  const sent = await run(sends, new TemplateOffice(), { env: fake.env() })
+  const [a, b] = sent.replies.map((reply) => reply.seq as number)
+  const named = (id: string, inbox: string, seq: number) => ({ id, op: "withdraw", inbox, events: [seq], by }) as const
+  // The send is the queue's, so the chat's inbox has no such send.
+  const taken = advanceJob(r1, { advance: false, deliver: [named("w1", "messages", a!), named("w2", "messages", b!)] })
+  const rec = await run(taken, new TemplateOffice(), { env: fake.env() })
+  expect(rec.replies.map((reply) => reply.withdrawn ?? reply.refused)).toEqual([[{ seq: a, value: expect.anything() }],
+    "unknown_send"])
+  const read = await run(advanceJob(r1, { deliver: [named("w3", "queued", b!)] }), new TemplateOffice(), {
+    env: fake.env(),
+  })
+  // Delivered before the advance, so the take never read it: taken back.
+  expect(read.replies[0]!.withdrawn).toEqual([{ seq: b, value: expect.anything() }])
+  const again = await run(
+    advanceJob(r1, { advance: false, deliver: [mine("c", "queued", "read")] }),
+    new TemplateOffice(),
+    { env: fake.env() },
+  )
+  const c = again.replies[0]!.seq as number
+  expect(waitingAt(await run(advanceJob(r1), new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#1/heard"])
+  const late = await run(advanceJob(r1, { advance: false, deliver: [named("w4", "queued", c)] }), new TemplateOffice(), {
+    env: fake.env(),
+  })
+  expect(late.replies).toEqual([
+    { type: "deliver_reply", id: "w4", seq: null, withdrawn: [], already_read: [c], already_withdrawn: [] },
+  ])
+  expect(userTexts(fake, 0)).toEqual(["read"])
+  const r2 = nextRun(r1, { seed: seedOf(r1, fake) })
+  expect(waitingAt(await run(r2, new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#0/heard"])
+  expect(fake.requests().length).toBe(1)
 })
 
 test("a send a failed reply read as a steer is not moved", async () => {

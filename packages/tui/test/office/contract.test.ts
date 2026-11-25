@@ -22,13 +22,13 @@ import fs from "node:fs"
 import path from "node:path"
 import { createFakeOffice, type FakeOffice } from "../fixture/fake-office"
 
-/** What a script run keeps: its folder, the chat it started, the profile version the office gave, and the cursor
- *  of its messages' older page. */
-type Ctx = { cwd: string; id: string; version: string; cursor?: string }
+/** What a script run keeps: its folder, the chat it started, the profile version the office gave, the cursor of its
+ *  messages' older page, and its first user message. */
+type Ctx = { cwd: string; id: string; version: string; cursor?: string; message?: string }
 
 type Step = {
   name: string
-  method: "GET" | "POST" | "PUT" | "DELETE"
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
   path: (ctx: Ctx) => string
   body?: (ctx: Ctx) => unknown
   /** Waits, before sending, until the chat `ctx.id` is idle. */
@@ -89,8 +89,33 @@ const STEPS: Step[] = [
     path: (c) => `/sessions/${c.id}/messages`,
     idle: true,
     schema: Message.array(),
+    keep: (r, c) => (c.message = r.find((m: Message) => m.role === "user")?.id),
     pick: (r) => r.map((m: Message) => [m.role, m.author, m.parts.map((p) => (p.type === "text" ? p.text : p.type))]),
   },
+  {
+    name: "take back a message read already",
+    method: "DELETE",
+    path: (c) => `/sessions/${c.id}/inbox/${seg(c.message!)}`,
+    idle: true,
+  },
+  {
+    name: "queue a message read already",
+    method: "PATCH",
+    path: (c) => `/sessions/${c.id}/inbox/${seg(c.message!)}`,
+    body: () => ({ delivery: "queue" }),
+  },
+  {
+    name: "move a message with a bad body",
+    method: "PATCH",
+    path: (c) => `/sessions/${c.id}/inbox/${seg(c.message!)}`,
+    body: () => ({ delivery: "sideways" }),
+  },
+  {
+    name: "take back a message neither office has",
+    method: "DELETE",
+    path: (c) => `/sessions/${c.id}/inbox/${seg(`${NO_SESSION}:000000000001`)}`,
+  },
+  { name: "queue with a bad body", method: "POST", path: (c) => `/sessions/${c.id}/queue`, body: () => ({}) },
   {
     name: "read the newest page of messages",
     method: "GET",
@@ -233,7 +258,15 @@ const STEPS: Step[] = [
   },
   { name: "connections", method: "GET", path: () => "/connections", schema: ConnectionList },
   { name: "the models of the office connection", method: "GET", path: () => "/connections/office/models", schema: ModelList },
-  { name: "end a chat", method: "POST", path: (c) => `/sessions/${c.id}/end`, schema: Ack },
+  {
+    name: "queue a message to an idle chat",
+    method: "POST",
+    path: (c) => `/sessions/${c.id}/queue`,
+    body: () => ({ text: PROMPT }),
+    idle: true,
+    schema: Ack,
+  },
+  { name: "end a chat", method: "POST", path: (c) => `/sessions/${c.id}/end`, idle: true, schema: Ack },
   { name: "no such route", method: "GET", path: () => "/no/such/route" },
   { name: "a wrong method", method: "DELETE", path: () => "/people" },
 ]

@@ -40,11 +40,14 @@ export function byPerson(handle: string | null | undefined): { by?: DeliveryBy }
 }
 
 /** One yian host call the worker makes on the run, with the id its `deliver_reply` answers, and `by`, who makes it,
- *  for a send, a complete or a release. A `send` with a `key` appends nothing when the run already has a send with
- *  that key, value and `by`, so a send retried or sent again by a new worker isn't doubled. A `withdraw` takes back
- *  every send of the inbox nothing has read yet, and its reply lists them (`withdrawn`: each one's seq and value), in
- *  send order. A `release` runs a call the office's gate held, once, with `note` kept in the run log; a second release
- *  of it appends nothing (`seq: null`). */
+ *  for a send, a complete, a release or a withdraw. A `send` with a `key` appends nothing when the run already has a
+ *  send with that key, value and `by`, so a send retried or sent again by a new worker isn't doubled. A `withdraw`
+ *  takes back every send of the inbox nothing has read yet, or with `events` those of the sends it names that `by`
+ *  made and nothing has read yet, and its reply lists them (`withdrawn`: each one's seq and value), in send order;
+ *  with `events`, it also lists those already read (`already_read`) and those an earlier withdraw took back
+ *  (`already_withdrawn`), and a seq that is no send of `by`'s to the inbox is refused `unknown_send`. A `release` runs a
+ *  call the office's gate held, once, with `note` kept in the run log; a second release of it appends nothing
+ *  (`seq: null`). */
 export const Delivery = z.discriminatedUnion("op", [
   z.strictObject({
     id: deliveryId,
@@ -69,7 +72,13 @@ export const Delivery = z.discriminatedUnion("op", [
     by: DeliveryBy.optional(),
   }),
   z.strictObject({ id: deliveryId, op: z.literal("close"), inbox: z.string() }),
-  z.strictObject({ id: deliveryId, op: z.literal("withdraw"), inbox: z.string() }),
+  z.strictObject({
+    id: deliveryId,
+    op: z.literal("withdraw"),
+    inbox: z.string(),
+    events: z.array(z.number().int().positive()).min(1).readonly().optional(),
+    by: DeliveryBy.optional(),
+  }),
   z.strictObject({ id: deliveryId, op: z.literal("interrupt"), inbox: z.string() }),
   z.strictObject({ id: deliveryId, op: z.literal("cancel") }),
 ])

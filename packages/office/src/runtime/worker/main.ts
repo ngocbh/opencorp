@@ -28,7 +28,6 @@ import {
 import { AuthError } from "@ngocbh/yian/llm_clients"
 import { loadSkills, type Skill } from "@ngocbh/yian/skills"
 import { cancelReplaced, readSeed } from "./history.ts"
-import { MAIN_CHAT } from "../../company/chat_flow.ts"
 import { loadConfined } from "../../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
 import { flowModuleTools } from "./wraps.ts"
@@ -86,7 +85,13 @@ export function jobMemory(job: Job, rpc: Rpc): Record<string, RemoteMemory> {
 
 /** A delivery's answer: a `deliver_reply` without its `type` and `id`. */
 type Outcome =
-  | { seq: number | null; closed?: string[]; withdrawn?: { seq: number; value: unknown }[] }
+  | {
+      seq: number | null
+      closed?: string[]
+      withdrawn?: { seq: number; value: unknown }[]
+      already_read?: number[]
+      already_withdrawn?: number[]
+    }
   | { refused: string }
   | { failed: string }
 
@@ -237,8 +242,18 @@ function applier(
         case "close":
           return { seq: await closeInbox(log, delivery.inbox, options) }
         case "withdraw": {
-          const taken = await withdraw(log, delivery.inbox, options)
-          return { seq: null, withdrawn: taken.map(({ seq, value }) => ({ seq, value })) }
+          const by = delivery.by ?? null
+          if (delivery.events === undefined) {
+            const taken = await withdraw(log, delivery.inbox, { ...options, by })
+            return { seq: null, withdrawn: taken.map(({ seq, value }) => ({ seq, value })) }
+          }
+          const named = await withdraw(log, delivery.inbox, { ...options, events: delivery.events, by })
+          return {
+            seq: null,
+            withdrawn: named.withdrawn.map(({ seq, value }) => ({ seq, value })),
+            already_read: [...named.alreadyRead],
+            already_withdrawn: [...named.alreadyWithdrawn],
+          }
         }
         case "interrupt":
           return { seq: null, closed: (await interrupt(log, delivery.inbox, options)).calls.map((call) => call.callId) }
@@ -737,15 +752,16 @@ async function runJob(
       inputs = { ...job.inputs, summary: seeded.summary, history: seeded.history }
       // After a stop the fresh run won't start, so the replaced run stays as it is for the next fresh run.
       if (job.seed.cancel && !signal.aborted) await cancelReplaced(job.seed.log, seedOptions)
-      // Ahead of the job's own deliveries, which `serve` queued first. Each keeps its key: a shell's note stays signed
-      // by its shell, and a send under a key the fresh run already has appends nothing.
+      // Ahead of the job's own deliveries, which `serve` queued first. Each goes to the inbox it was sent to and keeps
+      // its key: a shell's note stays signed by its shell, and a send under a key the fresh run already has appends
+      // nothing.
       const replaced = path.basename(path.dirname(job.seed.log))
       const from = new Map(seeded.unread.map(({ seq }, n) => [`moved-${n}`, seq]))
       deliveries.pushFront(
-        seeded.unread.map(({ message, key, by }, n) => ({
+        seeded.unread.map(({ inbox, message, key, by }, n) => ({
           id: `moved-${n}`,
           op: "send",
-          inbox: MAIN_CHAT.inbox,
+          inbox,
           event: message,
           ...(key === null ? {} : { key }),
           ...(by === null ? {} : { by }),

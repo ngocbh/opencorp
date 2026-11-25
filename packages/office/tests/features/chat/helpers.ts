@@ -61,15 +61,17 @@ export const CHAT_FLOW = fs.readFileSync(
   "utf8",
 )
 
-/** The template's chat flow with a second inbox, `queued`, which each turn's take reads beside `messages` and the
- *  reply never reads as steers: a queue for the next turn, as yian's inbox docs show one. */
-export const QUEUE_CHAT_FLOW = [
-  ["  messages: !Inbox(Message)  #", "  queued: !Inbox(Message)\n  messages: !Inbox(Message)  #"],
-  ["      messages: !Inbox(Message)\n", "      messages: !Inbox(Message)\n      queued: !Inbox(Message)\n"],
-  ["          from: ${input.messages}\n", "          from:\n            - ${input.messages}\n            - ${input.queued}\n"],
-  ["said: ${heard.output.events}", "said: ${[e.event for e in heard.output.events]}"],
-  ["[heard.output.events + (reply", "[[e.event for e in heard.output.events] + (reply"],
-  ["      messages: ${input.messages}\n      person", "      messages: ${input.messages}\n      queued: ${input.queued}\n      person"],
+/** The template's chat flow with no queue: one inbox, which its turn's take and its reply's steers read. */
+export const UNQUEUED_CHAT_FLOW = [
+  ["  queued: !Inbox(Message)  # what people send for the next turn: only each turn's take reads it\n", ""],
+  ["      queued: !Inbox(Message)\n", ""],
+  [
+    "          from:\n            - ${input.messages}\n            - ${input.queued}\n",
+    "          from: ${input.messages}\n",
+  ],
+  ["said: ${[e.event for e in heard.output.events]}", "said: ${heard.output.events}"],
+  ["[[e.event for e in heard.output.events] + (reply", "[heard.output.events + (reply"],
+  ["      queued: ${input.queued}\n", ""],
 ].reduce((flow, [from, to]) => {
   if (flow.split(from!).length !== 2) throw new Error(`the chat flow no longer holds ${JSON.stringify(from)} once`)
   return flow.replace(from!, to!)
@@ -205,8 +207,16 @@ export function send(id: string, text: string, author?: string): Delivery {
   return { id, op: "send", inbox: "messages", event: message(text, author) }
 }
 
+/** A send of `text` to the queued inbox, which only a turn's take reads. */
+export function queue(id: string, text: string, author?: string): Delivery {
+  return { id, op: "send", inbox: "queued", event: message(text, author) }
+}
+
 /** A close of the messages inbox. */
 export const CLOSE: Delivery = { id: "close", op: "close", inbox: "messages" }
+
+/** A close of the queued inbox: a template chat ends once both are closed. */
+export const CLOSE_QUEUE: Delivery = { id: "close-queue", op: "close", inbox: "queued" }
 
 /** The memories each template flow declares, which the office binds. */
 export const MEMORIES: Record<string, string[]> = { chat: ["profile"], side_chat: ["profile"], profile_manager: [] }

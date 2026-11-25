@@ -437,6 +437,36 @@ test("Esc holds a note already in the inbox, and the owner's queued messages go 
   expect(notes(o, sid)).toHaveLength(1)
 })
 
+test("Esc takes back the queue's messages too, so the turn after it reads the owner's steers and queued ones in order", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all"), { content: "never shown", hold: true }, { content: "In order." })
+  const { o, end } = await notesOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  await fake.waitForRequests(2, 30_000)
+  end("make all", 0)
+  await waitFor(() => loggedNotes(o, actor.runId!).length === 1, { what: "the note in the inbox" })
+  expect(await actor.prompt("first")).toBe("steer")
+  expect(await actor.queue("later")).toBe("queued")
+  expect(await actor.prompt("second")).toBe("steer")
+  await actor.interrupt()
+  fake.release()
+  await waitFor(() => texts(o, sid).includes("In order.") && status(o, sid) === "idle" && !actor.hasWorker, {
+    what: "the owner's messages answered",
+  })
+  const third = JSON.stringify(fake.requests()[2]!.messages)
+  const at = ["first", "later", "second"].map((text) => third.indexOf(text))
+  expect(at.every((i) => i > -1)).toBe(true)
+  expect(at).toEqual([...at].sort((a, b) => a - b))
+  expect(asked(fake, 3, heading("shell 1", "make all", 0))).toBe(false)
+  // Each shows once, read, in the order sent.
+  expect(texts(o, sid, "user").filter((text) => ["first", "later", "second"].includes(text))).toEqual([
+    "first",
+    "later",
+    "second",
+  ])
+})
+
 test("Esc on the model's question holds the note waiting behind it", async () => {
   const fake = await fakeLlm()
   fake.script(run("make all"), ASK_USER, { content: "Going on; it built." })

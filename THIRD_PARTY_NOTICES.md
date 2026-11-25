@@ -249,15 +249,31 @@ license, the upstream paths and commit, and our paths.
   commit `4332e24f` (2026-11-21).
 - **Ours:** `packages/tui/src/routes/session/index.tsx` (`toolView`, `HarnessCall`, `InlineTool`),
   `packages/tui/test/routes/session/harness-calls-frame.test.tsx`.
-- **What:** the pending message's look, ported from current upstream: a user message whose delivery is pending draws
-  its left border in the border colour instead of its speaker's, its text unchanged and nothing under it. Adapted:
-  pending is a chat message its run hasn't read yet (`unread`). The "Pending steer" dialog (Move to queue, Delete)
-  isn't ported: Yian can neither take back one message nor hold one until the turn ends, so a click opens the
-  message's actions as before.
-- **Upstream:** `packages/tui/src/routes/session/index.tsx` (`UserMessage` and its `delivery`, `pendingDelivery`),
-  read at commit `4332e24f` (2026-11-21).
-- **Ours:** `packages/tui/src/routes/session/index.tsx` (`UserMessage`),
-  `packages/tui/test/routes/session/unread-message-frame.test.tsx`.
+- **What:** the pending message's look and its "Pending steer" dialog, ported from current upstream: a user message
+  whose delivery is pending draws its left border in the border colour instead of its speaker's, its text unchanged
+  and nothing under it, and a click on a pending steer opens "Pending steer" (Move to queue, Delete). Adapted: pending
+  is a chat message its run hasn't read yet (`unread`); the dialog opens only on the chat's approver's own message,
+  as the office moves or takes back no one else's, and a message read meanwhile is a toast saying so.
+- **Upstream:** `packages/tui/src/routes/session/index.tsx` (`UserMessage` and its `delivery`, `pendingDelivery`,
+  `updatePendingSteer`), read at commit `4332e24f` (2026-11-21).
+- **Ours:** `packages/tui/src/routes/session/index.tsx` (`UserMessage`, `openPendingSteer`),
+  `packages/tui/test/routes/session/unread-message-frame.test.tsx`,
+  `packages/tui/test/routes/session/queued-prompt-frame.test.tsx`.
+- **What:** queued prompts, ported from current upstream: `prompt.queue` (`<leader>return`) sends the prompt for the
+  next turn, a word that quits or a command refused with "This prompt cannot be queued"; the queued prompts leave the
+  transcript for the dock above the prompt (`N queued · <next>`), whose click and "View queued prompts" open "Queued
+  prompts" (Enter steers one now, `queued_prompt.delete` on ctrl+d deletes it, `queued_prompt.undo` on ctrl+u puts it
+  back in the prompt), and Enter on an empty prompt steers the first. Adapted: the dock and the dialog hold only the
+  approver's own queued messages, anyone else's staying in the transcript as pending ones; a move the run refused once
+  it took the message back is a toast, the message back where it was or in the prompt; a queued prompt is a message
+  the chat's run holds in its queue (`queued`), which a turn reads with its inbox, every queued one at once (upstream:
+  one per turn), and after Esc too (upstream keeps them queued after an interrupt); `session.queued_prompts` has no
+  default key, as `<leader>q` stays the exit; the dialog searches its list with a filter line, not in its title.
+- **Upstream:** `packages/tui/src/routes/session/index.tsx` (`queuedPrompts`, `openQueuedPrompts`, `QueuedPromptDock`,
+  `requestPending`, `undoPending`, `onEmptySubmit`), `packages/tui/src/component/prompt/index.tsx` (`prompt.queue`,
+  `submit`'s `delivery`), `packages/tui/src/config/keybind.ts`, read at commit `4332e24f` (2026-11-21).
+- **Ours:** `packages/tui/src/routes/session/index.tsx`, `packages/tui/src/component/prompt/index.tsx`,
+  `packages/tui/src/config/keybind.ts`, `packages/tui/test/routes/session/queued-prompt-frame.test.tsx`.
 - **What:** the descendants' requests in the parent session: a session with no parent lists its own requests, then
   its descendants', and answers a child's where it is; a child lists only its own. Adapted: the requests are the open
   Codex cards of the chat's Codex and Claude Code sessions, shown above the chat's prompt as in the child's own view

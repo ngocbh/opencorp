@@ -5,7 +5,7 @@ import path from "node:path"
 import { iterRunRecords, type LiveViewCall, type PoolCommitRecord, type RunLogEntry } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import { Message, type ToolPart } from "@opencorp/protocol"
-import { type LiveCalls, tooLargeText, Transcript } from "../../../src/features/chat/transcript.ts"
+import { type LiveCalls, tooLargeText, Transcript, withdrawnSends } from "../../../src/features/chat/transcript.ts"
 import { MAIN_CHAT } from "../../../src/company/chat_flow.ts"
 import { newId } from "../../../src/runtime/store/store.ts"
 import type { FakeLLM } from "../../../src/testing/fake_llm.ts"
@@ -20,8 +20,7 @@ import {
   logPrefix,
   message,
   PERSON,
-  QUEUE_CHAT_FLOW,
-  ROOT,
+  queue,
   send,
   TemplateOffice,
   templateJob,
@@ -118,27 +117,111 @@ test("a user message comes from its turns take commit", async () => {
   })
 })
 
-test("a turn whose take reads several inboxes shows the messages it took from the chat's", async () => {
+test("a turn whose take reads both inboxes shows each message it took, in the order they were sent", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Hello." })
-  const root = tempDir()
-  const base = { pin: path.join(root, "pin"), runs: path.join(root, "runs") }
-  fs.cpSync(ROOT, base.pin, { recursive: true })
-  fs.writeFileSync(path.join(base.pin, "shared/flows/chat.yaml"), QUEUE_CHAT_FLOW)
-  const rec = new TemplateOffice()
-  const job = templateJob("chat", rec, {}, { base })
-  await run(job, rec, { env: fake.env() })
-  expect(waitingAt(rec)).toEqual(["chat#0/heard"])
-  const later: Delivery = { id: "q1", op: "send", inbox: "queued", event: message("later") }
-  await advance(job, fake, [send("s1", "one"), later])
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "one"), queue("q1", "later"), send("s2", "two")])
   const take = [...iterRunRecords(job.log, { kinds: ["pool_commit"] })]
     .map((entry) => (entry.envelope.record as PoolCommitRecord).take)
     .find((commit) => commit != null)
   expect(take?.inbox).toEqual(["messages", "queued"])
-  // The office sends only to the chat's inbox, so only its messages show; each as read, before the reply.
-  const read = messages(base.runs, newId(), ["r1"])
-  expect(texts(read)).toEqual([["user", ["one"]], ["assistant", ["Hello."]]])
-  expect(read[0]!.unread ?? false).toBe(false)
+  // Each as read, before the reply.
+  const read = messages(runs, newId(), ["r1"])
+  expect(texts(read)).toEqual([["user", ["one"]], ["user", ["later"]], ["user", ["two"]], ["assistant", ["Hello."]]])
+  expect(read.map((m) => [m.unread, m.queued])).toEqual([[false, false], [false, false], [false, false], [false, false]])
+})
+
+test("a queued send shows unread and queued until a turn takes it, and the reply at work never reads it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Working", tool_calls: [{ id: "c1", name: "toolbox_stub" }] }, { content: "Planned." }, {
+    content: "Booked.",
+  })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  const transcript = new Transcript(runs)
+  const sid = newId()
+  const users = () =>
+    messages(runs, sid, ["r1"], { transcript })
+      .filter((m) => m.role === "user")
+      .map((m) => [(m.parts[0] as { text: string }).text, m.unread, m.queued])
+  let during: unknown[] = []
+  class Queueing extends DeliverDuringTool {
+    override async toolCall(worker: TestWorker, group: string, name: string, args: Record<string, unknown>) {
+      const result = await super.toolCall(worker, group, name, args)
+      during = users()
+      return result
+    }
+  }
+  await run(advanceJob(job, { deliver: [send("s1", "Plan the trip.")] }), new Queueing(queue("q1", "Then book it.")), {
+    env: fake.env(),
+  })
+  expect(during).toEqual([
+    ["Plan the trip.", false, false],
+    ["Then book it.", true, true],
+  ])
+  // The next turn took it after the reply, which never read it.
+  expect(texts(messages(runs, sid, ["r1"], { transcript }))).toEqual([
+    ["user", ["Plan the trip."]],
+    ["assistant", ["Working", "Planned."]],
+    ["user", ["Then book it."]],
+    ["assistant", ["Booked."]],
+  ])
+  expect(users()).toEqual([
+    ["Plan the trip.", false, false],
+    ["Then book it.", false, false],
+  ])
+  const taken = messages(runs, sid, ["r1"], { transcript }).find((m) => m.role === "user" &&
+    (m.parts[0] as { text: string }).text === "Then book it.")!
+  expect(transcript.send("r1", Number(taken.id.split(":")[1]))).toEqual({ inbox: "queued", by: null, state: "read" })
+  await apply(job, fake, [queue("q2", "And a car.")])
+  const sent = Number(messages(runs, sid, ["r1"], { transcript }).at(-1)!.id.split(":")[1])
+  expect(transcript.sentMessage(sid, "r1", sent)).toMatchObject({ unread: true, queued: true })
+  expect(transcript.send("r1", sent)).toEqual({ inbox: "queued", by: null, state: "unread" })
+  expect(transcript.send("r1", sent + 1000)).toBeNull()
+})
+
+test("a withdraw a person named hides its send, and only Esc's withdraws are the sends Esc sends again", async () => {
+  const fake = await fakeLlm()
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  const by = { kind: "user", name: "minh" } as const
+  const mine = (id: string, inbox: string, text: string) =>
+    ({ id, op: "send", inbox, event: message(text), by }) as const
+  const sends = await run(
+    advanceJob(job, { advance: false, deliver: [mine("a", "messages", "deleted"), mine("b", "queued", "moved"),
+      mine("c", "messages", "kept")] }),
+    new TemplateOffice(),
+    { env: fake.env() },
+  )
+  const [a, b, c] = sends.replies.map((reply) => reply.seq as number)
+  expect(new Transcript(runs).send("r1", a!)).toEqual({ inbox: "messages", by: "minh", state: "unread" })
+  const named = (id: string, inbox: string, seq: number) => ({ id, op: "withdraw", inbox, events: [seq], by }) as const
+  await apply(job, fake, [named("w1", "messages", a!), named("w2", "queued", b!)])
+  expect(texts(messages(runs, newId(), ["r1"]))).toEqual([["user", ["kept"]]])
+  expect([new Transcript(runs).send("r1", a!), new Transcript(runs).send("r1", b!)]).toEqual([
+    { inbox: "messages", by: "minh", state: "withdrawn" },
+    { inbox: "queued", by: "minh", state: "withdrawn" },
+  ])
+  // Esc's withdraw takes the rest; only its sends go back.
+  await apply(job, fake, [{ id: "w3", op: "withdraw", inbox: "messages" }])
+  expect(withdrawnSends(job.log, "messages").map((send) => send.seq)).toEqual([c])
+  expect(withdrawnSends(job.log, "queued")).toEqual([])
+  expect(messages(runs, newId(), ["r1"])).toEqual([])
+  // A named withdraw's message is the run's, whole, by the inbox it left.
+  const transcript = new Transcript(runs)
+  const shown = (w: ReturnType<Transcript["withdrawn"]>) =>
+    w && [w.message.parts.map((p) => (p.type === "text" ? p.text : p.type)), w.by]
+  expect([shown(transcript.withdrawn("r1", "messages", a!)), shown(transcript.withdrawn("r1", "queued", b!))]).toEqual([
+    [["deleted"], "minh"],
+    [["moved"], "minh"],
+  ])
+  // Esc's withdraw named no send and no one.
+  expect([transcript.withdrawn("r1", "queued", a!), transcript.withdrawn("r1", "messages", c!)]).toEqual([null, null])
+  // A keyed send is the run's under its key, read or not.
+  await apply(job, fake, [{ id: "k", op: "send", inbox: "queued", event: message("keyed"), key: "moved:r0:1" }])
+  expect([transcript.keyed("r1", "moved:r0:1"), transcript.keyed("r1", "moved:r0:2")]).toEqual([true, false])
 })
 
 test("a user message can name its author", async () => {

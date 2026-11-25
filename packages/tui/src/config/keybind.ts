@@ -114,6 +114,11 @@ export const Definitions = {
   messages_toggle_conceal: keybind("<leader>h", "Toggle code block concealment in messages"),
 
   prompt_submit: keybind("none", "Submit prompt"),
+  "prompt.queue": keybind("<leader>return", "Queue prompt"),
+  // Upstream's `<leader>q`, which is this TUI's exit too, as upstream's; here the exit keeps it.
+  "session.queued_prompts": keybind("none", "Manage queued prompts"),
+  "queued_prompt.undo": keybind("ctrl+u", "Undo queued prompt"),
+  "queued_prompt.delete": keybind("ctrl+d", "Delete queued prompt"),
   prompt_stash: keybind("none", "Stash prompt"),
   prompt_stash_pop: keybind("none", "Pop stashed prompt"),
   prompt_stash_list: keybind("none", "List stashed prompts"),

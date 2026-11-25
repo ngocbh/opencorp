@@ -67,6 +67,8 @@ export type PromptProps = {
   onSend?: () => (() => void) | void
   /** Called when Esc interrupts the session, before the office is asked to. */
   onInterrupt?: () => void
+  /** Enter on an empty prompt, as upstream's: steers the first queued message; true when it did. */
+  onEmptySubmit?: () => Promise<boolean>
   ref?: (ref: PromptRef | undefined) => void
   hint?: JSX.Element
   right?: JSX.Element
@@ -215,6 +217,18 @@ export function Prompt(props: PromptProps) {
         },
       },
       {
+        title: "Queue prompt",
+        name: "prompt.queue",
+        category: "Prompt",
+        hidden: true,
+        run: async () => {
+          if (!input.focused) return
+          const handled = await submit("queue")
+          if (!handled) return
+          dialog.clear()
+        },
+      },
+      {
         title: "Paste",
         name: "prompt.paste",
         category: "Prompt",
@@ -333,6 +347,7 @@ export function Prompt(props: PromptProps) {
     mode: OPENCORP_BASE_MODE,
     bindings: tuiConfig.keybinds.gather("prompt.palette", [
       "prompt.submit",
+      "prompt.queue",
       "prompt.editor",
       "prompt.stash",
       "prompt.stash.pop",
@@ -674,7 +689,9 @@ export function Prompt(props: PromptProps) {
   })
 
   let submitting = false
-  async function submit() {
+  /** Sends the prompt: to steer the running reply (`steer`, Enter), else as the next turn, or with `queue`
+   *  (`<leader>return`) for the next turn only, as upstream's queued prompt. */
+  async function submit(delivery: "steer" | "queue" = "steer") {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
     // input's native onSubmit racing another dispatch). Without this guard,
     // a second call slips past the empty-input check before the first call
@@ -684,7 +701,7 @@ export function Prompt(props: PromptProps) {
     if (submitting) return false
     submitting = true
     try {
-      return await submitInner()
+      return await submitInner(delivery)
     } finally {
       submitting = false
     }
@@ -718,7 +735,7 @@ export function Prompt(props: PromptProps) {
     )
   }
 
-  async function submitInner() {
+  async function submitInner(delivery: "steer" | "queue") {
     // IME: double-defer may fire before onContentChange flushes the last
     // composed character (e.g. Korean hangul) to the store, so read
     // plainText directly and sync before any downstream reads.
@@ -728,9 +745,21 @@ export function Prompt(props: PromptProps) {
     }
     if (props.disabled) return false
     if (auto()?.visible) return false
+    if (!store.prompt.input.trim() && delivery === "steer" && props.sessionID) {
+      return (await props.onEmptySubmit?.()) === true
+    }
     if (!store.prompt.input) return false
     const trimmed = store.prompt.input.trim()
-    if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
+    const exitWord = trimmed === "exit" || trimmed === "quit" || trimmed === ":q"
+    // What isn't a message to the employee (a word that quits, `/cost-cap`, the chat's `/exit`), and a session that
+    // keeps no queue (Codex, Claude Code, a local one).
+    const command = exitWord || trimmed === "/exit" || costCapArgument(store.prompt.input) !== undefined
+    const yian = !session() || session()!.harness === "yian"
+    if (delivery === "queue" && (command || !yian || office.local)) {
+      toast.show({ message: "This prompt cannot be queued", variant: "warning" })
+      return false
+    }
+    if (exitWord) {
       void exit()
       return true
     }
@@ -785,7 +814,8 @@ export function Prompt(props: PromptProps) {
         if (!gone()) await office.syncSession(sessionID)
       }
       if (!gone()) undo = props.onSend?.()
-      await office.client.sessions.prompt(sessionID, { text })
+      if (delivery === "queue") await office.client.sessions.queue(sessionID, { text })
+      else await office.client.sessions.prompt(sessionID, { text })
       sending = undefined
       // A capped session holds the message until someone raises the cap.
       if (!renderer.isDestroyed && office.state.sessions.find((s) => s.id === sessionID)?.capped)
@@ -797,7 +827,9 @@ export function Prompt(props: PromptProps) {
       const title = continuing
         ? "Couldn't continue this session"
         : sessionID
-          ? "Failed to send prompt"
+          ? delivery === "queue"
+            ? "Failed to queue prompt"
+            : "Failed to send prompt"
           : "Creating a session failed"
       if (!renderer.isDestroyed) showError(title)(error)
       if (gone()) {

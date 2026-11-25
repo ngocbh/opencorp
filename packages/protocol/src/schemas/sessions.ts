@@ -173,6 +173,12 @@ export const Message = z.strictObject({
    * False for every other message.
    */
   unread: z.boolean().default(false),
+  /**
+   * A user message of a yian chat that waits unread in its run's queue: the next turn takes it, and the running reply
+   * never reads it as a steer; `unread` is true too. Once a turn takes it, `message.updated` sends it again with both
+   * false, under the same id. False for every other message.
+   */
+  queued: z.boolean().default(false),
   parts: z.array(Part),
   created_at: Timestamp,
 })
@@ -225,6 +231,23 @@ export const PromptRequest = z.strictObject({
   text: MessageText,
 })
 export type PromptRequest = z.input<typeof PromptRequest>
+
+/** How an unread message of a chat is delivered (`PATCH /sessions/{id}/inbox/{message}`): `steer` reads it in the
+ *  running reply, before its next model call, else in the next turn; `queue` keeps it for the next turn. */
+export const SetDeliveryRequest = z.strictObject({
+  delivery: z.enum(["steer", "queue"]),
+})
+export type SetDeliveryRequest = z.input<typeof SetDeliveryRequest>
+
+/** What a move of an unread message did. `moved`: it went where it was asked to, or was there already. Otherwise the
+ *  run took it back but the send there failed (`why`, in words for a person): it went back where it was, under a new
+ *  id, or, when that failed too, nowhere, and `text` gives it back for the prompt. */
+export const DeliveryReply = z.strictObject({
+  moved: z.boolean(),
+  why: z.string().nullable().default(null),
+  text: z.string().nullable().default(null),
+})
+export type DeliveryReply = z.input<typeof DeliveryReply>
 
 export const SetModeRequest = z.strictObject({
   mode: SessionMode,
