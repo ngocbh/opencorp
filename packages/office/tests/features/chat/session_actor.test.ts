@@ -546,6 +546,7 @@ function spyTranscript(o: ChatOffice, seen: string[]): ActorContext["transcript"
     forget: (runIds) => void seen.push(`transcript ${[...runIds].join(" ")}`),
     unread: (runId, seq) => o.transcript.unread(runId, seq),
     sentMessage: (sessionId, runId, seq) => o.transcript.sentMessage(sessionId, runId, seq),
+    send: (runId, seq) => o.transcript.send(runId, seq),
   }
 }
 

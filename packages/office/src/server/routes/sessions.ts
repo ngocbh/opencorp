@@ -8,6 +8,7 @@ import {
   MessagePage,
   PromptRequest,
   Session,
+  SetDeliveryRequest,
   SetModeRequest,
   SetModelRequest,
   Ulid,
@@ -179,6 +180,37 @@ export async function steer(ctx: RequestContext, params: Params, body: unknown) 
   return { ok: true }
 }
 
+/** Queue a message for the next turn: the running reply never reads it. Anyone who may chat may queue. */
+export async function queue(ctx: RequestContext, params: Params, body: unknown) {
+  const { text } = body as z.output<typeof PromptRequest>
+  const actor = harness(ctx, "POST /sessions/:id/queue")
+  const by = actingPerson(ctx)
+  if (actor.queue === undefined) throw new HttpError(422, "not_supported", "this office's sessions keep no queue")
+  await harnessCall(() => actor.queue!(params.id!, text, { by }))
+  return { ok: true }
+}
+
+/** Move one of the acting person's unread messages to steer the running reply or to wait for the next turn; only the
+ *  chat's approver may. */
+export async function setDelivery(ctx: RequestContext, params: Params, body: unknown) {
+  const { delivery } = body as z.output<typeof SetDeliveryRequest>
+  const actor = harness(ctx, "PATCH /sessions/:id/inbox/:message")
+  const by = actingPerson(ctx)
+  if (actor.setDelivery === undefined) throw new HttpError(422, "not_supported", "this office's sessions keep no queue")
+  await harnessCall(() => actor.setDelivery!(params.id!, params.message!, delivery, { by }))
+  return { ok: true }
+}
+
+/** Take back one of the acting person's unread messages, steer or queued, before the run reads it; only the chat's
+ *  approver may. */
+export async function withdraw(ctx: RequestContext, params: Params) {
+  const actor = harness(ctx, "DELETE /sessions/:id/inbox/:message")
+  const by = actingPerson(ctx)
+  if (actor.withdraw === undefined) throw new HttpError(422, "not_supported", "this office's sessions keep no queue")
+  await harnessCall(() => actor.withdraw!(params.id!, params.message!, { by }))
+  return { ok: true }
+}
+
 /** Esc: stop the running reply and its calls; the session stays open. */
 export async function interrupt(ctx: RequestContext, params: Params) {
   const actor = harness(ctx, "POST /sessions/:id/interrupt")
@@ -234,6 +266,15 @@ export const ROUTES: readonly Route<RequestContext>[] = [
   },
   { method: "POST", path: "/sessions/:id/prompt", body: PromptRequest, reply: Ack, handler: prompt },
   { method: "POST", path: "/sessions/:id/steer", body: PromptRequest, reply: Ack, handler: steer },
+  { method: "POST", path: "/sessions/:id/queue", body: PromptRequest, reply: Ack, handler: queue },
+  {
+    method: "PATCH",
+    path: "/sessions/:id/inbox/:message",
+    body: SetDeliveryRequest,
+    reply: Ack,
+    handler: setDelivery,
+  },
+  { method: "DELETE", path: "/sessions/:id/inbox/:message", reply: Ack, handler: withdraw },
   { method: "POST", path: "/sessions/:id/interrupt", reply: Ack, handler: interrupt },
   { method: "POST", path: "/sessions/:id/end", reply: Ack, handler: end },
   { method: "POST", path: "/sessions/:id/continue", reply: Session, handler: continueSession },

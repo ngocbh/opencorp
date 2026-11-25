@@ -868,6 +868,134 @@ test("a steer reaches a running reply and a prompt check can refuse", async () =
   expect(JSON.stringify(fake.requests())).not.toContain("nope")
 })
 
+/** Sends `body` as JSON with `method` (PATCH or DELETE), or no body when it is null. */
+function send(sock: string, method: string, target: string, body: unknown, headers: Record<string, string> = {}) {
+  if (body === null) return request(sock, method, target, { headers })
+  return request(sock, method, target, {
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  })
+}
+
+/** The route of message `id` waiting in session `sid`'s inbox or queue. */
+const inbox = (sid: string, id: string) => `/sessions/${sid}/inbox/${encodeURIComponent(id)}`
+
+test("a queued message waits for the next turn, and its approver steers it now, queues it again or takes it back", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const company = h.office.paths.company
+  addHuman(company, "ava")
+  const [ava, ceo] = [newToken(), newToken()]
+  giveDevice(company, "ava", "pc", ava)
+  giveDevice(company, CEO, "mac", ceo)
+  const { sock } = await served(h.office, { tokens: true })
+  fake.script({ content: "Working", hold: 30 }, { content: "Done." })
+  const sid = await open(h, sock, bearer(ceo))
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "hi" }, bearer(ceo))).json()).toEqual({ ok: true })
+  await fake.waitForRequests(1, 30_000)
+  const users = async () =>
+    (await messagesOf(sock, sid, bearer(ceo)))
+      .filter((m) => m.role === "user")
+      .map((m) => ({ id: m.id, text: (m.parts[0] as { text: string }).text, unread: m.unread, queued: m.queued }))
+  const find = async (text: string) => (await users()).find((m) => m.text === text)!
+  for (const [text, by] of [["later", ceo], ["also Rome", ceo], ["from ava", ava]] as const) {
+    const route = text === "later" ? "queue" : "steer"
+    expect((await post(sock, `/sessions/${sid}/${route}`, { text }, bearer(by))).json()).toEqual({ ok: true })
+  }
+  const queued = await find("later")
+  expect(queued).toMatchObject({ unread: true, queued: true })
+  expect(await find("also Rome")).toMatchObject({ unread: true, queued: false })
+  // Only the approver moves or takes back a message, and only their own.
+  let r = await send(sock, "PATCH", inbox(sid, queued.id), { delivery: "steer" }, bearer(ava))
+  expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+  r = await send(sock, "DELETE", inbox(sid, queued.id), null, bearer(ava))
+  expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+  r = await send(sock, "DELETE", inbox(sid, (await find("from ava")).id), null, bearer(ceo))
+  expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
+  const [run] = queued.id.split(":")
+  for (const id of [`${run}:000000999999`, `${ULID}:000000000001`, "nonsense"]) {
+    r = await send(sock, "DELETE", inbox(sid, id), null, bearer(ceo))
+    expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
+  }
+  r = await send(sock, "PATCH", inbox(sid, queued.id), { delivery: "sideways" }, bearer(ceo))
+  expect([r.status, errorOf(r)]).toEqual([422, "invalid_body"])
+  // Steer now: it leaves the queue for the inbox, under a new id.
+  r = await send(sock, "PATCH", inbox(sid, queued.id), { delivery: "steer" }, bearer(ceo))
+  expect([r.status, r.json()]).toEqual([200, { ok: true }])
+  const steered = await find("later")
+  expect(steered).toMatchObject({ unread: true, queued: false })
+  expect(steered.id).not.toBe(queued.id)
+  r = await send(sock, "DELETE", inbox(sid, queued.id), null, bearer(ceo))
+  expect([r.status, errorOf(r)]).toEqual([409, "already_withdrawn"])
+  // A message already where it goes stays.
+  r = await send(sock, "PATCH", inbox(sid, steered.id), { delivery: "steer" }, bearer(ceo))
+  expect([r.status, (await find("later")).id]).toEqual([200, steered.id])
+  // Back to the queue, then taken back.
+  r = await send(sock, "PATCH", inbox(sid, steered.id), { delivery: "queue" }, bearer(ceo))
+  expect(r.status).toBe(200)
+  const again = await find("later")
+  expect(again).toMatchObject({ unread: true, queued: true })
+  r = await send(sock, "DELETE", inbox(sid, again.id), null, bearer(ceo))
+  expect([r.status, r.json()]).toEqual([200, { ok: true }])
+  expect((await users()).map((m) => m.text)).toEqual(["hi", "also Rome", "from ava"])
+  fake.release()
+  // The steers the reply never read are the next turn's; a message read can't be taken back or moved.
+  await waitFor(async () => (await users()).every((m) => !m.unread), { what: "the steers read" })
+  expect(JSON.stringify(fake.requests())).not.toContain("later")
+  const rome = await find("also Rome")
+  for (const [method, body] of [["DELETE", null], ["PATCH", { delivery: "queue" }]] as const) {
+    r = await send(sock, method, inbox(sid, rome.id), body, bearer(ceo))
+    expect([r.status, errorOf(r)]).toEqual([409, "already_read"])
+  }
+  expect((await post(sock, `/sessions/${sid}/end`, null, bearer(ceo))).json()).toEqual({ ok: true })
+  await waitFor(() => h.store.getSession(sid)!.status === "ended", { what: "the end" })
+  r = await send(sock, "DELETE", inbox(sid, rome.id), null, bearer(ceo))
+  expect([r.status, errorOf(r)]).toEqual([409, "not_live"])
+})
+
+test("a queued message is the next turn's, whether the reply ends or Esc stops it", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  const { sock } = await served(h.office)
+  fake.script({ content: "Working", hold: 30 }, { content: "Booked.", hold: 30 }, { content: "Car too." })
+  const sid = await open(h, sock)
+  expect((await post(sock, `/sessions/${sid}/prompt`, { text: "Plan the trip." })).json()).toEqual({ ok: true })
+  await fake.waitForRequests(1, 30_000)
+  expect((await post(sock, `/sessions/${sid}/queue`, { text: "Then book it." })).json()).toEqual({ ok: true })
+  fake.release()
+  const [, second] = await fake.waitForRequests(2, 30_000)
+  expect(JSON.stringify(fake.requests()[0]!.messages)).not.toContain("Then book it.")
+  expect(JSON.stringify(second!.messages)).toContain("Then book it.")
+  // Esc stops the reply; the turn after it takes what waits in the queue.
+  expect((await post(sock, `/sessions/${sid}/queue`, { text: "And a car." })).json()).toEqual({ ok: true })
+  expect((await post(sock, `/sessions/${sid}/interrupt`, null)).json()).toEqual({ ok: true })
+  const requests = await fake.waitForRequests(3, 30_000)
+  expect(JSON.stringify(requests[2]!.messages)).toContain("And a car.")
+  await waitFor(() => chatStatus(h, sid) === "idle", { what: "the last turn" })
+  const users = (await messagesOf(sock, sid)).filter((m) => m.role === "user")
+  expect(users.map((m) => [(m.parts[0] as { text: string }).text, m.unread, m.queued])).toEqual([
+    ["Plan the trip.", false, false],
+    ["Then book it.", false, false],
+    ["And a car.", false, false],
+  ])
+})
+
+test("codex sessions keep no queue: queueing, moving or taking back a message is 422 not supported", async () => {
+  const h = makeCodex()
+  h.office.harness = h.sessions
+  const { sock } = await served(h.office)
+  h.fake.script([])
+  const sid = await start(h, h.workspace)
+  const message = inbox(sid, `${ULID}:000000000001`)
+  for (const r of [
+    await post(sock, `/sessions/${sid}/queue`, { text: "later" }),
+    await send(sock, "PATCH", message, { delivery: "steer" }),
+    await send(sock, "DELETE", message, null),
+  ]) {
+    expect([r.status, errorOf(r)]).toEqual([422, "not_supported"])
+  }
+})
+
 test("a blank message or a bad model name never reaches a live chat", async () => {
   const fake = await fakeLlm()
   const h = await makeHarness(fake)

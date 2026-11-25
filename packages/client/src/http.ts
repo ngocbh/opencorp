@@ -30,7 +30,7 @@ export function officeFetch(t: Transport, path: string, init: RequestInit): Prom
     : fetch(t.baseUrl + path, { ...init, credentials: "same-origin" })
 }
 
-export type Method = "GET" | "POST" | "PUT" | "DELETE"
+export type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
 
 /** Encodes one path segment (an id or a folder path). */
 export const seg = encodeURIComponent

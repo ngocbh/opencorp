@@ -127,7 +127,7 @@ export interface ActorContext {
   readonly checkMs?: number
   readonly hooks: Hooks
   readonly answers: Answers
-  readonly transcript: Pick<Transcript, "forget" | "unread" | "sentMessage">
+  readonly transcript: Pick<Transcript, "forget" | "unread" | "sentMessage" | "send">
   /** The office's live relay, fed each worker's live frames; the actor's `calls` reads it. */
   readonly live: Pick<LiveRelay, "frame" | "detach" | "calls" | "forget" | "unreadShown">
   /** The run spec of `session` (Python's restorers); may throw a `HarnessError`. */
@@ -772,25 +772,29 @@ export class SessionActor implements LiveCalls {
     return p
   }
 
-  /** The `send` of `text` from `by` to the run's inbox, after the `turnContext` part unless the reply runs, and the
-   *  reply it gets if queued now. */
+  /** The `send` of `text` from `by` to the run's inbox, or with `queued` to its queue, after the `turnContext` part
+   *  unless it steers the running reply, and the reply it gets if queued now. */
   async #message(
     session: SessionRecord,
     text: string,
     by: string | null,
+    { queued = false }: { queued?: boolean } = {},
   ): Promise<{ delivery: Delivery; reply: MessageReply }> {
     const spec = await this.#specOf(session)
     const author = by ?? (await this.#owner(session))
-    const reply = this.#replyNow(session)
+    const now = this.#replyNow(session)
+    // A queued message never steers: it waits for the next turn.
+    const reply = queued && now === "steer" ? "queued" : now
     const parts = [{ type: "text", text }]
-    // A held message starts the fresh run's turn, though a reply runs now.
-    if (!this.#replying() || this.#holdsSend()) {
+    // A held or queued message starts a turn of its own, though a reply runs now.
+    if (queued || !this.#replying() || this.#holdsSend()) {
       const results = this.#ctx.hooks.fire("turnContext", session, text, { first: session.turns === 0 })
       const context = results.find((result) => typeof result === "string")
       if (typeof context === "string") parts.unshift({ type: "text", text: context })
     }
     const event = { role: "user", parts, ...(author ? { author } : {}) }
-    return { delivery: { id: newId(), op: "send", inbox: spec.chat.inbox, event, ...byPerson(author) }, reply }
+    const inbox = queued ? spec.chat.queue : spec.chat.inbox
+    return { delivery: { id: newId(), op: "send", inbox, event, ...byPerson(author) }, reply }
   }
 
   /** Delivers the `send` `delivery`, answering its caller with `reply` once the run has it. */
@@ -1081,6 +1085,131 @@ export class SessionActor implements LiveCalls {
   /** A steer is a message: the running reply reads it before its next model call, else the next turn does. */
   steer(text: string, options: { by?: string | null } = {}): Promise<MessageReply> {
     return this.prompt(text, options)
+  }
+
+  /**
+   * Takes a message from `by` (the owner when null) for the run's next turn and resolves once the run has it: it goes
+   * to the run's queue, which only a turn's take reads, so the running reply never reads it as a steer, and it never
+   * answers the model's open question. The notes held since Esc go to the run with it. The reply is decided when it is
+   * queued: `turn` while the run waits only at its turn, else `queued`. Refused as `prompt` refuses a message, with
+   * `422 refused` for the flow's exit command, which ends the chat only when sent, and `422 not_supported` when the
+   * chat's flow keeps no queue.
+   */
+  async queue(text: string, { by = null }: { by?: string | null } = {}): Promise<MessageReply> {
+    const pending = await this.#command(async () => {
+      const session = this.#live()
+      if (!text.isWellFormed()) throw refusalOf("invalid_value")
+      for (const refusal of this.#ctx.hooks.fire("promptCheck", session, text)) {
+        if (refusal) throw new HarnessError(422, "refused", String(refusal))
+      }
+      if (text === (await this.#specOf(session)).chat.exit) {
+        throw new HarnessError(422, "refused", "the exit command can't be queued; send it to end the chat")
+      }
+      if (this.#capped()) this.#ensureCapItem()
+      const { delivery, reply } = await this.#message(session, text, by, { queued: true })
+      await this.#releaseNotes(session, { spawn: false })
+      return await this.#send(delivery, reply)
+    })
+    return (await pending.answer) as MessageReply
+  }
+
+  /**
+   * Takes back the message `messageId` of the current run, one `by` sent that nothing has read yet, from the inbox or
+   * the queue it waits in, and tells the clients it is gone. Resolves once the run has taken it back. Refused `404
+   * not_found` for a message that is no send of `by`'s to this run (another run's, another person's, an instrument's
+   * note, or none), `409 already_read` once a turn or a steer has read it, `409 already_withdrawn` once a withdraw took
+   * it back, `409 not_live` or `409 ending` for a session that isn't live, and `503 stopping`.
+   */
+  async withdraw(messageId: string, { by }: { by: string }): Promise<void> {
+    await this.#takeBack(messageId, by, null)
+  }
+
+  /**
+   * Moves the unread message `messageId`, one `by` sent, to `delivery`: `queue` takes it back from the inbox the
+   * running reply steers from and sends it to the queue, for the next turn; `steer` takes it back from the queue and
+   * sends it to the inbox, which the running reply reads before its next model call, else the next turn. A message
+   * already there stays as it is. Resolves once the run has it where it goes. Refused as `withdraw` is, and `422
+   * not_supported` when the chat's flow keeps no queue; the message then goes back to the inbox.
+   */
+  async setDelivery(messageId: string, delivery: "steer" | "queue", { by }: { by: string }): Promise<void> {
+    const taken = await this.#takeBack(messageId, by, delivery)
+    if (taken === null) return
+    const send = async (inbox: string) => {
+      const sent = await this.#command(async () => {
+        this.#live()
+        return this.#send({ id: newId(), op: "send", inbox, event: taken.event, ...byPerson(by) }, "queued")
+      })
+      await sent.answer
+    }
+    try {
+      await send(taken.to)
+    } catch (error) {
+      if (!(error instanceof HarnessError) || error.code !== "not_supported") throw error
+      // The flow has no queue: the message goes back to the inbox it came from, under its new seq.
+      await send(taken.from)
+      throw error
+    }
+  }
+
+  /**
+   * Takes back the message `messageId` of the current run that `by` sent, for `withdraw` (`to` null) or to send it on
+   * to `to`'s inbox (`setDelivery`): a `withdraw` that names its send, by `by`. Null when there is nothing to send: a
+   * withdraw, or a message already where `to` sends it. Otherwise the inbox it came from, the one it goes to, and its
+   * message as the run held it. A withdraw whose worker went before it answered reads what it took from the log.
+   */
+  async #takeBack(
+    messageId: string,
+    by: string,
+    to: "steer" | "queue" | null,
+  ): Promise<{ from: string; to: string; event: unknown } | null> {
+    const asked = await this.#command(async () => {
+      this.#live()
+      const { chat } = await this.#specOf(this.#session())
+      const at = messageId.lastIndexOf(":")
+      const [runId, digits] = [messageId.slice(0, at), messageId.slice(at + 1)]
+      const seq = /^[0-9]{1,15}$/.test(digits) ? Number(digits) : 0
+      const send = at > 0 && runId === this.#runId && seq > 0 ? this.#ctx.transcript.send(runId, seq) : null
+      if (send === null) throw noSuchSend()
+      const target = to === null ? null : to === "queue" ? chat.queue : chat.inbox
+      if (send.inbox === target) return null
+      if (send.state === "read") throw alreadyRead()
+      if (send.state === "withdrawn") throw alreadyWithdrawn()
+      const delivery: Delivery = { id: newId(), op: "withdraw", inbox: send.inbox, events: [seq], ...byPerson(by) }
+      const p = new Pending(delivery)
+      await this.#deliver(p)
+      return { p, runId, seq, from: send.inbox, to: target }
+    })
+    if (asked === null) return null
+    const { p, runId, seq, from, to: target } = asked
+    let taken: { seq: number; value: unknown }[]
+    try {
+      await p.answer
+      const reply = p.reply!
+      if (Array.isArray(reply.already_read) && reply.already_read.length > 0) throw alreadyRead()
+      if (Array.isArray(reply.already_withdrawn) && reply.already_withdrawn.length > 0) throw alreadyWithdrawn()
+      taken = Array.isArray(reply.withdrawn) ? (reply.withdrawn as { seq: number; value: unknown }[]) : []
+    } catch (error) {
+      if (error instanceof HarnessError && error.code !== "cant_wake") throw error
+      // The worker went before it answered: the log says whether the withdraw took it.
+      const logged = this.#namedWithdrawn(runId, from, seq)
+      if (logged === null) throw error
+      taken = [{ seq, value: logged }]
+      this.#publishRemoved(messageId)
+    }
+    const value = taken.find((send) => send.seq === seq)?.value
+    if (value === undefined) throw alreadyRead()
+    return target === null ? null : { from, to: target, event: value }
+  }
+
+  /** The message of send `seq` of run `runId`'s inbox `inbox` when a withdraw that named it took it back, as the log
+   *  records it; null when none did, or the log can't be read. */
+  #namedWithdrawn(runId: string, inbox: string, seq: number): RunMessage | null {
+    try {
+      return withdrawnSends(this.#logOf(runId), inbox, { named: true }).find((send) => send.seq === seq)?.message ?? null
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a withdraw's sends can't be read (${errorName(error)})`)
+      return null
+    }
   }
 
   /**
@@ -1732,7 +1861,8 @@ export class SessionActor implements LiveCalls {
         p.live = true
         if (p.delivery.op === "send") {
           run.turnPending = true
-          this.#messageArrived()
+          // A queued message is for the next turn: the agent's waits go on.
+          if (p.delivery.inbox !== this.#chat.queue) this.#messageArrived()
         }
         return false
       }
@@ -2724,8 +2854,15 @@ export class SessionActor implements LiveCalls {
       if (p.questionId !== null) this.#consume(p.questionId)
       // The stored status is busy, and a message shown, before the caller hears back.
       this.#trySettle("after a reply")
-      if (op === "send") this.#publishMessage(run.runId, reply.seq as number, p.delivery.event, p.delivery.key)
-      if (op === "withdraw") this.#post("withdrawn", () => this.#withdrawn(run.runId))
+      if (op === "send") {
+        const { event, key, inbox } = p.delivery
+        this.#publishMessage(run.runId, reply.seq as number, event, key, inbox === this.#chat.queue)
+      }
+      if (op === "withdraw" && p.delivery.events === undefined) this.#post("withdrawn", () => this.#withdrawn(run.runId))
+      // A person's withdraw of their own message: it shows no more.
+      else if (op === "withdraw" && Array.isArray(reply.withdrawn)) {
+        for (const { seq } of reply.withdrawn as { seq: number }[]) this.#publishRemoved(messageId(run.runId, seq))
+      }
       if (p.note !== null) this.#delivered(p.note)
       p.resolve(p.acked)
     } else if (p.note !== null && reply.refused === "key_reused") {
@@ -2791,13 +2928,14 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** Publishes the user message of the `send` the run took at `seq`: unread unless the run has read it already
-   *  (`sentUnread`), and then the live relay publishes it again once the run has. `sent` is the message `prompt`
-   *  built. */
-  #publishMessage(runId: string, seq: number, sent: unknown, key: string | undefined): void {
+  /** Publishes the user message of the `send` the run took at `seq`, to its queue when `queued`: unread unless the run
+   *  has read it already (`sentUnread`), and then the live relay publishes it again once the run has. `sent` is the
+   *  message `prompt` or `queue` built. */
+  #publishMessage(runId: string, seq: number, sent: unknown, key: string | undefined, queued: boolean): void {
     const unread = sentUnread(this.#ctx.transcript, runId, seq, (line) => this.#log(`session ${this.sessionId}: ${line}`))
     try {
-      const message = userMessage(this.sessionId, runId, { seq, at: now(), message: sent as RunMessage, key }, unread)
+      const send = { seq, at: now(), message: sent as RunMessage, key, ...(queued ? { queued } : {}) }
+      const message = userMessage(this.sessionId, runId, send, unread)
       if (unread) this.#ctx.live.unreadShown(runId, message.id)
       this.#ctx.bus.publishLive({ type: "message.updated", session_id: this.sessionId, data: message })
     } catch (error) {
@@ -3956,7 +4094,25 @@ function sameWaits(a: readonly Wait[], b: readonly Wait[]): boolean {
 function refusalOf(reason: string): HarnessError {
   if (reason === "inbox_closed" || reason === "ended") return new HarnessError(409, "ending", "the session is ending")
   if (reason === "too_large") return tooLarge()
+  // The chat's own inbox is always there: only its queue can be missing.
+  if (reason === "unknown_inbox") {
+    return new HarnessError(422, "not_supported", "this chat keeps no queue: its flow has no `queued` inbox")
+  }
+  if (reason === "unknown_send") return noSuchSend()
   return new HarnessError(422, "refused", `the run refused it (${reason})`)
+}
+
+/** A message that is no unread send of the acting person's to the session's current run. */
+function noSuchSend(): HarnessError {
+  return new HarnessError(404, "not_found", "no message of yours waits in this chat by that id")
+}
+
+function alreadyRead(): HarnessError {
+  return new HarnessError(409, "already_read", "the message was already read")
+}
+
+function alreadyWithdrawn(): HarnessError {
+  return new HarnessError(409, "already_withdrawn", "the message was already taken back")
 }
 
 function tooLarge(): HarnessError {

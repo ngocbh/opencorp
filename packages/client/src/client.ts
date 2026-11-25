@@ -50,6 +50,7 @@ import type {
   SendBackRequest,
   Session,
   SetDefaultConnectionRequest,
+  SetDeliveryRequest,
   SetModeRequest,
   SetModelRequest,
   SetPasswordRequest,
@@ -102,6 +103,7 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
   // comes back as a rejected promise.
   const s = (id: string) => `/sessions/${part(id, `no session ${id}`)}`
   const instrument = (id: string, iid: string) => `${s(id)}/instruments/${part(iid, `no instrument ${iid}`)}`
+  const waiting = (id: string, mid: string) => `${s(id)}/inbox/${part(mid, `no message ${mid} waits in session ${id}`)}`
   // Each shell's keys requests still in flight, by path: one goes at a time, so the office gets them in the order
   // they were typed.
   const typing = new Map<string, Promise<Ack>>()
@@ -279,6 +281,17 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
         get<MessagePage>(`${s(id)}/messages${query({ limit: opts.limit, before: opts.before })}`),
       prompt: async (id: string, req: PromptRequest) => post<Ack>(`${s(id)}/prompt`, req),
       steer: async (id: string, req: PromptRequest) => post<Ack>(`${s(id)}/steer`, req),
+      /** Queues a message for the chat's next turn, which the running reply never reads. */
+      queue: async (id: string, req: PromptRequest) => post<Ack>(`${s(id)}/queue`, req),
+      /**
+       * Moves one of your messages still unread to steer the running reply (`steer`) or to wait for the next turn
+       * (`queue`); only the chat's approver may. Fails with `already_read` or `already_withdrawn` when it is too late.
+       */
+      setDelivery: async (id: string, messageId: string, req: SetDeliveryRequest) =>
+        call<Ack>("PATCH", waiting(id, messageId), req),
+      /** Takes back one of your messages still unread, steer or queued; only the chat's approver may. Fails with
+       *  `already_read` or `already_withdrawn` when it is too late. */
+      withdraw: async (id: string, messageId: string) => call<Ack>("DELETE", waiting(id, messageId)),
       interrupt: async (id: string) => post<Ack>(`${s(id)}/interrupt`),
       end: async (id: string) => post<Ack>(`${s(id)}/end`),
       /** Continues an ended Codex session on its thread, as a new session. */

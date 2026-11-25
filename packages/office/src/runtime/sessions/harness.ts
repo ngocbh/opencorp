@@ -49,6 +49,17 @@ export interface SessionHarness extends CardActor {
   prompt(sessionId: string, text: string, options?: { by?: string | null }): Promise<string>
   /** Steers the running reply as `by`; with no reply running it is a `prompt`. */
   steer(sessionId: string, text: string, options?: { by?: string | null }): Promise<string>
+  /** A message from `by` (the opener when null) for the next turn, which the running reply never reads; the chat
+   *  harness implements it, and a Codex or Claude Code session refuses it `422 not_supported`. */
+  queue?(sessionId: string, text: string, options?: { by?: string | null }): Promise<string>
+  /** Takes back `by`'s unread message `messageId` as `by`, who must be the session's approver (`approverOf`): 403
+   *  forbidden for anyone else, 404 not_found for no such unread message of `by`'s, 409 already_read and 409
+   *  already_withdrawn; the chat harness implements it. */
+  withdraw?(sessionId: string, messageId: string, options: { by: string }): Promise<void>
+  /** Moves `by`'s unread message `messageId` to steer the running reply (`steer`) or to wait for the next turn
+   *  (`queue`), as `by`, who must be the session's approver; refused as `withdraw` is. The chat harness implements
+   *  it. */
+  setDelivery?(sessionId: string, messageId: string, delivery: "steer" | "queue", options: { by: string }): Promise<void>
   /** Ends the session, interrupting a busy reply first; ending one already ending is a no-op. */
   end(sessionId: string): Promise<void>
   /** Continues an ended session as a new one opened by `by`. */

@@ -232,6 +232,13 @@ export const PromptRequest = z.strictObject({
 })
 export type PromptRequest = z.input<typeof PromptRequest>
 
+/** How an unread message of a chat is delivered (`PATCH /sessions/{id}/inbox/{message}`): `steer` reads it in the
+ *  running reply, before its next model call, else in the next turn; `queue` keeps it for the next turn. */
+export const SetDeliveryRequest = z.strictObject({
+  delivery: z.enum(["steer", "queue"]),
+})
+export type SetDeliveryRequest = z.input<typeof SetDeliveryRequest>
+
 export const SetModeRequest = z.strictObject({
   mode: SessionMode,
 })

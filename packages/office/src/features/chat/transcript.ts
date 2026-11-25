@@ -771,10 +771,10 @@ export interface WithdrawnSend {
  * The sends of the inbox `inbox` that Esc's withdraws took back in the run log `log`, in send order: each
  * `inbox_withdrawn` record of every unread send names their seqs, and the send records before it hold their messages
  * and keys. A withdraw that named its sends (a person's delete, or a move to the queue or back) isn't Esc's: those
- * sends are gone, or sent to the other inbox. The log is the record of what a withdraw took, even when its worker died
- * before it answered. A send whose value isn't a message is left out.
+ * sends are gone, or sent to the other inbox; with `named`, only those are listed. The log is the record of what a
+ * withdraw took, even when its worker died before it answered. A send whose value isn't a message is left out.
  */
-export function withdrawnSends(log: string, inbox: string): WithdrawnSend[] {
+export function withdrawnSends(log: string, inbox: string, { named = false }: { named?: boolean } = {}): WithdrawnSend[] {
   const sends = new Map<number, Omit<WithdrawnSend, "seq">>()
   const taken: number[] = []
   for (const entry of iterRunRecords(log)) {
@@ -789,7 +789,7 @@ export function withdrawnSends(log: string, inbox: string): WithdrawnSend[] {
       }
     } else if (entry.kind === "inbox_withdrawn") {
       const { inbox: from, events, chosen } = record as { inbox: string; events: readonly number[]; chosen: boolean }
-      if (from === inbox && !chosen) taken.push(...events.map(Number))
+      if (from === inbox && chosen === named) taken.push(...events.map(Number))
     }
   }
   return taken
