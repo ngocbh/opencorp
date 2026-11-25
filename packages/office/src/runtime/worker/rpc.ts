@@ -48,6 +48,11 @@ export const REPLY_TYPES: ReadonlySet<string> = new Set(Object.values(REQUEST_RE
  *  the call runs (yian's `ToolContext.interrupted`): the office aborts that call's `interrupted` signal. It needs no
  *  reply. A call sent while the agent already holds one says `interrupted: true` in its own frame. */
 export const TOOL_INTERRUPT = "tool_interrupt"
+/** The worker -> office frame `{type, id}` saying a steer waits for the agent that made tool call request `id`, which
+ *  its next model call reads (yian's `ToolContext.steered`): the office aborts that call's `steered` signal. It needs
+ *  no reply. A call sent while one already waits (it came while the model wrote the call) says `steered: true` in its
+ *  own frame. */
+export const TOOL_STEER = "tool_steer"
 
 /** Whether `type` is a request frame type: an own key of `REQUEST_REPLIES`, so `toString` or `__proto__` is not. */
 export function isRequest(type: unknown): type is RequestType {
@@ -89,21 +94,32 @@ export class Rpc {
    *  reply, with the send's own error, with `signal.reason` once `signal` aborts (a later reply is dropped), or
    *  with the error `close` was given. A request sent with `interrupted` already aborted says so (`interrupted:
    *  true`); once it aborts while the request waits for its reply, a `tool_interrupt` frame naming the request
-   *  follows, once. Either way the request still waits for its reply. */
+   *  follows, once. `steered` goes the same way, as `steered: true` or a `tool_steer` frame. Either way the request
+   *  still waits for its reply. */
   async request(
     type: RequestType,
     fields: Frame = {},
-    { signal, interrupted }: { signal?: AbortSignal; interrupted?: AbortSignal } = {},
+    { signal, interrupted, steered }: { signal?: AbortSignal } & CallSignals = {},
   ): Promise<Frame> {
     if (this.#closed) throw this.#closed.error
     if (signal?.aborted) throw signal.reason
     const id = ++this.#lastId
     let onAbort: (() => void) | undefined
     let answered = false
-    // Runs inside yian's interrupt call, so it never throws; a send that fails leaves the call to finish as it would.
-    const onInterrupt = () => {
-      if (!answered) this.channel.send({ type: TOOL_INTERRUPT, id }).catch(() => {})
-    }
+    // Each signal the office tool hears of. Its listener runs inside yian's interrupt or send call, so it never throws;
+    // a send that fails leaves the call to finish as it would.
+    const relays = (
+      [
+        [interrupted, "interrupted", TOOL_INTERRUPT],
+        [steered, "steered", TOOL_STEER],
+      ] as const
+    ).flatMap(([aborts, field, frame]) => {
+      if (aborts === undefined) return []
+      const relay = () => {
+        if (!answered) this.channel.send({ type: frame, id }).catch(() => {})
+      }
+      return [{ aborts, field, early: aborts.aborted, relay }]
+    })
     let reply: Frame
     try {
       // Registered before the send, so a reply that arrives at once finds its waiter.
@@ -119,16 +135,19 @@ export class Rpc {
       })
       // Observed at once: an abort while the send is pending, or after it failed, must not be unhandled.
       replied.catch(() => {})
-      const early = interrupted?.aborted === true
-      await this.channel.send({ ...fields, type, id, ...(early ? { interrupted: true } : {}) })
-      if (!early && interrupted?.aborted) onInterrupt()
-      else if (!early) interrupted?.addEventListener("abort", onInterrupt, { once: true })
+      const already = Object.fromEntries(relays.filter((r) => r.early).map((r) => [r.field, true]))
+      await this.channel.send({ ...fields, type, id, ...already })
+      for (const { aborts, early, relay } of relays) {
+        if (early) continue
+        if (aborts.aborted) relay()
+        else aborts.addEventListener("abort", relay, { once: true })
+      }
       reply = await replied
     } finally {
       answered = true
       this.#waiting.delete(id)
       if (onAbort) signal?.removeEventListener("abort", onAbort)
-      interrupted?.removeEventListener("abort", onInterrupt)
+      for (const { aborts, relay } of relays) aborts.removeEventListener("abort", relay)
     }
     if (Object.hasOwn(reply, "error")) throw new RemoteError(reply)
     return reply
@@ -210,9 +229,9 @@ export function modelFromSchema(
  *
  * An error reply throws `ReportedToolError` (`error: <message>`), which an AGENT's model reads as the call's result.
  * The request ends when the call's signal aborts, as it does when the run stops. An interrupt of the agent while the
- * call runs (`ctx.interrupted`) reaches the office as a `tool_interrupt` frame, and the office tool's own reply to it
- * is the call's result. A `resumable` spec lets yian send a call again, with its call id, when a crash or stop cut it
- * off before its result was recorded.
+ * call runs (`ctx.interrupted`) reaches the office as a `tool_interrupt` frame, and a steer waiting for it
+ * (`ctx.steered`) as a `tool_steer` frame; the office tool's own reply to either is the call's result. A `resumable`
+ * spec lets yian send a call again, with its call id, when a crash or stop cut it off before its result was recorded.
  */
 export function remoteTool(rpc: Rpc, group: string, spec: ToolSpec): FunctionTool {
   return tool({
@@ -225,7 +244,8 @@ export function remoteTool(rpc: Rpc, group: string, spec: ToolSpec): FunctionToo
     execute: async (args, ctx) => {
       try {
         const fields = { group, name: spec.name, args, call_id: ctx.callId }
-        const reply = await rpc.request("tool_call", fields, { signal: ctx.signal, interrupted: ctx.interrupted })
+        const signals = { signal: ctx.signal, interrupted: ctx.interrupted, steered: ctx.steered }
+        const reply = await rpc.request("tool_call", fields, signals)
         return reply.pending === true ? pending() : (reply.result ?? null)
       } catch (error) {
         if (isInstance(error, RemoteError)) throw new ReportedToolError(`error: ${error.message}`)
@@ -427,14 +447,28 @@ function gatedCall(raw: unknown): GatedCall {
   }
 }
 
-/** What an office tool's call gets beside its arguments: the yian call id, a signal that aborts the call, and a
- *  signal that aborts when the agent that made the call takes an interrupt (Esc) while it runs. A tool that watches
- *  `interrupted` may stop early and reply with its own result, which the model reads; the agent then ends
- *  interrupted. */
+/** What an office tool's call gets beside its arguments: the yian call id, a signal that aborts the call, a signal
+ *  that aborts when the agent that made the call takes an interrupt (Esc) while it runs, and one that aborts once a
+ *  steer waits for that agent, as yian's `ToolContext.steered` does (aborted at the start when one already waits). A
+ *  tool that watches `interrupted` may stop early and reply with its own result, which the model reads; the agent
+ *  then ends interrupted. One that watches `steered` may end its wait and reply with what it has; the model reads
+ *  the steer after it. */
 export interface ToolCallOptions {
   readonly callId?: string
   readonly signal?: AbortSignal
   readonly interrupted?: AbortSignal
+  readonly steered?: AbortSignal
+}
+
+/** The signals of a tool call the worker relays to the office tool: its interrupt and its steer. */
+export type CallSignals = Pick<ToolCallOptions, "interrupted" | "steered">
+
+/** `signals` without the ones not given, so a call made without one gets no such key. */
+function given(signals: CallSignals): CallSignals {
+  return {
+    ...(signals.interrupted === undefined ? {} : { interrupted: signals.interrupted }),
+    ...(signals.steered === undefined ? {} : { steered: signals.steered }),
+  }
 }
 
 /** A tool the office runs for a worker: its declared description and schema, and the call itself. */
@@ -482,7 +516,8 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
    * Runs tool `name` of `group` with `args`; the result must be JSON data. `callId` is the yian call id (it starts
    * with `${worker.job.run_id}/`). It may return Yian's `pending()` instead: the reply is then `{pending: true}`, and
    * the office answers the call later by `complete` on `callId`. `options.interrupted` aborts when the worker says the
-   * agent that made the call took an interrupt while it runs.
+   * agent that made the call took an interrupt while it runs, and `options.steered` when it says a steer waits for
+   * that agent.
    */
   toolCall(
     worker: W,
@@ -490,7 +525,7 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
     name: string,
     args: Record<string, unknown>,
     callId: string,
-    options?: { interrupted?: AbortSignal },
+    options?: CallSignals,
   ): unknown
   /**
    * Decides whether the model's tool call `call` may run, before it starts (`call.callId` starts with
@@ -548,18 +583,19 @@ export class BaseHandlers implements WorkerHandlers {
     throw new Error("nobody is here to answer")
   }
 
-  /** Calls tool `name` of `group` with `args` and `{ callId }`, and its `interrupted` signal when it has one. */
+  /** Calls tool `name` of `group` with `args` and `{ callId }`, and its `interrupted` and `steered` signals when it
+   *  has them. */
   async toolCall(
     _worker: unknown,
     group: string,
     name: string,
     args: Record<string, unknown>,
     callId?: string,
-    { interrupted }: { interrupted?: AbortSignal } = {},
+    signals: CallSignals = {},
   ): Promise<unknown> {
     const named = Object.hasOwn(this.tools, group) ? this.tools[group]! : {}
     if (!Object.hasOwn(named, name)) throw new Error(noTool(group, name))
-    return await named[name]!.call(args, interrupted === undefined ? { callId } : { callId, interrupted })
+    return await named[name]!.call(args, { callId, ...given(signals) })
   }
 
   /** Refuses every call: a host whose runs call tools decides each one (its gate), so one that doesn't fails closed. */
@@ -591,7 +627,7 @@ export async function answerRequest(
   frame: Frame,
   handlers: WorkerHandlers,
   worker: JobWorker,
-  { log = noLog, interrupted }: { log?: RpcLog; interrupted?: AbortSignal } = {},
+  { log = noLog, ...signals }: { log?: RpcLog } & CallSignals = {},
 ): Promise<Frame> {
   const kind = frame.type
   if (!isRequest(kind)) throw new TypeError("answerRequest was handed a frame that isn't a request")
@@ -611,8 +647,7 @@ export async function answerRequest(
         return isPending(answer) ? { ...head, pending: true } : { ...head, answer: answer ?? null }
       }
       case "tool_call": {
-        const options = interrupted === undefined ? {} : { interrupted }
-        const result = await handlers.toolCall(worker, args.group, args.name, args.args, args.callId, options)
+        const result = await handlers.toolCall(worker, args.group, args.name, args.args, args.callId, given(signals))
         return isPending(result) ? { ...head, pending: true } : { ...head, result: result ?? null }
       }
       case "gate_call":
@@ -653,12 +688,12 @@ export async function replyTo(
   frame: Frame,
   handlers: WorkerHandlers,
   worker: JobWorker,
-  { log = noLog, interrupted }: { log?: RpcLog; interrupted?: AbortSignal } = {},
+  { log = noLog, ...signals }: { log?: RpcLog } & CallSignals = {},
 ): Promise<void> {
   const kind = frame.type
   if (!isRequest(kind)) return
   try {
-    await channel.send(await answerRequest(frame, handlers, worker, { log, interrupted }))
+    await channel.send(await answerRequest(frame, handlers, worker, { log, ...signals }))
   } catch (error) {
     if (isInstance(error, ChannelClosed)) return
     const name = errorName(error)
@@ -670,11 +705,11 @@ export async function replyTo(
 }
 
 /** The office's end of a worker's requests on `channel`: each request frame is answered in the background
- *  (`replyTo`), a tool call with an `interrupted` signal of its own, which the worker's `tool_interrupt` frame naming
- *  that request aborts. */
+ *  (`replyTo`), a tool call with an `interrupted` and a `steered` signal of its own, which the worker's
+ *  `tool_interrupt` and `tool_steer` frames naming that request abort. */
 export class OfficeRequests {
-  /** Each tool call in flight's interrupt, by its request id. */
-  readonly #interrupts = new Map<number, AbortController>()
+  /** Each tool call in flight's interrupt and steer, by its request id. */
+  readonly #calls = new Map<number, { readonly interrupt: AbortController; readonly steer: AbortController }>()
 
   constructor(
     private readonly channel: Pick<Channel, "send">,
@@ -682,25 +717,28 @@ export class OfficeRequests {
   ) {}
 
   /** Takes `frame` from `worker`, answered by `handlers`: a request (never awaited, since it may wait for a person),
-   *  a tool call that says `interrupted` starting with its signal aborted; or a tool interrupt, which aborts the
-   *  signal of the tool call in flight it names and is otherwise ignored. False for any other frame, which is the
-   *  caller's. */
+   *  a tool call that says `interrupted` or `steered` starting with that signal aborted; or a tool interrupt or tool
+   *  steer, which aborts that signal of the tool call in flight it names and is otherwise ignored. False for any
+   *  other frame, which is the caller's. */
   take(frame: Frame, handlers: WorkerHandlers, worker: JobWorker): boolean {
     const kind = frame.type
-    if (kind === TOOL_INTERRUPT) {
-      if (typeof frame.id === "number") this.#interrupts.get(frame.id)?.abort()
+    if (kind === TOOL_INTERRUPT || kind === TOOL_STEER) {
+      const call = typeof frame.id === "number" ? this.#calls.get(frame.id) : undefined
+      ;(kind === TOOL_INTERRUPT ? call?.interrupt : call?.steer)?.abort()
       return true
     }
     if (!isRequest(kind)) return false
-    // A repeated id keeps the first call's interrupt: the worker numbers its requests once each.
-    const id = kind === "tool_call" && typeof frame.id === "number" && !this.#interrupts.has(frame.id) ? frame.id : null
-    const interrupt = id === null ? undefined : new AbortController()
-    if (id !== null) this.#interrupts.set(id, interrupt!)
-    if (frame.interrupted === true) interrupt?.abort()
+    // A repeated id keeps the first call's signals: the worker numbers its requests once each.
+    const id = kind === "tool_call" && typeof frame.id === "number" && !this.#calls.has(frame.id) ? frame.id : null
+    const call = id === null ? undefined : { interrupt: new AbortController(), steer: new AbortController() }
+    if (id !== null) this.#calls.set(id, call!)
+    if (frame.interrupted === true) call?.interrupt.abort()
+    if (frame.steered === true) call?.steer.abort()
     const done = () => {
-      if (id !== null && this.#interrupts.get(id) === interrupt) this.#interrupts.delete(id)
+      if (id !== null && this.#calls.get(id) === call) this.#calls.delete(id)
     }
-    void replyTo(this.channel, frame, handlers, worker, { ...this.options, interrupted: interrupt?.signal }).finally(done)
+    const signals = call === undefined ? {} : { interrupted: call.interrupt.signal, steered: call.steer.signal }
+    void replyTo(this.channel, frame, handlers, worker, { ...this.options, ...signals }).finally(done)
     return true
   }
 }

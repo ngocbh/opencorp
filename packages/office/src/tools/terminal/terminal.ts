@@ -24,9 +24,12 @@
  *
  *  **Waits.** A reply waits at most two minutes; a held call waits in yian for its card instead. Each call's wait ends
  *  with the call's signal, with its interrupt (the agent's, as yian passes it, which reaches a call that came after
- *  `interruptWaits` too) and with `interruptWaits`, and a call stopped before it acts types nothing. A message for the
- *  agent while a call waits (`messageArrived`) ends that wait too, with its command running on, so the agent reads it
- *  at its next step. Calls on one shell queue; calls on different shells run together.
+ *  `interruptWaits` too) and with `interruptWaits`, and a call stopped before it acts types nothing. A steer waiting
+ *  for the agent (yian's `ctx.steered`: a message it hasn't read, one sent while its model wrote the call included)
+ *  ends the wait too, once the call has acted, with its command running on, so the agent reads it at its next step.
+ *  In a PTY shell that is never before the shell has checked for a secret prompt (`PROMPT_CHECK_MS`) since the call
+ *  acted, so a prompt that shows at once is in the reply. Calls on one shell queue; calls on different shells run
+ *  together.
  *
  *  **A call cut off stops its command.** A `run` whose signal aborts before its reply
  *  returns stops the command it waits on, as the owner's Ctrl-C does, and replies once it has ended (or after a few
@@ -36,10 +39,12 @@
  *  command ran or was refused, and the reply the agent read, are in the run's log.
  *
  *  **Notes.** A host that takes them (`ended`) gets one note when a command whose reply said it runs on ends: its
- *  shell, the command, its exit and its last lines, fenced, keyed by the shell and the command's number there. None comes when
- *  the agent interrupted the command or closed its shell, when a read or type the agent was waiting on returned the
- *  end, or once the terminal has closed. A note leaves the agent's place in the view where it was. The shell's record
- *  keeps the key of each note owed (`told`), so the host can send a note of it after a restart (`restoredNote`).
+ *  shell, the command, its exit and its last lines, fenced, keyed by the shell and the command's number there. None
+ *  comes when the agent interrupted the command or closed its shell, when a read or type the agent was waiting on
+ *  returned the end, or once the terminal has closed. A command whose reply a steer ended early, which then waits at a
+ *  secret prompt, gets one note saying so, keyed `:secret`, unless a read or type waiting on it replies with the
+ *  prompt. A note leaves the agent's place in the view where it was. The shell's record keeps the key of each note
+ *  owed (`told`), so the host can send a note of it after a restart (`restoredNote`).
  *
  *  **The owner's close** (`ownerClose`) ends a shell as the agent's close does, signed by the owner: the shell's record
  *  says who closed it, the host gets one quiet note of it, naming the command it stopped, in place of that command's
@@ -51,9 +56,11 @@ import { type Result, type RunOptions, SandboxUnavailable } from "../../runtime/
 import { SshPolicy } from "../../runtime/sandbox/ssh_policy.ts"
 import { elapsed, fence, lastLines, oneLine } from "../../util/lines.ts"
 import { PipeShell } from "./pipes.ts"
-import { PtyShell, type Reply, type ShellHost, shellKind, type ShellState } from "./shell.ts"
+import { PROMPT_CHECK_MS, PtyShell, type Reply, type ShellHost, shellKind, type ShellState } from "./shell.ts"
 import type { InstrumentRecord, RecordedCommand } from "./record.ts"
-import { cardArgs, type Parsed, parseArgs, refusalText, replyText, type ToolName, TOOLS, toolSpecs } from "./tools.ts"
+import {
+  cardArgs, type Parsed, parseArgs, refusalText, replyText, secretNote, type ToolName, TOOLS, toolSpecs,
+} from "./tools.ts"
 
 /** How a terminal's shells run: on PTYs, in `sandbox` (null: none, which only the owner allows); or as the
  *  workspace's pipes, each command its own call in the workspace's sandbox.
@@ -138,14 +145,20 @@ export function decidedFor(plan: CommandPlan & { decide: true }, approved: boole
 export type TerminalShell = PtyShell | PipeShell
 
 /** A tool as the model calls it: an `OfficeTool`, declared here by its shape. `callId` is the yian call's, which a
- *  held call's card names; `signal` stops the call, and so does `interrupted`, the agent's interrupt while it runs. */
+ *  held call's card names; `signal` stops the call, and so does `interrupted`, the agent's interrupt while it runs;
+ *  `steered`, a steer waiting for the agent, ends its reply's wait. */
 export interface TerminalTool {
   readonly description: string
   readonly parameters: Record<string, unknown>
-  call(
-    args: Record<string, unknown>,
-    options?: { readonly callId?: string; readonly signal?: AbortSignal; readonly interrupted?: AbortSignal },
-  ): Promise<unknown>
+  call(args: Record<string, unknown>, options?: CallOptions): Promise<unknown>
+}
+
+/** What a call gets beside its arguments, as yian's `ToolContext` gives them (see `TerminalTool`). */
+interface CallOptions {
+  readonly callId?: string
+  readonly signal?: AbortSignal
+  readonly interrupted?: AbortSignal
+  readonly steered?: AbortSignal
 }
 
 /** What a call returns when its stop came after the gate let it run, before it started. */
@@ -235,17 +248,21 @@ interface Running {
   stopped: string | null
   /** A reply told the agent it runs on, and nothing since told it of its end: its end gets a note. */
   told: boolean
+  /** A reply a steer ended early told the agent it runs on; and whether its note of a secret prompt went. */
+  early: boolean
+  secretTold: boolean
   /** How it ended, once it has: its exit, why it had none, and how long it ran, in seconds. */
   end: { exit: number | null; stopped: string | null; duration: number } | null
   readonly ended: PromiseWithResolvers<void>
 }
 
 /** How one call runs: the yian call's id, its signal, and what the gate decided for it (null: nothing), taken as the
- *  call started. Its reply's wait also ends early on `early`, a message for the agent, with its command running on. */
+ *  call started. Its reply's wait also ends early on `steered`, a steer waiting for the agent, with its command
+ *  running on. */
 interface Call {
   readonly callId: string | undefined
   readonly signal: AbortSignal
-  readonly early: AbortSignal
+  readonly steered: AbortSignal
   readonly decided: Decided | null
 }
 
@@ -267,9 +284,6 @@ export class Terminal {
   private readonly entries: Entry[] = []
   /** The calls running now, each stopped by its controller: `interruptWaits` ends them. */
   private readonly calls = new Set<AbortController>()
-  /** The agent's calls running now, a held one the owner approved among them, each one's wait ended early by its
-   *  controller: `messageArrived` ends them. */
-  private readonly early = new Set<AbortController>()
   private made = 0
   private closed = false
 
@@ -292,7 +306,7 @@ export class Terminal {
         : null
   }
 
-  /** The model-facing tools: description, parameters, `call(args, { callId, signal })`. */
+  /** The model-facing tools: description, parameters, `call(args, { callId, signal, interrupted, steered })`. */
   tools(): Record<ToolName, TerminalTool> {
     const specs = toolSpecs(this.host.shells.kind, this.notes)
     const tool = (name: ToolName): TerminalTool => ({
@@ -388,14 +402,6 @@ export class Terminal {
     for (const call of [...this.calls]) call.abort()
   }
 
-  /** A message for the agent arrived: every reply the agent's calls wait on comes now, a held call the owner approved
-   *  included, so the agent reads the message at its next step. Their commands run on, as after the wait, and a call
-   *  queued behind another goes on. A call that starts after it, as one the model asked for while the message came,
-   *  waits on: nothing here knows whether the agent has read it (yian#1806). */
-  messageArrived(): void {
-    for (const call of [...this.early]) call.abort()
-  }
-
   /** The owner, `by`, closes shell `id` from their client, as the agent's close does: the shell ends, and so does its
    *  command. Its record says who closed it, and the host gets one quiet note of it, signed by the shell, which names
    *  the command it stopped in place of that command's own note. Nothing for a shell still starting, or one that has
@@ -447,11 +453,7 @@ export class Terminal {
     )
   }
 
-  private async call(
-    tool: ToolName,
-    args: Record<string, unknown>,
-    options: { readonly callId?: string; readonly signal?: AbortSignal; readonly interrupted?: AbortSignal },
-  ): Promise<unknown> {
+  private async call(tool: ToolName, args: Record<string, unknown>, options: CallOptions): Promise<unknown> {
     // Taken first, whatever the call does next: a refused call leaves no decision behind.
     const decided = this.host.permissions.decided(options.callId)
     if (this.closed) return refusalText(CLOSED)
@@ -459,14 +461,13 @@ export class Terminal {
     if (typeof parsed === "string") return refusalText(parsed)
     const own = new AbortController()
     this.calls.add(own)
-    const early = new AbortController()
-    this.early.add(early)
     // The agent's interrupt reaches a call that came after `interruptWaits` cut off the ones it found: Esc, say, while
     // the call was on its way.
     const stops = [own.signal, options.signal, options.interrupted].filter((s) => s !== undefined)
     const signal = AbortSignal.any(stops)
     try {
-      const call: Call = { callId: options.callId, signal, early: early.signal, decided }
+      const steered = options.steered ?? new AbortController().signal
+      const call: Call = { callId: options.callId, signal, steered, decided }
       if (parsed.tool === "run") return await this.run(parsed, call)
       const entry = this.find(parsed.shell)
       if (entry === undefined) return refusalText(this.unknown(parsed.shell))
@@ -480,7 +481,7 @@ export class Terminal {
           case "read": {
             const from = parsed.from === undefined ? {} : { from: parsed.from }
             return await this.waiting(entry, async () => {
-              const reply = await shell.read({ waitMs: parsed.waitMs, signal: waitSignal(call), ...from })
+              const reply = await shell.read({ waitMs: parsed.waitMs, signal: this.waitSignal(call), ...from })
               return this.text(entry, shell, reply, false, endedEarly(call))
             })
           }
@@ -502,7 +503,6 @@ export class Terminal {
       })
     } finally {
       this.calls.delete(own)
-      this.early.delete(early)
     }
   }
 
@@ -567,10 +567,11 @@ export class Terminal {
   ): Promise<string> {
     const running: Running = {
       command: parsed.command, started: performance.now(), from: shell.viewEnd(), n: ++entry.commands,
-      seen: false, stopped: null, told: false, end: null, ended: Promise.withResolvers<void>(),
+      seen: false, stopped: null, told: false, early: false, secretTold: false, end: null,
+      ended: Promise.withResolvers<void>(),
     }
     entry.running = running
-    const reply = await shell.run(parsed.command, parsed.waitMs, waitSignal(call), call.callId)
+    const reply = await shell.run(parsed.command, parsed.waitMs, this.waitSignal(call), call.callId)
     // Refused by the shell itself: it never started.
     if (!running.seen && entry.running === running) entry.running = null
     if (!call.signal.aborted && running.seen && reply.refused === undefined && runsOn(reply)) {
@@ -606,6 +607,7 @@ export class Terminal {
       }
       return
     }
+    if (state.status === "waiting") this.secret(entry, running, state)
     if (state.status === "running" || state.status === "waiting") return
     entry.running = null
     const duration = (performance.now() - running.started) / 1000
@@ -648,6 +650,30 @@ export class Terminal {
     }
   }
 
+  /** `running`, which a reply a steer ended early told the agent runs on, waits at a secret prompt: the host gets one
+   *  note of it, as the reply would have said, unless a read or type waiting on the shell replies with it, or the
+   *  terminal has closed. The command's end still gets its own note. */
+  private secret(entry: Entry, running: Running, state: ShellState): void {
+    if (state.waiting !== "secret" || !running.told || !running.early || running.secretTold || this.closed) return
+    if (entry.waits > 0) return
+    running.secretTold = true
+    const command = oneLine(running.command, NOTE_COMMAND)
+    const head = `${entry.name}: \`${command}\` is waiting for the owner to type at a password prompt.`
+    const text = `${head}\n${secretNote(this.host.permissions.mode() === "dontAsk")}`
+    try {
+      this.host.ended?.({ key: `${noteKey(entry, running)}:secret`, shell: entry.name, text })
+    } catch {
+      // The host's notes failed; the prompt still holds the shell for the owner.
+    }
+  }
+
+  /** What ends `call`'s reply's wait: its signal, and a steer waiting for the agent, in a PTY shell no sooner than
+   *  the shell's checks for a secret prompt (`PROMPT_CHECK_MS`) after the wait began, so a prompt that shows at once
+   *  is in the reply rather than a promise of a note the prompt would hold back. */
+  private waitSignal(call: Call): AbortSignal {
+    return AbortSignal.any([call.signal, this.interactive ? noSooner(call.steered, PROMPT_CHECK_MS) : call.steered])
+  }
+
   /** Runs `job`, a read or type the agent waits on in `entry`'s shell. A command that ended while it waited gets its
    *  note once no such call waits, unless a reply carried its end (`text`). */
   private async waiting<T>(entry: Entry, job: () => Promise<T>): Promise<T> {
@@ -682,7 +708,7 @@ export class Terminal {
       return this.text(entry, shell, shell.refusal(decided.approved ? MOVED_SINCE : MOVED))
     }
     if (call.signal.aborted) return STOPPED
-    const reply = await shell.type(text, { enter, waitMs, signal: waitSignal(call) })
+    const reply = await shell.type(text, { enter, waitMs, signal: this.waitSignal(call) })
     return this.text(entry, shell, reply, false, endedEarly(call))
   }
 
@@ -770,27 +796,37 @@ export class Terminal {
   }
 
   /** `reply` as the model reads it; with `told`, the note that the agent will be told of its command's end, and with
-   *  `early`, that a message ended its wait. A reply that shows the shell's command has ended carries the end of one
+   *  `early`, that a steer ended its wait. A reply that shows the shell's command has ended carries the end of one
    *  whose note waited on it. */
   private text(entry: Entry, shell: TerminalShell, reply: Reply, told = false, early = false): string {
     if (entry.untold !== null && !runsOn(reply)) {
       this.untell(entry, entry.untold)
       entry.untold = null
     }
+    if (early && reply.status === "running" && entry.running !== null) entry.running.early = true
     const dontAsk = this.host.permissions.mode() === "dontAsk"
     const note = noExitNote(entry, reply)
     return replyText(reply, { name: entry.name, error: shell.state().error, dontAsk, runsOn: told, note, early })
   }
 }
 
-/** What ends `call`'s reply's wait: its signal, and a message for the agent. */
-function waitSignal(call: Call): AbortSignal {
-  return AbortSignal.any([call.signal, call.early])
+/** `signal`, aborted no sooner than `ms` from now: at once when it aborts later, else once `ms` have passed. */
+function noSooner(signal: AbortSignal, ms: number): AbortSignal {
+  const at = performance.now() + ms
+  const after = new AbortController()
+  const fire = () => {
+    const left = at - performance.now()
+    if (left <= 0) return after.abort()
+    setTimeout(() => after.abort(), left).unref?.()
+  }
+  if (signal.aborted) fire()
+  else signal.addEventListener("abort", fire, { once: true })
+  return after.signal
 }
 
-/** Whether a message for the agent, not the call's own end, ended `call`'s wait. */
+/** Whether a steer waiting for the agent, not the call's own end, ended `call`'s wait. */
 function endedEarly(call: Call): boolean {
-  return call.early.aborted && !call.signal.aborted
+  return call.steered.aborted && !call.signal.aborted
 }
 
 /** Why `reply`'s exit is null, for its note: the command still runs, or how the last command the terminal ran ended

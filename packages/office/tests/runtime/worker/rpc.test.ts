@@ -835,18 +835,19 @@ test("concurrent requests get their own replies", async () => {
   expect(order).toEqual(["b", "a"])
 })
 
-/** An office tool that waits for its call's interrupt, then returns `stopped`; `seen` gets each call's options. */
-function interruptible(): { seen: unknown[]; tool: OfficeTool } {
+/** An office tool that waits for its call's `signal` (its interrupt, or its steer), then returns `stopped`; `seen`
+ *  gets each call's options. */
+function interruptible(signal: "interrupted" | "steered" = "interrupted"): { seen: unknown[]; tool: OfficeTool } {
   const seen: unknown[] = []
   const tool: OfficeTool = {
     description: "Wait for the interrupt.",
     parameters: { type: "object", properties: {}, required: [] },
     call: (_args, options) => {
       seen.push(options)
-      const interrupted = options?.interrupted
-      if (interrupted === undefined) return "no interrupt"
-      if (interrupted.aborted) return "stopped at once"
-      return new Promise((resolve) => interrupted.addEventListener("abort", () => resolve("stopped"), { once: true }))
+      const aborts = options?.[signal]
+      if (aborts === undefined) return "no interrupt"
+      if (aborts.aborted) return "stopped at once"
+      return new Promise((resolve) => aborts.addEventListener("abort", () => resolve("stopped"), { once: true }))
     },
   }
   return { seen, tool }
@@ -876,15 +877,97 @@ test("a remote tool's interrupt reaches the office tool as its call's interrupte
   expect(sentFrames(frames, "tool_interrupt")).toHaveLength(2)
 })
 
-test("an interrupt after a remote tool's reply sends nothing", async () => {
+test("a steer for the agent while a remote tool runs reaches the office tool as its call's steered signal", async () => {
+  const frames = recordFrames()
+  const { seen, tool: wait } = interruptible("steered")
+  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { wait } } }), { concurrent: true })
+  const tools = new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("wait", wait))] })
+  const steer = new AbortController()
+  const called = tools.invoke("wait", {}, { callId: "r1/reply/1/0", steered: steer.signal })
+  await waitFor(() => seen.length === 1, { timeout: 5000, what: "the office tool to run" })
+  steer.abort()
+  expect(await called).toBe("stopped")
+  // Once, as the worker sent it and as the office read it; the call's interrupt is its own.
+  expect(sentFrames(frames, "tool_steer")).toEqual([{ type: "tool_steer", id: 1 }, { type: "tool_steer", id: 1 }])
+  expect((seen[0] as { interrupted: AbortSignal }).interrupted.aborted).toBe(false)
+  expect(sentFrames(frames, "tool_interrupt")).toEqual([])
+
+  // A steer waited as the call started (it came while the model wrote the call): the call's own frame says so, and
+  // the office tool starts with its signal aborted.
+  const already = new AbortController()
+  already.abort()
+  expect(await tools.invoke("wait", {}, { callId: "r1/reply/1/1", steered: already.signal })).toBe("stopped at once")
+  expect(sentFrames(frames, "tool_call").map((f) => f.steered)).toEqual([undefined, undefined, true, true])
+  expect(sentFrames(frames, "tool_steer")).toHaveLength(2)
+})
+
+test("an interrupt or a steer after a remote tool's reply sends nothing", async () => {
   const frames = recordFrames()
   const rpc = await officeEnd(new BaseHandlers({ tools: { toolbox: { shout } } }), { concurrent: true })
   const tools = new ToolSet({ toolbox: [remoteTool(rpc, "toolbox", toolSpec("shout", shout))] })
   const interrupt = new AbortController()
-  expect(await tools.invoke("shout", { text: "hi" }, { callId: "r1/n/1/0", interrupted: interrupt.signal })).toBe("HI")
+  const steer = new AbortController()
+  const signals = { interrupted: interrupt.signal, steered: steer.signal }
+  expect(await tools.invoke("shout", { text: "hi" }, { callId: "r1/n/1/0", ...signals })).toBe("HI")
   interrupt.abort()
+  steer.abort()
   await Bun.sleep(20)
   expect(sentFrames(frames, "tool_interrupt")).toEqual([])
+  expect(sentFrames(frames, "tool_steer")).toEqual([])
+})
+
+test("a tool steer aborts only the steered signal of the tool call it names, and one for no call in flight is ignored", async () => {
+  const { seen, tool: wait } = interruptible("steered")
+  const handlers = new BaseHandlers({ tools: { g: { wait } } })
+  const requests = new OfficeRequests({ send: async () => {} }, { log: () => {} })
+  const worker = workerFor(handlers)
+  const frame = (id: number) => ({ type: "tool_call", id, group: "g", name: "wait", args: {}, call_id: `r1/n/1/${id}` })
+  expect(requests.take({ type: "tool_steer", id: 9 }, handlers, worker)).toBe(true)
+  expect(requests.take(frame(1), handlers, worker)).toBe(true)
+  expect(requests.take(frame(2), handlers, worker)).toBe(true)
+  expect(requests.take({ ...frame(3), steered: true }, handlers, worker)).toBe(true)
+  await waitFor(() => seen.length === 3, { timeout: 5000, what: "the calls to run" })
+  const [first, second, third] = seen as { interrupted: AbortSignal; steered: AbortSignal }[]
+  expect([first!.steered.aborted, second!.steered.aborted, third!.steered.aborted]).toEqual([false, false, true])
+  requests.take({ type: "tool_steer", id: 2 }, handlers, worker)
+  expect([first!.steered.aborted, second!.steered.aborted]).toEqual([false, true])
+  expect(second!.interrupted.aborted).toBe(false)
+  requests.take({ type: "tool_steer", id: 1 }, handlers, worker)
+  expect(first!.steered.aborted).toBe(true)
+})
+
+test("a tool steer for a call that has finished, or with a malformed id, is ignored, as is a steered that isn't true", async () => {
+  const { seen, tool: wait } = interruptible("steered")
+  const handlers = new BaseHandlers({ tools: { g: { wait } } })
+  const sent: Frame[] = []
+  const requests = new OfficeRequests({ send: async (frame) => void sent.push(frame) }, { log: () => {} })
+  const worker = workerFor(handlers)
+  const frame = (id: number, extra: Frame = {}) => ({
+    type: "tool_call", id, group: "g", name: "wait", args: {}, call_id: `r1/n/1/${id}`, ...extra,
+  })
+  // Only `steered: true` starts a call with its steer aborted.
+  expect(requests.take(frame(1, { steered: "yes" }), handlers, worker)).toBe(true)
+  expect(requests.take(frame(2, { steered: 1 }), handlers, worker)).toBe(true)
+  await waitFor(() => seen.length === 2, { timeout: 5000, what: "both calls to run" })
+  const [first, second] = seen as { steered: AbortSignal }[]
+  expect([first!.steered.aborted, second!.steered.aborted]).toEqual([false, false])
+  // A steer whose id isn't a request's number names no call.
+  for (const id of ["1", 1.5, null, { id: 1 }]) {
+    expect(requests.take({ type: "tool_steer", id }, handlers, worker)).toBe(true)
+  }
+  expect(requests.take({ type: "tool_steer" }, handlers, worker)).toBe(true)
+  expect([first!.steered.aborted, second!.steered.aborted]).toEqual([false, false])
+  expect(sent).toEqual([])
+  // The first call ends on its steer; one for it after it has replied finds no call, and nothing else moves.
+  requests.take({ type: "tool_steer", id: 1 }, handlers, worker)
+  await waitFor(() => sent.length === 1, { timeout: 5000, what: "the first call's reply" })
+  expect(sent[0]).toMatchObject({ type: "tool_result", id: 1, result: "stopped" })
+  expect(requests.take({ type: "tool_steer", id: 1 }, handlers, worker)).toBe(true)
+  await Bun.sleep(20)
+  expect(sent).toHaveLength(1)
+  expect(second!.steered.aborted).toBe(false)
+  requests.take({ type: "tool_steer", id: 2 }, handlers, worker)
+  await waitFor(() => sent.length === 2, { timeout: 5000, what: "the second call's reply" })
 })
 
 test("a tool interrupt aborts only the tool call it names, and one for no call in flight is ignored", async () => {

@@ -60,6 +60,7 @@ import { byPerson, type Delivery, type Job, MESSAGE_MOVED, type Seed, STOP_REASO
 import {
   type AskRequest,
   BaseHandlers,
+  type CallSignals,
   errnoFields,
   errorKind,
   errorName,
@@ -2025,11 +2026,7 @@ export class SessionActor implements LiveCalls {
       // A reply means the worker took it, though the channel closed before the frame's write reported back.
       if (sent || p.reply !== null) {
         p.live = true
-        if (p.delivery.op === "send") {
-          run.turnPending = true
-          // A queued message is for the next turn: the agent's waits go on.
-          if (p.delivery.inbox !== this.#chat.queue) this.#messageArrived()
-        }
+        if (p.delivery.op === "send") run.turnPending = true
         return false
       }
       // The worker read its last frame meanwhile; its exit decides the next spawn.
@@ -2742,7 +2739,7 @@ export class SessionActor implements LiveCalls {
         name: string,
         args: Record<string, unknown>,
         callId?: string,
-        options: { interrupted?: AbortSignal } = {},
+        options: CallSignals = {},
       ): Promise<unknown> {
         if (actor.#closed) return Promise.reject(new Error("the office is stopping"))
         const call = () => super.toolCall(worker, group, name, args, callId, options)
@@ -3952,21 +3949,6 @@ export class SessionActor implements LiveCalls {
   /** Who answers for the person: the session's opener, else the pinned CEO. */
   async #owner(session: SessionRecord): Promise<string | null> {
     return session.opened_by ?? (await this.#pinsOf(session)).ceo
-  }
-
-  /** A message reached the running agent's inbox: the replies its terminal, Codex and Claude Code calls wait on come
-   *  now, their commands and turns going on, so it reads the message at its next step. A call the model asked for
-   *  while the message came starts after it and waits on, since Yian doesn't yet tell a tool that a steer waits
-   *  unread (yian#1806). */
-  #messageArrived(): void {
-    const { terminal, codex, claude } = this.#spec ?? {}
-    for (const instrument of [terminal, codex, claude]) {
-      try {
-        instrument?.messageArrived()
-      } catch (error) {
-        this.#log(`session ${this.sessionId}: a wait can't be ended (${errorName(error)})`)
-      }
-    }
   }
 
   /** Interrupts the workspace's file calls and cuts off the terminal's calls in flight, whose commands then stop:

@@ -171,24 +171,27 @@ export function openTerminal(o: {
     dir,
     /** The notes the host got of commands that ended, in order. */
     notes,
-    /** Calls tool `name` with `args`, as yian would: with a fresh call id unless given, its signal and the agent's
-     *  interrupt, through the permissions' gate, when they have one, first. */
+    /** Calls tool `name` with `args`, as yian would: with a fresh call id unless given, its signal, the agent's
+     *  interrupt and its steer signal, through the permissions' gate, when they have one, first. */
     call: async (
       name: keyof typeof tools,
       args: Record<string, unknown>,
-      options: { callId?: string; signal?: AbortSignal; interrupted?: AbortSignal } = {},
+      options: { callId?: string; signal?: AbortSignal; interrupted?: AbortSignal; steered?: AbortSignal } = {},
     ) => {
       const callId = options.callId ?? `r/n/${++calls}/0`
       const signal = options.signal ? { signal: options.signal } : {}
       const interrupted = options.interrupted ? { interrupted: options.interrupted } : {}
+      const steered = options.steered ? { steered: options.steered } : {}
       const out = gate === undefined ? null : await gate.decide(terminal, name, args, callId, options.signal)
-      return out !== null ? out : tools[name].call(args, { callId, ...signal, ...interrupted })
+      return out !== null ? out : tools[name].call(args, { callId, ...signal, ...interrupted, ...steered })
     },
-    /** The owner's Yes to held call `callId`: yian releases it, and the call is made again under its id. */
-    approve: (callId: string, o: { signal?: AbortSignal } = {}) => {
+    /** The owner's Yes to held call `callId`: yian releases it, and the call is made again under its id, with its
+     *  signal and its steer signal when given. */
+    approve: (callId: string, o: { signal?: AbortSignal; steered?: AbortSignal } = {}) => {
       if (gate === undefined) throw new Error("these permissions have no gate")
       const call = gate.approve(callId)
-      return tools[call.name as keyof typeof tools].call(call.args, { callId, ...(o.signal ? { signal: o.signal } : {}) })
+      const signals = { ...(o.signal ? { signal: o.signal } : {}), ...(o.steered ? { steered: o.steered } : {}) }
+      return tools[call.name as keyof typeof tools].call(call.args, { callId, ...signals })
     },
     /** The owner's live view of shell `id` so far, decoded. */
     live: (id: string) => new TextDecoder().decode(Buffer.concat(live.get(id) ?? [])),

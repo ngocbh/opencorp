@@ -491,11 +491,13 @@ test("with notes, a wait left out is five seconds and the descriptions say not t
   expect(waits(specs)).toEqual(Array(3).fill("Seconds to wait for the command to end before replying: default 5, at most 120."))
   expect(specs.run.description).toContain("So don't wait for a long command: keep working on what doesn't need its result")
   expect(specs.run.description).toContain(
-    "Pass a longer `wait` only when your next step needs the result and there is nothing else to do. A message " +
-      "that reaches you while you wait ends the wait early.",
+    "Pass a longer `wait` only when your next step needs the result and there is nothing else to do. A new " +
+      "message for you ends the wait early, even one sent while you wrote the call.",
   )
   expect(specs.read.description).toContain("don't poll: read only when its output lets you do useful work now")
-  expect(specs.read.description).toContain("A message that reaches you while you wait ends the wait early.")
+  expect(specs.read.description).toContain(
+    "A new message for you ends the wait early, even one sent while you wrote the call.",
+  )
   const shell = () => t.terminal.shell("sh_1")!
   await t.call("run", { command: "echo hi", why: "x" })
   const read = spyOn(shell(), "read")
@@ -512,12 +514,13 @@ test("with notes, a wait left out is five seconds and the descriptions say not t
   expect(plain.read.description).toContain("use a long wait, not polling with short ones")
 })
 
-test("a message for the agent ends a run's or a read's wait at once; the command runs on, and its note still comes", async () => {
+test("a steer for the agent ends a run's or a read's wait at once; the command runs on, and its note still comes", async () => {
   const { t, fake } = notedTerminal()
   const started = performance.now()
-  const running = t.call("run", { command: "make all", why: "x", wait: 120 })
+  const steer = new AbortController()
+  const running = t.call("run", { command: "make all", why: "x", wait: 120 }, { steered: steer.signal })
   await waitFor(() => fake.running().includes("make all"), { what: "the command" })
-  t.terminal.messageArrived()
+  steer.abort()
   const reply = json(await running)
   expect(performance.now() - started).toBeLessThan(2000)
   expect(reply).toMatchObject({ shell: "shell 1", status: "running", exit: null })
@@ -528,9 +531,10 @@ test("a message for the agent ends a run's or a read's wait at once; the command
   )
   expect(fake.running()).toEqual(["make all"])
   // A read waiting on it ends early too, saying so.
-  const reading = t.call("read", { shell: "shell 1", wait: 120 })
+  const steerRead = new AbortController()
+  const reading = t.call("read", { shell: "shell 1", wait: 120 }, { steered: steerRead.signal })
   await Bun.sleep(50)
-  t.terminal.messageArrived()
+  steerRead.abort()
   const read = json(await reading)
   expect(read).toMatchObject({ status: "running" })
   expect(read.note).toBe("Your wait ended early: a message came for you, which you'll read next. No exit yet: the command is still running.")
@@ -540,25 +544,86 @@ test("a message for the agent ends a run's or a read's wait at once; the command
   fake.end("make all", 0, "built\n")
   await waitFor(() => t.notes.length === 1, { what: "the note" })
   expect(headings(t)).toEqual(["shell 1: `make all` ended, exit 0"])
-  // A message that came before a call doesn't end that call's wait: nothing here knows whether the agent read it,
-  // as when it came while the model wrote the call (yian#1806).
-  t.terminal.messageArrived()
-  const at = performance.now()
-  const later = json(await t.call("run", { command: "make later", why: "x", shell: "shell 1", wait: 0.3 }))
-  expect(performance.now() - at).toBeGreaterThan(250)
-  expect(later).toMatchObject({ status: "running" })
-  expect(later.note).not.toContain("ended early")
 })
 
-test("a message for the agent ends an approved call's wait too, its command running on", async () => {
+test("a call whose steer already waits as it starts acts, then replies at once, its command running on", async () => {
+  const { t, fake } = notedTerminal()
+  // The message came while the model wrote the call: yian hands the call its steer signal aborted.
+  const steered = AbortSignal.abort()
+  const at = performance.now()
+  const reply = json(await t.call("run", { command: "make all", why: "x", wait: 120 }, { steered }))
+  expect(performance.now() - at).toBeLessThan(2000)
+  expect(reply).toMatchObject({ shell: "shell 1", status: "running", exit: null })
+  expect(reply.note).toStartWith("Your wait ended early: a message came for you, which you'll read next. No exit yet")
+  expect(fake.running()).toEqual(["make all"])
+  const read = json(await t.call("read", { shell: "shell 1", wait: 120 }, { steered }))
+  expect(read.note).toStartWith("Your wait ended early")
+  expect(performance.now() - at).toBeLessThan(3000)
+  // A call with no steer waits as long as it asked.
+  const later = performance.now()
+  expect(json(await t.call("read", { shell: "shell 1", wait: 0.3 }))).toMatchObject({ status: "running" })
+  expect(performance.now() - later).toBeGreaterThan(250)
+  fake.end("make all", 0)
+  await waitFor(() => t.notes.length === 1, { what: "the note" })
+})
+
+/** A terminal on plain PTYs, in dontAsk, that may run the prompt tests' commands, keeping each note of a command. */
+function promptTerminal() {
+  const rules = ["sleep *", "stty *", "read *", "echo *"].map((pattern) => rule("allow", "command", pattern))
+  return openTerminal({ perms: permissions({ mode: "dontAsk", rules }).perms, notes: true })
+}
+
+/** What a reply or note says of a secret prompt in dontAsk. */
+const SECRET_DONT_ASK =
+  "Only the owner can answer this prompt, and this session doesn't ask. Unless the owner answers it, close this " +
+  "shell; don't poll read."
+
+test("a call whose steer already waits gives a PTY shell its prompt check first, so a secret prompt shows in its reply", async () => {
+  const t = promptTerminal()
+  const command = "stty -echo; read x; stty echo; echo after"
+  const reply = json(await t.call("run", { command, why: "x", wait: 120 }, { steered: AbortSignal.abort() }))
+  // The reply says the owner must type, never that a note will come when the command ends.
+  expect(reply).toMatchObject({ status: "waiting", waiting: "secret" })
+  expect(reply.note).toBe(SECRET_DONT_ASK)
+  t.terminal.shell("sh_1")!.ownerKeys("pw\r")
+  expect(json(await t.call("read", { shell: "shell 1", wait: 10 }))).toMatchObject({ status: "idle", exit: 0 })
+})
+
+test("a secret prompt that shows after a reply ended early gets the agent one note; the command's end gets its own", async () => {
+  const t = promptTerminal()
+  const command = "sleep 0.6; stty -echo; read x; stty echo; echo after"
+  const reply = json(await t.call("run", { command, why: "x", wait: 120 }, { steered: AbortSignal.abort() }))
+  expect(reply).toMatchObject({ status: "running" })
+  expect(reply.note).toStartWith("Your wait ended early")
+  await waitFor(() => t.notes.length === 1, { what: "the prompt's note" })
+  expect(t.notes[0]).toEqual({
+    key: "terminal:sh_1:1:secret",
+    shell: "shell 1",
+    text: `shell 1: \`${command}\` is waiting for the owner to type at a password prompt.\n${SECRET_DONT_ASK}`,
+  })
+  t.terminal.shell("sh_1")!.ownerKeys("pw\r")
+  await waitFor(() => t.notes.length === 2, { what: "the end's note" })
+  expect(headings(t)[1]).toBe(`shell 1: \`${command}\` ended, exit 0`)
+  // A reply that waited its time out promised nothing early, and gets no such note.
+  const later = json(await t.call("run", { command, why: "x", wait: 0, shell: "shell 1" }))
+  expect(later).toMatchObject({ status: "running" })
+  await waitFor(() => t.terminal.shell("sh_1")!.state().status === "waiting", { what: "the second prompt" })
+  await Bun.sleep(300)
+  expect(t.notes).toHaveLength(2)
+  t.terminal.shell("sh_1")!.ownerKeys("pw\r")
+  await waitFor(() => t.notes.length === 3, { what: "the second end's note" })
+})
+
+test("a steer for the agent ends an approved call's wait too, its command running on", async () => {
   const { perms, held } = permissions({ mode: "ask" })
   let fake!: ReturnType<typeof fakePipes>
   const t = openTerminal({ perms, shells: (dir) => (fake = fakePipes(dir)).shells, notes: true })
   expect(isPending(await t.call("run", { command: "make all", why: "x", wait: 120 }))).toBe(true)
   const started = performance.now()
-  const approved = t.approve(held[0]!.callId)
+  const steer = new AbortController()
+  const approved = t.approve(held[0]!.callId, { steered: steer.signal })
   await waitFor(() => fake.running().includes("make all"), { what: "the approved command" })
-  t.terminal.messageArrived()
+  steer.abort()
   const reply = json(await approved)
   expect(performance.now() - started).toBeLessThan(2000)
   expect(reply).toMatchObject({ status: "running" })
@@ -566,28 +631,6 @@ test("a message for the agent ends an approved call's wait too, its command runn
   expect(fake.running()).toEqual(["make all"])
   fake.end("make all", 0)
   await waitFor(() => t.notes.length === 1, { what: "the approved command's note" })
-})
-
-test("no call's early wait is left behind once the calls have returned, however each ended", async () => {
-  const { perms, held } = permissions({ mode: "ask", rules: [rule("allow", "command", "make *")] })
-  let fake!: ReturnType<typeof fakePipes>
-  const t = openTerminal({ perms, shells: (dir) => (fake = fakePipes(dir)).shells, notes: true })
-  const early = () => (t.terminal as unknown as { early: Set<AbortController> }).early.size
-  const running = t.call("run", { command: "make a", why: "x", wait: 120 })
-  await waitFor(() => early() === 1 && fake.running().length === 1, { what: "the waiting call" })
-  t.terminal.messageArrived()
-  await running
-  await t.call("read", { shell: "shell 9" })
-  await t.call("run", { command: 7, why: "x" })
-  expect(isPending(await t.call("run", { command: "echo held", why: "x" }))).toBe(true)
-  await t.approve(held[0]!.callId)
-  const cut = new AbortController()
-  const reading = t.call("read", { shell: "shell 1", wait: 120 }, { signal: cut.signal })
-  await waitFor(() => early() === 1, { what: "the read" })
-  cut.abort()
-  await reading
-  fake.end("make a", 0)
-  expect(early()).toBe(0)
 })
 
 test("each shell's record keeps the commands it ran, who ran them and their exits; a refused or held one isn't there", async () => {

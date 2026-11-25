@@ -2,13 +2,16 @@
  *  session when it ends, as a message signed by its shell or its session. A running reply reads it as a steer, a run at
  *  rest takes it as a new turn, notes that end together share one model call, Esc holds them for the next person's
  *  message, the cost cap holds them for a raise, a note is never sent twice and never answers the model's question, and
- *  nothing is left once the chat ends. A message that reaches the agent ends the wait of the call it is blocked in. */
+ *  nothing is left once the chat ends. A message for the agent ends the wait of the call it is blocked in, as yian's
+ *  `ctx.steered` says, even one sent while its model wrote the call; a message queued for the next turn, or a person's
+ *  action, doesn't. */
 import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { stringify } from "yaml"
 import { isInstrumentNote } from "@opencorp/protocol"
 import { loadRepo } from "../../../src/company/loader.ts"
+import { YES } from "../../../src/runtime/questions/approval.ts"
 import { EmployeeCodex } from "../../../src/features/chat/codex.ts"
 import type { InstrumentSessions } from "../../../src/features/chat/instrument.ts"
 import type { SessionActor } from "../../../src/features/chat/session_actor.ts"
@@ -19,6 +22,7 @@ import type { WorkerHandlers } from "../../../src/runtime/worker/rpc.ts"
 import type { Worker } from "../../../src/runtime/worker/spawn.ts"
 import type { ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import { waitFor } from "../../helpers.ts"
+import { CEO } from "../../server/helpers.ts"
 import {
   ASK_USER,
   capItem,
@@ -960,23 +964,119 @@ test("Esc holds a Codex note already in the inbox, and it goes with the owner's 
   expect(notes(o, sid).map((note) => note.split("\n")[0])).toEqual([CODEX_DONE])
 })
 
-test("one message ends a terminal wait and a Codex wait together; the command and the turn go on", async () => {
+test("one message ends every wait of the reply's calls: a terminal's and a Codex's; the command and the turn go on", async () => {
   const fake = await fakeLlm()
-  fake.script(startCodex("Fix the build.", 0), run("make all", 120), { match: "Look here.", content: "Looking." })
+  const both: ScriptedReply = {
+    tool_calls: [
+      { name: "terminal_run", arguments: { command: "make all", why: "builds", wait: 120 } },
+      { name: "codex_history", arguments: { codex: "codex 1", wait: 120 } },
+    ],
+  }
+  fake.script(startCodex("Fix the build.", 0), both, { match: "Look here.", content: "Looking." })
   const { o, codex } = await codexOffice(fake)
   const { actor, sid } = await startActor(o)
   await actor.prompt("hand the build to Codex, and build")
   await waitFor(() => o.pipes.commands.length === 1 && codex.busy(), { what: "make all, with Codex at work" })
-  // Another wait on Codex at the same time, on the chat's instrument: the model's calls run one at a time.
-  const reading = codex.made.at(-1)!.tools().history.call({ codex: "codex 1", wait: 120 })
   await Bun.sleep(50)
   const at = performance.now()
-  await actor.prompt("Look here.")
-  const history = JSON.parse(String(await reading)) as Record<string, string>
+  expect(await actor.prompt("Look here.")).toBe("steer")
   await waitFor(() => fake.requests().length === 3, { what: "the next model call" })
   expect(performance.now() - at).toBeLessThan(1_500)
-  expect(history.note).toContain("Your wait ended early")
-  expect(asked(fake, 3, "Your wait ended early") && asked(fake, 3, "Look here.")).toBe(true)
+  // Each call's reply says the message ended its wait, the one that started after it too.
+  expect(times(fake, 3, "Your wait ended early")).toBe(2)
+  expect(asked(fake, 3, "Look here.")).toBe(true)
   await waitFor(() => texts(o, sid).includes("Looking.") && status(o, sid) === "idle", { what: "the reply" })
   expect([o.pipes.commands, codex.busy()]).toEqual([["make all"], true])
+})
+
+test("a message sent while the model writes a call ends that call's wait as it starts; the command runs on", async () => {
+  const fake = await fakeLlm()
+  fake.script({ ...run("make all", 120), hold: true }, { match: "Look here.", content: "Looking." }, {
+    match: heading("shell 1", "make all", 0), content: "It built.",
+  })
+  const { o, end } = await notesOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  await fake.waitForRequests(1, 30_000)
+  // The model is still writing its call when the run has the owner's message, in the inbox the reply reads as steers
+  // (the actor may not have heard yet that the reply runs, and say `queued`).
+  await actor.prompt("Look here.")
+  expect(committed(o, actor.runId!, "messages", "Look here.")).toBe(true)
+  const at = performance.now()
+  fake.release()
+  await waitFor(() => fake.requests().length === 2, { what: "the next model call" })
+  expect(performance.now() - at).toBeLessThan(5_000)
+  expect(asked(fake, 2, "Your wait ended early") && asked(fake, 2, "Look here.")).toBe(true)
+  await waitFor(() => texts(o, sid).includes("Looking.") && status(o, sid) === "idle", { what: "the reply" })
+  // The command ran, was never stopped, and its note comes when it ends.
+  expect(o.pipes.commands).toEqual(["make all"])
+  end("make all", 0)
+  await waitFor(() => texts(o, sid).includes("It built.") && status(o, sid) === "idle", { what: "the woken reply" })
+  expect(notes(o, sid).map((note) => note.split("\n")[0])).toEqual([heading("shell 1", "make all", 0)])
+})
+
+test("the owner's message ends an approved command's wait too; the command runs on", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("deploy prod", 120), { match: "Look here.", content: "Looking." }, {
+    match: heading("shell 1", "deploy prod", 0), content: "Deployed.",
+  })
+  const { o, end } = await notesOffice(fake)
+  const { actor, sid } = await startActor(o)
+  o.office.store.updateSession(sid, { mode: "ask" })
+  await actor.prompt("deploy it")
+  const q = await card(o, sid, "approval")
+  await actor.answer(q.id, YES, "option", { by: CEO })
+  await waitFor(() => o.pipes.commands.length === 1, { what: "the approved command" })
+  const at = performance.now()
+  expect(await actor.prompt("Look here.")).toBe("steer")
+  await waitFor(() => fake.requests().length === 2, { what: "the next model call" })
+  expect(performance.now() - at).toBeLessThan(1_500)
+  expect(asked(fake, 2, "Your wait ended early") && asked(fake, 2, "Look here.")).toBe(true)
+  await waitFor(() => texts(o, sid).includes("Looking.") && status(o, sid) === "idle", { what: "the reply" })
+  expect(o.pipes.commands).toEqual(["deploy prod"])
+  end("deploy prod", 0)
+  await waitFor(() => texts(o, sid).includes("Deployed.") && status(o, sid) === "idle", { what: "the woken reply" })
+})
+
+/** Whether run `runId` of `o` has committed a send to its inbox `inbox` holding `text`. */
+function committed(o: ChatOffice, runId: string, inbox: string, text: string): boolean {
+  return fs
+    .readFileSync(path.join(o.office.paths.runs, runId, "log.jsonl"), "utf8")
+    .split("\n")
+    .some((line) => line.includes('"kind":"pool_commit"') && line.includes(`.${inbox}"`) && line.includes(text))
+}
+
+test("a message queued for the next turn, or a person's action, never ends a wait; a message for the agent does", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all", 120), { match: "Look here.", content: "Looking." }, {
+    match: "For later.", content: "Later.",
+  })
+  const { o } = await notesOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  await waitFor(() => o.pipes.commands.length === 1, { what: "the command" })
+  // The owner queues a message for the next turn, and a person's action reaches the reply's inbox, as yian records
+  // one (the office sends none yet): neither is a steer the reply reads next.
+  expect(await actor.queue("For later.")).toBe("queued")
+  const action = {
+    role: "user", author: CEO, parts: [{ type: "action", tool: "terminal_type", summary: "ngocbh typed into shell 1" }],
+  }
+  expect(await o.registry.get(sid)!.deliver({ id: "a1", op: "send", inbox: "messages", event: action })).toBe(true)
+  const runId = actor.runId!
+  await waitFor(() => committed(o, runId, "queued", "For later.") && committed(o, runId, "messages", "typed into"), {
+    what: "both sends in the log",
+  })
+  await Bun.sleep(500)
+  expect(fake.requests()).toHaveLength(1)
+  const at = performance.now()
+  expect(await actor.prompt("Look here.")).toBe("steer")
+  await waitFor(() => fake.requests().length === 2, { what: "the next model call" })
+  expect(performance.now() - at).toBeLessThan(1_500)
+  expect(asked(fake, 2, "Your wait ended early") && asked(fake, 2, "Look here.")).toBe(true)
+  // The reply read the action with the message; the queued message waits for the next turn, which takes it.
+  expect(asked(fake, 2, "typed into shell 1")).toBe(true)
+  expect(asked(fake, 2, "For later.")).toBe(false)
+  await waitFor(() => texts(o, sid).includes("Later.") && status(o, sid) === "idle", { what: "the queued turn" })
+  expect(asked(fake, 3, "For later.")).toBe(true)
+  expect(o.pipes.commands).toEqual(["make all"])
 })

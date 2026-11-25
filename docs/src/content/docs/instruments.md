@@ -109,8 +109,11 @@ while a command runs), and a missing `.mcp.json` can still be created.
   ctrl+d leaves an ended shell alone: it is the record of what ran.
 - **Waits.** A command's reply waits 5 seconds unless your employee asks for longer (at most two minutes): a quick
   command replies with its output, and a longer one runs on while your employee does other work or ends their reply.
-  A message that reaches your employee during the wait, yours or a note, ends it at once; the command goes on. One
-  sent while their model is still writing the call doesn't: they read it at their next step, after the wait.
+  A message for your employee, yours or a note, ends the wait at once, even one sent while their model was still
+  writing the call or while its card was open; the command goes on, and they read the message at their next step. A
+  password prompt the command shows right away is in the reply; one it shows after a message ended the wait comes as
+  a note from the shell, saying it waits for you to type. A message you queue for their next turn leaves the wait
+  alone.
 - **When a command ends.** Your employee is told when a command they were told is still running ends, in a note from its
   shell (signed `shell 1`, never by a person): the command, its exit code and its last lines. While they work, they read
   it before their next step; while they rest, it starts a new turn, as a message does. The chat shows it as one line,
