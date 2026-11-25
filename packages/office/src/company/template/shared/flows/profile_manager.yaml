@@ -1,6 +1,6 @@
 # The profile manager: the owner chats with it to edit one person's memory/profile.md. It reads the
 # profile and proposes edits; the owner applies them from the profile view. It has the same
-# turn, context and reply node names and the same messages inbox as chat.yaml, so the office
+# turn, context and reply node names and the same inboxes as chat.yaml, so the office
 # drives it like a chat.
 id: profile_manager
 name: profile_manager
@@ -10,7 +10,8 @@ uses:
   compact_history: compact_history  # shared/flows/compact_history.yaml, yian's example
 
 input:
-  messages: !Inbox(Message)  # what the owner sends; read by each turn's take and, while the reply works, as steers
+  messages: !Inbox(Message)  # what the owner sends now: each turn's take reads it, and a working reply as steers
+  queued: !Inbox(Message)  # what the owner sends for the next turn: only each turn's take reads it
   summary: !str  # older turns folded by compact_history; "" for a new chat
   history: !list(list(Message))  # the kept turns, one list of messages each; [] for a new chat
   turns: !int  # the session's turns so far
@@ -37,18 +38,22 @@ defs:
   turn:
     input:
       messages: !Inbox(Message)
+      queued: !Inbox(Message)
       summary: !str
       history: !list(list(Message))
       closed: !bool
       turns: !int
       max_turns: !int
     nodes:
-      # The turn: everything sent since the last one. Messages read along with a close aren't answered.
+      # The turn: everything sent to either inbox since the last one. Messages read along with the last
+      # close aren't answered.
       heard:
         kind: call
         call: take
         input:
-          from: ${input.messages}
+          from:
+            - ${input.messages}
+            - ${input.queued}
           take: all
       route:
         kind: case
@@ -72,7 +77,7 @@ defs:
         input:
           summary: ${context.output.summary}
           history: ${context.output.messages}
-          said: ${heard.output.events}
+          said: ${[e.event for e in heard.output.events]}
         output: !Optional(str)  # null only after an interrupt
         system_prompt: |-
           You help the company's owner edit one person's profile (their memory/profile.md), the
@@ -84,11 +89,11 @@ defs:
         prompt:
           - ${history}
           - ${said}
-    # The loop carries the messages inbox itself, so the output leaves it out. A close with nothing
+    # The loop carries the inboxes itself, so the output leaves them out. A close with nothing
     # queued appends an empty turn; the run ends right after.
     output:
       summary: ${context.output?.summary :- input.summary}
-      history: ${(context.output?.history :- input.history) + [heard.output.events + (reply.new_messages :- [])]}
+      history: ${(context.output?.history :- input.history) + [[e.event for e in heard.output.events] + (reply.new_messages :- [])]}
       closed: ${heard.output.closed}
       turns: ${input.turns + 1}
       max_turns: ${input.max_turns}
@@ -99,6 +104,7 @@ nodes:
     call: turn
     input:
       messages: ${input.messages}
+      queued: ${input.queued}
       summary: ${input.summary}
       history: ${input.history}
       closed: false

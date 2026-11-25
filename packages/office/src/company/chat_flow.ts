@@ -2,12 +2,13 @@
 import { staticPathOf } from "@ngocbh/yian/run"
 
 /**
- * A conversation flow's shape: its inbox, its turn node (the take on the inbox), its context node (which folds
- * older turns once the take has run), its summarizer inside that context, its reply node (which reads the same
- * inbox as its steer inbox), and its exit command.
+ * A conversation flow's shape: its inbox, its queue (an inbox only the turn's take reads, for the next turn), its turn
+ * node (the take on both), its context node (which folds older turns once the take has run), its summarizer inside
+ * that context, its reply node (which reads the inbox as its steer inbox), and its exit command.
  */
 export class ChatFlow {
   readonly inbox: string
+  readonly queue: string
   readonly turn: string
   readonly context: string
   readonly summarizer: string
@@ -16,6 +17,7 @@ export class ChatFlow {
 
   constructor({
     inbox = "messages",
+    queue = "queued",
     turn = "chat/heard",
     context = "chat/context",
     summarizer = "chat/context/compacted/folded/summarize",
@@ -23,6 +25,7 @@ export class ChatFlow {
     exit = "/exit",
   }: {
     inbox?: string
+    queue?: string
     turn?: string
     context?: string
     summarizer?: string
@@ -30,6 +33,7 @@ export class ChatFlow {
     exit?: string
   } = {}) {
     this.inbox = inbox
+    this.queue = queue
     this.turn = turn
     this.context = context
     this.summarizer = summarizer

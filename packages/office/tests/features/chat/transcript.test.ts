@@ -20,7 +20,6 @@ import {
   logPrefix,
   message,
   PERSON,
-  QUEUE_CHAT_FLOW,
   ROOT,
   send,
   TemplateOffice,
@@ -124,7 +123,6 @@ test("a turn whose take reads several inboxes shows the messages it took from th
   const root = tempDir()
   const base = { pin: path.join(root, "pin"), runs: path.join(root, "runs") }
   fs.cpSync(ROOT, base.pin, { recursive: true })
-  fs.writeFileSync(path.join(base.pin, "shared/flows/chat.yaml"), QUEUE_CHAT_FLOW)
   const rec = new TemplateOffice()
   const job = templateJob("chat", rec, {}, { base })
   await run(job, rec, { env: fake.env() })

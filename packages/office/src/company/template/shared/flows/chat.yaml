@@ -1,9 +1,10 @@
 # A person's main chat: one LOOP iteration per turn. Each turn takes everything sent to `messages`
-# since the last one, then folds older turns into `summary` through compact_history (yian's example)
-# when the history is over budget, then the reply answers it; messages sent while the reply works
-# steer it. The kept turns ride in the LOOP as `history`. The person's profile is the `profile`
+# and `queued` since the last one, in the order it was sent, then folds older turns into `summary`
+# through compact_history (yian's example) when the history is over budget, then the reply answers
+# it; messages sent to `messages` while the reply works steer it, and those sent to `queued` wait for
+# the next turn. The kept turns ride in the LOOP as `history`. The person's profile is the `profile`
 # memory the office binds; the reply's system prompt holds it, and the reply can't change it.
-# Closing `messages` ends the chat.
+# Closing both inboxes ends the chat.
 id: chat
 name: chat
 description: Chat with a person in the office.
@@ -19,7 +20,8 @@ typedefs:
     company: str
     reports_to: str  # "You report to <Name> (@<handle>)." or ""
 input:
-  messages: !Inbox(Message)  # what people send; read by each turn's take and, while the reply works, as steers
+  messages: !Inbox(Message)  # what people send now: each turn's take reads it, and a working reply as steers
+  queued: !Inbox(Message)  # what people send for the next turn: only each turn's take reads it
   person: !Person  # who the reply speaks as; the office passes it
   talking_to: !str  # "You're talking with <Name> (@<handle>), <roles>." or ""; the office passes it
   summary: !str  # older turns folded by compact_history; "" for a new chat
@@ -49,6 +51,7 @@ defs:
   turn:
     input:
       messages: !Inbox(Message)
+      queued: !Inbox(Message)
       person: !Person
       talking_to: !str
       summary: !str
@@ -58,12 +61,15 @@ defs:
       max_turns: !int
       profile: !FileMemory
     nodes:
-      # The turn: everything sent since the last one. Messages read along with a close aren't answered.
+      # The turn: everything sent to either inbox since the last one. Messages read along with the last
+      # close aren't answered.
       heard:
         kind: call
         call: take
         input:
-          from: ${input.messages}
+          from:
+            - ${input.messages}
+            - ${input.queued}
           take: all
       route:
         kind: case
@@ -88,7 +94,7 @@ defs:
         input:
           summary: ${context.output.summary}
           history: ${context.output.messages}
-          said: ${heard.output.events}
+          said: ${[e.event for e in heard.output.events]}
           person: ${input.person}
           talking_to: ${input.talking_to}
           profile: ${input.profile}
@@ -110,13 +116,13 @@ defs:
           - ${history}
           - ${said}
     # A LOOP body maps its carried record to the next one, so the person and who they talk with ride
-    # along unchanged; the loop carries the messages inbox itself, so the output leaves it out. A close
+    # along unchanged; the loop carries the inboxes itself, so the output leaves them out. A close
     # with nothing queued appends an empty turn; the run ends right after.
     output:
       person: ${input.person}
       talking_to: ${input.talking_to}
       summary: ${context.output?.summary :- input.summary}
-      history: ${(context.output?.history :- input.history) + [heard.output.events + (reply.new_messages :- [])]}
+      history: ${(context.output?.history :- input.history) + [[e.event for e in heard.output.events] + (reply.new_messages :- [])]}
       closed: ${heard.output.closed}
       turns: ${input.turns + 1}
       max_turns: ${input.max_turns}
@@ -127,6 +133,7 @@ nodes:
     call: turn
     input:
       messages: ${input.messages}
+      queued: ${input.queued}
       person: ${input.person}
       talking_to: ${input.talking_to}
       summary: ${input.summary}

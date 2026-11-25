@@ -58,7 +58,6 @@ import {
   noWorkersLeft,
   PRICES,
   PRICEY,
-  QUEUE_CHAT_FLOW,
   reopen,
   replyRunning,
   say,
@@ -1230,7 +1229,7 @@ test("exit typed ends the session", async () => {
 test("end closes each inbox its turn's take reads, the chat's first, and the session ends", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "one" })
-  const o = await chatOffice(fake, { files: { "shared/flows/chat.yaml": QUEUE_CHAT_FLOW } })
+  const o = await chatOffice(fake)
   const ended: string[] = []
   o.hooks.sessionEnded.push((s) => void ended.push(s.status))
   const { actor, sid } = await startActor(o)
