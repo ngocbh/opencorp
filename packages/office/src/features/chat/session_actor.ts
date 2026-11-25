@@ -10,6 +10,8 @@ import {
   type RunInspection,
   type Message as RunMessage,
   staticPathOf,
+  type TakeInbox,
+  takeInboxes,
 } from "@ngocbh/yian/run"
 import {
   CompanyDefaults, type Message, now, OFFICE, type RemoveRuleRequest, type RuleFileError, WorkItem,
@@ -265,7 +267,8 @@ export interface Wait {
   node: string
   call_id: string
   tool: string
-  inbox: string | null
+  /** The inbox a take reads, or the inboxes a take of several reads; null for any other call. */
+  inbox: TakeInbox | null
   deadline: string | null
   settled: boolean
   /** A call the office's gate held: it waits on its card, or on Auto's check. */
@@ -471,6 +474,8 @@ export class SessionActor implements LiveCalls {
   #finishedRuns: readonly string[] = []
   #closed = false
   #ending = false
+  /** The inboxes closed while ending, by run: End closes the chat's, and a turn take's others once it waits on them. */
+  #endClosed: { runId: string; inboxes: Set<string> } | null = null
   /** Workers that exited with no outcome, or with a `stopped` or `crashed` run, since the last `waiting` or
    *  `succeeded` result. */
   #deaths = 0
@@ -3073,6 +3078,7 @@ export class SessionActor implements LiveCalls {
     this.#carry(run)
     // Armed before the spawn, which disarms it once its worker starts: a spawn that fails leaves the timer.
     this.#arm(waits)
+    if (this.#ending) this.#closeTurnInboxes(run.runId, waits)
     // An answer no reply settled yet, sent again once: a reply that failed leaves it for the next spawn.
     const resend = this.#unreadAnswers(this.#next).some((q) => !this.#resent.has(q.id))
     if (!this.#ending && this.#capped()) {
@@ -3094,6 +3100,21 @@ export class SessionActor implements LiveCalls {
       return
     }
     await this.#spawnQuietly("advance", { plain: true })
+  }
+
+  /** While ending, queues a close of each inbox but the chat's that a turn take in `waits` still waits on, once per
+   *  run: a take of several inboxes waits until each of them is closed, and End closed only the chat's. */
+  #closeTurnInboxes(runId: string, waits: readonly Wait[]): void {
+    if (this.#endClosed?.runId !== runId) this.#endClosed = { runId, inboxes: new Set([this.#chat.inbox]) }
+    const closed = this.#endClosed.inboxes
+    for (const wait of waits) {
+      if (wait.tool !== "take" || wait.settled || wait.inbox === null || !this.#chat.isTurn(wait.node)) continue
+      for (const inbox of takeInboxes(wait.inbox)) {
+        if (closed.has(inbox)) continue
+        closed.add(inbox)
+        this.#next.push(new Pending({ id: newId(), op: "close", inbox }))
+      }
+    }
   }
 
   /** Whether a call in `waits` other than a turn's take is settled: advancing would wake the agent and spend. */

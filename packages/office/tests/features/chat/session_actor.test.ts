@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { stringify } from "yaml"
 import { AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
+import { inspectRun, iterRunRecords } from "@ngocbh/yian/run"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent, Message } from "@opencorp/protocol"
 import {
@@ -57,6 +58,7 @@ import {
   noWorkersLeft,
   PRICES,
   PRICEY,
+  QUEUE_CHAT_FLOW,
   reopen,
   replyRunning,
   say,
@@ -1223,6 +1225,26 @@ test("exit typed ends the session", async () => {
   expect(ended).toEqual(["ended"])
   expect(fake.requests()).toEqual([])
   expect(texts(o, sid, "user")).toEqual([])
+})
+
+test("end closes each inbox its turn's take reads, the chat's first, and the session ends", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" })
+  const o = await chatOffice(fake, { files: { "shared/flows/chat.yaml": QUEUE_CHAT_FLOW } })
+  const ended: string[] = []
+  o.hooks.sessionEnded.push((s) => void ended.push(s.status))
+  const { actor, sid } = await startActor(o)
+  expect(await say(o, actor, sid, "a")).toBe("one")
+  await actor.end()
+  await waitFor(() => status(o, sid) === "ended" && ended.length > 0, { what: "the end" })
+  expect(ended).toEqual(["ended"])
+  // The take waits on queued once messages is closed; the run ends once both are.
+  const log = path.join(o.office.paths.runs, actor.runId!, "log.jsonl")
+  const closed = [...iterRunRecords(log, { kinds: ["inbox_closed"] })]
+    .map((entry) => (entry.envelope.record as unknown as { inbox: string }).inbox)
+  expect(closed).toEqual(["messages", "queued"])
+  expect(inspectRun(log).status).toBe("succeeded")
+  expect(fake.requests()).toHaveLength(1)
 })
 
 test("the actor brings the run index up to date before it reports a runs end", async () => {
