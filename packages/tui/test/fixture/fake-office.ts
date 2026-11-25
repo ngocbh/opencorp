@@ -111,8 +111,15 @@ const now = () => new Date().toISOString()
 const served = (person: Person): Person => PersonSchema.parse({ ...person, password_hash: null })
 /** `session` as the office serves it: every field, defaults filled. */
 const servedSession = (session: Session): Session => SessionSchema.parse(session)
-/** `message` as the office serves it: a message with no author has a null one, and one not marked unread is read. */
-const servedMessage = (message: Message): Message => ({ author: null, instrument: null, unread: false, ...message })
+/** `message` as the office serves it: a message with no author has a null one, and one not marked unread or queued
+ *  is neither. */
+const servedMessage = (message: Message): Message => ({
+  author: null,
+  instrument: null,
+  unread: false,
+  queued: false,
+  ...message,
+})
 
 /** Words a side chat refuses, in any case: only the office ends a side run. */
 const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])
@@ -439,7 +446,12 @@ export function createFakeOffice(
     return s
   }
   /** Adds a user message from `author` (the first human by default), as the office names every sender. */
-  function userMessage(sessionId: string, text: string, author?: string) {
+  function userMessage(
+    sessionId: string,
+    text: string,
+    author?: string,
+    waits: Pick<Message, "unread" | "queued"> = {},
+  ) {
     const msg: Message = {
       id: nextId(),
       session_id: sessionId,
@@ -447,6 +459,7 @@ export function createFakeOffice(
       author: author ?? human(),
       parts: [{ id: nextId(), type: "text", text }],
       created_at: now(),
+      ...waits,
     }
     state.messages[sessionId] = [...(state.messages[sessionId] ?? []), msg]
     live({ type: "message.updated", session_id: sessionId, data: structuredClone(msg) as unknown as LiveEvent["data"] })
@@ -492,6 +505,40 @@ export function createFakeOffice(
     if (s.status === "idle") startReply(id, body.text)
     else if (s.status !== "busy" || interrupted.has(id)) queued.set(id, [...(queued.get(id) ?? []), body.text])
     return Response.json({ ok: true })
+  }
+  /**
+   * The office's queue: to an idle session a turn at once, as a prompt; else a message that waits unread in the
+   * queue, which the running reply never reads, until the reply ends and the next turn takes it.
+   */
+  function queueTurn(id: string, body: any, actor?: string) {
+    check(str(body?.text), "text must be a non-empty string")
+    const s = liveSession(id)
+    if (s.status === "ending") throw fail(409, "ending", `session ${id} is ending`)
+    if (s.harness !== "yian") throw fail(422, "not_supported", "only a chat keeps a queue")
+    if (s.status === "idle") {
+      userMessage(id, body.text, actor)
+      startReply(id, body.text)
+    } else {
+      userMessage(id, body.text, actor, { unread: true, queued: true })
+    }
+    return Response.json({ ok: true })
+  }
+  /** The approver's unread message `messageId` of session `id`, taken out of the transcript and dropped for clients;
+   *  refused as the office refuses it. */
+  function takeBack(id: string, messageId: string, actor?: string) {
+    const s = liveSession(id)
+    const by = actor ?? human()
+    const approver = s.opened_by ?? human()
+    if (by !== approver) throw fail(403, "forbidden", `only @${approver} may move a message`)
+    const list = state.messages[id] ?? []
+    const msg = list.find((m) => m.id === messageId)
+    if (!msg || msg.role !== "user" || msg.author !== by) {
+      throw fail(404, "not_found", "no message of yours waits in this chat by that id")
+    }
+    if (!msg.unread) throw fail(409, "already_read", "the message was already read")
+    state.messages[id] = list.filter((m) => m !== msg)
+    live({ type: "message.removed", session_id: id, data: { id: msg.id, session_id: id } })
+    return msg
   }
   /** Sets the session busy and starts a reply to `text`. */
   function startReply(sessionId: string, text: string) {
@@ -633,9 +680,17 @@ export function createFakeOffice(
    */
   function replyEnded(sessionId: string) {
     interrupted.delete(sessionId)
-    const pending = queued.get(sessionId)
+    // The next turn takes what waits unread, steers and the queue alike: each comes again, read.
+    const waiting = (state.messages[sessionId] ?? []).filter((m) => m.unread)
+    for (const m of waiting) {
+      const read = { ...m, unread: false, queued: false }
+      state.messages[sessionId] = state.messages[sessionId]!.map((x) => (x === m ? read : x))
+      const data = structuredClone(read) as unknown as LiveEvent["data"]
+      live({ type: "message.updated", session_id: sessionId, data })
+    }
+    const pending = [...(queued.get(sessionId) ?? []), ...waiting.map((m) => (m.parts[0] as { text: string }).text)]
     queued.delete(sessionId)
-    if (pending) startReply(sessionId, pending.join("\n\n"))
+    if (pending.length > 0) startReply(sessionId, pending.join("\n\n"))
     else if (["busy", "starting"].includes(session(sessionId).status)) setStatus(sessionId, "idle")
   }
 
@@ -1165,6 +1220,28 @@ export function createFakeOffice(
     ],
     ["POST", "/sessions/:id/prompt", ({ params, body, actor }) => turn(params.id, body, actor)],
     ["POST", "/sessions/:id/steer", ({ params, body, actor }) => turn(params.id, body, actor)],
+    ["POST", "/sessions/:id/queue", ({ params, body, actor }) => queueTurn(params.id, body, actor)],
+    [
+      "PATCH",
+      "/sessions/:id/inbox/:message",
+      ({ params, body, actor }) => {
+        check(body?.delivery === "steer" || body?.delivery === "queue", "delivery: isn't an allowed value")
+        const msg = state.messages[params.id]?.find((m) => m.id === params.message)
+        if (msg && msg.unread && !!msg.queued === (body.delivery === "queue")) return Response.json({ ok: true })
+        const taken = takeBack(params.id, params.message, actor)
+        const text = (taken.parts[0] as { text: string }).text
+        userMessage(params.id, text, taken.author ?? undefined, { unread: true, queued: body.delivery === "queue" })
+        return Response.json({ ok: true })
+      },
+    ],
+    [
+      "DELETE",
+      "/sessions/:id/inbox/:message",
+      ({ params, actor }) => {
+        takeBack(params.id, params.message, actor)
+        return Response.json({ ok: true })
+      },
+    ],
     [
       "POST",
       "/sessions/:id/interrupt",

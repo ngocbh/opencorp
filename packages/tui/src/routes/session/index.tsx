@@ -40,6 +40,7 @@ import { Dynamic, useRenderer, useTerminalDimensions, type JSX } from "@opentui/
 import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
 import { DialogMessage } from "./dialog-message"
+import { DialogSelect } from "../../ui/dialog-select"
 import { DialogMode } from "./dialog-mode"
 import { DialogRules } from "./dialog-rules"
 import { PermissionPrompt } from "./permission"
@@ -122,6 +123,7 @@ const sessionBindingCommands = [
   "session.export",
   "session.child.first",
   "session.parent",
+  "session.queued_prompts",
 ] as const
 
 const sessionGlobalBindingCommands = [
@@ -320,10 +322,16 @@ export function Session(props: SessionProps) {
   const sideSession = createMemo(() => office.state.sessions.find((s) => s.id === sideQuestion()?.side_session_id))
   // Until its first message the side session doesn't exist, so the side view starts empty.
   const viewID = createMemo(() => (sideOf() ? sideQuestion()?.side_session_id : props.sessionID))
-  const messages = createMemo(() => {
+  const loaded = createMemo(() => {
     const id = viewID()
     return id ? (office.state.messages[id] ?? []) : []
   })
+  // What waits unread in the run's queue for its next turn shows in the dock above the prompt, not in the transcript,
+  // as upstream's queued prompts; once a turn takes one, the office sends it again, read, and it joins the transcript.
+  const queuedPrompts = createMemo(() => loaded().filter((m) => m.role === "user" && m.queued && m.unread))
+  const messages = createMemo(() =>
+    queuedPrompts().length === 0 ? loaded() : loaded().filter((m) => !(m.queued && m.unread)),
+  )
   // Esc freezes what the transcript shows until the next message is sent.
   const [frozen, setFrozen] = createSignal<Freeze>()
   const shown = createMemo(() => frozenList(frozen(), messages()))
@@ -898,6 +906,102 @@ export function Session(props: SessionProps) {
     return current && formatTranscript(current, messages(), office.state.people, { toolDetails })
   }
 
+  // Upstream's pending and queued prompt actions. A message's move or withdraw goes once at a time; the office takes
+  // only its approver's own unread messages, and says when one was read or taken back already.
+  const pendingRuns = new Set<string>()
+  const mutatePending = async (action: "steer" | "queue" | "cancel", messageID: string, failureLabel?: string) => {
+    const sessionID = viewID()
+    if (!sessionID || pendingRuns.has(messageID)) return false
+    pendingRuns.add(messageID)
+    try {
+      if (action === "cancel") await office.client.sessions.withdraw(sessionID, messageID)
+      else await office.client.sessions.setDelivery(sessionID, messageID, { delivery: action })
+      return true
+    } catch (error) {
+      const label = failureLabel ?? (action === "cancel" ? "delete" : action)
+      toast.show({ title: `Failed to ${label} pending prompt`, message: errorMessage(error), variant: "error" })
+      return false
+    } finally {
+      pendingRuns.delete(messageID)
+    }
+  }
+  /** Takes the queued message back and puts its text in the prompt, after what the prompt holds. */
+  const undoQueued = async (message: Message) => {
+    if (!(await mutatePending("cancel", message.id, "undo"))) return false
+    const ref = promptRef.current
+    if (!ref) return true
+    const text = messageText(message)
+    const held = ref.current.input
+    ref.set({ input: held ? `${held}\n${text}` : text, parts: [] })
+    ref.focus()
+    return true
+  }
+  const openQueuedPrompts = () =>
+    dialog.replace(() => (
+      <DialogSelect
+        title="Queued prompts"
+        placeholder="Search queued prompts"
+        options={queuedPrompts().map((prompt, index) => ({
+          title: display(messageText(prompt)),
+          value: prompt.id,
+          footer: `${index + 1} of ${queuedPrompts().length}`,
+        }))}
+        onSelect={(option) => {
+          void mutatePending("steer", option.value).then((steered) => {
+            if (steered) dialog.clear()
+          })
+        }}
+        actions={[
+          {
+            command: "queued_prompt.delete",
+            title: "delete",
+            onTrigger: (option) => {
+              const last = queuedPrompts().length === 1
+              void mutatePending("cancel", option.value).then((cancelled) => {
+                if (cancelled && last) dialog.clear()
+              })
+            },
+          },
+          {
+            command: "queued_prompt.undo",
+            title: "undo",
+            onTrigger: (option) => {
+              const queued = queuedPrompts().find((m) => m.id === option.value)
+              if (!queued) return
+              void undoQueued(queued).then((undone) => {
+                if (undone) dialog.clear()
+              })
+            },
+          },
+        ]}
+        footerHints={[{ title: "steer", label: "enter" }]}
+      />
+    ))
+  /** Upstream's "Pending steer": the owner's own message the running reply hasn't read yet. */
+  const openPendingSteer = (messageID: string) =>
+    dialog.replace(() => (
+      <DialogSelect
+        title="Pending steer"
+        renderFilter={false}
+        options={[
+          { title: "Move to queue", value: "queue" as const },
+          { title: "Delete", value: "cancel" as const },
+        ]}
+        onSelect={(option) => {
+          void mutatePending(option.value, messageID).then((done) => {
+            if (done) dialog.clear()
+          })
+        }}
+      />
+    ))
+  /** Whether `message` is the viewer's own, unread steer, which they may move or take back as the chat's approver. */
+  const pendingSteer = (message: Message) => {
+    if (!message.unread || message.queued || isInstrumentNote(message) || office.local) return false
+    const approver = sessionOwner(viewSession(), office.state.people)
+    const me = office.person ?? approver
+    return !!me && message.author === me && me === approver
+  }
+
   const sessionCommandList = createMemo(() => [
     {
       title: "End the session",
@@ -944,6 +1048,13 @@ export function Session(props: SessionProps) {
         else setComposer({ open: true, tab: openingTab() })
         dialog.clear()
       },
+    },
+    {
+      title: "View queued prompts",
+      value: "session.queued_prompts",
+      category: "Prompt",
+      enabled: queuedPrompts().length > 0,
+      run: openQueuedPrompts,
     },
     {
       title: "Go back to the chat that drives this Codex or Claude Code session",
@@ -1343,6 +1454,7 @@ export function Session(props: SessionProps) {
                           speakerColor={speakerColor(message)}
                           onMouseUp={() => {
                             if (renderer.getSelection()?.getSelectedText()) return
+                            if (pendingSteer(message)) return openPendingSteer(message.id)
                             dialog.replace(() => <DialogMessage messageID={message.id} sessionID={props.sessionID} />)
                           }}
                           message={message}
@@ -1405,6 +1517,9 @@ export function Session(props: SessionProps) {
                     </text>
                   )}
                 </Show>
+                <Show when={!composerVisible() && !readOnly() && !harnessed() && queuedPrompts().length > 0}>
+                  <QueuedPromptDock prompts={queuedPrompts()} onOpen={openQueuedPrompts} />
+                </Show>
                 <Composer
                   sessionID={props.sessionID}
                   open={composerVisible()}
@@ -1459,6 +1574,11 @@ export function Session(props: SessionProps) {
                             onSend={lift}
                             onSubmit={() => toBottom()}
                             onInterrupt={interrupt}
+                            onEmptySubmit={async () => {
+                              const next = queuedPrompts()[0]
+                              if (!next) return false
+                              return mutatePending("steer", next.id)
+                            }}
                             sessionID={props.sessionID}
                           />
                         }
@@ -1532,6 +1652,45 @@ function WaitingCard(props: { question: OfficeQuestion; next: boolean }) {
       <text fg={theme.textMuted} wrapMode="none">
         {props.next ? `${title()} · ${focusKey()} to answer` : `${title()} (waiting)`}
       </text>
+    </box>
+  )
+}
+
+/** Upstream's queued-prompt dock above the prompt: how many wait for the next turn, and the first of them; a click
+ *  opens them. */
+function QueuedPromptDock(props: { prompts: Message[]; onOpen: () => void }) {
+  const { theme } = useTheme()
+  const [hover, setHover] = createSignal(false)
+  const next = createMemo(() => {
+    const first = props.prompts[0]
+    return first && messageText(first).replaceAll("\n", " ")
+  })
+  return (
+    <box
+      id="session-queued-prompts"
+      marginBottom={1}
+      border={["left"]}
+      borderColor={theme.border}
+      customBorderChars={SplitBorder.customBorderChars}
+      onMouseOver={() => setHover(true)}
+      onMouseOut={() => setHover(false)}
+      onMouseUp={props.onOpen}
+      flexShrink={0}
+    >
+      <box
+        width="100%"
+        paddingTop={1}
+        paddingBottom={1}
+        paddingLeft={2}
+        paddingRight={2}
+        backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
+        flexDirection="row"
+      >
+        <text fg={theme.textMuted} wrapMode="none" truncate flexGrow={1} flexShrink={1} minWidth={0}>
+          <span style={{ fg: theme.text }}>{props.prompts.length} queued</span>
+          <Show when={next()}>{(text) => <> · {display(text())}</>}</Show>
+        </text>
+      </box>
     </box>
   )
 }

@@ -622,6 +622,7 @@ test("with clean, transcript text and names come in cleaned; ids, sessions and q
       author: null,
       instrument: null,
       unread: false,
+      queued: false,
       parts: [{ id: "lp", type: "text", text: "loaded" }],
       created_at: "t",
     },
