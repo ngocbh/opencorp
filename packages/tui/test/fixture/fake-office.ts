@@ -268,6 +268,8 @@ export function createFakeOffice(
   // Messages sent while a session is neither idle nor busy, or while its reply is being stopped, by session; the
   // next reply takes them.
   const queued = new Map<string, string[]>()
+  // How the next moves of a message fail after it was taken back: `back` where it was, or `lost`, its text returned.
+  const moveFailures: ("back" | "lost")[] = []
   // Sessions whose reply was interrupted and hasn't ended yet.
   const interrupted = new Set<string>()
   const streams = new Set<Stream>()
@@ -525,7 +527,7 @@ export function createFakeOffice(
   }
   /** The approver's unread message `messageId` of session `id`, taken out of the transcript and dropped for clients;
    *  refused as the office refuses it. */
-  function takeBack(id: string, messageId: string, actor?: string) {
+  function takeBack(id: string, messageId: string, actor?: string, { keep = false }: { keep?: boolean } = {}) {
     const s = liveSession(id)
     const by = actor ?? human()
     const approver = s.opened_by ?? human()
@@ -536,6 +538,7 @@ export function createFakeOffice(
       throw fail(404, "not_found", "no message of yours waits in this chat by that id")
     }
     if (!msg.unread) throw fail(409, "already_read", "the message was already read")
+    if (keep) return msg
     state.messages[id] = list.filter((m) => m !== msg)
     live({ type: "message.removed", session_id: id, data: { id: msg.id, session_id: id } })
     return msg
@@ -1227,11 +1230,17 @@ export function createFakeOffice(
       ({ params, body, actor }) => {
         check(body?.delivery === "steer" || body?.delivery === "queue", "delivery: isn't an allowed value")
         const msg = state.messages[params.id]?.find((m) => m.id === params.message)
-        if (msg && msg.unread && !!msg.queued === (body.delivery === "queue")) return Response.json({ ok: true })
-        const taken = takeBack(params.id, params.message, actor)
+        const there = msg !== undefined && !!msg.queued === (body.delivery === "queue")
+        const taken = takeBack(params.id, params.message, actor, { keep: there })
+        const moved = { moved: true, why: null, text: null }
+        if (there) return Response.json(moved)
         const text = (taken.parts[0] as { text: string }).text
-        userMessage(params.id, text, taken.author ?? undefined, { unread: true, queued: body.delivery === "queue" })
-        return Response.json({ ok: true })
+        // A send there that fails, as `moveFailures` says: back where it was, or nowhere with its text.
+        const failed = moveFailures.shift()
+        const waits = { unread: true, queued: failed ? !!taken.queued : body.delivery === "queue" }
+        if (failed !== "lost") userMessage(params.id, text, taken.author ?? undefined, waits)
+        if (failed === undefined) return Response.json(moved)
+        return Response.json({ moved: false, why: "the session is ending", text: failed === "lost" ? text : null })
       },
     ],
     [
@@ -1684,6 +1693,9 @@ export function createFakeOffice(
     notImplemented,
     /** Codex card ids whose answer comes back stale, as when Codex no longer waits for the card. */
     staleOnAnswer,
+    /** How the next moves of an unread message fail once it is taken back, in order: `back` where it was, under a new
+     *  id, or `lost`, its text given back. */
+    moveFailures,
     /** Route keys (`"GET /connections"`) answered with 500, as an office that hit an error. */
     broken,
     /** How the office refuses the next `POST /connections`, in order: each is sent as a 422 with that code. */

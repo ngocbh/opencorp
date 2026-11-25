@@ -214,3 +214,50 @@ test("a steer read meanwhile can't be moved: the office says so, and the message
     office.stop()
   }
 })
+
+test("a move whose send fails after the run took it back says why, and puts the text back in the prompt", async () => {
+  const { office, app, s } = await boot((sid) => [message(sid, "M3", "user", "Also mention Rome.", { unread: true })])
+  try {
+    await app.until((f) => f.includes("Also mention Rome."))
+    office.moveFailures.push("lost")
+    await click(app, "Also mention Rome.")
+    await app.until((f) => f.includes("Pending steer"))
+    app.input.pressEnter()
+    const f = await app.until(
+      (f) => f.includes("Failed to queue pending prompt") && f.includes("back in the prompt") && !f.includes("Pending steer"),
+    )
+    expect(f).toContain("the session is ending")
+    expect(sent(office, `/sessions/${s.id}/inbox/M3`)).toEqual([["PATCH", { delivery: "queue" }]])
+    // Gone from the transcript, and in the prompt for Enter to send again.
+    expect(f).not.toContain("queued ·")
+    await app.until((f) => rowsWith(f, "Also mention Rome.") === 1)
+    app.input.pressEnter()
+    await app.until(() => sent(office, `/sessions/${s.id}/prompt`).length > 0)
+    expect(sent(office, `/sessions/${s.id}/prompt`)).toEqual([["POST", { text: "Also mention Rome." }]])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("someone else's queued message stays in the transcript, grey; the dock and Enter on an empty prompt are yours", async () => {
+  const { office, app, s } = await boot((sid) => [
+    { ...message(sid, "Q1", "user", "Lan's later.", { unread: true, queued: true }), author: "lan" },
+  ])
+  try {
+    const f = await app.until((f) => f.includes("Lan's later."))
+    expect(f).not.toContain("queued ·")
+    // Nothing of yours waits: Enter on an empty prompt asks the office nothing.
+    app.input.pressEnter()
+    await Bun.sleep(100)
+    expect(office.requests.filter((r) => r.path.startsWith(`/sessions/${s.id}/inbox/`))).toEqual([])
+    // A click opens the message's own actions, not Pending steer.
+    await click(app, "Lan's later.")
+    await Bun.sleep(100)
+    await app.setup.renderOnce()
+    expect(app.frame()).not.toContain("Pending steer")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

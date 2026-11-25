@@ -326,12 +326,22 @@ export function Session(props: SessionProps) {
     const id = viewID()
     return id ? (office.state.messages[id] ?? []) : []
   })
-  // What waits unread in the run's queue for its next turn shows in the dock above the prompt, not in the transcript,
-  // as upstream's queued prompts; once a turn takes one, the office sends it again, read, and it joins the transcript.
-  const queuedPrompts = createMemo(() => loaded().filter((m) => m.role === "user" && m.queued && m.unread))
-  const messages = createMemo(() =>
-    queuedPrompts().length === 0 ? loaded() : loaded().filter((m) => !(m.queued && m.unread)),
-  )
+  /** Whether `message` is the viewer's own, and they the chat's approver: the office moves or takes back only the
+   *  approver's own unread messages. */
+  const mine = (message: Message) => {
+    if (office.local) return false
+    const approver = sessionOwner(office.state.sessions.find((s) => s.id === viewID()), office.state.people)
+    const me = office.person ?? approver
+    return !!me && message.author === me && me === approver
+  }
+  // The viewer's own messages waiting unread in the run's queue for its next turn show in the dock above the prompt,
+  // not in the transcript, as upstream's queued prompts; anyone else's show in the transcript, grey, as a pending
+  // message does. Once a turn takes one, the office sends it again, read, and it joins the transcript.
+  const queuedPrompts = createMemo(() => loaded().filter((m) => m.role === "user" && m.queued && m.unread && mine(m)))
+  const messages = createMemo(() => {
+    const queued = new Set(queuedPrompts())
+    return queued.size === 0 ? loaded() : loaded().filter((m) => !queued.has(m))
+  })
   // Esc freezes what the transcript shows until the next message is sent.
   const [frozen, setFrozen] = createSignal<Freeze>()
   const shown = createMemo(() => frozenList(frozen(), messages()))
@@ -913,27 +923,42 @@ export function Session(props: SessionProps) {
     const sessionID = viewID()
     if (!sessionID || pendingRuns.has(messageID)) return false
     pendingRuns.add(messageID)
+    const title = `Failed to ${failureLabel ?? (action === "cancel" ? "delete" : action)} pending prompt`
     try {
-      if (action === "cancel") await office.client.sessions.withdraw(sessionID, messageID)
-      else await office.client.sessions.setDelivery(sessionID, messageID, { delivery: action })
+      if (action === "cancel") {
+        await office.client.sessions.withdraw(sessionID, messageID)
+        return true
+      }
+      const reply = await office.client.sessions.setDelivery(sessionID, messageID, { delivery: action })
+      if (reply.moved) return true
+      // Taken back but not sent on: back where it was, under a new id, or, when that failed too, nowhere, its text
+      // back in the prompt. Either way the message the dialog named is gone, so its work is over.
+      const text = reply.text ?? null
+      if (text !== null) restoreText(text)
+      const back = text === null ? "" : " It is back in the prompt."
+      toast.show({ title, message: `${reply.why ?? "the run couldn't take it"}.${back}`, variant: "error" })
       return true
     } catch (error) {
-      const label = failureLabel ?? (action === "cancel" ? "delete" : action)
-      toast.show({ title: `Failed to ${label} pending prompt`, message: errorMessage(error), variant: "error" })
+      toast.show({ title, message: errorMessage(error), variant: "error" })
       return false
     } finally {
       pendingRuns.delete(messageID)
     }
   }
-  /** Takes the queued message back and puts its text in the prompt, after what the prompt holds. */
-  const undoQueued = async (message: Message) => {
-    if (!(await mutatePending("cancel", message.id, "undo"))) return false
+  /** Puts `text` in the prompt, after what it holds, and gives the prompt the keys once the dialog it came from has
+   *  closed and handed them back to what had them before (its refocus waits a millisecond). */
+  const restoreText = (text: string) => {
     const ref = promptRef.current
-    if (!ref) return true
-    const text = messageText(message)
+    if (!ref) return
     const held = ref.current.input
     ref.set({ input: held ? `${held}\n${text}` : text, parts: [] })
     ref.focus()
+    setTimeout(() => promptRef.current?.focus(), 5)
+  }
+  /** Takes the queued message back and puts its text in the prompt, after what the prompt holds. */
+  const undoQueued = async (message: Message) => {
+    if (!(await mutatePending("cancel", message.id, "undo"))) return false
+    restoreText(messageText(message))
     return true
   }
   const openQueuedPrompts = () =>
@@ -995,12 +1020,8 @@ export function Session(props: SessionProps) {
       />
     ))
   /** Whether `message` is the viewer's own, unread steer, which they may move or take back as the chat's approver. */
-  const pendingSteer = (message: Message) => {
-    if (!message.unread || message.queued || isInstrumentNote(message) || office.local) return false
-    const approver = sessionOwner(viewSession(), office.state.people)
-    const me = office.person ?? approver
-    return !!me && message.author === me && me === approver
-  }
+  const pendingSteer = (message: Message) =>
+    message.unread && !message.queued && !isInstrumentNote(message) && mine(message)
 
   const sessionCommandList = createMemo(() => [
     {
