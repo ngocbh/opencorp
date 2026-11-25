@@ -551,6 +551,7 @@ function pendingCall(over: Partial<PendingCall>): PendingCall {
     ask: null,
     held: false,
     source: null,
+    target: null,
     ...over,
   }
 }
