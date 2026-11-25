@@ -16,6 +16,13 @@ click it to see the calls. "Verbosity" in the command list (ctrl+p) switches bet
 folds only reads and searches, and High, which shows every call. Scrolled up in a long chat, click
 `Jump to latest ↓` under it to go back to the newest message.
 
+Enter sends a message. While your employee works, they read it before their next step; until then it has a grey
+border, and a click on it moves it to the queue or deletes it. ctrl+x Enter queues a message instead: it waits for
+their next turn, in a line above the prompt such as `2 queued · Then book the hotel.`. Click the line to see what is
+queued: Enter steers with one now, ctrl+d deletes it, and ctrl+u puts it back in the prompt. Enter on an empty prompt
+steers with the first. Esc stops your employee, and what is queued is their next turn. Only whoever opened the chat
+moves or deletes a message, and only their own.
+
 A session's id in your employee's reply shows as a link named after that session, such as `@minh · codex 1` or
 `@minh · chat`; one of the chat's Codex or Claude Code sessions opens in [the pane](/instruments/#the-pane).
 
