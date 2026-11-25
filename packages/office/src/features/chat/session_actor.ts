@@ -56,7 +56,7 @@ import {
 import type { Env } from "../../util/env.ts"
 import type { OfficePaths } from "../../util/home.ts"
 import { type Frame, FrameTooLarge } from "../../runtime/worker/channel.ts"
-import { type Delivery, type Job, MESSAGE_MOVED, type Seed, STOP_REASON } from "../../runtime/worker/job.ts"
+import { byPerson, type Delivery, type Job, MESSAGE_MOVED, type Seed, STOP_REASON } from "../../runtime/worker/job.ts"
 import {
   type AskRequest,
   BaseHandlers,
@@ -580,6 +580,7 @@ export class SessionActor implements LiveCalls {
         release: (callId, note, card) => {
           const delivery: Delivery = {
             id: newId(), op: "release", call_id: callId, ...(note === null ? {} : { note }),
+            ...byPerson(card?.answered_by),
           }
           return this.#deliver(new Pending(delivery, undefined, card === null ? {} : { questionId: card.id }))
         },
@@ -789,7 +790,7 @@ export class SessionActor implements LiveCalls {
       if (typeof context === "string") parts.unshift({ type: "text", text: context })
     }
     const event = { role: "user", parts, ...(author ? { author } : {}) }
-    return { delivery: { id: newId(), op: "send", inbox: spec.chat.inbox, event }, reply }
+    return { delivery: { id: newId(), op: "send", inbox: spec.chat.inbox, event, ...byPerson(author) }, reply }
   }
 
   /** Delivers the `send` `delivery`, answering its caller with `reply` once the run has it. */
@@ -806,13 +807,17 @@ export class SessionActor implements LiveCalls {
     if (question.approval != null && (read === "yes" || read === "session" || read === "always")) {
       // A card's Yes runs the call where yian holds it, at most once.
       const note = question.answered_by ? `approved by @${question.answered_by}` : "approved"
-      const delivery: Delivery = { id: newId(), op: "release", call_id: question.call_id!, note }
+      const delivery: Delivery = {
+        id: newId(), op: "release", call_id: question.call_id!, note, ...byPerson(question.answered_by),
+      }
       return new Pending(delivery, acked, { questionId: question.id, fallback })
     }
     // An approval card's call gets its action's own output only from its approvals: anything else is what it says.
     const carried = () => this.#ctx.answers.carried(question)
     const output = question.source === "approval" ? approvalResult(question) : formatAnswer(question, carried())
-    const delivery: Delivery = { id: newId(), op: "complete", call_id: question.call_id!, result: { output } }
+    const delivery: Delivery = {
+      id: newId(), op: "complete", call_id: question.call_id!, result: { output }, ...byPerson(question.answered_by),
+    }
     return new Pending(delivery, acked, { questionId: question.id, fallback })
   }
 
@@ -1157,14 +1162,15 @@ export class SessionActor implements LiveCalls {
       taken = []
     }
     const back: Pending[] = []
-    for (const { seq, message, key: sentAs } of taken) {
+    for (const { seq, message, key: sentAs, by } of taken) {
       if (this.#rehomed.has(`${runId}:${seq}`)) continue
       this.#rehomed.add(`${runId}:${seq}`)
       this.#publishRemoved(messageId(runId, seq))
       // A note was sent under its instrument's key: it goes back under that key too, so it stays the instrument's.
       const owed = sentAs === null ? null : (OWED_KEY.exec(sentAs)?.[0] ?? null)
       if (owed === null) {
-        back.push(new Pending({ id: newId(), op: "send", inbox, event: message, key: `withdrawn:${runId}:${seq}` }))
+        const again = { id: newId(), op: "send", inbox, event: message, key: `withdrawn:${runId}:${seq}` } as const
+        back.push(new Pending({ ...again, ...(by === null ? {} : { by }) }))
         continue
       }
       const text = message.parts.findLast((part) => part.type === "text") as { text: string } | undefined

@@ -203,10 +203,12 @@ test("restore sends again an answer the run took just before the office died, an
   const q = await card(o, sid, "ask_user")
   await waitFor(() => status(o, sid) === "waiting" && !first.hasWorker, { what: "asleep on the question" })
   const actor = await reopen(o, first)
-  // The worker wrote the answer to the log, and the office died before it read the reply.
+  // The worker wrote the answer to the log, as its answerer's, and the office died before it read the reply.
   const answered = o.office.store.answerQuestion(q.id, "A", "text", CEO)
   const job = o.jobs.at(-1)!
-  expect(await complete(job.log, q.call_id!, { output: formatAnswer(answered) }, offline(job, fake))).toBeNumber()
+  const by = { kind: "user", name: CEO } as const
+  const wrote = await complete(job.log, q.call_id!, { output: formatAnswer(answered) }, { ...offline(job, fake), by })
+  expect(wrote).toBeNumber()
   const before = o.kinds.length
   await actor.restore()
   expect(o.kinds.slice(before)).toEqual(["advance"])

@@ -1,7 +1,9 @@
 /** A chat's terminal under the office's gate: each command is decided before it starts, a held one waits on its card
  *  as yian's hold, Yes runs it once where yian held it, and yian's at-most-once covers a command a crash cut off. The
  *  terminal is real, over the chat office's pipes stand-in. */
+import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import { iterRunRecords } from "@ngocbh/yian/run"
 import type { GatedCall } from "@ngocbh/yian/tools"
 import { ChatApprovals } from "../../../src/features/chat/approvals.ts"
 import type { CheckRunner } from "../../../src/runtime/permissions/classifier.ts"
@@ -28,6 +30,15 @@ function shellCall(command: string, wait?: number): ScriptedReply {
 /** What the employee's last request holds. */
 function lastAsked(fake: Awaited<ReturnType<typeof fakeLlm>>, text: string): boolean {
   return JSON.stringify(fake.requests().at(-1)?.messages ?? []).includes(text)
+}
+
+/** Who made each host call the session's run log records with one: `[record kind, by]`, in order. */
+function madeBy(c: { o: Awaited<ReturnType<typeof chatOffice>>; actor: { runId: string | null } }): [string, unknown][] {
+  const log = path.join(c.o.office.paths.runs, c.actor.runId!, "log.jsonl")
+  return [...iterRunRecords(log)].flatMap((entry) => {
+    const by = (entry.envelope.record as unknown as { by?: unknown }).by
+    return by == null ? [] : [[entry.kind, by] as [string, unknown]]
+  })
 }
 
 /** Auto's check that waits for the test: each check waits until `finish` gives it a verdict. */
@@ -71,6 +82,9 @@ test("an ask-mode command waits on its card; Yes runs it once, where yian held i
   await waitFor(() => texts(c.o, c.sid).includes("Listed.") && status(c.o, c.sid) === "idle", { what: "the reply" })
   expect(c.o.pipes.commands).toEqual(["ls"])
   expect(await toolResults(c.o, c.sid)).toMatchObject([{ name: "terminal_run", held: true, releaseNote: `approved by @${CEO}` }])
+  // The log names who sent the message and who released the call.
+  const ceo = { kind: "user", name: CEO }
+  expect(madeBy(c)).toEqual([["pool_commit", ceo], ["node_step", ceo]])
 })
 
 test("No runs nothing, and the employee reads the approver's words", async () => {
@@ -83,6 +97,8 @@ test("No runs nothing, and the employee reads the approver's words", async () =>
   await waitFor(() => texts(c.o, c.sid).includes("Left it.") && status(c.o, c.sid) === "idle", { what: "the reply" })
   expect(c.o.pipes.commands).toEqual([])
   expect(lastAsked(fake, "Not run: the user said no: keep the build")).toBe(true)
+  const ceo = { kind: "user", name: CEO }
+  expect(madeBy(c)).toEqual([["pool_commit", ceo], ["node_step", ceo]])
 })
 
 test("a released command a crash cut off as it ran runs once: the employee reads that its outcome is unknown", async () => {

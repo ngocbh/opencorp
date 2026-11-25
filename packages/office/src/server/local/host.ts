@@ -44,7 +44,7 @@ import { Instruments, type LiveInstrument } from "../../runtime/sessions/instrum
 import { HarnessError } from "../../runtime/sessions/state.ts"
 import type { QuestionRecord, SessionRecord } from "../../runtime/store/store.ts"
 import type { Frame } from "../../runtime/worker/channel.ts"
-import { type Delivery, groupSpecs, type Job, parseJob } from "../../runtime/worker/job.ts"
+import { byPerson, type Delivery, groupSpecs, type Job, parseJob } from "../../runtime/worker/job.ts"
 import {
   type AskRequest,
   BaseHandlers,
@@ -524,7 +524,7 @@ export class LocalHost {
   async prompt(text: string, by: string): Promise<void> {
     this.#live()
     const event = { role: "user", parts: [{ type: "text" as const, text }], author: by }
-    await this.#deliver({ id: newId(), op: "send", inbox: MAIN_CHAT.inbox, event }, (frame) => {
+    await this.#deliver({ id: newId(), op: "send", inbox: MAIN_CHAT.inbox, event, ...byPerson(by) }, (frame) => {
       if (typeof frame.seq !== "number") return
       const unread = sentUnread(this.#transcript, this.#runId, frame.seq, this.#log)
       const message = userMessage(this.id, this.#runId, { seq: frame.seq, at: now(), message: event }, unread)
@@ -991,7 +991,9 @@ export class LocalHost {
   /** Completes `question`'s call with `output`: consumed once the run takes it, stale when it can't. */
   async #complete(question: QuestionRecord, output: unknown): Promise<void> {
     if (this.#finished || question.call_id === null) return
-    const delivery: Delivery = { id: newId(), op: "complete", call_id: question.call_id, result: { output } }
+    const delivery: Delivery = {
+      id: newId(), op: "complete", call_id: question.call_id, result: { output }, ...byPerson(question.answered_by),
+    }
     await this.#deliver(delivery, (frame) => {
       const held = this.#held.get(question.id)
       if (held === undefined || held.question.status !== "answered") return
@@ -1003,7 +1005,9 @@ export class LocalHost {
    *  consumed once the run takes it, stale when it can't. */
   async #release(callId: string, note: string | null, card: QuestionRecord | null): Promise<void> {
     if (this.#finished) return
-    const delivery: Delivery = { id: newId(), op: "release", call_id: callId, ...(note === null ? {} : { note }) }
+    const delivery: Delivery = {
+      id: newId(), op: "release", call_id: callId, ...(note === null ? {} : { note }), ...byPerson(card?.answered_by),
+    }
     await this.#deliver(delivery, (frame) => {
       const held = card === null ? undefined : this.#held.get(card.id)
       if (held === undefined || held.question.status !== "answered") return

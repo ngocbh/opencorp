@@ -31,14 +31,18 @@ async function replied(host: Awaited<ReturnType<typeof startHost>>["host"], text
   await waitFor(async () => (await said(host)).at(-1)?.[1].at(-1) === text, { what: `the reply ${text}` })
 }
 
-/** The `released` steps of the session's run log: each call let run, and its note. */
-function releases(folder: string, runId: string): { call_id: string; note: string | null }[] {
+/** The `released` steps of the session's run log: each call let run, its note, and who released it. */
+function releases(folder: string, runId: string): { call_id: string; note: string | null; by: unknown }[] {
   const log = path.join(folder, "runs", runId, "log.jsonl")
   return [...iterRunRecords(log, { kinds: ["node_step"] })].flatMap((entry) => {
-    const step = (entry.envelope!.record as unknown as { step: { kind: string; call_id?: string; note?: string } }).step
-    return step.kind === "released" ? [{ call_id: step.call_id!, note: step.note ?? null }] : []
+    const record = entry.envelope!.record as unknown as { by: unknown; step: Record<string, string | undefined> }
+    const { step, by } = record
+    return step.kind === "released" ? [{ call_id: step.call_id!, note: step.note ?? null, by }] : []
   })
 }
+
+/** The owner, as the run log names who made a host call. */
+const BY_OWNER = { kind: "user", name: OWNER }
 
 test("a held command's card comes once yian holds it; only the owner's Yes releases it, once, noting who approved it", async () => {
   const fake = await fakeLlm()
@@ -58,7 +62,7 @@ test("a held command's card comes once yian holds it; only the owner's Yes relea
   await replied(host, "Counted.")
   expect(fs.readFileSync(path.join(work, "count"), "utf8")).toBe("x\n")
   const runId = host.session()!.run_ids[0]!
-  expect(releases(folder, runId)).toEqual([{ call_id: card!.call_id!, note: "approved by @owner" }])
+  expect(releases(folder, runId)).toEqual([{ call_id: card!.call_id!, note: "approved by @owner", by: BY_OWNER }])
   await waitFor(() => host.question(card!.id)?.status === "consumed", { what: "the card consumed" })
 })
 
@@ -120,7 +124,9 @@ test("don't ask again adds a session rule that lets the reply's later call run, 
   await replied(host, "Both.")
   expect(["a", "b"].map((f) => fs.existsSync(path.join(work, f)))).toEqual([true, true])
   expect(host.questions({})).toHaveLength(1)
-  expect(releases(folder, host.session()!.run_ids[0]!)).toEqual([{ call_id: card!.call_id!, note: "approved by @owner" }])
+  expect(releases(folder, host.session()!.run_ids[0]!)).toEqual([
+    { call_id: card!.call_id!, note: "approved by @owner", by: BY_OWNER },
+  ])
 })
 
 test("Auto's check is a hold: its run verdict releases the call with its reason, and it never reads the model's key", async () => {
@@ -140,7 +146,10 @@ test("Auto's check is a hold: its run verdict releases the call with its reason,
   await replied(host, "Wrote it.")
   expect(fs.readFileSync(path.join(work, "k"), "utf8")).toBe(key)
   const runId = host.session()!.run_ids[0]!
-  const [note] = releases(folder, runId).map((r) => r.note)
+  const [released] = releases(folder, runId)
+  const note = released?.note
+  // The office's check released it, not a person.
+  expect(released?.by).toBeNull()
   // The note cites the check's own run, whose log is in the session's checks/ folder.
   const run = /^Auto's check: it writes one file \(run ([0-9a-f-]{36})\)$/.exec(note ?? "")?.[1]
   expect(run).toBeString()
