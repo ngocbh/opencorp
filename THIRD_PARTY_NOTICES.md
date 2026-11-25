@@ -578,7 +578,7 @@ Agreement.
 
 - **What:** `shared/flows/compact_history.yaml` in the company template is Yian's
   `examples/compact_history.yaml`, copied unchanged.
-- **Upstream:** https://github.com/ngocbh/yian at commit `e5349583`.
+- **Upstream:** https://github.com/ngocbh/yian at commit `266739db`.
 - **Ours:** `packages/office/src/company/template/shared/flows/compact_history.yaml`.
 - **License:** Apache-2.0; the full text is in `packages/yian/LICENSE`. Yian's NOTICE
   (`packages/yian/NOTICE`) says "yian, Copyright 2026 Ngoc Bui".
