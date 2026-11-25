@@ -998,8 +998,10 @@ test("a message sent while the model writes a call ends that call's wait as it s
   const { actor, sid } = await startActor(o)
   await actor.prompt("build it")
   await fake.waitForRequests(1, 30_000)
-  // The model is still writing its call when the run has the owner's message.
-  expect(await actor.prompt("Look here.")).toBe("steer")
+  // The model is still writing its call when the run has the owner's message, in the inbox the reply reads as steers
+  // (the actor may not have heard yet that the reply runs, and say `queued`).
+  await actor.prompt("Look here.")
+  expect(committed(o, actor.runId!, "messages", "Look here.")).toBe(true)
   const at = performance.now()
   fake.release()
   await waitFor(() => fake.requests().length === 2, { what: "the next model call" })
