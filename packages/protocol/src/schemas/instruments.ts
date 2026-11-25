@@ -31,6 +31,9 @@ export const Instrument = z.strictObject({
   command: z.string().nullable().default(null),
   /** Why it failed, in words the owner can act on. */
   error: z.string().nullable().default(null),
+  /** A shell's: a line the owner is part-way through holds it, refusing its driver's commands and keys until Enter runs
+   *  it or Ctrl-C gives it back (at the shell's prompt, Ctrl-U or deleting it too). False at a secret prompt. */
+  owner_typing: z.boolean().default(false),
   created_at: Timestamp,
   updated_at: Timestamp,
 })

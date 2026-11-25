@@ -51,7 +51,9 @@ const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/
 /** A shell with no terminal that runs each of an agent's commands as its own sandboxed call. */
 export class PipeShell {
   private readonly view = new ModelView()
-  private current: ShellState = { status: "starting", waiting: null, command: null, exit: null, error: null }
+  private current: ShellState = {
+    status: "starting", waiting: null, command: null, exit: null, error: null, ownerTyping: false,
+  }
   /** Stops the running command's call; null while none runs. */
   private call: AbortController | null = null
   /** Settles once the running command's call has ended. */

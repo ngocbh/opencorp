@@ -11,8 +11,8 @@
  *  <nonce> $?`, with a fresh start token and nonce for each command. `__oc_b` prints a start marker with the start
  *  token: the shell has read the line. `__oc_s` sets `__oc_n` to the nonce and keeps the command's exit code; the
  *  `PROMPT_COMMAND` the shell's set-up line installs then puts the terminal's line settings back as they were at the
- *  start, prints a marker (an OSC holding `__oc_n` and the exit code) and clears `__oc_n`. Only a marker with the
- *  command's nonce ends it.
+ *  start, prints a marker (an OSC holding `__oc_n`, the exit code and whether it drained the terminal) and clears
+ *  `__oc_n`. Only a marker with the command's nonce ends it.
  *  - The nonce is in no variable, `PS1` or environment while the command runs, or between commands: it reaches the
  *    shell in the typed line's last call, which runs once the command has. The shell reads the whole line before it
  *    runs any of it, so nothing of it is left for the command to read as input.
@@ -45,6 +45,28 @@
  *  dropped (bash ignores one that comes while it waits on a child that exits normally), so it goes again, up to three
  *  times, while the command runs on. The owner's keys go straight to the terminal.
  *
+ *  **The owner's line.** A line the owner is part-way through holds the shell for them: the agent's commands, keys and
+ *  interrupt are refused until Enter runs it or Ctrl-C gives it back. Ctrl-D gives back only an empty line: part-way
+ *  through one, it hands the text on unended. At bash's own prompt, where nothing runs, the terminal reads whole lines
+ *  with the line settings the prompt put back, so the office knows what the keys do there: when every key since the
+ *  last Enter or Ctrl-C was typed there, Ctrl-U (the kill key) gives the line back, and so does deleting it, counted
+ *  from the keys: printable characters add their bytes and Backspace (DEL, the erase key) takes one off, until an
+ *  arrow, Tab or other control key makes the count unknown. A key typed anywhere else (into a running command, over
+ *  ssh, at a secret prompt, or in sh, whose prompt keeps the owner's own line settings) may reach a program, or the
+ *  shell, as it is, so only Enter or Ctrl-C frees that line; a Ctrl-C at the prompt once the shell prompts again, as
+ *  it drops what it read of the line then. Nothing the owner left joins the agent's next command, or runs before it:
+ *  after their keys on the idle shell's line (but for a line their Enter sent), it goes after a kill (Ctrl-U). Keys
+ *  typed anywhere else may reach the shell later as they are, whole lines among them (a raw program leaves them
+ *  queued, Enter and Ctrl-C as plain bytes), past a kill's reach, as turning whole lines back on hands them to the
+ *  shell. For those the office makes the drain flag, a file in the shell's temp folder, before it writes the key; the
+ *  shell's next prompt (bash's prompt function, sh's prompt and the agent's typed line) removes it and reads and drops
+ *  everything the terminal holds, before the shell reads a line, and its marker says it drained. The agent's next
+ *  command waits for a marker that says so; without one in 2 s the shell stays the owner's until one does. A flag that
+ *  is gone proves nothing, as a command or a process it left can remove it: the prompt then drains nothing, its marker
+ *  says so, and the office makes the flag again. Like the end of the owner's command, a plain prompt's marker can be
+ *  forged; the agent's (with its nonce) can't. The owner's type-ahead on the idle line is never dropped. Neither the
+ *  kill nor the drain goes into a running program. The shell's state says when the owner holds it (`ownerTyping`).
+ *
  *  **Secret prompts.** While a command runs, the shell checks `ownerPrompt` after each output chunk and every 200 ms.
  *  At a secret prompt (a password, passphrase or code) it waits for the owner and refuses the agent's keys and its
  *  interrupt, in every mode; so does a line the owner is part-way through. Should the prompt end while the owner is
@@ -60,19 +82,25 @@
  *  and Auto's check decide, and no one reads a command for this. */
 import { randomBytes } from "node:crypto"
 import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import type { Instrument } from "@opencorp/protocol"
 import type { PtyProcess } from "../../platform.ts"
 import { type OwnerPrompt, ownerPrompt } from "./guards.ts"
 import { ModelView, PlainText } from "./output.ts"
 import type { InstrumentRecord } from "./record.ts"
 
-/** A shell's state, as its host lists it. `command` is the agent's command while it runs, never the owner's. */
+/** A shell's state, as its host lists it. `command` is the agent's command while it runs, never the owner's.
+ *  `ownerTyping` says a line the owner is part-way through, or their Ctrl-C whose prompt hasn't come, holds the idle or
+ *  running shell, which they can give back: never at a secret prompt, or while the rest of a line is dropped, which
+ *  hold it on their own terms. */
 export interface ShellState {
   status: Instrument["status"]
   waiting: OwnerPrompt | null
   command: string | null
   exit: number | null
   error: string | null
+  ownerTyping: boolean
 }
 
 /** What a call on the shell returns: its state, and a page of the model's view from where the call started. `next`
@@ -117,52 +145,86 @@ const LONG_LINE =
   "a line of this command is over 1000 bytes; a terminal cuts longer lines (Linux keeps 4095 bytes, macOS 1024): " +
   "write a script with the file tools and run it"
 const SECRET = "the program is asking for a password; only the owner types it. Call read to see what happens next."
-const OWNER_TYPING = "the owner is typing a line in this shell; call read, and try again once they've finished it"
+const OWNER_TYPING =
+  "the owner is typing a line in this shell, which holds it for them until Enter runs it or Ctrl-C gives it back to " +
+  "you; at the shell's prompt, Ctrl-U or deleting what they typed gives it back too. Call read, and try again once " +
+  "they have; if they seem to have stopped, tell them how to give it back"
 const OWNER_SECRET = "the shell is waiting for the owner at a prompt for a secret; only they can answer or stop it"
 /** What the owner's live view and the model's say when a secret prompt ends under the owner's answer. */
 const DROPPED_NOTE =
   "\r\n[the prompt ended while you were typing: the rest of that line is dropped until you press Enter]\r\n"
 /** What a kill (Ctrl-U) echoes, whatever the line settings: erasures, or `^U` and a line end. */
 const KILL_ECHO = "\b ^U\r\n"
+/** The owner's keys that end their line (Enter, Ctrl-C; Ctrl-D only an empty one), kill it (Ctrl-U), and take a byte
+ *  off it at the prompt (Backspace, which terminals send as DEL, the terminal's erase key; Ctrl-H isn't). */
+const LINE_ENDS = new Set(["\r", "\n", "\x03", "\x04"])
+const EOF = "\x04"
+const KILL = "\x15"
+const ERASE = "\x7f"
 
-/** A marker: the OSC the shell prints at its prompt, with the nonce (empty at a plain prompt), the exit code and,
- *  but for sh's prompt, the folder. */
+/** A marker: the OSC the shell prints at its prompt, with the nonce (empty at a plain prompt), the exit code, `1` when
+ *  the prompt drained the terminal (`drain`) and, but for sh's prompt, the folder. */
 const MARK = "\x1b]633;opencorp-mark;"
-const MARKER = /\x1b\]633;opencorp-mark;([^;\x07\x1b]*);([^;\x07\x1b]*)(?:;([^\x07\x1b]*))?\x07/g
+const MARKER = /\x1b\]633;opencorp-mark;([^;\x07\x1b]*);([^;\x07\x1b]*)(?:;([^;\x07\x1b]*)(?:;([^\x07\x1b]*))?)?\x07/g
 /** The first marker, which says the shell is ready. */
 const READY = new RegExp(MARKER.source)
 /** The longest folder a marker reports, in bytes: Linux's `PATH_MAX`. A longer one is unknown. */
 const FOLDER_MAX = 4096
-/** How far past `MARK` a marker runs: a 16-hex nonce, a `;`, an exit code, a `;` and the folder. */
-const MARK_TAIL = 32 + FOLDER_MAX
+/** How far past `MARK` a marker runs: a 16-hex nonce, a `;`, an exit code, a `;`, whether the prompt drained, a `;` and
+ *  the folder. */
+const MARK_TAIL = 40 + FOLDER_MAX
 /** What a command's output shows in place of the nonce. */
 const NONCE_SHOWN = "[nonce]"
 
-/** The set-up line each shell types first, its echo cut with everything else before the first marker. */
-const SETUP = {
-  // The prompt's work runs in read-only functions that call programs by path and no builtin (a command can shadow
-  // `return`, `builtin` or `printf` with a function); the start's line settings are saved for each prompt to restore.
-  bash:
-    "set +B +m +o history; shopt -u expand_aliases; unalias -a; set +o emacs +o vi; PS1=; PS2=; " +
-    `__oc_y=$(type -P stty); __oc_f=$(type -P printf); __oc_w=$(type -P pwd); __oc_t=$("$__oc_y" -g </dev/tty); ` +
-    "readonly __oc_y __oc_f __oc_w __oc_t; " +
-    `__oc_b() { "$__oc_f" "\\033]633;opencorp-mark;%s;start\\007" "$1" >/dev/tty; }; ` +
-    `__oc_s() { __oc_n=$1; /bin/sh -c 'exit "$1"' sh "$2"; }; ` +
-    `__oc_p() { "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; ` +
-    `"$__oc_f" "\\033]633;opencorp-mark;%s;%d;%s\\007" "$__oc_n" "$1" "$("$__oc_w" -P 2>/dev/null)" >/dev/tty; ` +
-    "__oc_n=; }; " +
-    `readonly -f __oc_b __oc_s __oc_p; PROMPT_COMMAND='__oc_p "$?"'; readonly PROMPT_COMMAND\n`,
+/** `s` as one sh word. */
+const shQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`
+
+/** While the drain flag (`__oc_d`) exists: removes it, then reads, with no wait, and drops whatever keys the terminal
+ *  holds, whole lines or not, and prints `1` for the marker; nothing when there was no flag to remove. `around` keeps
+ *  the line settings it finds, for a prompt that doesn't put its own back. It runs in the marker's own command
+ *  substitution, so nothing a command sets can make it say it drained. */
+const drain = (around = false): string =>
+  `"$__oc_u" "$__oc_d" 2>/dev/null && { ${around ? '__oc_g=$("$__oc_y" -g </dev/tty); ' : ""}` +
+  `"$__oc_y" -icanon min 0 time 0 </dev/tty 2>/dev/null; "$__oc_c" </dev/tty >/dev/null 2>&1; ` +
+  `${around ? '"$__oc_y" "$__oc_g" </dev/tty 2>/dev/null; ' : ""}"$__oc_f" 1; }`
+
+/** The set-up line a `kind` shell types first, its echo cut with everything else before the first marker. `flag` is
+ *  the drain flag: while it exists, the next prompt (`drain`) removes it and first empties the terminal of the keys it
+ *  holds. */
+function setupLine(kind: "bash" | "sh", flag: string): string {
+  const flagged = `__oc_d=${shQuote(flag)}; `
+  if (kind === "bash") {
+    // The prompt's work runs in read-only functions that call programs by path and no builtin (a command can shadow
+    // `return`, `builtin` or `printf` with a function); the start's line settings are saved for each prompt to
+    // restore, after its drain.
+    return (
+      "set +B +m +o history; shopt -u expand_aliases; unalias -a; set +o emacs +o vi; PS1=; PS2=; " +
+      `__oc_y=$(type -P stty); __oc_f=$(type -P printf); __oc_w=$(type -P pwd); __oc_t=$("$__oc_y" -g </dev/tty); ` +
+      `__oc_u=$(type -P rm); __oc_c=$(type -P cat); ${flagged}` +
+      "readonly __oc_y __oc_f __oc_w __oc_t __oc_u __oc_c __oc_d; " +
+      `__oc_b() { "$__oc_f" "\\033]633;opencorp-mark;%s;start\\007" "$1" >/dev/tty; }; ` +
+      `__oc_s() { __oc_n=$1; /bin/sh -c 'exit "$1"' sh "$2"; }; ` +
+      `__oc_p() { "$__oc_f" "\\033]633;opencorp-mark;%s;%d;%s;%s\\007" "$__oc_n" "$1" ` +
+      `"$(${drain()}; "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null)" "$("$__oc_w" -P 2>/dev/null)" >/dev/tty; ` +
+      "__oc_n=; }; " +
+      `readonly -f __oc_b __oc_s __oc_p; PROMPT_COMMAND='__oc_p "$?"'; readonly PROMPT_COMMAND\n`
+    )
+  }
   // sh's set may not know some of these options, and a special builtin's error would end the line, so each goes
   // last, alone and through `command`. A sh that is bash edits lines unless told not to. The marker's printf and pwd
-  // run by path where they are found, so a command's function can't stand in for them.
-  sh:
-    `PS1="$(printf '\\033]633;opencorp-mark;;')\\$?$(printf '\\007')"; PS2=; set +m; unalias -a; ` +
+  // run by path where they are found, so a command's function can't stand in for them. The prompt expands its drain
+  // each time, after the exit code it reports and before it shows.
+  return (
+    `PS1="$(printf '\\033]633;opencorp-mark;;')\\$?;"'$(${drain(true)})'"$(printf '\\007')"; PS2=; set +m; ` +
+    "unalias -a; " +
     `__oc_y=$(command -v stty); __oc_t=$("$__oc_y" -g </dev/tty); ` +
+    `__oc_u=$(command -v rm); __oc_c=$(command -v cat); ${flagged}` +
     "__oc_f=/usr/bin/printf; [ -x $__oc_f ] || __oc_f=printf; " +
     "__oc_w=/bin/pwd; [ -x $__oc_w ] || __oc_w=/usr/bin/pwd; " +
-    "readonly __oc_y __oc_t __oc_f __oc_w; " +
+    "readonly __oc_y __oc_t __oc_f __oc_w __oc_u __oc_c __oc_d; " +
     "for o in '+o emacs' '+o vi' +B '+o history'; do command set $o 2>/dev/null; done; " +
-    "command shopt -u expand_aliases 2>/dev/null\n",
+    "command shopt -u expand_aliases 2>/dev/null\n"
+  )
 }
 const ARGV = { bash: ["/bin/bash", "--noprofile", "--norc", "--noediting", "-i"], sh: ["/bin/sh", "-i"] }
 /** Variables the shell never takes from its host: they would run code at its start or turn options back on. */
@@ -174,12 +236,16 @@ const GUARD_MS = 200
 const CTRL_C_AGAIN_MS = 300
 const CTRL_C_AGAIN = 3
 const START_MS = 15_000
+/** How long the agent's command waits for a prompt that drops what the owner left (`drained`). */
+const DRAIN_MS = 2_000
 const HANGUP_MS = 2_000
 /** The longest a reply waits, whatever it is asked. */
 const WAIT_MAX_MS = 10 * 60_000
 
 /** A control character a command can't hold: all but newline and tab. */
 const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/
+/** A key that is no printable character: the terminal or the program edits the line with it. */
+const KEY_CONTROL = /[\x00-\x1f\x7f-\x9f]/
 /** The bytes of a command's nonce, 16 hex digits. */
 const NONCE_BYTES = 8
 
@@ -194,8 +260,8 @@ function typedLine(command: string, start: string, nonce: string, kind: "bash" |
   return kind === "bash"
     ? `\\__oc_b ${start}; eval ${quoted}; \\__oc_s ${nonce} $?\n`
     : `"$__oc_f" '\\033]633;opencorp-mark;%s;start\\007' ${start} >/dev/tty; eval ${quoted}; __oc_r=$?; ` +
-        `"$__oc_y" "$__oc_t" </dev/tty 2>/dev/null; "$__oc_f" ` +
-        `'\\033]633;opencorp-mark;%s;%d;%s\\007' ${nonce} "$__oc_r" "$("$__oc_w" -P 2>/dev/null)" >/dev/tty\n`
+        `"$__oc_f" '\\033]633;opencorp-mark;%s;%d;%s;%s\\007' ${nonce} "$__oc_r" ` +
+        `"$(${drain()}; "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null)" "$("$__oc_w" -P 2>/dev/null)" >/dev/tty\n`
 }
 
 /** `env` for the shell: its prompts empty, no history file, and nothing that runs code or sets options at its start. */
@@ -244,7 +310,9 @@ export class PtyShell {
   private pty: PtyProcess | null = null
   private readonly view = new ModelView()
   private readonly decoder = new TextDecoder()
-  private current: ShellState = { status: "starting", waiting: null, command: null, exit: null, error: null }
+  private current: ShellState = {
+    status: "starting", waiting: null, command: null, exit: null, error: null, ownerTyping: false,
+  }
   /** The agent's running command's nonce. */
   private nonce: string | null = null
   /** Its start token, and whether its start marker has come: the shell has read its line. */
@@ -264,9 +332,21 @@ export class PtyShell {
   /** A possible marker's start, held back for the next chunk, and how many guard checks it has waited. */
   private held = ""
   private heldChecks = 0
-  /** The owner has typed keys since their last Enter, Ctrl-C or Ctrl-D: all the shell keeps of their keys, with the
-   *  next two. */
-  private ownerMidLine = false
+  /** What the shell keeps of the owner's keys, with the next three: how many bytes of printable text their line holds,
+   *  as their keys at the prompt say; whether a control key there has made that count unknown; and whether a key went
+   *  anywhere but bash's idle prompt, where only Enter or Ctrl-C frees the line. */
+  private ownerBytes = 0
+  private ownerUnknown = false
+  private ownerElsewhere = false
+  /** The owner has typed at the prompt since its last kill or their Enter there: the agent's next command goes after a
+   *  kill. */
+  private killFirst = false
+  /** The owner has typed while the shell wasn't at its idle prompt reading whole lines: the agent's next command waits
+   *  for a prompt whose marker says it drained the terminal. */
+  private strayKeys = false
+  /** The owner's Ctrl-C reached the idle shell, which drops what it read of their line as it prompts again: until that
+   *  prompt, the agent's line could go with it. */
+  private promptDue = false
   /** Those keys went to a secret prompt. */
   private ownerAtSecret = false
   /** A secret prompt ended under the owner's answer: their keys are dropped until their Enter. */
@@ -293,12 +373,20 @@ export class PtyShell {
   /** Settles once the shell's process has ended and the shell has taken its exit (or it never started). */
   private ended: Promise<void> = Promise.resolve()
 
+  /** The drain flag, in the shell's temp folder (its home without one), and the set-up line that names it. */
+  private readonly flag: string
+  private readonly setup: string
+
   private constructor(
     readonly id: string,
     readonly name: string,
     private readonly host: ShellHost,
     private readonly kind: "bash" | "sh",
-  ) {}
+  ) {
+    const dir = host.env.TMPDIR ?? host.env.HOME ?? os.tmpdir()
+    this.flag = path.join(dir, `.opencorp-drain-${randomBytes(6).toString("hex")}`)
+    this.setup = setupLine(kind, this.flag)
+  }
 
   /** Starts a shell on `host`'s PTY and resolves once it is ready at its prompt, or has failed (`state().error` says
    *  why, and the record ends failed). */
@@ -336,8 +424,13 @@ export class PtyShell {
    *  character other than newline and tab, or a line of it would be over 1000 bytes. Its record names `callId`, the
    *  yian call that ran it, when given. */
   async run(command: string, waitMs: number, signal?: AbortSignal, callId?: string): Promise<Reply> {
-    const why = this.runProblem(command)
+    let why = this.runProblem(command)
     if (why !== null) return this.refusal(why)
+    if (this.strayKeys) {
+      await this.drained()
+      why = this.runProblem(command)
+      if (why !== null) return this.refusal(why)
+    }
     const nonce = randomBytes(NONCE_BYTES).toString("hex")
     const token = randomBytes(NONCE_BYTES).toString("hex")
     const typed = typedLine(command, token, nonce, this.kind)
@@ -355,6 +448,7 @@ export class PtyShell {
     this.startToken = token
     this.begun = this.stopWanted = false
     this.interrupted = false
+    if (this.killFirst) this.kill()
     this.echo = bytesOf(typed).replaceAll("\n", "\r\n")
     this.echoAt = 0
     this.emit(bytesOf(`$ ${command.replaceAll("\n", "\r\n")}\r\n`))
@@ -389,7 +483,7 @@ export class PtyShell {
   /** Sends Ctrl-C to the agent's own running command. Refused when nothing runs, or the command is the owner's. */
   interrupt(): Reply {
     if (this.current.status === "waiting") return this.refusal(OWNER_SECRET)
-    if (this.ownerMidLine) return this.refusal(OWNER_TYPING)
+    if (this.ownerHolds()) return this.refusal(OWNER_TYPING)
     if (this.nonce === null) {
       const why = this.ownerRunning ? "the running command is the owner's; only they can stop it" : "nothing is running"
       return this.refusal(why)
@@ -427,38 +521,85 @@ export class PtyShell {
     if (left === 0) return
     const nonce = this.nonce
     this.again = setTimeout(() => {
-      if (this.nonce === nonce && this.current.status === "running" && !this.ownerMidLine) this.sendCtrlC(left - 1)
+      if (this.nonce === nonce && this.current.status === "running" && !this.ownerHolds()) this.sendCtrlC(left - 1)
     }, CTRL_C_AGAIN_MS)
   }
 
-  /** Writes the owner's keys to the PTY, straight to the running command. The shell keeps only whether the owner is
-   *  part-way through a line, and whether at a secret prompt; an Enter at the prompt starts the owner's command. While
-   *  a secret prompt that ended under their answer is being dropped, their keys up to their Enter go nowhere. */
+  /** Writes the owner's keys to the PTY, straight to the running command. The shell keeps only how far the owner's
+   *  line holds the shell (the module's "The owner's line"), and whether their keys went to a secret prompt; an Enter
+   *  at the prompt starts the owner's command. While a secret prompt that ended under their answer is being dropped,
+   *  their keys up to their Enter go nowhere. */
   ownerKeys(data: string): void {
     const { status } = this.current
     if (status === "starting" || status === "ended" || status === "failed") return
     this.agentLine = ""
     let keys = ""
     for (const key of data) {
-      const ends = key === "\r" || key === "\n" || key === "\x03" || key === "\x04"
+      const ends = LINE_ENDS.has(key)
       if (this.dropping) {
-        if (ends) this.dropping = this.ownerMidLine = false
+        if (ends) {
+          this.dropping = false
+          this.ownerLineGone()
+        }
         continue
       }
       keys += key
-      if (!ends) {
-        this.ownerMidLine = true
-        if (this.current.status === "waiting") this.ownerAtSecret = true
+      // A key on the idle shell's line, read whole, stays there for a kill; any other may reach the shell later as it is.
+      const line = this.atIdleLine()
+      const prompt = line && this.kind === "bash"
+      if (line) this.killFirst = true
+      else this.stray()
+      if (ends) {
+        this.ownerAtSecret = false
+        // Ctrl-D hands a part-typed line on unended: whoever reads it holds it now.
+        if (key === EOF && this.ownerLineHeld()) this.ownerElsewhere = true
+        else this.ownerLineGone()
+        if (key === "\x03" && this.nonce !== null) this.interrupted = true
+        if (key === "\x03" && this.current.status === "idle") this.promptDue = true
+        if ((key === "\r" || key === "\n") && this.current.status === "idle") {
+          // The shell takes the line whole: nothing of it is left for a kill.
+          if (line) this.killFirst = false
+          this.ownerRunning = true
+          this.set({ status: "running", waiting: null, command: null, exit: null })
+        }
         continue
       }
-      this.ownerMidLine = this.ownerAtSecret = false
-      if (key === "\x03" && this.nonce !== null) this.interrupted = true
-      if ((key === "\r" || key === "\n") && this.current.status === "idle") {
-        this.ownerRunning = true
-        this.set({ status: "running", waiting: null, command: null, exit: null })
+      if (this.current.status === "waiting") this.ownerAtSecret = true
+      if (!prompt) this.ownerElsewhere = true
+      else if (key === KILL && !this.ownerElsewhere) {
+        // The terminal kills its whole line: all of it was typed at the prompt.
+        this.ownerLineGone()
+        continue
       }
+      if (key === ERASE) this.ownerBytes = Math.max(0, this.ownerBytes - 1)
+      else if (KEY_CONTROL.test(key)) this.ownerUnknown = true
+      else this.ownerBytes += Buffer.byteLength(key)
     }
     if (keys !== "") this.write(keys)
+    this.set({})
+  }
+
+  /** Whether the owner's line holds the shell: they are part-way through it, the rest of it is being dropped, or the
+   *  shell is still to prompt again after their Ctrl-C. */
+  private ownerHolds(): boolean {
+    return this.dropping || this.promptDue || this.ownerLineHeld()
+  }
+
+  /** Whether the owner is part-way through a line, as far as their keys say. */
+  private ownerLineHeld(): boolean {
+    return this.ownerElsewhere || this.ownerUnknown || this.ownerBytes > 0
+  }
+
+  /** The owner's line has ended or been killed: nothing of it holds the shell. */
+  private ownerLineGone(): void {
+    this.ownerBytes = 0
+    this.ownerUnknown = this.ownerElsewhere = false
+  }
+
+  /** Whether a key goes to the idle shell's line now, which the terminal reads whole: nothing runs to read it. At
+   *  bash's, whose prompt puts its line settings back, the office knows what the keys do there too. */
+  private atIdleLine(): boolean {
+    return this.current.status === "idle" && this.pty !== null && this.pty.modes().canonical
   }
 
   resize(cols: number, rows: number): void {
@@ -494,7 +635,7 @@ export class PtyShell {
       (code) => this.onExit(code),
       () => this.onExit(null),
     )
-    this.write(SETUP[this.kind])
+    this.write(this.setup)
     let timer: ReturnType<typeof setTimeout> | undefined
     await new Promise<void>((resolve) => {
       this.ready = resolve
@@ -521,7 +662,7 @@ export class PtyShell {
     for (const match of text.matchAll(MARKER)) {
       this.emit(this.neutral(text.slice(at, match.index)))
       at = match.index + match[0].length
-      this.marker(match[1]!, match[2]!, match[3])
+      this.marker(match[1]!, match[2]!, match[3] === "1", match[4])
     }
     let rest = text.slice(at)
     const hold = this.holdFrom(rest)
@@ -553,7 +694,7 @@ export class PtyShell {
     const found = READY.exec(this.startup)
     if (found === null) return null
     const rest = this.startup.slice(found.index + found[0].length)
-    this.folder = folderOf(found[3])
+    this.folder = folderOf(found[4])
     this.startup = ""
     const modes = this.pty!.modes()
     if (!modes.echo || !modes.canonical) {
@@ -594,13 +735,19 @@ export class PtyShell {
    *  none, after a Ctrl-C), or of the owner's when it holds none; with `start` for `exitText`, the start of the
    *  agent's command when it holds its start token. Any other is ignored. Only a marker with the nonce sets the
    *  folder. */
-  private marker(nonce: string, exitText: string, folder: string | undefined): void {
+  private marker(nonce: string, exitText: string, drained: boolean, folder: string | undefined): void {
     if (exitText === "start") return this.begin(nonce)
     const exit = /^-?\d+$/.test(exitText) ? Number(exitText) : null
     if (nonce === "" && this.promptAfter) {
       // sh's prompt after the agent's line, which already ended it: never the end of a command started since.
       this.promptAfter = false
-      return
+      return this.prompted(drained)
+    }
+    // A fresh prompt: the shell has dropped what it read of a line a Ctrl-C stopped.
+    if (nonce === "" && this.promptDue) {
+      this.promptDue = false
+      this.prompted(drained)
+      this.set({})
     }
     if (this.nonce !== null) {
       if (nonce !== this.nonce && !(nonce === "" && this.interrupted)) return
@@ -611,6 +758,7 @@ export class PtyShell {
         // meta.json can't be written now; the record keeps the exit for its next write.
       }
     } else if (!(nonce === "" && this.ownerRunning)) return
+    this.prompted(drained)
     this.folder = nonce === "" ? null : folderOf(folder)
     this.settle()
     this.set({ status: "idle", waiting: null, command: null, exit })
@@ -643,9 +791,10 @@ export class PtyShell {
   /** Kills the terminal's unfinished line (Ctrl-U), which the prompt's line settings make the kill key. The owner's
    *  keys on it go too; whether they went to a secret prompt still counts, for `drop`. */
   private kill(): void {
-    this.write("\x15")
+    this.write(KILL)
     this.killSent = true
-    this.ownerMidLine = false
+    this.killFirst = false
+    this.ownerLineGone()
   }
 
   /** Holds the shell for the owner while the screen asks a secret, and lets it go once it doesn't. */
@@ -679,15 +828,18 @@ export class PtyShell {
     }
   }
 
-  /** Updates the state, tells the host, runs the guard's timer while a command runs, and wakes waiting replies. */
+  /** Updates the state, with whether the owner's line holds the shell, tells the host, runs the guard's timer while a
+   *  command runs, and wakes waiting replies. */
   private set(change: Partial<ShellState>): void {
     const next = { ...this.current, ...change }
-    const same = (Object.keys(next) as (keyof ShellState)[]).every((key) => next[key] === this.current[key])
     if (next.status === "waiting" && this.current.status !== "waiting") this.holds += 1
     const dropping = this.current.status === "waiting" && next.status !== "waiting" && this.ownerAtSecret
+    if (dropping && next.status !== "ended" && next.status !== "failed") this.drop()
+    const live = next.status === "idle" || next.status === "running"
+    next.ownerTyping = (this.ownerLineHeld() || this.promptDue) && !this.dropping && live
+    const same = (Object.keys(next) as (keyof ShellState)[]).every((key) => next[key] === this.current[key])
     this.current = next
     if (same) return
-    if (dropping && next.status !== "ended" && next.status !== "failed") this.drop()
     const busy = next.status === "running" || next.status === "waiting"
     if (busy && this.guardTimer === null) this.guardTimer = setInterval(() => this.check(), GUARD_MS)
     if (!busy && this.guardTimer !== null) {
@@ -695,7 +847,62 @@ export class PtyShell {
       this.guardTimer = null
     }
     this.host.changed(this.state())
+    this.wake()
+  }
+
+  /** Wakes the replies and flushes that wait, each to check whether its wait is over. */
+  private wake(): void {
     for (const waiter of [...this.waiters]) waiter()
+  }
+
+  /** The owner's key goes where the shell may read it later as it is (`strayKeys`): the drain flag is made before the
+   *  key is written, so any prompt that could find the key finds the flag too. It is opened without following a link,
+   *  truncating, or waiting on a pipe, as the shell's commands can write its folder; a flag that can't be made leaves
+   *  the agent's commands refused. */
+  private stray(): void {
+    this.strayKeys = true
+    this.makeFlag()
+  }
+
+  /** Makes the drain flag, if it can: a flag that isn't there leaves the next prompt's marker saying it didn't drain. */
+  private makeFlag(): void {
+    try {
+      const { O_WRONLY, O_CREAT, O_NOFOLLOW, O_NONBLOCK } = fs.constants
+      fs.closeSync(fs.openSync(this.flag, O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o600))
+    } catch {
+      // A link, pipe or folder a command put there: no prompt drains until it goes.
+    }
+  }
+
+  /** A prompt the shell acts on came, its marker saying whether it drained the terminal. Only that says so: a flag that
+   *  is gone may have been removed by a command, or a process it left. Without the drain, the owner's stray keys stay
+   *  (the agent's next command waits), and the flag is made again for the next prompt. */
+  private prompted(drained: boolean): void {
+    if (!this.strayKeys) return
+    if (!drained) return this.makeFlag()
+    this.strayKeys = false
+    this.wake()
+  }
+
+  /** Waits for a prompt that drained the terminal of the owner's stray keys, at most `DRAIN_MS`. Without one the shell
+   *  may still hold them: it stays the owner's, and says so, until a prompt drains it (their Enter or Ctrl-C). */
+  private async drained(): Promise<void> {
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer)
+        this.waiters.delete(check)
+        resolve()
+      }
+      const check = () => {
+        if (!this.strayKeys || this.current.status !== "idle") done()
+      }
+      const timer = setTimeout(done, DRAIN_MS)
+      this.waiters.add(check)
+      check()
+    })
+    if (!this.strayKeys || this.current.status !== "idle") return
+    this.promptDue = true
+    this.set({})
   }
 
   /** A secret prompt ended under the owner's answer: kills the line they were typing and drops their keys up to their
@@ -704,7 +911,7 @@ export class PtyShell {
     this.emit(bytesOf(DROPPED_NOTE))
     this.kill()
     this.ownerAtSecret = false
-    this.dropping = this.ownerMidLine = true
+    this.dropping = true
   }
 
   /** The guard's timed check; a possible marker's start held through a whole check is plain output after all. */
@@ -763,7 +970,7 @@ export class PtyShell {
     if (status === "running") {
       return "a command is still running in this shell; call read to follow it, type to answer it, or interrupt it"
     }
-    if (this.ownerMidLine) return OWNER_TYPING
+    if (this.ownerHolds()) return OWNER_TYPING
     return PtyShell.commandProblem(command, this.kind)
   }
 
@@ -775,7 +982,7 @@ export class PtyShell {
     const { status } = this.current
     if (status === "waiting") return SECRET
     if (status !== "running") return "nothing is running in this shell to type into; run a command"
-    if (this.ownerMidLine) return OWNER_TYPING
+    if (this.ownerHolds()) return OWNER_TYPING
     if (!/^[\x20-\x7e]*$/.test(text)) return "type takes printable ASCII only; interrupt sends Ctrl-C"
     if (this.agentLine.length + text.length > LINE_MAX) {
       return "a typed line would be over 1000 bytes, and a terminal cuts longer lines"
@@ -830,11 +1037,21 @@ export class PtyShell {
       }
     }
     this.settle()
+    this.unflag()
     this.set({ status: "ended", waiting: null, command: null, exit: code })
     try {
       this.host.record.end("ended")
     } catch {
       // meta.json can't be written; output.log is complete and closed.
+    }
+  }
+
+  /** Removes the drain flag, a link or file in its place included, once the shell has ended. */
+  private unflag(): void {
+    try {
+      fs.unlinkSync(this.flag)
+    } catch {
+      // There is none, or a folder a command made there, which goes with the temp folder.
     }
   }
 
@@ -855,7 +1072,7 @@ export class PtyShell {
   /** The last of what the shell printed while starting, its set-up line's echo left out, for a failure's message. */
   private startupTail(): string {
     const plain = new PlainText().push(Buffer.from(this.startup, "latin1").toString("utf8"))
-    const text = plain.replaceAll(SETUP[this.kind].trim(), "").trim().slice(-300)
+    const text = plain.replaceAll(this.setup.trim(), "").trim().slice(-300)
     return text === "" ? "" : `: ${text}`
   }
 }

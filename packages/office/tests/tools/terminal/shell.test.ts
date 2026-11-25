@@ -106,7 +106,9 @@ const BOTH: [string, (start: Start) => Promise<void>][] = [
     "an idle shell is not raw: echo and whole lines are on at its prompt",
     async (start) => {
       const t = await openShell({ start })
-      expect(t.shell.state()).toEqual({ status: "idle", waiting: null, command: null, exit: null, error: null })
+      expect(t.shell.state()).toEqual({
+        status: "idle", waiting: null, command: null, exit: null, error: null, ownerTyping: false,
+      })
       expect(t.pty().modes()).toEqual({ echo: true, canonical: true })
       expect(t.states.map((state) => state.status)).toEqual(["idle"])
       // The shell's own start-up (its first prompt, its set-up line and its echo) reaches no view.
@@ -121,7 +123,9 @@ const BOTH: [string, (start: Start) => Promise<void>][] = [
       const reply = await t.shell.run("echo hi; false", 5000)
       const output = "$ echo hi; false\nhi\n"
       expect(reply).toEqual({ shell: "sh_1", status: "idle", exit: 1, waiting: null, output, next: 20, more: false })
-      expect(t.shell.state()).toEqual({ status: "idle", waiting: null, command: null, exit: 1, error: null })
+      expect(t.shell.state()).toEqual({
+        status: "idle", waiting: null, command: null, exit: 1, error: null, ownerTyping: false,
+      })
       expect(t.states.map((state) => [state.status, state.command])).toEqual([
         ["idle", null],
         ["running", "echo hi; false"],
@@ -216,7 +220,7 @@ for (const kind of ["bash", "sh"] as const) {
     await t.shell.run(`cd '${folder}'`, 5000)
     expect(t.shell.cwd()).toBe(folder)
     // The kernel's folder, not what $PWD says, and never a marker the command prints itself.
-    await t.shell.run("cd /; PWD=/srv; printf '\\033]633;opencorp-mark;;0;/srv\\007'", 5000)
+    await t.shell.run("cd /; PWD=/srv; printf '\\033]633;opencorp-mark;;0;1;/srv\\007'", 5000)
     expect(t.shell.cwd()).toBe("/")
     // A folder whose name holds a control character can't be reported.
     await t.shell.run(`cd '${t.dir}' && mkdir "$(printf 'a\\001b')" && cd "$(printf 'a\\001b')"`, 5000)
@@ -422,6 +426,292 @@ test("the agent can't type into a line the owner is part-way through", async () 
   expect((await t.shell.run("true", 5000)).refused).toBeUndefined()
 })
 
+test("the owner who deletes all they typed gives the line back, and the agent's next command runs", async () => {
+  const t = await openShell()
+  t.shell.ownerKeys("ech")
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect((await t.shell.run("true", 1000)).refused).toMatch(/the owner is typing/)
+  // Backspace (DEL) takes one character off; the last one gives the line back.
+  t.shell.ownerKeys("\x7f\x7f")
+  expect(t.shell.state().ownerTyping).toBe(true)
+  t.shell.ownerKeys("\x7f")
+  expect(t.shell.state().ownerTyping).toBe(false)
+  // The host heard each change, so the owner's view shows the hold, then not.
+  expect(t.states.map((state) => state.ownerTyping)).toEqual([false, true, false])
+  const reply = await t.shell.run("echo agent-$((6*7))", 5000)
+  expect(reply).toMatchObject({ status: "idle", exit: 0 })
+  expect(reply.output).toContain("agent-42\n")
+  // A Backspace on an empty line holds nothing.
+  t.shell.ownerKeys("\x7f")
+  expect(t.shell.state().ownerTyping).toBe(false)
+  // A character past ASCII counts as its bytes, as a terminal that erases a byte at a time takes it off.
+  t.shell.ownerKeys("é\x7f")
+  expect(t.shell.state().ownerTyping).toBe(true)
+  t.shell.ownerKeys("\x7f")
+  expect(t.shell.state().ownerTyping).toBe(false)
+  expect(await t.shell.run("echo agent-$((6*7))", 5000)).toMatchObject({ status: "idle", exit: 0 })
+})
+
+test("Ctrl-U gives the owner's line back, and what they typed never runs", async () => {
+  const t = await openShell()
+  t.shell.ownerKeys("echo owner-$((6*7))")
+  t.shell.ownerKeys("\x15")
+  expect(t.shell.state().ownerTyping).toBe(false)
+  const reply = await t.shell.run("echo agent", 5000)
+  expect(reply).toMatchObject({ status: "idle", exit: 0 })
+  expect(reply.output).toContain("agent\n")
+  expect(await t.view()).not.toContain("owner-42")
+})
+
+test("at the prompt, once the owner uses a key the line edits on its own, only Enter, Ctrl-C or Ctrl-U gives it back", async () => {
+  const t = await openShell()
+  // An arrow: the office can't know the line from the keys any more, so deleting what was typed doesn't free it.
+  t.shell.ownerKeys("ab\x1b[D")
+  t.shell.ownerKeys("\x7f".repeat(6))
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect((await t.shell.run("true", 1000)).refused).toMatch(/the owner is typing/)
+  t.shell.ownerKeys("\x15")
+  expect(t.shell.state().ownerTyping).toBe(false)
+  expect((await t.shell.run("true", 5000)).refused).toBeUndefined()
+  // A tab, then Ctrl-C.
+  t.shell.ownerKeys("x\t\x7f\x7f")
+  expect((await t.shell.run("true", 1000)).refused).toMatch(/the owner is typing/)
+  await ctrlC(t)
+  expect(t.shell.state().ownerTyping).toBe(false)
+  expect((await t.shell.run("true", 5000)).refused).toBeUndefined()
+  // Ctrl-W, then Enter.
+  t.shell.ownerKeys("true x\x17")
+  expect((await t.shell.run("true", 1000)).refused).toMatch(/the owner is typing/)
+  t.shell.ownerKeys("\r")
+  expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+  expect((await t.shell.run("true", 5000)).refused).toBeUndefined()
+})
+
+/** The owner's Ctrl-C at the idle prompt: the agent waits until the shell prompts again, having dropped what it read
+ *  of the line, then may run. */
+async function ctrlC(t: { shell: PtyShell }) {
+  t.shell.ownerKeys("\x03")
+  // Until then the owner still holds it, and their view says so.
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect(t.shell.runProblem("echo agent")).toMatch(/the owner is typing/)
+  await waitFor(() => t.shell.runProblem("echo agent") === null, { timeout: 5000, what: "the prompt after Ctrl-C" })
+  expect(t.shell.state().ownerTyping).toBe(false)
+}
+
+/** Whether the shell ran the owner's `touch OWNED` (and whatever joined it) in the test's folder. */
+const ownedRan = async (t: { dir: string }) => fs.existsSync(path.join(t.dir, "OWNED"))
+
+test("keys a running program reads one at a time hold through deletes and Ctrl-U, as over ssh, until Enter or Ctrl-C", async () => {
+  const t = await openShell()
+  // As ssh to a host whose erase key is Ctrl-H: the remote, not the office, edits the line.
+  expect((await t.shell.run("stty -icanon -echo; cat", 300)).status).toBe("running")
+  t.shell.ownerKeys(`touch OWNED ${"\x7f".repeat(11)}`)
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect((await t.shell.type("echo agent", { enter: true, waitMs: 0 })).refused).toMatch(/the owner is typing/)
+  t.shell.ownerKeys("\x15")
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect((await t.shell.type("echo agent", { enter: true, waitMs: 0 })).refused).toMatch(/the owner is typing/)
+  t.shell.ownerKeys("\x03")
+  expect(t.shell.state().ownerTyping).toBe(false)
+  expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle" })
+})
+
+test("keys typed while a raw command runs, which the shell reads later, hold until Enter or Ctrl-C at the prompt", async () => {
+  const t = await openShell()
+  expect((await t.shell.run("stty raw -echo; sleep 1", 300)).status).toBe("running")
+  t.shell.ownerKeys(`touch OWNED ${"\x7f".repeat(11)}\x15`)
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+  // The shell holds those bytes now: deletes and Ctrl-U at its prompt can't take them off.
+  t.shell.ownerKeys("\x7f\x15")
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect((await t.shell.run("echo agent", 1000)).refused).toMatch(/the owner is typing/)
+  // Ctrl-C at the prompt drops what the shell holds of the line.
+  await ctrlC(t)
+  expect(t.shell.state().ownerTyping).toBe(false)
+  const reply = await t.shell.run("echo agent", 5000)
+  expect(reply).toMatchObject({ status: "idle", exit: 0 })
+  expect(reply.output).toContain("agent\n")
+  expect(await ownedRan(t)).toBe(false)
+})
+
+for (const [setting, deleting] of [["erase ^H", "\x7f".repeat(11)], ["kill ^X", "\x15"]] as const) {
+  test(`keys typed while a command that sets stty ${setting} runs hold until Enter or Ctrl-C`, async () => {
+    const t = await openShell()
+    expect((await t.shell.run(`stty ${setting}; sleep 1`, 300)).status).toBe("running")
+    t.shell.ownerKeys(`touch OWNED ${deleting}`)
+    expect(t.shell.state().ownerTyping).toBe(true)
+    expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+    t.shell.ownerKeys("\x15")
+    expect((await t.shell.run("echo agent", 1000)).refused).toMatch(/the owner is typing/)
+    await ctrlC(t)
+    expect(await t.shell.run("echo agent", 5000)).toMatchObject({ status: "idle", exit: 0 })
+    expect(await ownedRan(t)).toBe(false)
+  })
+}
+
+test("in sh, whose prompt keeps the owner's line settings, deletes and Ctrl-U never give the line back", async () => {
+  const t = await openShell({ shell: "sh" })
+  t.shell.ownerKeys("stty erase ^H\r")
+  expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+  t.shell.ownerKeys(`touch OWNED ${"\x7f".repeat(11)}\x15`)
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect((await t.shell.run("echo agent", 1000)).refused).toMatch(/the owner is typing/)
+  await ctrlC(t)
+  expect(await t.shell.run("echo agent", 5000)).toMatchObject({ status: "idle", exit: 0 })
+  expect(await ownedRan(t)).toBe(false)
+})
+
+test("Ctrl-D part-way through a line hands it to the shell and keeps the hold; Ctrl-C gives it back", async () => {
+  const t = await openShell()
+  t.shell.ownerKeys("touch OWNED \x04")
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect((await t.shell.run("echo agent", 1000)).refused).toMatch(/the owner is typing/)
+  t.shell.ownerKeys("\x15\x7f")
+  expect(t.shell.state().ownerTyping).toBe(true)
+  await ctrlC(t)
+  expect(await t.shell.run("echo agent", 5000)).toMatchObject({ status: "idle", exit: 0 })
+  expect(await ownedRan(t)).toBe(false)
+})
+
+test("after the owner's keys at the prompt, the agent's next line kills what may be left on it first", async () => {
+  const t = await openShell()
+  // Ctrl-V puts a literal Ctrl-U on the line, which the office takes as the kill that gave it back.
+  t.shell.ownerKeys("touch OWNED \x16\x15")
+  expect(t.shell.state().ownerTyping).toBe(false)
+  const reply = await t.shell.run("echo agent", 5000)
+  expect(reply).toMatchObject({ status: "idle", exit: 0 })
+  expect(reply.output).toContain("agent\n")
+  expect(await ownedRan(t)).toBe(false)
+})
+
+test("the owner's Enter at the prompt leaves no kill for the agent to send into the program it starts", async () => {
+  const t = await openShell()
+  // The owner starts a program that reads keys one at a time; the agent types into it.
+  t.shell.ownerKeys("IFS= read -r -n 5 x; printf '[%q]\\n' \"$x\"\r")
+  await waitFor(() => !t.pty().modes().canonical, { timeout: 5000, what: "read -n's own line settings" })
+  expect((await t.shell.type("hello", { enter: false, waitMs: 5000 })).refused).toBeUndefined()
+  await waitFor(() => t.shell.state().status === "idle", { timeout: 5000, what: "the owner's command to end" })
+  const view = await t.view()
+  expect(view).toContain("[hello]")
+  expect(view).not.toContain("025")
+})
+
+test("after trap '' INT the owner's Ctrl-C brings no prompt: the hold shows, and Enter ends it", async () => {
+  const t = await openShell()
+  expect(await t.shell.run("trap '' INT", 5000)).toMatchObject({ status: "idle", exit: 0 })
+  t.shell.ownerKeys("touch OWNED \x03")
+  await Bun.sleep(300)
+  // The shell ignored it and never prompted again: the employee waits, and the owner's view says why.
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect((await t.shell.run("echo agent", 1000)).refused).toMatch(/the owner is typing/)
+  t.shell.ownerKeys("\r")
+  await waitFor(() => t.shell.runProblem("echo agent") === null, { timeout: 5000, what: "the prompt after Enter" })
+  expect(t.shell.state().ownerTyping).toBe(false)
+  expect(await t.shell.run("echo agent", 5000)).toMatchObject({ status: "idle", exit: 0 })
+  expect(await ownedRan(t)).toBe(false)
+})
+
+for (const [end, name] of [["\r", "Enter"], ["\x03", "Ctrl-C"]] as const) {
+  test(`the owner's ${name} while a raw command runs frees the hold, but what they typed never joins the agent's line`, async () => {
+    const t = await openShell()
+    expect((await t.shell.run("stty raw -echo; sleep 1", 300)).status).toBe("running")
+    // In raw mode the terminal neither ends the line nor stops the command: the shell reads it all later.
+    t.shell.ownerKeys(`touch OWNED ${end}`)
+    expect(t.shell.state().ownerTyping).toBe(false)
+    expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+    const reply = await t.shell.run("echo agent", 5000)
+    expect(reply).toMatchObject({ status: "idle", exit: 0 })
+    expect(reply.output).toContain("agent\n")
+    expect(await ownedRan(t)).toBe(false)
+  })
+}
+
+for (const kind of ["bash", "sh"] as const) {
+  test(`in ${kind}, lines the owner left queued behind a raw command never run, a cd among them, Ctrl-C ignored or not`, async () => {
+    const t = await openShell({ shell: kind })
+    fs.mkdirSync(path.join(t.dir, "sub"))
+    for (const trap of ["", "trap '' INT"]) {
+      if (trap !== "") expect(await t.shell.run(trap, 5000)).toMatchObject({ status: "idle", exit: 0 })
+      expect((await t.shell.run("stty raw -echo; sleep 1", 300)).status).toBe("running")
+      // Raw, the terminal ends no line and stops nothing: Ctrl-J and Enter queue as bytes, for the shell to read once
+      // whole lines are back. The last line, unended, would join the agent's.
+      t.shell.ownerKeys("cd sub\ntouch OWNED1\ntouch OWNED \r")
+      expect(t.shell.state().ownerTyping).toBe(false)
+      expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+      await Bun.sleep(300)
+      const reply = await t.shell.run("pwd", 5000)
+      expect(reply).toMatchObject({ status: "idle", exit: 0 })
+      expect(reply.output).toContain(`\n${t.dir}\n`)
+      expect(t.shell.cwd()).toBe(t.dir)
+      for (const file of ["OWNED1", "OWNED", "sub/OWNED1", "sub/OWNED"]) {
+        expect(fs.existsSync(path.join(t.dir, file))).toBe(false)
+      }
+    }
+  })
+}
+
+test("the agent's command waits for a prompt that dropped what the owner left, and fails closed without one", async () => {
+  const t = await openShell()
+  // The agent's own command takes the office's flag's place, so no prompt can drop the owner's keys.
+  expect(await t.shell.run('mkdir "$__oc_d"', 5000)).toMatchObject({ status: "idle", exit: 0 })
+  expect((await t.shell.run("stty raw -echo; sleep 1", 300)).status).toBe("running")
+  t.shell.ownerKeys("touch OWNED \r")
+  expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+  expect((await t.shell.run("echo agent", 5000)).refused).toMatch(/the owner is typing/)
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect(readRecord(t.recordDir)!.commands.map((c) => c.command)).toEqual([
+    'mkdir "$__oc_d"', "stty raw -echo; sleep 1",
+  ])
+  expect(await ownedRan(t)).toBe(false)
+})
+
+for (const kind of ["bash", "sh"] as const) {
+  test(`in ${kind}, a drain flag a command removes leaves what the owner left held, never drained or joined`, async () => {
+    const t = await openShell({ shell: kind })
+    // The command removes the flag the owner's keys made before its prompt can find it.
+    expect((await t.shell.run('stty raw -echo; sleep 1; rm -f "$__oc_d"', 300)).status).toBe("running")
+    t.shell.ownerKeys("touch OWNED \r")
+    expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+    // The office makes the flag again for the next prompt. bash's comes only after the owner's Ctrl-C; sh's own
+    // prompt, just after the agent's line, may find it first and drain then.
+    const first = await t.shell.run("echo agent", 5000)
+    if (kind === "bash") expect(first.refused).toMatch(/the owner is typing/)
+    if (first.refused !== undefined) {
+      expect(first.refused).toMatch(/the owner is typing/)
+      expect(t.shell.state().ownerTyping).toBe(true)
+      expect(await ownedRan(t)).toBe(false)
+      await ctrlC(t)
+      expect(await t.shell.run("echo agent", 5000)).toMatchObject({ status: "idle", exit: 0 })
+    }
+    expect(await ownedRan(t)).toBe(false)
+  })
+}
+
+test("a background process that keeps removing the drain flag leaves the owner's keys held", async () => {
+  const t = await openShell()
+  const deleter = 'for i in $(seq 100); do rm -f "$__oc_d"; sleep 0.05; done >/dev/null 2>&1 &'
+  expect(await t.shell.run(deleter, 5000)).toMatchObject({ status: "idle", exit: 0 })
+  expect((await t.shell.run("stty raw -echo; sleep 1", 300)).status).toBe("running")
+  t.shell.ownerKeys("touch OWNED \r")
+  expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+  expect((await t.shell.run("echo agent", 5000)).refused).toMatch(/the owner is typing/)
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect(await ownedRan(t)).toBe(false)
+})
+
+test("keys on the agent's unfinished line in a running command hold through deletes and Ctrl-U", async () => {
+  const t = await openShell()
+  await t.shell.run("cat", 300)
+  expect((await t.shell.type("agent", { enter: false, waitMs: 0 })).refused).toBeUndefined()
+  t.shell.ownerKeys("x\x7f\x15")
+  expect(t.shell.state().ownerTyping).toBe(true)
+  expect((await t.shell.type("fresh", { enter: true, waitMs: 0 })).refused).toMatch(/the owner is typing/)
+  t.shell.ownerKeys("\x03")
+  expect(t.shell.state().ownerTyping).toBe(false)
+  expect((await t.shell.read({ waitMs: 5000 })).status).toBe("idle")
+})
+
 test("interrupt stops the agent's own command and refuses the owner's", async () => {
   const t = await openShell()
   expect((await t.shell.run("sleep 30", 300)).status).toBe("running")
@@ -439,7 +729,9 @@ test("interrupt stops the agent's own command and refuses the owner's", async ()
 test("an owner's command at the prompt shows running until the shell is ready again, and the view shows it as the screen does", async () => {
   const t = await openShell()
   t.shell.ownerKeys("sleep 0.3; echo owner-$((6*7))\r")
-  expect(t.shell.state()).toEqual({ status: "running", waiting: null, command: null, exit: null, error: null })
+  expect(t.shell.state()).toEqual({
+    status: "running", waiting: null, command: null, exit: null, error: null, ownerTyping: false,
+  })
   const reply = await t.shell.read({ waitMs: 5000 })
   expect(reply).toMatchObject({ status: "idle", exit: 0, output: "sleep 0.3; echo owner-$((6*7))\nowner-42\n" })
   // The owner's command isn't the agent's: the record takes none of it but the screen.
@@ -536,6 +828,26 @@ test("a secret prompt that ends while the owner is typing drops the rest of thei
   const reply = await t.shell.read({ waitMs: 5000 })
   expect(reply).toMatchObject({ status: "idle", exit: 0 })
   expect(reply.output).toContain("echo back\nback\n")
+  await t.shell.close()
+  const record = fs.readFileSync(path.join(t.recordDir, "output.log"), "utf8")
+  for (const text of [await t.view(), t.live(), record]) expect(text).not.toMatch(/hunt|er2/)
+})
+
+test("at a secret prompt, deleting the answer or Ctrl-U gives nothing back, and the prompt's end still drops the line", async () => {
+  const t = await openShell()
+  const asked = await t.shell.run("stty -echo; read -t 1 x; stty echo; echo after", 5000)
+  expect(asked).toMatchObject({ status: "waiting", waiting: "secret" })
+  t.shell.ownerKeys(`hunt${"\x7f".repeat(4)}\x15`)
+  // The prompt holds the shell on its own terms; there is no line to give back.
+  expect(t.shell.state()).toMatchObject({ status: "waiting", ownerTyping: false })
+  expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+  await waitFor(async () => (await t.view()).includes("press Enter"), { timeout: 5000, what: "the owner's note" })
+  // The owner's keys are dropped through Backspace and Ctrl-U until Enter, and the agent waits for that.
+  t.shell.ownerKeys("er2\x7f\x15")
+  expect(t.shell.state().ownerTyping).toBe(false)
+  expect((await t.shell.run("true", 1000)).refused).toMatch(/the owner is typing/)
+  t.shell.ownerKeys("\r")
+  expect((await t.shell.run("true", 5000)).refused).toBeUndefined()
   await t.shell.close()
   const record = fs.readFileSync(path.join(t.recordDir, "output.log"), "utf8")
   for (const text of [await t.view(), t.live(), record]) expect(text).not.toMatch(/hunt|er2/)

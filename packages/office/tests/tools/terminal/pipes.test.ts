@@ -89,7 +89,9 @@ function result(exit: number | null): Result {
 describe.skipIf(!sandboxAvailable())("in the sandbox", () => {
   test("a pipes shell runs each command sandboxed, streams it, and refuses typed input", async () => {
     const t = openShell()
-    expect(t.shell.state()).toEqual({ status: "idle", waiting: null, command: null, exit: null, error: null })
+    expect(t.shell.state()).toEqual({
+      status: "idle", waiting: null, command: null, exit: null, error: null, ownerTyping: false,
+    })
     expect(t.states.map((state) => state.status)).toEqual(["idle"])
     // It starts in the workspace, and the folder around it is out of its reach.
     const outside = path.join(t.dir, "outside")
@@ -99,7 +101,9 @@ describe.skipIf(!sandboxAvailable())("in the sandbox", () => {
     const output = `$ ${command}\n${t.ws}\nhidden\n`
     const next = output.length
     expect(reply).toEqual({ shell: "sh_1", status: "idle", exit: 1, waiting: null, output, next, more: false })
-    expect(t.shell.state()).toEqual({ status: "idle", waiting: null, command: null, exit: 1, error: null })
+    expect(t.shell.state()).toEqual({
+      status: "idle", waiting: null, command: null, exit: 1, error: null, ownerTyping: false,
+    })
     expect(t.states.map((state) => [state.status, state.command])).toEqual([
       ["idle", null],
       ["running", command],
@@ -210,7 +214,9 @@ describe.skipIf(!sandboxAvailable())("in the sandbox", () => {
     const last = await ownSleepers("4040")
     expect(last).toHaveLength(1)
     await t.shell.close()
-    expect(t.shell.state()).toEqual({ status: "ended", waiting: null, command: null, exit: null, error: null })
+    expect(t.shell.state()).toEqual({
+      status: "ended", waiting: null, command: null, exit: null, error: null, ownerTyping: false,
+    })
     expect(await ended(last)).toBe(true)
     expect(readRecord(t.recordDir)).toMatchObject({
       state: "ended",
@@ -313,7 +319,9 @@ test("a pipes call that fails ends its command, saying why, and the shell runs o
   const output = "$ echo hi\npartial\n[this command couldn't run: spawn EAGAIN]\n"
   const next = output.length
   expect(reply).toEqual({ shell: "sh_1", status: "idle", exit: null, waiting: null, output, next, more: false })
-  expect(t.shell.state()).toEqual({ status: "idle", waiting: null, command: null, exit: null, error: null })
+  expect(t.shell.state()).toEqual({
+    status: "idle", waiting: null, command: null, exit: null, error: null, ownerTyping: false,
+  })
   expect(t.live()).toBe(output)
   expect(readRecord(t.recordDir)).toMatchObject({ state: "running", commands: [{ command: "echo hi", exit: null }] })
   expect(await t.shell.run("true", 5_000)).toMatchObject({ status: "idle", exit: 0, output: "$ true\n" })
@@ -330,7 +338,9 @@ test("a pipes shell where the sandbox can't run fails, saying why", async () => 
   expect(reply).toMatchObject({ status: "failed", exit: null, output: `$ echo hi\n[${error}]\n` })
   // The command went as one `/bin/sh -c` whose stderr is its stdout.
   expect(calls).toEqual([["/bin/sh", "-c", "exec 2>&1; echo hi"]])
-  expect(t.shell.state()).toEqual({ status: "failed", waiting: null, command: null, exit: null, error })
+  expect(t.shell.state()).toEqual({
+    status: "failed", waiting: null, command: null, exit: null, error, ownerTyping: false,
+  })
   expect((await t.shell.run("true", 1_000)).refused).toBe(`the shell failed: ${error}`)
   expect(readRecord(t.recordDir)).toMatchObject({ state: "failed", error, commands: [{ command: "echo hi" }] })
   expect(t.log()).toBe(`$ echo hi\n[${error}]\n`)

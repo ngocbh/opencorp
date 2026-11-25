@@ -24,7 +24,9 @@ import { CEO, type Reply, addHuman, bearer, giveDevice, makeOffice, request, ser
 
 setDefaultTimeout(30_000)
 
-const STARTING: ShellState = { status: "starting", waiting: null, command: null, exit: null, error: null }
+const STARTING: ShellState = {
+  status: "starting", waiting: null, command: null, exit: null, error: null, ownerTyping: false,
+}
 
 /** A served office acting on device tokens, with a device for the CEO and one for ava, another human; `logs` gets the
  *  office's log and the request pipeline's lines. */

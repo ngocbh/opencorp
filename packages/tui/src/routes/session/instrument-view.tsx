@@ -32,6 +32,12 @@ const SECRET_LABEL = "type your password here"
 /** The most of a pipes shell's output a view keeps, its newest part. */
 const OUTPUT_CHARS = 64 * 1024
 
+/** How the owner gives a shell their line holds (`owner_typing`) back to its driver: Enter or Ctrl-C anywhere, Ctrl-U
+ *  (or deleting the line) only at the shell's own prompt. Short, so a half-screen pane's footer shows it whole. */
+export function giveBack(instrument: Instrument) {
+  return `Enter or Ctrl-C (Ctrl-U at the prompt) gives it to @${display(instrument.driver)}`
+}
+
 /** Who has the controls of an open instrument: the owner, while they type into it, or else its driver, the employee;
  *  `color` is that person's. */
 export type Driver = { you: boolean; handle: string | undefined; color: RGBA }
@@ -40,7 +46,8 @@ export type Driver = { you: boolean; handle: string | undefined; color: RGBA }
  * An open instrument in the right pane, in the upstream TUI's diff-viewer chrome: a header row, the body, and a footer
  * with the pane's keys. The header says who is at the controls, "@minh is driving" in the employee's colour (with a
  * spinner while the shell or the harness works) or "you are driving" in the owner's, then what it is, its status in
- * the warning colour while it waits on the owner, and the command it runs.
+ * the warning colour while it waits on the owner, and the command it runs. While the owner's line holds a shell whose
+ * pane has their keys, the footer says how to give it back in place of the pane's keys.
  */
 export function InstrumentPanel(props: {
   instrument: Instrument
@@ -85,6 +92,7 @@ export function InstrumentPanel(props: {
     if (!docked()) return { key: close(), label: "close" }
     return props.focused ? { key: leftKey(), label: "focus chat" } : { key: rightKey(), label: "focus pane" }
   }
+  const held = () => props.approver && props.focused && !!props.instrument.owner_typing
 
   return (
     <box flexGrow={1} minWidth={0} minHeight={0}>
@@ -116,27 +124,36 @@ export function InstrumentPanel(props: {
       </box>
       {props.children}
       <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1} gap={1} overflow="hidden">
-        <text
-          fg={props.focused ? theme.primary : theme.textMuted}
-          attributes={props.focused ? 0 : TextAttributes.DIM}
-          wrapMode="none"
-          flexGrow={1}
-          minWidth={0}
+        <Show
+          when={!held()}
+          fallback={
+            <text fg={theme.textMuted} wrapMode="none" flexGrow={1} minWidth={0}>
+              {giveBack(props.instrument)}
+            </text>
+          }
         >
-          {hint().key}
-          <span style={{ fg: theme.textMuted }}> {hint().label}</span>
-        </text>
-        <Show when={docked()}>
-          <text fg={theme.text} wrapMode="none" flexShrink={0}>
-            {close()}
-            <span style={{ fg: theme.textMuted }}> close</span>
+          <text
+            fg={props.focused ? theme.primary : theme.textMuted}
+            attributes={props.focused ? 0 : TextAttributes.DIM}
+            wrapMode="none"
+            flexGrow={1}
+            minWidth={0}
+          >
+            {hint().key}
+            <span style={{ fg: theme.textMuted }}> {hint().label}</span>
           </text>
-        </Show>
-        <Show when={panels.canSplit() && fullKey()}>
-          <text fg={theme.text} wrapMode="none" flexShrink={0}>
-            {fullKey()}
-            <span style={{ fg: theme.textMuted }}>{docked() ? " full screen" : " split"}</span>
-          </text>
+          <Show when={docked()}>
+            <text fg={theme.text} wrapMode="none" flexShrink={0}>
+              {close()}
+              <span style={{ fg: theme.textMuted }}> close</span>
+            </text>
+          </Show>
+          <Show when={panels.canSplit() && fullKey()}>
+            <text fg={theme.text} wrapMode="none" flexShrink={0}>
+              {fullKey()}
+              <span style={{ fg: theme.textMuted }}>{docked() ? " full screen" : " split"}</span>
+            </text>
+          </Show>
         </Show>
       </box>
     </box>

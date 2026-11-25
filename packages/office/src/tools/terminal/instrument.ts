@@ -9,7 +9,9 @@ import type { TerminalProfile, TerminalShell } from "./terminal.ts"
 const CTRL_C = "\x03"
 /** The size a PTY shell opens at, until the owner's view gives one. */
 const OPEN_SIZE = { cols: 80, rows: 24 } as const
-const STARTING: ShellState = { status: "starting", waiting: null, command: null, exit: null, error: null }
+const STARTING: ShellState = {
+  status: "starting", waiting: null, command: null, exit: null, error: null, ownerTyping: false,
+}
 
 /** A shell as the registry lists it: `LiveInstrument`, by its shape. */
 export interface ShellInstrument {
@@ -46,7 +48,7 @@ export function shellInstrument(o: ShellInstrumentInit): ShellInstrument {
     id: o.id,
     interactive: o.interactive,
     info: () => {
-      const { status, waiting, command, error } = o.shell()?.state() ?? STARTING
+      const { status, waiting, command, error, ownerTyping } = o.shell()?.state() ?? STARTING
       return {
         id: o.id,
         session_id: o.sessionId,
@@ -60,6 +62,7 @@ export function shellInstrument(o: ShellInstrumentInit): ShellInstrument {
         waiting,
         command,
         error,
+        owner_typing: ownerTyping,
         created_at: created,
         updated_at: now(),
       }
