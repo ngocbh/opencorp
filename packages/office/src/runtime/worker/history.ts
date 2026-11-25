@@ -15,9 +15,10 @@ import {
 import { errorName } from "./rpc.ts"
 import { MAIN_CHAT } from "../../company/chat_flow.ts"
 
-/** A send of the replaced run that nothing read: its seq there, its message, the key the office sent it under, if
- *  any, and who sent it (`by`), if its record says. */
+/** A send of the replaced run that nothing read: its inbox (the main chat's or its queue), its seq there, its
+ *  message, the key the office sent it under, if any, and who sent it (`by`), if its record says. */
 export interface UnreadSend {
+  readonly inbox: string
   readonly seq: number
   readonly message: Message
   readonly key: string | null
@@ -42,13 +43,15 @@ type SeedOptions = { env: (name: string) => string | undefined; codeRoot: string
 // yian's fixed START id: the commit under this key holds the run's inputs, and a send commits under
 // `<START>.<inbox>`.
 const START = "__start__"
-const SEND_KEY = `${START}.${MAIN_CHAT.inbox}`
+/** The inboxes whose unread sends move, by the key a send to each commits under. */
+const SEND_KEYS = new Map([MAIN_CHAT.inbox, MAIN_CHAT.queue].map((inbox) => [`${START}.${inbox}`, inbox]))
+const INBOXES: ReadonlySet<string> = new Set(SEND_KEYS.values())
 // A turn's end in the main chat's LOOP; nested ends such as `chat#3/context/compacted/__end__` don't match.
 const TURN_END = new RegExp(`^${MAIN_CHAT.turn.split("/")[0]}#\\d+/__end__$`)
 
 /**
  * The `summary` and `history` the run logged at `log` carried last: its last accepted turn end's, or, when it
- * finished no turn, its START inputs'; and its unread sends to the main chat's inbox. Never rejects: a failed fold
+ * finished no turn, its START inputs'; and its unread sends to the main chat's inbox and its queue. Never rejects: a failed fold
  * seeds `""` and `[]`, with the error's type in `error`, and still reads the unread sends from the records; a log
  * that can't be read moves none.
  */
@@ -95,9 +98,10 @@ function carried(records: FoldedRun["records"]): { summary: string; history: Mes
 }
 
 /**
- * The sends to the main chat's inbox, in log order, that no accepted take, steer step or withdraw consumed, with their
- * keys and senders. A take commit counts once a success names it: an orphan one's events go back to unread, as yian
- * re-offers them. A withdraw's sends are the office's again (Esc sends them anew), so none is moved.
+ * The sends to the main chat's inbox and its queue, in log order, that no accepted take, steer step or withdraw
+ * consumed, with their inboxes, keys and senders. A take commit counts once a success names it: an orphan one's events
+ * go back to unread, as yian re-offers them. A withdraw's sends are the office's again (Esc sends them anew, a move to
+ * the queue or back sends them to the other inbox, and a delete drops them), so none is moved.
  */
 function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
   const sends = new Map<number, Omit<UnreadSend, "seq">>()
@@ -106,9 +110,10 @@ function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
   for (const entry of entries) {
     const record = entry.envelope.record
     if (record instanceof PoolCommitRecord) {
-      if (record.nodeId === START && record.key === SEND_KEY && record.value !== null) {
+      const inbox = record.nodeId === START ? SEND_KEYS.get(record.key) : undefined
+      if (inbox !== undefined && record.value !== null) {
         const message = TypedValue.fromWire(record.value).toObject() as Message
-        sends.set(entry.seq, { message, key: record.sendKey, by: record.by })
+        sends.set(entry.seq, { inbox, message, key: record.sendKey, by: record.by })
       } else if (record.take !== null) {
         takes.set(entry.seq, record.take.events)
       }
@@ -119,10 +124,10 @@ function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
     } else if (entry.kind === "inbox_withdrawn") {
       const { inbox, events } = record as { inbox?: unknown; events?: unknown }
       // Event seqs are bigints.
-      if (inbox === MAIN_CHAT.inbox && Array.isArray(events)) for (const seq of events) consumed.add(Number(seq))
+      if (INBOXES.has(inbox as string) && Array.isArray(events)) for (const seq of events) consumed.add(Number(seq))
     } else if (entry.kind === "node_step") {
       const step = (record as { step?: Record<string, unknown> }).step
-      if (step?.kind === "steer" && step.inbox === MAIN_CHAT.inbox && Array.isArray(step.from)) {
+      if (step?.kind === "steer" && INBOXES.has(step.inbox as string) && Array.isArray(step.from)) {
         // Step ints are bigints.
         for (const seq of step.from) consumed.add(Number(seq))
       }
