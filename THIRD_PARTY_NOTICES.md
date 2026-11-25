@@ -263,10 +263,12 @@ license, the upstream paths and commit, and our paths.
   next turn, a word that quits or a command refused with "This prompt cannot be queued"; the queued prompts leave the
   transcript for the dock above the prompt (`N queued · <next>`), whose click and "View queued prompts" open "Queued
   prompts" (Enter steers one now, `queued_prompt.delete` on ctrl+d deletes it, `queued_prompt.undo` on ctrl+u puts it
-  back in the prompt), and Enter on an empty prompt steers the first. Adapted: a queued prompt is a message the chat's
-  run holds in its queue (`queued`), which a turn reads with its inbox, every queued one at once (upstream: one per
-  turn), and after Esc too (upstream keeps them queued after an interrupt); `session.queued_prompts` has no default key,
-  as `<leader>q` stays the exit; the dialog searches its list with a filter line, not in its title.
+  back in the prompt), and Enter on an empty prompt steers the first. Adapted: the dock and the dialog hold only the
+  approver's own queued messages, anyone else's staying in the transcript as pending ones; a move the run refused once
+  it took the message back is a toast, the message back where it was or in the prompt; a queued prompt is a message
+  the chat's run holds in its queue (`queued`), which a turn reads with its inbox, every queued one at once (upstream:
+  one per turn), and after Esc too (upstream keeps them queued after an interrupt); `session.queued_prompts` has no
+  default key, as `<leader>q` stays the exit; the dialog searches its list with a filter line, not in its title.
 - **Upstream:** `packages/tui/src/routes/session/index.tsx` (`queuedPrompts`, `openQueuedPrompts`, `QueuedPromptDock`,
   `requestPending`, `undoPending`, `onEmptySubmit`), `packages/tui/src/component/prompt/index.tsx` (`prompt.queue`,
   `submit`'s `delivery`), `packages/tui/src/config/keybind.ts`, read at commit `4332e24f` (2026-11-21).
