@@ -6,6 +6,7 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { type FileLock, FileLockError, lockFile } from "@ngocbh/yian/platform"
+import { type TakeInbox, takeInboxes } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import {
   type Event,
@@ -273,6 +274,8 @@ export class LocalHost {
   #waits = ""
   #plainFrom: string | null = null
   #ending = false
+  /** The inboxes closed while ending: End closes the chat's, and a turn take's others once it waits on them. */
+  readonly #endClosed = new Set<string>([MAIN_CHAT.inbox])
   #finished = false
   /** The session's end, once it started. */
   #finishing: Promise<void> | null = null
@@ -700,6 +703,20 @@ export class LocalHost {
     await this.#flush()
   }
 
+  /** While ending, queues a close of each inbox but the chat's that an unsettled turn take in `waits` (a result's)
+   *  still reads, once: a take of several inboxes waits until each of them is closed, and End closed only the chat's.
+   *  The worker's park sends them. */
+  #closeTurnInboxes(waits: readonly Frame[]): void {
+    for (const wait of waits) {
+      if (wait?.tool !== "take" || wait.settled === true || !MAIN_CHAT.isTurn(wait.node as string)) continue
+      for (const inbox of wait.inbox == null ? [] : takeInboxes(wait.inbox as TakeInbox)) {
+        if (this.#endClosed.has(inbox)) continue
+        this.#endClosed.add(inbox)
+        this.#queue.push({ id: newId(), op: "close", inbox })
+      }
+    }
+  }
+
   /** Hands the queued deliveries to the parked worker as its next `advance` job; with none, moves the run on when it
    *  must (`#readvance`). */
   async #flush(): Promise<void> {
@@ -765,6 +782,7 @@ export class LocalHost {
           host.#waits = JSON.stringify(waits)
           // A plain re-advance that left the run on the same settled calls made no progress: it waits for the owner.
           if (waits.some((wait) => wait?.settled === true) && host.#plainFrom !== host.#waits) host.#readvance = true
+          if (host.#ending) host.#closeTurnInboxes(waits)
         }
         if (frame.kept !== true && frame.status !== "succeeded") {
           const status = typeof frame.status === "string" ? frame.status : "badly"
