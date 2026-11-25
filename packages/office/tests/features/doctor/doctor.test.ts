@@ -24,6 +24,7 @@ import { installPaths } from "../../../src/runtime/service/programs.ts"
 import * as systemd from "../../../src/runtime/service/systemd.ts"
 import { helperCommand } from "../../../src/platform.ts"
 import { hqChecks } from "../../../src/server/hq/checks.ts"
+import { SCHEMA } from "../../../src/runtime/runs/reader.ts"
 import { latestVersion } from "../../../src/runtime/store/migrate.ts"
 import { Store } from "../../../src/runtime/store/store.ts"
 import { INHERITED_ENV } from "../../../src/util/env.ts"
@@ -34,6 +35,7 @@ import { loadRepo } from "../../../src/company/loader.ts"
 import { git, makeCompany, person } from "../../company/helpers.ts"
 import { CEO, giveDevice, makeOffice, served } from "../../server/helpers.ts"
 import { fifo, isGone, ps, shortDir, tempDir, waitFor } from "../../helpers.ts"
+import { runStarted } from "../../runtime/runs/helpers.ts"
 import { sandboxAvailable } from "../../runtime/sandbox/helpers.ts"
 import { makeHost, Runner, standIn } from "../setup/helpers.ts"
 import { harnessTemp } from "../../../src/features/codex/thread.ts"
@@ -710,6 +712,40 @@ for (const name of ["runs", "sessions"] as const) {
     }
   })
 }
+
+test("run logs of an older schema warn, saying how many and how to start clean; readable ones add no row", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  /** Run `id`'s log, its first record of run-log schema `schema`. */
+  const log = (id: string, schema: number) => {
+    fs.mkdirSync(path.join(paths.runs, id), { recursive: true })
+    const first = runStarted(0).toString().replace(`"schema":${SCHEMA},`, `"schema":${schema},`)
+    fs.writeFileSync(path.join(paths.runs, id, "log.jsonl"), first)
+  }
+  log("r1", SCHEMA)
+  // Neither a damaged log nor a FIFO is this check's: the FIFO is never opened, so nothing hangs.
+  fs.mkdirSync(path.join(paths.runs, "r2"))
+  fs.writeFileSync(path.join(paths.runs, "r2", "log.jsonl"), "not a record\n")
+  fs.mkdirSync(path.join(paths.runs, "r3"))
+  fifo(path.join(paths.runs, "r3", "log.jsonl"))
+  expect(byName(await runChecks(dir, paths))["run logs"]).toBeUndefined()
+  log("r4", SCHEMA - 1)
+  log("r5", SCHEMA - 1)
+  log("r6", SCHEMA - 3)
+  const found = await runChecks(dir, paths)
+  expect(byName(found)["run logs"]).toEqual({
+    name: "run logs",
+    status: "warn",
+    detail:
+      `3 run logs in ${paths.runs} use run-log schema ${SCHEMA - 3} or ${SCHEMA - 1}, older than the ${SCHEMA} this` +
+      " office reads, so Run Logs can't show them and their sessions start over without that history. There's no" +
+      " migration while OpenCorp isn't deployed: to start clean, re-initialise the office (`opencorp offboard`, then" +
+      " `opencorp init`, or `opencorp onboard --from URL` for a company you pushed)",
+  })
+  const names = found.map((c) => c.name)
+  expect(names.slice(names.indexOf("runs"), names.indexOf("runs") + 4)).toEqual(["runs", "sessions", "run logs", "service"])
+  expect(doctor.exitCode(found)).toBe(0)
+})
 
 test("a fresh machine has no runs or sessions row", async () => {
   const dir = tempDir()
