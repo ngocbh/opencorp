@@ -70,6 +70,9 @@ export const Session = z.strictObject({
   model: z.string().nullable().default(null),
   /** Why the chat isn't on the model it was asked to start on, or why it moved. */
   model_note: z.string().nullable().default(null),
+  /** Who last switched the chat's connection or model; null until someone did. The run hears a switch as their
+   *  action. */
+  model_by: Handle.nullable().default(null),
   /**
    * The model the harness runs, as it reports it (a Codex session: Codex's load response); null until the
    * harness reports it, and for yian sessions.

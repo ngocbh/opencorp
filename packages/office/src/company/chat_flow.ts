@@ -79,6 +79,11 @@ export class ChatFlow {
 /** The shape of `shared/flows/chat.yaml`; a person's own main flow must keep these node names. */
 export const MAIN_CHAT = new ChatFlow()
 
+/** Whether `message` is a person's model action in `flow`: only actions, one of them naming its `model` tool. */
+export function modelAction(message: { readonly parts?: unknown } | null | undefined, flow: ChatFlow = MAIN_CHAT): boolean {
+  return actionOnly(message) && (message!.parts as { tool?: unknown }[]).some((part) => part.tool === flow.model)
+}
+
 /** Whether `message` holds only `action` parts: something a person did themselves, which a conversation flow notes
  *  for its next answered turn and never answers. */
 export function actionOnly(message: { readonly parts?: unknown } | null | undefined): boolean {

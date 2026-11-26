@@ -90,6 +90,19 @@ function loggedNotes(o: ChatOffice, runId: string): string[] {
     .filter((line) => line.includes('"kind":"pool_commit"') && line.includes('"send_key":"terminal:'))
 }
 
+/** The `/model` actions run `runId` of `o`'s log holds, in send order: each one's key's first part and the model it
+ *  chose. */
+function modelActions(o: ChatOffice, runId: string): [string, string][] {
+  return fs
+    .readFileSync(path.join(o.office.paths.runs, runId, "log.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line.includes('"kind":"pool_commit"') && line.includes('"send_key":"') && line.includes('"/model"'))
+    .map((line) => {
+      const { send_key: key } = JSON.parse(line).payload as { send_key: string }
+      return [key.split(":")[0]!, line.match(/"model":"([^"]+)"/)![1]!]
+    })
+}
+
 /** Whether the model's request `n` (from 1) holds `text`. */
 function asked(fake: Awaited<ReturnType<typeof fakeLlm>>, n: number, text: string): boolean {
   return JSON.stringify(fake.requests()[n - 1]?.messages ?? []).includes(JSON.stringify(text).slice(1, -1))
@@ -730,6 +743,36 @@ test("after Esc, a model switch moves none of what Esc took back: each message a
   ])
   expect(texts(o, sid, "user").filter((text) => text.startsWith("msg-"))).toEqual(["msg-one", "msg-two"])
   expect(notes(o, sid)).toHaveLength(1)
+})
+
+test("Esc takes back a /model action no turn read with the note, and the run hears the latest model, never the old one", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all"), { content: "never shown", hold: true }, { content: "On three." })
+  const { o, end } = await notesOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  await fake.waitForRequests(2, 30_000)
+  const runId = actor.runId!
+  // While the model answers: the owner's switch waits in the queue, and the command's note in the inbox.
+  await actor.setModel(OFFICE, "stub-2", { by: "ngocbh" })
+  end("make all", 0)
+  await waitFor(() => loggedNotes(o, runId).length === 1 && modelActions(o, runId).length === 1, {
+    what: "the note and the switch in the run",
+  })
+  await actor.interrupt()
+  fake.release()
+  await waitFor(() => status(o, sid) === "idle" && !actor.hasWorker, { what: "the stopped reply" })
+  await actor.setModel(OFFICE, "stub-3", { by: "ngocbh" })
+  await actor.prompt("and now?")
+  await waitFor(() => texts(o, sid).includes("On three.") && status(o, sid) === "idle", { what: "the next reply" })
+  expect(fake.requests().at(-1)!.model).toBe("stub-3")
+  expect(asked(fake, 3, heading("shell 1", "make all", 0))).toBe(true)
+  // The switch Esc took back is never sent again as it was: only the newer one follows it.
+  expect(modelActions(o, runId)).toEqual([
+    ["model", "stub-2"],
+    ["model", "stub-3"],
+  ])
+  expect(session(o, sid).run_ids).toEqual([runId])
 })
 
 /** Codex as a chat's instrument opens it, scripted in this process: each message starts a turn, or joins the one under

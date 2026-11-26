@@ -13,7 +13,7 @@ import {
   TypedValue,
 } from "@ngocbh/yian/run"
 import { errorName } from "./rpc.ts"
-import { actionOnly, MAIN_CHAT } from "../../company/chat_flow.ts"
+import { MAIN_CHAT, modelAction } from "../../company/chat_flow.ts"
 
 /** A send of the replaced run that nothing read: its inbox (the main chat's or its queue), its seq there, its
  *  message, the key the office sent it under, if any, and who sent it (`by`), if its record says. */
@@ -43,11 +43,6 @@ type SeedOptions = { env: (name: string) => string | undefined; codeRoot: string
 // yian's fixed START id: the commit under this key holds the run's inputs, and a send commits under
 // `<START>.<inbox>`.
 const START = "__start__"
-/** Whether `message` is a person's `/model` action. */
-function modelAction(message: Message): boolean {
-  return actionOnly(message) && message.parts.some((part) => (part as { tool?: unknown }).tool === MAIN_CHAT.model)
-}
-
 /** The inboxes whose unread sends move, by the key a send to each commits under. */
 const SEND_KEYS = new Map([MAIN_CHAT.inbox, MAIN_CHAT.queue].map((inbox) => [`${START}.${inbox}`, inbox]))
 const INBOXES: ReadonlySet<string> = new Set(SEND_KEYS.values())

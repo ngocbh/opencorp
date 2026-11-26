@@ -583,7 +583,7 @@ export class ChatHarness implements SessionHarness {
     // Read again: the session may have started, ended or begun ending during the awaits.
     const current = this.store.getSession(sessionId)
     if (current?.status === "starting" && !this.#actors.has(sessionId)) {
-      return this.store.updateSession(sessionId, { connection, model: picked, model_note: null })
+      return this.store.updateSession(sessionId, { connection, model: picked, model_note: null, model_by: by })
     }
     return this.#actor(sessionId).setModel(connection, picked, { by })
   }
