@@ -56,7 +56,8 @@
  *      starts outlives it; its result is the output, stdout then stderr, with "Exit code N" first when it fails (the
  *      text and `tool_use_result`'s fields unrecorded); one with `run_in_background` isn't modelled. Another tool
  *      with no `result` returns "";
- *    - `{"sleep": seconds}`; `{"fail": text, "status"?}` ends the turn with an API error as recorded;
+ *    - `{"sleep": seconds}`; `{"until_joined": seconds}` waits until a line joins the turn, at most `seconds`;
+ *      `{"fail": text, "status"?}` ends the turn with an API error as recorded;
  *      `{"exit": code}` exits at once, as a crash would, leaving what `spawn` started;
  *    - `{"spawn": seconds}` starts `sleep <seconds>` in the fake's own process group, as a command Claude Code runs
  *      may be, logs its pid as `{"dir": "spawn", "pid": n}`, and leaves it running: only the group's kill ends it.
@@ -122,6 +123,7 @@ export type FakeClaudeStep =
   | { say: string }
   | { tool: string; input?: Obj; result?: string; is_error?: boolean }
   | { sleep: number }
+  | { until_joined: number }
   | { fail: string; status?: number }
   | { exit: number }
   | { spawn: number }
@@ -1095,6 +1097,7 @@ class Fake {
         this.write(this.assistant(turn, [{ type: "text", text: step.say }]))
       } else if ("tool" in step) await this.tool(turn, step)
       else if ("sleep" in step) await this.pause(turn, step.sleep)
+      else if ("until_joined" in step) await this.untilJoined(turn, step.until_joined)
       else if ("fail" in step) {
         this.write(this.apiError(turn, step.fail, step.status ?? null))
         this.write(this.result(turn, { text: step.fail, status: step.status ?? null }))
@@ -1163,6 +1166,14 @@ class Fake {
     const slept = new Promise<void>((resolve) => (timer = setTimeout(resolve, seconds * 1000)))
     await Promise.race([slept, turn.interrupted])
     clearTimeout(timer)
+  }
+
+  /** Waits until a line joins `turn`, an interrupt comes, or `seconds` pass. */
+  async untilJoined(turn: Turn, seconds: number): Promise<void> {
+    const deadline = Date.now() + seconds * 1000
+    while (turn.joined.length === 0 && turn.interrupt === null && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
   }
 
   async tool(turn: Turn, step: { tool: string; input?: Obj; result?: string; is_error?: boolean }): Promise<void> {

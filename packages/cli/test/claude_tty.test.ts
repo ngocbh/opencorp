@@ -73,9 +73,11 @@ describe.skipIf(!TMUX)("the owner and an employee both write to Claude Code, in 
       env: { PATH: "/usr/bin:/bin", HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
       timeout: 10_000,
     })
+    // The turn holds until the owner's message joins it, however long the TUI takes to send it under load, and less
+    // than the employee's wait.
     fake.set({
       version: "2.1.325",
-      turns: [[{ say: "Looking at the build." }, { sleep: 15 }, { say: "Fixed it, on the staging database." }]],
+      turns: [[{ say: "Looking at the build." }, { until_joined: 100 }, { say: "Fixed it, on the staging database." }]],
     })
     office.llm.forget()
     office.llm.script(

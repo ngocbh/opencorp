@@ -681,6 +681,40 @@ test("a message with priority next, or with none, joins the running turn, and on
   expect(await claude.close()).toBe(0)
 })
 
+test("an until_joined step waits for a line to join the turn and no longer, and with none goes on after its seconds", async () => {
+  const turns = [[{ say: "a" }, { until_joined: 60 }, { say: "b" }], [{ say: "c" }, { until_joined: 0.3 }, { say: "d" }]]
+  const { fake, work } = fakeClaude({ turns })
+  const claude = new Claude(fake, [], work)
+  claude.send(user("First.", "u-1"))
+  await claude.until(isText("a"), "the first text")
+  // The step holds the turn until the line comes, however late.
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  const sent = performance.now()
+  claude.send(user("Join.", "u-2"))
+  const first = await claude.turn("the first turn's end")
+  expect(performance.now() - sent).toBeLessThan(30_000)
+  expect(first.map(brief)).toEqual([
+    "queued:u-2",
+    "started:u-2",
+    "assistant:b",
+    "completed:u-2",
+    "result/success/completed",
+    "completed:u-1",
+  ])
+  claude.send(user("Second.", "u-3"))
+  const second = await claude.turn("the second turn's end")
+  expect(second.map(brief)).toEqual([
+    "queued:u-3",
+    "started:u-3",
+    "system/init",
+    "assistant:c",
+    "assistant:d",
+    "result/success/completed",
+    "completed:u-3",
+  ])
+  expect(await claude.close()).toBe(0)
+})
+
 test("an interrupt with cancel_queued cancels the lines waiting, which never run, and lists them", async () => {
   const { fake, work } = fakeClaude({ turns: [[{ say: "a" }, { sleep: 30 }], [{ say: "never" }]] })
   const claude = new Claude(fake, [], work)
