@@ -1,4 +1,4 @@
-// The line under the prompt: after the cwd, or the spinner and "esc interrupt", the picker's key (↓) and a count per
+// The line under the prompt: after the cwd, or the spinner and "esc to interrupt", the picker's key (↓) and a count per
 // kind of the chat's shells running a command and its live Codex and Claude Code sessions, running or idle, then how
 // many of its instruments failed; on the right, what waits for the owner,
 // in place of the shortcuts. Its layout is the upstream TUI's prompt line, its count the upstream footer's, with the
@@ -71,8 +71,8 @@ test("with no instruments the line is as before", async () => {
   try {
     expect(line(app.frame())).toBe(IDLE)
     office.updateSession(sid, { status: "busy" })
-    const f = await app.until((f) => f.includes("esc interrupt"))
-    expect(line(f)).toMatch(new RegExp(`^   \\S+ esc interrupt${ENDS_WITH_SHORTCUTS}`))
+    const f = await app.until((f) => f.includes("esc to interrupt"))
+    expect(line(f)).toMatch(new RegExp(`^   \\S+ esc to interrupt${ENDS_WITH_SHORTCUTS}`))
   } finally {
     await app.stop()
     office.stop()
@@ -96,15 +96,15 @@ test("the line counts running shells and live sessions, by kind, after the picke
     expect(fgOf(app, "1 shell")?.equals(theme.textMuted)).toBe(true)
     expect(fgOf(app, "↓")?.equals(theme.text)).toBe(true)
     // One its host took out of the list leaves the count; while the session can be interrupted, the counts follow
-    // "esc interrupt".
+    // "esc to interrupt".
     office.removeInstrument(sid, claude.id)
     office.updateSession(sid, { status: "busy" })
-    f = await app.until((f) => line(f).includes("esc interrupt"))
-    expect(line(f)).toMatch(new RegExp(`^   \\S+ esc interrupt · ↓ 1 shell · 1 Codex session${ENDS_WITH_SHORTCUTS}`))
+    f = await app.until((f) => line(f).includes("esc to interrupt"))
+    expect(line(f)).toMatch(new RegExp(`^   \\S+ esc to interrupt · ↓ 1 shell · 1 Codex session${ENDS_WITH_SHORTCUTS}`))
     // A session between turns stays in the count, as the owner can still open and message it.
     office.addInstrument(sid, { ...codex, status: "idle" })
     office.updateSession(sid, { status: "idle" })
-    f = await app.until((f) => !line(f).includes("esc interrupt"))
+    f = await app.until((f) => !line(f).includes("esc to interrupt"))
     expect(line(f)).toMatch(new RegExp(`^   /tmp/proj · ↓ 1 shell · 1 Codex session${ENDS_WITH_SHORTCUTS}`))
     // One that ended leaves it.
     office.addInstrument(sid, { ...codex, status: "ended" })

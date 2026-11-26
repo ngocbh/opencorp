@@ -463,6 +463,52 @@ test("a message sent while the reply runs is published unread, and again, read, 
   ])
 })
 
+test("Esc while the reply works stops it, and the owner's unread steer and queued message are its next turn, each once", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "never shown", hold: true }, { content: "On both." })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  const sub = o.office.bus.subscribe(sid)
+  onTestFinished(() => sub.close())
+  await actor.prompt("Plan the trip.")
+  await fake.waitForRequests(1, 30_000)
+  await replyRunning(o)
+  expect(await actor.prompt("Also mention Rome.")).toBe("steer")
+  expect(await actor.queue("Then book the hotel.")).toBe("queued")
+  await actor.interrupt()
+  fake.release()
+  await waitFor(() => texts(o, sid).includes("On both.") && status(o, sid) === "idle" && !actor.hasWorker, {
+    what: "the next turn",
+  })
+  // The stopped reply wrote nothing; the next model call reads both, in the order sent.
+  expect(fake.requests()).toHaveLength(2)
+  expect(texts(o, sid)).not.toContain("never shown")
+  const next = JSON.stringify(fake.requests()[1]!.messages)
+  const at = ["Also mention Rome.", "Then book the hotel."].map((text) => next.indexOf(text))
+  expect(at[0]).toBeGreaterThan(-1)
+  expect(at[0]).toBeLessThan(at[1]!)
+  // None was taken back: nothing removed, each published unread and again, read, under the id it was sent as.
+  const events: LiveEvent[] = []
+  while (sub.queued > 0) {
+    const item = await sub.next(0)
+    if (item !== null && item !== PING && item[0] === "live") events.push(item[1])
+  }
+  expect(events.filter((event) => event.type === "message.removed")).toEqual([])
+  const users = o.transcript.messages(sid, session(o, sid).run_ids).filter((m) => m.role === "user")
+  expect(texts(o, sid, "user")).toEqual(["Plan the trip.", "Also mention Rome.", "Then book the hotel."])
+  for (const text of ["Also mention Rome.", "Then book the hotel."]) {
+    const shown = users.find((m) => JSON.stringify(m.parts).includes(text))!
+    const published = events.filter(
+      (event) => event.type === "message.updated" && JSON.stringify(event.data.parts).includes(text),
+    )
+    expect(published.map((event) => [event.data.id === shown.id, event.data.unread])).toEqual([
+      [true, true],
+      [true, false],
+    ])
+  }
+  expectSessionPages(o, sid)
+})
+
 test("a moved message drops its old copy only when the run it names is the session's", async () => {
   const o = await chatOffice(await fakeLlm())
   const workers = scriptedWorker(o)

@@ -176,7 +176,7 @@ test("ctrl+t moves to the prompt, where a message steers, leaves the cards open 
   }
 })
 
-test("from the prompt under an open card, Esc clears a draft, then interrupts the turn", async () => {
+test("from the prompt under an open card, Esc interrupts the turn and keeps the draft", async () => {
   const { office, s } = codexOffice()
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
@@ -188,10 +188,8 @@ test("from the prompt under an open card, Esc clears a draft, then interrupts th
     await app.input.typeText("draft")
     await app.until((f) => f.includes("draft"))
     app.input.pressEscape()
-    await app.until((f) => !f.includes("draft"))
-    expect(sent(office, `/sessions/${s.id}/interrupt`)).toEqual([])
-    app.input.pressEscape()
     await app.until(() => sent(office, `/sessions/${s.id}/interrupt`).length === 1, 2000)
+    expect(await app.until(() => true)).toContain("draft")
   } finally {
     await app.stop()
     office.stop()

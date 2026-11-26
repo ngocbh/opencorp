@@ -69,6 +69,11 @@ export type PromptProps = {
   onInterrupt?: () => void
   /** Enter on an empty prompt, as upstream's: steers the first queued message; true when it did. */
   onEmptySubmit?: () => Promise<boolean>
+  /** Whether the viewer has unread messages of their own in the chat, which ↑ at the top of the prompt takes back. */
+  unread?: boolean
+  /** ↑ at the top of the prompt while `unread`, as Claude Code's: takes the viewer's newest unread message back from
+   *  the employee and gives its text, or undefined when there was none to take or the office refused. */
+  onTakeBack?: () => Promise<string | undefined>
   ref?: (ref: PromptRef | undefined) => void
   hint?: JSX.Element
   right?: JSX.Element
@@ -97,7 +102,8 @@ export type PromptRef = {
   submit(): void
 }
 
-const DRAFT_RETENTION_MIN_CHARS = 20
+/** How soon a second Esc must follow the first to clear an idle draft, as Claude Code's double press. */
+const ESC_AGAIN_MS = 800
 
 function randomIndex(count: number) {
   if (count <= 0) return 0
@@ -252,11 +258,7 @@ export function Prompt(props: PromptProps) {
         run: () => {
           if (auto()?.visible) return
           if (!input.focused) return
-          const sessionID = props.sessionID
-          if (!sessionID) return
-          props.onInterrupt?.()
-          office.client.sessions.interrupt(sessionID).catch(showError("Interrupting failed"))
-          dialog.clear()
+          interruptSession()
         },
       },
       {
@@ -586,16 +588,35 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  // Ctrl+C, as Claude Code's: while the employee works it interrupts them, the draft kept; else it clears the draft
+  // into the history, where ↑ finds it, and on an empty prompt it falls through to leaving. Above the leave keys.
   useBindings(() => {
     return {
       target: inputTarget,
-      enabled: inputTarget() !== undefined && !props.disabled && store.prompt.input !== "",
-      bindings: tuiConfig.keybinds.get("prompt.clear"),
+      priority: 1,
+      enabled: inputTarget() !== undefined && !props.disabled && (store.prompt.input !== "" || busy()),
+      bindings: tuiConfig.keybinds.get("prompt.clear").map((binding) => ({
+        ...binding,
+        cmd: () => {
+          if (busy()) return interruptSession()
+          clearPrompt()
+          dialog.clear()
+        },
+      })),
     }
   })
 
-  // Esc with a draft clears it ahead of the interrupt; base mode only, so an open menu keeps Esc. Text being sent is
-  // no draft, so Esc interrupts then. The priority holds that order however the layers are registered.
+  // Esc, as Claude Code's: while the employee works or waits it falls through to the interrupt, the draft kept. Idle,
+  // one Esc on a draft only says to press it again, and a second soon after clears the draft into the history, where ↑
+  // finds it. Base mode only, so an open menu keeps Esc; the priority puts it ahead of the interrupt.
+  const [escArmed, setEscArmed] = createSignal(false)
+  let escTimer: ReturnType<typeof setTimeout> | undefined
+  const disarmEsc = () => {
+    if (escTimer) clearTimeout(escTimer)
+    escTimer = undefined
+    setEscArmed(false)
+  }
+  onCleanup(disarmEsc)
   useBindings(() => ({
     target: inputTarget,
     mode: OPENCORP_BASE_MODE,
@@ -607,8 +628,14 @@ export function Prompt(props: PromptProps) {
         desc: "Clear the prompt",
         group: "Prompt",
         cmd: () => {
-          if (submitting || !store.prompt.input) return false
-          clearPrompt()
+          if (submitting || canInterrupt() || !store.prompt.input) return false
+          if (escArmed()) {
+            disarmEsc()
+            clearPrompt()
+            return true
+          }
+          setEscArmed(true)
+          escTimer = setTimeout(disarmEsc, ESC_AGAIN_MS)
           return true
         },
       },
@@ -639,6 +666,9 @@ export function Prompt(props: PromptProps) {
               input.moveCursorUp()
               return
             }
+
+            // At the top, the viewer's unread messages come back first, the newest first, as Claude Code's queue.
+            if (props.unread && props.onTakeBack) return takeBack()
 
             const item = history.move(-1, input.plainText)
             if (!item) return false
@@ -705,6 +735,44 @@ export function Prompt(props: PromptProps) {
     } finally {
       submitting = false
     }
+  }
+
+  /** Interrupts the session, as Esc does: the view freezes first (`onInterrupt`), then the office is asked. */
+  function interruptSession() {
+    const sessionID = props.sessionID
+    if (!sessionID) return
+    props.onInterrupt?.()
+    office.client.sessions.interrupt(sessionID).catch(showError("Interrupting failed"))
+    dialog.clear()
+  }
+
+  // One take at a time, in the order ↑ was pressed, so each message taken back goes ahead of the one before it.
+  let taking: Promise<void> = Promise.resolve()
+  /** Takes the viewer's newest unread message back (`onTakeBack`) and puts it ahead of what the prompt holds. */
+  function takeBack() {
+    taking = taking.then(async () => {
+      if (!props.unread || !props.onTakeBack) return
+      const text = await props.onTakeBack()
+      if (text !== undefined && !gone()) prepend(text)
+    })
+  }
+
+  /** Puts `text` on its own line ahead of what the prompt holds, as Claude Code puts what ↑ takes back, its parts
+   *  moved along; the cursor goes to the start, so the next ↑ takes back the message before it. */
+  function prepend(text: string) {
+    const held = store.prompt.input
+    const head = held ? `${text}\n` : text
+    const shift = promptOffsetWidth(head)
+    const parts = store.prompt.parts.map((part) => {
+      const span = part.source?.text
+      if (!part.source || !span) return part
+      return { ...part, source: { ...part.source, text: { ...span, start: span.start + shift, end: span.end + shift } } }
+    }) as PromptInfo["parts"]
+    history.reset()
+    input.setText(head + held)
+    setStore("prompt", { input: head + held, parts })
+    restoreExtmarksFromParts(parts)
+    input.cursorOffset = 0
   }
 
   function showError(title: string) {
@@ -927,8 +995,9 @@ export function Prompt(props: PromptProps) {
     input.clear()
   }
 
+  /** Empties the prompt, keeping a draft that shows in the history, as Claude Code keeps a cleared one for ↑. */
   function clearPrompt() {
-    if (store.prompt.input.trim().length >= DRAFT_RETENTION_MIN_CHARS) history.append(promptText())
+    if (store.prompt.input.trim()) history.append(promptText())
     else history.reset()
     input.clear()
     input.extmarks.clear()
@@ -951,6 +1020,8 @@ export function Prompt(props: PromptProps) {
   const borderHighlight = createMemo(() => tint(theme.border, highlight(), agentMetaAlpha()))
 
   const placeholderText = createMemo(() => {
+    // Claude Code's hint for what ↑ takes back.
+    if (props.unread && props.onTakeBack) return "Press ↑ to edit unread messages"
     if (props.showPlaceholder === false) return undefined
     if (!list().length) return undefined
     return `Ask anything… "${list()[store.placeholder % list().length]}"`
@@ -1037,6 +1108,8 @@ export function Prompt(props: PromptProps) {
               maxHeight={maxHeight()}
               onContentChange={() => {
                 const value = input.plainText
+                // Typing after one Esc starts over: the next Esc only asks again.
+                if (escArmed() && value !== store.prompt.input) disarmEsc()
                 setStore("prompt", "input", value)
                 auto()?.onInput(value)
                 syncExtmarksWithPromptParts()
@@ -1151,13 +1224,22 @@ export function Prompt(props: PromptProps) {
           <Show
             when={canInterrupt()}
             fallback={
-              props.hint ?? (
-                <Show when={props.sessionID} fallback={<text />}>
-                  <box marginLeft={1}>
-                    <text fg={theme.textMuted}>{display(session()?.cwd ?? office.cwd)}</text>
-                  </box>
-                </Show>
-              )
+              <Show
+                when={escArmed()}
+                fallback={
+                  props.hint ?? (
+                    <Show when={props.sessionID} fallback={<text />}>
+                      <box marginLeft={1}>
+                        <text fg={theme.textMuted}>{display(session()?.cwd ?? office.cwd)}</text>
+                      </box>
+                    </Show>
+                  )
+                }
+              >
+                <text fg={theme.text} marginLeft={1}>
+                  esc <span style={{ fg: theme.textMuted }}>again to clear</span>
+                </text>
+              </Show>
             }
           >
             <box flexDirection="row" gap={1}>
@@ -1170,7 +1252,7 @@ export function Prompt(props: PromptProps) {
                 </box>
               </Show>
               <text fg={theme.text} marginLeft={busy() ? 0 : 1}>
-                esc <span style={{ fg: theme.textMuted }}>interrupt</span>
+                esc <span style={{ fg: theme.textMuted }}>to interrupt</span>
               </text>
             </box>
           </Show>

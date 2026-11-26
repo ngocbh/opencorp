@@ -1022,6 +1022,20 @@ export function Session(props: SessionProps) {
   /** Whether `message` is the viewer's own, unread steer, which they may move or take back as the chat's approver. */
   const pendingSteer = (message: Message) =>
     message.unread && !message.queued && !isInstrumentNote(message) && mine(message)
+  /** The viewer's own unread messages, steers and queued ones alike, in the order sent: ↑ at the top of the prompt
+   *  takes the newest back into it, as Claude Code's ↑ takes back what is queued. */
+  const unreadOwn = createMemo(() =>
+    loaded().filter((m) => m.role === "user" && m.unread && !isInstrumentNote(m) && mine(m)),
+  )
+  // Taken back, until the office's removal reaches the transcript.
+  const takenBack = new Set<string>()
+  /** Takes the viewer's newest unread message back, as the queued prompts' undo does, and gives its text. */
+  const takeBack = async () => {
+    const next = unreadOwn().findLast((m) => !takenBack.has(m.id))
+    if (!next || !(await mutatePending("cancel", next.id, "undo"))) return undefined
+    takenBack.add(next.id)
+    return messageText(next)
+  }
 
   const sessionCommandList = createMemo(() => [
     {
@@ -1600,6 +1614,8 @@ export function Session(props: SessionProps) {
                               if (!next) return false
                               return mutatePending("steer", next.id)
                             }}
+                            unread={unreadOwn().some((m) => !takenBack.has(m.id))}
+                            onTakeBack={takeBack}
                             sessionID={props.sessionID}
                           />
                         }

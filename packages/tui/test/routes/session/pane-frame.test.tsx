@@ -488,14 +488,16 @@ test("a Codex session opens in the pane with its transcript and a prompt; @minh 
     expect(boxColor(app)).toEqual(OWNER)
     expect(borderOf(app, "Ngoc Bui (owner)")).toEqual(OWNER)
     expect(borderOf(app, "@minh")).toEqual(MINH)
-    // Ctrl-C in the pane's prompt clears its text; the TUI stays.
+    // Ctrl-C in the pane's prompt, while Codex works, interrupts its turn and keeps the text; the TUI stays.
     app.input.typeText("half typed")
     await app.until((f) => f.includes("half typed"))
     app.input.pressKey("c", { ctrl: true })
-    await app.until((f) => !f.includes("half typed"))
+    await until(() => sent(office, `/sessions/${child.id}/interrupt`).length === 1)
     await Bun.sleep(100)
     expect(app.setup.renderer.isDestroyed).toBe(false)
+    expect(await app.until(() => true)).toContain("half typed")
     expect(app.frame()).not.toContain("Press again to leave.")
+    expect(sent(office, `/sessions/${chat.id}/interrupt`)).toEqual([])
   } finally {
     await app.stop()
     office.stop()
@@ -1119,11 +1121,11 @@ test("a Codex card in both the chat and the pane leaves the pane's prompt its Es
     await app.until((f) => shown(f) === 1)
     app.input.typeText("draft")
     await app.until((f) => f.includes("draft"))
-    await escape(app)
-    await app.until((f) => !f.includes("draft"))
-    expect(sent(office, `/sessions/${child.id}/interrupt`)).toEqual([])
+    // Esc there interrupts Codex's turn, the draft kept.
     await escape(app)
     await until(() => sent(office, `/sessions/${child.id}/interrupt`).length === 1)
+    expect(await app.until(() => true)).toContain("draft")
+    expect(sent(office, `/sessions/${chat.id}/interrupt`)).toEqual([])
     app.input.pressKey("t", { ctrl: true })
     await app.until((f) => shown(f) === 2)
     app.input.pressKey("1")
@@ -1193,10 +1195,10 @@ test("a card the chat gets the keys back for under an open palette takes none of
   }
 })
 
-test("with the chat's own approval card open beside the pane, Esc in the pane's prompt still clears a draft", async () => {
+test("with the chat's own approval card open beside the pane, Esc in the pane's prompt is still its own", async () => {
   const office = createFakeOffice()
   const chat = office.state.sessions[0]!
-  codex(office, chat.id, "busy")
+  const child = codex(office, chat.id, "busy")
   const { app } = await boot(office, 120, chat.id)
   try {
     await app.until((f) => f.includes("↓ 1 Codex session"))
@@ -1206,8 +1208,13 @@ test("with the chat's own approval card open beside the pane, Esc in the pane's 
     await app.until((f) => f.includes("make deploy"))
     app.input.typeText("draft")
     await app.until((f) => f.includes("draft"))
+    // It interrupts Codex's turn, the draft kept, and leaves the chat's card alone.
     await escape(app)
-    await app.until((f) => !f.includes("draft"))
+    await until(() => sent(office, `/sessions/${child.id}/interrupt`).length === 1)
+    const f = await app.until(() => true)
+    expect(f).toContain("draft")
+    expect(f).toContain("make deploy")
+    expect(sent(office, `/sessions/${chat.id}/interrupt`)).toEqual([])
   } finally {
     await app.stop()
     office.stop()

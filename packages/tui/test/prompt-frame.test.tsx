@@ -73,7 +73,7 @@ test("one Esc while busy interrupts, and the reply stops showing at once", async
     await app.until((f) => f.includes("@minh · idle"))
     app.input.typeText("go")
     app.input.pressEnter()
-    await app.until((f) => f.includes("@minh · busy") && f.includes("Looking") && f.includes("esc interrupt"))
+    await app.until((f) => f.includes("@minh · busy") && f.includes("Looking") && f.includes("esc to interrupt"))
     app.input.pressEscape()
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${id}/interrupt`))
     // The office's reply only stops at its next safe point; what it streams meanwhile stays hidden.
@@ -115,7 +115,7 @@ test("after Esc, the stopped reply's interrupted marker shows, and nothing else 
     await app.until((f) => f.includes("@minh · idle"))
     app.input.typeText("go")
     app.input.pressEnter()
-    await app.until((f) => f.includes("Looking") && f.includes("esc interrupt"))
+    await app.until((f) => f.includes("Looking") && f.includes("esc to interrupt"))
     app.input.pressEscape()
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${id}/interrupt`))
     const part = { ...first.parts[0], text: "Looking at it" + INTERRUPTED_TEXT }
@@ -157,7 +157,7 @@ test("a send after Esc keeps the stopped reply's interrupted marker, before and 
     await app.until((f) => f.includes("@minh · idle"))
     app.input.typeText("go")
     app.input.pressEnter()
-    await app.until((f) => f.includes("Looking") && f.includes("esc interrupt"))
+    await app.until((f) => f.includes("Looking") && f.includes("esc to interrupt"))
     app.input.pressEscape()
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${id}/interrupt`))
     const part = { ...first.parts[0], text: "Looking" + INTERRUPTED_TEXT }
@@ -199,7 +199,7 @@ test("a second Esc keeps hiding a reply that arrived after the first", async () 
     await app.until((f) => f.includes("@minh · idle"))
     app.input.typeText("go")
     app.input.pressEnter()
-    await app.until((f) => f.includes("Looking") && f.includes("esc interrupt"))
+    await app.until((f) => f.includes("Looking") && f.includes("esc to interrupt"))
     app.input.pressEscape()
     await app.until(() => office.requests.filter((r) => r.path === `/sessions/${id}/interrupt`).length === 1)
     reply("late words")
@@ -325,34 +325,7 @@ test("a 501 from the office shows as a toast, not a crash", async () => {
   }
 })
 
-test("Esc with a draft clears it and doesn't interrupt, idle or busy; on the empty prompt Esc interrupts", async () => {
-  const office = createFakeOffice()
-  const id = office.state.sessions[0].id
-  const interrupts = () => office.requests.filter((r) => r.path === `/sessions/${id}/interrupt`).length
-  const app = await bootFrame(createStub(office), { sessionID: id })
-  try {
-    await app.until((f) => f.includes("@minh · idle"))
-    await app.input.typeText("idle draft")
-    await app.until((f) => f.includes("idle draft"))
-    app.input.pressEscape()
-    await app.until((f) => !f.includes("idle draft"))
-    office.setStatus(id, "busy")
-    await app.until((f) => f.includes("@minh · busy") && f.includes("esc interrupt"))
-    await app.input.typeText("half a thought")
-    await app.until((f) => f.includes("half a thought"))
-    app.input.pressEscape()
-    await app.until((f) => !f.includes("half a thought"))
-    await Bun.sleep(100)
-    expect(interrupts()).toBe(0)
-    app.input.pressEscape()
-    await until(() => interrupts() === 1)
-  } finally {
-    await app.stop()
-    office.stop()
-  }
-})
-
-test("while busy, Esc closes an open @ menu and keeps the draft; the next Esc clears it, and only then Esc interrupts", async () => {
+test("while busy, Esc closes an open @ menu and keeps the draft; the next Esc interrupts, the draft still kept", async () => {
   const office = createFakeOffice()
   const id = office.state.sessions[0].id
   const interrupts = () => office.requests.filter((r) => r.path === `/sessions/${id}/interrupt`).length
@@ -360,7 +333,7 @@ test("while busy, Esc closes an open @ menu and keeps the draft; the next Esc cl
   try {
     await app.until((f) => f.includes("@minh · idle"))
     office.setStatus(id, "busy")
-    await app.until((f) => f.includes("@minh · busy") && f.includes("esc interrupt"))
+    await app.until((f) => f.includes("@minh · busy") && f.includes("esc to interrupt"))
     await app.input.typeText("look at @")
     await app.until((f) => f.includes("look at @") && f.includes("No matching items"))
     app.input.pressEscape()
@@ -370,11 +343,10 @@ test("while busy, Esc closes an open @ menu and keeps the draft; the next Esc cl
     expect(app.frame()).toContain("look at @")
     expect(interrupts()).toBe(0)
     app.input.pressEscape()
-    await app.until((f) => !f.includes("look at @"))
-    await Bun.sleep(100)
-    expect(interrupts()).toBe(0)
-    app.input.pressEscape()
     await until(() => interrupts() === 1)
+    await Bun.sleep(100)
+    await app.setup.renderOnce()
+    expect(app.frame()).toContain("look at @")
   } finally {
     await app.stop()
     office.stop()
@@ -387,9 +359,9 @@ test("Esc on a waiting session interrupts it", async () => {
   office.updateSession(s.id, { status: "waiting", waiting_on: ["ngocbh"] })
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
-    const f = await app.until((f) => f.includes("@minh · waiting") && f.includes("esc interrupt"))
+    const f = await app.until((f) => f.includes("@minh · waiting") && f.includes("esc to interrupt"))
     // No spinner before the hint: a waiting session isn't working.
-    expect(f.split("\n").find((l) => l.includes("esc interrupt"))).toMatch(/^\s*esc interrupt/)
+    expect(f.split("\n").find((l) => l.includes("esc to interrupt"))).toMatch(/^\s*esc to interrupt/)
     app.input.pressEscape()
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${s.id}/interrupt`))
   } finally {
@@ -595,7 +567,7 @@ test("a card that takes the prompt's place while a steer goes out keeps it out o
       release()
       await Bun.sleep(100)
       app.input.pressKey("2")
-      await app.until((f) => !f.includes("Retry the flaky test?") && f.includes("esc interrupt"))
+      await app.until((f) => !f.includes("Retry the flaky test?") && f.includes("esc to interrupt"))
       await Bun.sleep(100)
       await app.setup.renderOnce()
       // Only the transcript shows it, as the message that went out.

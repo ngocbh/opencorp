@@ -92,7 +92,7 @@ license, the upstream paths and commit, and our paths.
 - **Upstream:** `packages/core/src/tool/plugin/subagent.ts` (`description`, `backgroundResult`) and
   `packages/core/src/session/subagent-completion.ts` (`deliver`), read at commit `4332e24f` (2026-11-22).
 - **Ours:** `packages/office/src/tools/harness/tools.ts`, `packages/office/src/tools/harness/instrument.ts`.
-- **What:** the line under the prompt keeps the fork's layout: the spinner and `esc interrupt` (or the folder) on the
+- **What:** the line under the prompt keeps the fork's layout: the spinner and `esc to interrupt` (or the folder) on the
   left, the shortcuts on the right. What the chat has running follows the left side (the picker's count, below), and
   what waits for the owner takes the shortcuts' place in the warning colour, as the fork's session footer showed its
   open permissions (`△ N Permissions`).
