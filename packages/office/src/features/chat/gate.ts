@@ -376,6 +376,8 @@ export class CallGate {
    */
   async answered(card: QuestionRecord): Promise<void> {
     const read = readAnswer(card)
+    // A Yes is taken whatever the card's target holds: each client draws its own card, and one that can't show the
+    // target whole offers no Yes (the TUI's). The Yes binds to the card's call id and the gate's decision.
     if (read.answer === "yes" || read.answer === "session" || read.answer === "always") {
       const credit = card.answered_by ? `approved by @${card.answered_by}` : "approved"
       this.#holds.delete(card.call_id!)

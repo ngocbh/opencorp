@@ -85,6 +85,11 @@ test("Escape goes back from a call to its node, then closes the node", async ({ 
   await expect(call.getByRole("region", { name: "Reply" })).toContainText("Done.")
   // A text the office cut says where.
   await expect(call.getByRole("region", { name: "Request" })).toContainText("Cut at 64K characters here")
+  // Its one attempt, the node's step 5, is numbered within the call.
+  const attempts = call.getByRole("list", { name: "Attempts" })
+  await expect(attempts.getByRole("listitem")).toHaveCount(1)
+  await expect(attempts.getByRole("listitem")).toContainText("Attempt 1")
+  await expect(attempts).not.toContainText("Attempt 5")
   await page.keyboard.press("Escape")
   await expect(call).toHaveCount(0)
   await expect(detail).toBeVisible()

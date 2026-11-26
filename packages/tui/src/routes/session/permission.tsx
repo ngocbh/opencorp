@@ -25,8 +25,9 @@ type PermissionStage = "permission" | "always" | "reject"
 
 type Tone = "text" | "muted" | "warning"
 /** A line of the prompt, before it is wrapped: its colour, a leading mark of `len` characters (an icon) drawn in a
- *  colour of its own, and the spaces before each of its rows (a value under its label), wrapped ones too. */
-type Line = { text: string; tone: Tone; mark?: { len: number; tone: Tone }; indent?: number }
+ *  colour of its own, the spaces before each of its rows (a value under its label), and the spaces more before each
+ *  row after its first (a field's later lines and wrapped rows, under its label). */
+type Line = { text: string; tone: Tone; mark?: { len: number; tone: Tone }; indent?: number; hang?: number }
 /** A line wrapped to the prompt's width: what one row on screen draws. */
 type Row = Line
 
@@ -36,18 +37,24 @@ const READ_ON = "Read to the end (PageDown, Space, arrows) to see the choices"
 const CUT = "more characters not shown, so this card can't approve the call"
 
 /** `lines` wrapped to `width`, one row each as the screen draws it: a line break starts a row, and a line wider than
- *  the box wraps whole, never cut. An indented line's every row starts with its indent, so no text of a value reads
- *  as a label. */
+ *  the box wraps whole, never cut. An indented line's every row starts with its indent, and a hanging one's every row
+ *  after its first with more, so no text of a value or a field reads as a label. */
 function wrapLines(lines: readonly Line[], width: number): Row[] {
   return lines.flatMap((line) => {
     const pad = " ".repeat(Math.min(line.indent ?? 0, width - 1))
-    return line.text.split("\n").flatMap((part, p) =>
-      wrap(part.replace(/\t/g, "  "), width - pad.length).map((text, i) => ({
-        text: pad + text,
-        tone: line.tone,
-        ...(line.mark && p === 0 && i === 0 && { mark: line.mark }),
-      })),
-    )
+    const hang = pad + " ".repeat(Math.min(line.hang ?? 0, width - 1 - pad.length))
+    const rows: string[] = []
+    line.text.split("\n").forEach((part, p) => {
+      let text = part.replace(/\t/g, "  ")
+      if (p === 0) {
+        const first = wrap(text, width - pad.length)[0]!
+        rows.push(pad + first)
+        text = text.slice(first.length)
+        if (text === "") return
+      }
+      for (const row of wrap(text, width - hang.length)) rows.push(hang + row)
+    })
+    return rows.map((text, i) => ({ text, tone: line.tone, ...(line.mark && i === 0 && { mark: line.mark }) }))
   })
 }
 
@@ -113,8 +120,9 @@ export function PermissionPrompt(props: { question: Question | undefined }) {
     const why = display(approval?.why ?? "").trim()
     const reason = display(approval?.reason ?? "").trim()
     const notes: Line[] = [
-      ...(why ? [{ text: `Why: ${why}`, tone: "muted" as const }] : []),
-      ...(reason ? [{ text: `Asking because: ${reason}`, tone: "muted" as const }] : []),
+      // Several lines (Auto's check's reason may hold some) hang under the label, so none reads as one of the card's.
+      ...(why ? [{ text: `Why: ${why}`, tone: "muted" as const, hang: 2 }] : []),
+      ...(reason ? [{ text: `Asking because: ${reason}`, tone: "muted" as const, hang: 2 }] : []),
     ]
     const target = presentation().target
     const call = presentation().lines.map((text): Line => ({ text, tone: "text", ...(target && { indent: 2 }) }))

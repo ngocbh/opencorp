@@ -16,9 +16,8 @@ export type TargetText = { text: string; more: number }
 /** The most characters of a target a card shows. A card that can't show its target whole doesn't approve its call. */
 export const TARGET_CHARS = 4000
 
-/** A run of spaces a target shows as `<N spaces>`, as the office shows a command, so padding can't push the rest of a
- *  value away: four or more. */
-const SPACES = / {4,}/g
+/** A UTF-16 code unit outside printable ASCII, which a target shows as its JSON escape. */
+const UNPRINTABLE = /[^\x20-\x7e]/g
 
 /** The tools that run a command in a shell. */
 const SHELLS = new Set(["shell", "workspace_shell", "terminal_run"])
@@ -34,13 +33,13 @@ export function shownText(text: string): string {
 
 /**
  * What a card shows of `target`, a call's gate target (Yian's `GatedCall.target`, which the office derives from the
- * validated call): its JSON, whose escapes cover the C0 controls, with every other character outside printable
- * ASCII as `<U+XXXX>` and each run of four or more spaces as `<N spaces>`, cut to `TARGET_CHARS`. Null for no
- * target. It is shown only: the card's answer binds to its call id.
+ * validated call): its JSON in printable ASCII, each other UTF-16 unit as its `\uXXXX` escape, as JSON writes the
+ * controls, cut to `TARGET_CHARS`. JSON doubles a backslash, so text in the target can't fake an escape; what shows
+ * whole parses back to the target. Null for no target. It is shown only: the card's answer binds to its call id.
  */
 export function targetText(target: Readonly<Record<string, unknown>> | null | undefined): TargetText | null {
   if (target == null) return null
-  const shown = shownText(JSON.stringify(target)).replace(SPACES, (run) => `<${run.length} spaces>`)
+  const shown = JSON.stringify(target).replace(UNPRINTABLE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)
   return { text: shown.slice(0, TARGET_CHARS), more: Math.max(0, shown.length - TARGET_CHARS) }
 }
 

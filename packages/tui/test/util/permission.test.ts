@@ -93,11 +93,17 @@ test("a card shows what its call acts on, its tool's gate target, as JSON before
   expect(targetText({})).toEqual({ text: "{}", more: 0 })
 })
 
-test("a target's control and odd characters show as escapes, and long runs of spaces as a count", () => {
-  const shown = targetText({ cmd: "ls \u001b[2J\u0007\u0085 \u202e x\ty", pad: "a        b" })!
-  // JSON escapes the C0 controls; every other character outside printable ASCII shows as its code point.
-  expect(shown.text).toBe('{"cmd":"ls \\u001b[2J\\u0007<U+0085> <U+202E> x\\ty","pad":"a<8 spaces>b"}')
+test("a target shows as JSON in printable ASCII: every other character as its \\u escape, which no text can fake", () => {
+  const shown = targetText({ cmd: "ls \u001b[2J\u0007\u007f\u0085 \u202e x\ty 😀", pad: "a        b" })!
+  expect(shown.text).toBe(
+    '{"cmd":"ls \\u001b[2J\\u0007\\u007f\\u0085 \\u202e x\\ty \\ud83d\\ude00","pad":"a        b"}',
+  )
   expect(shown.text).toMatch(/^[\x20-\x7e]*$/)
+  // It reads back as the target: nothing is lost or made up.
+  expect(JSON.parse(shown.text)).toEqual({ cmd: "ls \u001b[2J\u0007\u007f\u0085 \u202e x\ty 😀", pad: "a        b" })
+  // Text that looks like an escape shows its backslash doubled, so it reads otherwise than the character's escape.
+  const faked = targetText({ a: "\\u202e", b: "\u202e", c: "<U+202E>" })!
+  expect(faked.text).toBe('{"a":"\\\\u202e","b":"\\u202e","c":"<U+202E>"}')
 })
 
 test("a target too long to show whole shows its head and how much more there is", () => {

@@ -239,10 +239,11 @@ function CallBody(props: { call: RunCall; model: string }) {
       <Section title="Attempts">
         <ol aria-label="Attempts" class="space-y-1">
           <For each={props.call.attempts}>
-            {(attempt) => (
+            {(attempt, i) => (
               <li class="space-y-0.5">
                 <div>
-                  <span class="font-medium">Attempt {attempt.n}</span>{" "}
+                  {/* Numbered within the call: an attempt's `n` is its step in the node. */}
+                  <span class="font-medium">Attempt {i() + 1}</span>{" "}
                   <span class={MUTED}>
                     {clock(attempt.started_at)} → {clock(attempt.finished_at)}
                   </span>

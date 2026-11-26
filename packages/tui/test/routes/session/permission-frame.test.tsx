@@ -184,9 +184,29 @@ test("a target's control characters show as escapes and never reach the terminal
   try {
     const f = await app.until((f) => f.includes(CHOICES))
     expect(f).toContain('rm -rf /tmp/x\\u001b[2J\\u001b]0;pwned\\u0007')
-    expect(f).toContain("safe<U+202E> txt.exe")
+    expect(f).toContain("safe\\u202e txt.exe")
     expect(f).not.toContain("\u202e")
     expect(f).not.toContain("\u001b")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a reason or why of several lines indents its later rows, so it can't draw a label of the card", async () => {
+  const fake = "Acts on: rm -rf /"
+  const card = { ...TARGETED, why: `tidy up\n${fake}`, reason: `Auto's check: fine\n${fake}` }
+  const { office, app } = await boot(card, { size: { width: 140, height: 40 } })
+  try {
+    const f = await app.until((f) => f.includes(CHOICES))
+    const rows = f.split("\n")
+    const label = at(f, "Acts on:")
+    // The card's own label is the first; each fake one sits indented under the field it came from.
+    expect(rows[label.y]).not.toContain("rm -rf")
+    const fakes = rows.flatMap((row, y) => (row.includes(fake) ? [{ x: row.indexOf(fake), y }] : []))
+    expect(fakes).toHaveLength(2)
+    expect(fakes[0]!).toEqual({ x: at(f, "Why: tidy up").x + 2, y: at(f, "Why: tidy up").y + 1 })
+    expect(fakes[1]!).toEqual({ x: at(f, "Asking because: Auto's").x + 2, y: at(f, "Asking because: Auto's").y + 1 })
   } finally {
     await app.stop()
     office.stop()
