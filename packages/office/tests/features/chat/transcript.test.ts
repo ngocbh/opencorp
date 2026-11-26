@@ -1361,6 +1361,9 @@ test("a read from the end reads the run whole when a record after its rest point
     ["a steer's send", [sent(1, "early"), started(2, heard), ...rest(3, heard), ...turn, started(9, "chat#1/reply"),
       line(10, "node_step", { node_id: "chat#1/reply", n: 1n, step: { kind: "steer", from: [1n] } })],
       ["a", "b", "early"]],
+    // A withdraw after the rest point takes back a send before it, which shows nowhere.
+    ["a withdrawn send", [sent(1, "early"), started(2, heard), ...rest(3, heard), ...turn,
+      line(9, "inbox_withdrawn", { inbox: "messages", events: [1n] })], ["a", "b"]],
   ]
   for (const [what, records, shows] of logs) {
     const runs = tempDir()
@@ -1375,8 +1378,41 @@ test("a read from the end reads the run whole when a record after its rest point
       false,
       [],
     ])
-    const page = new Transcript(runs, FROM_END).pageNow("s", [RUN], { limit: 1 })
+    const transcript = new Transcript(runs, FROM_END)
+    const page = transcript.pageNow("s", [RUN], { limit: 1 })
     expect([what, page]).toEqual([what, pageOf(whole, 1, null)])
     expectPages(runs, "s", [RUN], whole)
+    // It read the run whole: older pages come from that read, though the log's start is damaged now.
+    corrupt(log)
+    expect([what, transcript.pageNow("s", [RUN], { limit: 5, before: page!.next })]).toEqual([
+      what,
+      pageOf(whole, 5, page!.next),
+    ])
   }
+})
+
+test("a segment between rest points that leaves a send unread makes the run read whole", () => {
+  const take = (seq: number, node: string, events: number[]) => {
+    const inbox = ["messages", "queued"]
+    return line(seq, "pool_commit", { node_id: node, key: node, inbox, events: events.map(BigInt), closed: [] })
+  }
+  const turn = (seq: number, node: string, text: string) =>
+    [sent(seq, text), take(seq + 1, node, [seq]), accepted(seq + 2, node, seq + 1)]
+  // Three turns, a rest point after the first two; between them a send nothing reads or withdraws.
+  const records = [runStarted(0), ...turn(1, "chat#0/heard", "zero"), ...rest(4, "chat#1/heard"), sent(6, "stray"),
+    ...turn(7, "chat#1/heard", "one"), ...rest(10, "chat#2/heard"), ...turn(12, "chat#2/heard", "two")]
+  const runs = tempDir()
+  const log = path.join(runs, RUN, "log.jsonl")
+  fs.mkdirSync(path.dirname(log), { recursive: true })
+  fs.writeFileSync(log, Buffer.concat(records))
+  const whole = new Transcript(runs).messages("s", [RUN])
+  expect(texts(whole).map(([, parts]) => parts.join(""))).toEqual(["zero", "one", "two", "stray"])
+  expect(whole.map((m) => m.unread)).toEqual([false, false, false, true])
+  // The page reads back one segment, finds the send unread there, and reads the run whole.
+  const transcript = new Transcript(runs, FROM_END)
+  const page = transcript.pageNow("s", [RUN], { limit: 2 })
+  expect(page).toEqual(pageOf(whole, 2, null))
+  expectPages(runs, "s", [RUN], whole)
+  corrupt(log)
+  expect(transcript.pageNow("s", [RUN], { limit: 5, before: page!.next })).toEqual(pageOf(whole, 5, page!.next))
 })
