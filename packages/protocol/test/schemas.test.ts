@@ -218,7 +218,7 @@ test("a question may be an approval card, holding what it would allow", () => {
   })
   expect(card.approval).toEqual({
     kind: "command", tool: "shell", action: "ls", args: {}, why: "", reason: "Ask mode", rules: [], partial: false,
-    into: null,
+    into: null, target: null,
   })
   expect(Schemas.Question.parse({ ...base, source: "ask_user" }).approval).toBeNull()
   expect(Schemas.Approval.safeParse({ kind: "command", tool: "shell", action: "ls", reason: "", extra: 1 }).success)
@@ -228,8 +228,13 @@ test("a question may be an approval card, holding what it would allow", () => {
   const action = 'crm_quote {"amount":5}'
   const tool = { kind: "tool" as const, tool: "crm_quote", action, reason: "Ask mode", rules: ["module crm quote"] }
   expect(Schemas.Approval.parse({ ...tool, args: { amount: 5 } })).toEqual({
-    ...tool, args: { amount: 5 }, why: "", partial: false, into: null,
+    ...tool, args: { amount: 5 }, why: "", partial: false, into: null, target: null,
   })
+  // What the call acts on, as its tool's gate target says: a JSON object, or null.
+  const target = { run: "r1", call: "r1/agent/3/0" }
+  expect(Schemas.Approval.parse({ ...tool, target }).target).toEqual(target)
+  expect(Schemas.Approval.safeParse({ ...tool, target: "r1" }).success).toBe(false)
+  expect(Schemas.Approval.safeParse({ ...tool, target: [1] }).success).toBe(false)
 })
 
 test("a rule has a source, and a rules list names the files that don't load", () => {

@@ -182,7 +182,8 @@ export class CallGate {
     if (refused !== undefined && decision.verdict !== "refuse") decision = { verdict: "refuse", reason: refused }
     if (decision.verdict === "refuse") return { refuse: decision.reason }
     // A flow's call keeps the module tools it calls, so it is decided again by them.
-    const held = { tool, source, arguments: args, attempt, ...(call.wraps === undefined ? {} : { wraps: call.wraps }) }
+    const wraps = call.wraps === undefined ? {} : { wraps: call.wraps }
+    const held = { tool, source, arguments: args, attempt, target: call.target, ...wraps }
     const terminal = command !== null
     const hold = { runId, callId: call.callId, call: held, terminal, command, held: false, check: null }
     this.#holds.set(call.callId, hold)
@@ -253,7 +254,7 @@ export class CallGate {
       if (!call.held || call.source === null || !call.callId.startsWith(`${runId}/`)) continue
       if (this.#holds.has(call.callId)) continue
       // Arguments it didn't record are none the gate can judge: it asks.
-      const known = { tool: call.tool, source: call.source, arguments: call.arguments, attempt: 1 }
+      const known = { tool: call.tool, source: call.source, arguments: call.arguments, attempt: 1, target: call.target }
       // A terminal call's plan is read from the shells as they are now; one that can't be read is decided by nobody.
       const planned = this.#planned({ source: call.source, arguments: call.arguments })
       const terminal = planned !== null

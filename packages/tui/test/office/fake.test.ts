@@ -89,7 +89,7 @@ test("an approval card has no side chat or send back, and its stop answers it in
   ])
   expect(q.approval).toEqual({
     kind: "command", tool: "shell", action: "rm -rf build", args: {}, why: "", reason: "Ask mode",
-    rules: ["rm -rf build"], partial: false, into: null,
+    rules: ["rm -rf build"], partial: false, into: null, target: null,
   })
   const typed = office.addApproval(sid, { kind: "input", tool: "terminal_type", action: "y", reason: "" })
   expect([typed.title, typed.options, typed.call_id === q.call_id]).toEqual([

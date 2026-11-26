@@ -41,6 +41,9 @@ export interface ToolCall {
    *  calls), as the worker read them from the flow; null or absent when they couldn't be read, which counts as every
    *  module tool. */
   readonly wraps?: readonly WrappedTool[] | null
+  /** What the call acts on, as its tool's gate target says (yian's `GatedCall.target`), for its card; null or absent
+   *  when it says nothing. It never decides the call. */
+  readonly target?: Readonly<Record<string, unknown>> | null
 }
 
 /** A tool module's tool a flow calls itself: its `uses:` alias and its export, as `module <alias> <export>` names
@@ -231,10 +234,11 @@ export function afterCheck(verdict: Verdict, rules: readonly string[], mode: Mod
 }
 
 /** The approval card a call is held on: the call as the model made it (its name and its arguments as JSON, or its
- *  name alone when they couldn't be read), why it asks, and the rules "don't ask again" may add. A big integer
- *  argument shows as its digits. */
+ *  name alone when they couldn't be read), what it acts on as its tool's gate target says (null when it says
+ *  nothing), why it asks, and the rules "don't ask again" may add. A big integer shows as its digits. */
 export function toolCard(call: ToolCall, asked: { reason: string; rules: readonly string[] }): Approval {
   const args = call.arguments
+  const target = call.target ?? null
   return {
     kind: "tool",
     tool: call.tool,
@@ -245,6 +249,7 @@ export function toolCard(call: ToolCall, asked: { reason: string; rules: readonl
     rules: [...asked.rules],
     partial: false,
     into: null,
+    target: target === null ? null : (JSON.parse(jsonText(target, true)) as Record<string, unknown>),
   }
 }
 

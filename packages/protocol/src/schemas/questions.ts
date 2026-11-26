@@ -57,6 +57,12 @@ export const Approval = z.strictObject({
   partial: z.boolean().default(false),
   /** For typed text: the command it is typed into, whose ssh destination is its host. */
   into: z.string().nullable().default(null),
+  /**
+   * For a tool card: what the call acts on, as its tool's gate target says (Yian's `GatedCall.target`), derived from
+   * the validated call, never from the model's words; null when it says nothing. Cards show it first. It is display
+   * only: the answer binds to the card's call id.
+   */
+  target: z.record(z.string(), z.unknown()).nullable().default(null),
 })
 export type Approval = z.input<typeof Approval>
 

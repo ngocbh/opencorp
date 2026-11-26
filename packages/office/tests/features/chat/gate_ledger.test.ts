@@ -121,6 +121,21 @@ test("a restored terminal hold the terminal can't read keeps its card open for t
   for (const n of [0, 1, 2]) expect(a.perms.decided!(held(n, null).callId)).toBeNull()
 })
 
+test("a restored hold's card holds what the call acts on, as yian recorded its target", async () => {
+  const a = await approvals("default")
+  const target = { run: "r1", call: "r1/agent/3/0" }
+  const mcp: PendingCall = {
+    callId: `${RUN}/chat#0/reply/1/0`, node: "chat#0/reply", tool: "github_create_issue", arguments: { title: "Fix" },
+    pendingSeq: 1, deadline: null, ask: null, held: true, source: { kind: "mcp", server: "github", tool: "create_issue" },
+    target,
+  }
+  a.chat.settleHolds(RUN, [mcp])
+  await a.drain()
+  expect(a.o.office.store.getQuestionByCall(mcp.callId)).toMatchObject({
+    status: "open", approval: { kind: "tool", action: 'github_create_issue {"title":"Fix"}', target },
+  })
+})
+
 test("a card approves its call only with its approver's Yes", async () => {
   const a = await approvals("ask")
   const nobody = a.card(`${RUN}/chat#0/reply/1/0`, "ls")

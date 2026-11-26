@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test"
 import { APPROVAL_YES, approvalAlwaysOption, approvalSessionOption } from "@opencorp/protocol"
 import { shownAction } from "@opencorp/office/util/show"
-import { permissionAlwaysLines, permissionOptions, permissionPresentation } from "../../src/util/permission"
+import {
+  permissionAlwaysLines,
+  permissionOptions,
+  permissionPresentation,
+  TARGET_CHARS,
+  targetText,
+} from "../../src/util/permission"
 
 test("each tool's approval has its title and body: a shell command, a typed line, and any other tool", () => {
   for (const tool of ["shell", "workspace_shell", "terminal_run"])
@@ -67,4 +73,37 @@ test("a card's choices are its own options, matched against the protocol's label
   // A label for other rules, or one the protocol doesn't name, is never offered.
   expect(permissionOptions([APPROVAL_YES, approvalSessionOption(["make"])], rules)).toEqual({ yes: "Yes" })
   expect(permissionOptions(["Yes", "Yes, and something else"], rules)).toEqual({ yes: "Yes" })
+})
+
+test("a card shows what its call acts on, its tool's gate target, as JSON before the call; none without one", () => {
+  const target = { run: "r1", call: "r1/agent/3/0" }
+  expect(permissionPresentation({ kind: "tool", tool: "flows_approve", target }, 'flows_approve {"id":"x"}')).toEqual({
+    icon: "⚙",
+    title: "Call tool flows_approve",
+    lines: ['flows_approve {"id":"x"}'],
+    target: { text: '{"run":"r1","call":"r1/agent/3/0"}', more: 0 },
+  })
+  for (const none of [null, undefined])
+    expect(permissionPresentation({ kind: "tool", tool: "crm_quote", target: none }, "crm_quote {}")).toEqual({
+      icon: "⚙",
+      title: "Call tool crm_quote",
+      lines: ["crm_quote {}"],
+    })
+  expect(targetText(null)).toBeNull()
+  expect(targetText({})).toEqual({ text: "{}", more: 0 })
+})
+
+test("a target's control and odd characters show as escapes, and long runs of spaces as a count", () => {
+  const shown = targetText({ cmd: "ls \u001b[2J\u0007\u0085 \u202e x\ty", pad: "a        b" })!
+  // JSON escapes the C0 controls; every other character outside printable ASCII shows as its code point.
+  expect(shown.text).toBe('{"cmd":"ls \\u001b[2J\\u0007<U+0085> <U+202E> x\\ty","pad":"a<8 spaces>b"}')
+  expect(shown.text).toMatch(/^[\x20-\x7e]*$/)
+})
+
+test("a target too long to show whole shows its head and how much more there is", () => {
+  const shown = targetText({ text: "x".repeat(TARGET_CHARS) })!
+  expect(shown.text).toHaveLength(TARGET_CHARS)
+  expect(shown.text.startsWith('{"text":"xxx')).toBe(true)
+  expect(shown.more).toBe('{"text":""}'.length)
+  expect(targetText({ text: "x".repeat(TARGET_CHARS - '{"text":""}'.length) })!.more).toBe(0)
 })

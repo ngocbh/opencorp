@@ -5,6 +5,7 @@ import { approvalAlwaysOption, approvalSessionOption } from "@opencorp/protocol"
 import type { Approval, Message, Question } from "@opencorp/protocol"
 import type { CapturedLine } from "@opentui/core"
 import { expect, onTestFinished, test } from "bun:test"
+import { TARGET_CHARS } from "../../../src/util/permission"
 import { createFakeOffice, createStub, type FakeOffice } from "../../fixture/fake-office"
 import { bootFrame } from "../../fixture/frame"
 import { writeKV } from "../../fixture/kv"
@@ -129,10 +130,85 @@ test("a tool card shows the tool's call, and its don't-ask-again page the tool r
     expect(f).toContain('crm_quote {"amount":5}')
     expect(f).toContain("Asking because: Ask mode")
     expect(f).not.toContain("Shell command")
+    // With no target, the card shows the call alone, as it always did.
+    expect(f).not.toContain("Acts on")
+    expect(f).not.toContain("Call:")
     app.input.pressKey("2")
     app.input.pressEnter()
     f = await app.until((f) => f.includes("These will run without asking for the rest of this session:"))
     expect(f).toContain("- module crm quote")
+    expect(answers(office, q)).toEqual([])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+/** A tool card whose tool's gate target says what the call acts on. */
+const TARGETED: Approval = {
+  kind: "tool",
+  tool: "flows_approve",
+  action: 'flows_approve {"call_id":"r1/agent/3/0","reason":"looks fine"}',
+  args: { call_id: "r1/agent/3/0", reason: "looks fine" },
+  why: "",
+  reason: "Ask mode",
+  rules: ["host flows approve"],
+  target: { run: "r1", call: "r1/agent/3/0", tool: "terminal_run" },
+}
+
+test("a tool card shows what the call acts on first, then the call, and Yes once read", async () => {
+  const { office, q, app } = await boot(TARGETED)
+  try {
+    const f = await app.until((f) => f.includes(CHOICES))
+    const target = at(f, '{"run":"r1","call":"r1/agent/3/0","tool":"terminal_run"}')
+    expect(at(f, "⚙ Call tool flows_approve").y).toBeLessThan(at(f, "Acts on:").y)
+    expect(at(f, "Acts on:").y).toBeLessThan(target.y)
+    expect(target.y).toBeLessThan(at(f, "Call:").y)
+    expect(at(f, "Call:").y).toBeLessThan(at(f, "flows_approve {").y)
+    // Each value sits indented under its label.
+    expect(target.x).toBe(at(f, "Acts on:").x + 2)
+    expect(f).toContain(" Yes ")
+    app.input.pressKey("1")
+    app.input.pressEnter()
+    await until(() => answers(office, q).length === 1)
+    expect(answers(office, q)).toEqual([{ answer: "Yes", answer_kind: "option" }])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a target's control characters show as escapes and never reach the terminal", async () => {
+  const target = { cmd: "rm -rf /tmp/x\u001b[2J\u001b]0;pwned\u0007", note: "safe\u202e txt.exe" }
+  const { office, app } = await boot({ ...TARGETED, target }, { size: { width: 140, height: 40 } })
+  try {
+    const f = await app.until((f) => f.includes(CHOICES))
+    expect(f).toContain('rm -rf /tmp/x\\u001b[2J\\u001b]0;pwned\\u0007')
+    expect(f).toContain("safe<U+202E> txt.exe")
+    expect(f).not.toContain("\u202e")
+    expect(f).not.toContain("\u001b")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a target too long to show whole shows its head, says how much more, and offers only No", async () => {
+  const target = { text: "t".repeat(TARGET_CHARS + 500) }
+  const { office, q, app } = await boot({ ...TARGETED, target }, { size: { width: 100, height: 30 } })
+  try {
+    let f = await app.until((f) => f.includes(READ_ON) && POSITION.test(f))
+    expect(f).toContain('{"text":"ttt')
+    app.input.pressKey(END)
+    f = await app.until((f) => f.includes(CHOICES))
+    expect(f).toContain("511 more characters not shown")
+    expect(f).toContain(" No ")
+    expect(f).not.toContain(" Yes ")
+    expect(f).not.toContain("Don't ask again")
+    // A digit for Yes selects nothing to approve.
+    app.input.pressKey("1")
+    app.input.pressEnter()
+    f = await app.until((f) => f.includes("Tell @minh what to do instead"))
     expect(answers(office, q)).toEqual([])
   } finally {
     await app.stop()
