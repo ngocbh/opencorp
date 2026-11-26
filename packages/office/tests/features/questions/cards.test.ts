@@ -990,7 +990,8 @@ test("end during the side chats first reply keeps its first message", async () =
   const side = await h.office.cards!.openSide(q.id, "explain")
   try {
     await fake.waitForRequests(2)
-    expect(status(h, side.id)).toBe("starting")
+    // A starting session shows busy once the office reads its reply's start, which comes before the model call.
+    await waitFor(() => status(h, side.id) === "busy", { what: "the first reply under way" })
     await h.harness.end(sid)
     await waitFor(() => h.store.getQuestion(q.id)!.status === "consumed", { what: "the question to close" })
     expect(h.store.getQuestion(q.id)!.discussion).toEqual([{ role: "user", text: "explain" }])
