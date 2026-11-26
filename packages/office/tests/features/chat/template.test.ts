@@ -83,15 +83,28 @@ test("every chat template takes its turns from its messages and queued inboxes a
     }
     const from = ["${input.messages}", "${input.queued}"]
     expect(turn.nodes.heard).toEqual({ kind: "call", call: "take", input: { from, take: "all" } })
+    expect(turn.nodes.sorted.input.events).toBe("${[e.event for e in heard.output.events]}")
     expect([reply.input.said, turn.output.history]).toEqual([
-      "${[e.event for e in heard.output.events]}",
-      "${(context.output?.history :- input.history) + [[e.event for e in heard.output.events] + (reply.new_messages :- [])]}",
+      "${sorted.output.noted + sorted.output.said}",
+      "${(context.output?.history :- input.history) + ([sorted.output.noted + sorted.output.said + (reply.new_messages :- [])] if sorted.output.said != [] else [])}",
     ])
     expect([reply.steer_inbox, reply.output, reply.prompt]).toEqual([
       "${input.messages}",
       "!Optional(str)",
       ["${history}", "${said}"],
     ])
+    // The model of each turn is the loop's, which the person's /model actions choose.
+    expect([flow.input.model, turn.input.model, flow.nodes.chat.input.model, turn.output.model]).toEqual([
+      "!Optional(Model) null",
+      "!Optional(Model)",
+      "${input.model}",
+      "${sorted.output.model}",
+    ])
+    expect(reply.llm_config).toEqual({
+      provider: "${sorted.output.model?.provider}",
+      model: "${sorted.output.model?.model}",
+    })
+    expect(turn.nodes.context.input.model).toBe("${sorted.output.model}")
     expect(flow.nodes.chat.while).toBe("not closed and turns < max_turns")
     expect([flow.input.summary, flow.input.history, flow.input.turns, flow.input.max_turns]).toEqual([
       "!str",
@@ -99,7 +112,7 @@ test("every chat template takes its turns from its messages and queued inboxes a
       "!int",
       "!int",
     ])
-    expect(Object.keys(turn.nodes)).toEqual(["heard", "route", "context", "reply"])
+    expect(Object.keys(turn.nodes)).toEqual(["heard", "sorted", "route", "context", "reply"])
     expect(turn.nodes.route.cases[0].then).toBe("context")
     expect(turn.output.summary).toBe("${context.output?.summary :- input.summary}")
     expect(flow.typedefs?.Msg).toBeUndefined()
@@ -276,6 +289,74 @@ test("a turn reads its messages and its queued ones together, in the order they 
     { role: "user", content: "three" },
   ])
   expect(waitingAt(rec)).toEqual(["chat#1/heard"])
+})
+
+/** A person's `/model` action as the office sends it, to the queue: `author` picked `model` of connection office. */
+function chose(id: string, model: string, author = "ngocbh") {
+  const parts = [{ type: "action", tool: "/model", arguments: { connection: "office", provider: "vllm", model } }]
+  return { id, op: "send", inbox: "queued", event: { role: "user", author, parts } } as const
+}
+
+test.each([["chat"], ["side_chat"], ["profile_manager"]])(
+  "a /model action is noted without a turn, and the next turn's reply runs on its model and reads it first [%s]",
+  async (name) => {
+    const fake = await fakeLlm()
+    fake.script({ content: "On two." })
+    const job = await waitingChat(fake, name)
+    const noted = await advance(job, fake, [chose("m1", "stub-2")], name)
+    expect(fake.requests()).toEqual([])
+    expect(waitingAt(noted)).toEqual(["chat#1/heard"])
+    const [quiet] = succeeded(noted, "chat#0/__end__")
+    expect([quiet!.output.turns, quiet!.output.history, quiet!.output.noted.length]).toEqual([0n, [], 1])
+    const rec = await advance(job, fake, [send("s1", "hi")], name)
+    expect(fake.requests().map((request) => request.model)).toEqual(["stub-2"])
+    const users = requestMessages(fake, 0).filter((m) => m.role === "user").map((m) => String(m.content))
+    expect(users.at(-2)).toContain('<authored_message author="ngocbh">')
+    expect(users.at(-2)).toContain('"tool":"/model"')
+    expect(users.at(-1)).toBe("hi")
+    const [end] = succeeded(rec, "chat#1/__end__")
+    expect([end!.output.turns, end!.output.noted, end!.output.model]).toEqual([
+      1n,
+      [],
+      { provider: "vllm", model: "stub-2" },
+    ])
+    expect(said(end!.output.history.at(-1))).toEqual([
+      ["user", ""],
+      ["user", "hi"],
+      ["assistant", "On two."],
+    ])
+    expect(waitingAt(rec)).toEqual(["chat#2/heard"])
+  },
+)
+
+test("a chat starts on its model input, and a /model action read with a message chooses that turn's model", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "On two." }, { content: "On three." })
+  const job = await waitingChat(fake, "chat", { model: { provider: "vllm", model: "stub-2" } })
+  await advance(job, fake, [send("s1", "one")])
+  await advance(job, fake, [chose("m1", "stub-3"), send("s2", "two")])
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub-2", "stub-3"])
+})
+
+test("a /model action chooses only with its person's name, a provider and a model", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Still one." })
+  const job = await waitingChat(fake)
+  const { parts } = chose("m1", "stub-2").event
+  const unsigned = { ...chose("m1", "stub-2"), event: { role: "user", parts } }
+  const bare = chose("m2", "stub-3")
+  const partial = { ...bare, event: { ...bare.event, parts: [{ type: "action", tool: "/model", arguments: { model: "stub-3" } }] } }
+  await advance(job, fake, [unsigned, partial, send("s1", "hi")])
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub"])
+})
+
+test("a long history folds on the model a /model action chose", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "SUMMARY-OF-TURN-0" }, { content: "Hello." })
+  const job = await waitingChat(fake, "chat", { history: LONG })
+  await advance(job, fake, [chose("m1", "stub-2"), send("s1", "next")])
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub-2", "stub-2"])
+  expect(summarizes(fake, 0)).toBe(true)
 })
 
 test("a message sent after the replys last model call is the next turn at once", async () => {
