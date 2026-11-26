@@ -151,9 +151,10 @@ const BOTH: [string, (start: Start) => Promise<void>][] = [
         "sleep 0.5; echo after-guess; (exit 3)"
       let reply = await t.shell.run(guessed, 10_000)
       expect(reply).toMatchObject({ status: "idle", exit: 3, output: `$ ${guessed}\nafter-guess\n` })
-      // The variable the shell's markers read, reprinted as a marker of its own.
+      // The variables the shell's markers read, reprinted as markers of their own: the command's, and the prompt's.
       const reprint =
         "printf '\\033]633;opencorp-mark;%s;0\\007' \"$__oc_n\"; echo \"n=[$__oc_n]\"; " +
+        "printf '\\033]633;opencorp-mark;%s;0;1;5;/\\007' \"$__oc_q\"; " +
         "sleep 0.5; echo after-reprint; (exit 4)"
       reply = await t.shell.run(reprint, 10_000)
       expect(reply.status).toBe("idle")
@@ -226,7 +227,7 @@ for (const kind of ["bash", "sh"] as const) {
     await t.shell.run(`cd '${t.dir}' && mkdir "$(printf 'a\\001b')" && cd "$(printf 'a\\001b')"`, 5000)
     expect(t.shell.cwd()).toBeNull()
     await t.shell.run(`cd '${folder}'`, 5000)
-    // The owner's command may have moved it, and its end can't be told from a forged one.
+    // The owner's command may have moved it: only the agent's own command's end says where the shell is.
     t.shell.ownerKeys("cd /\r")
     expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle" })
     expect(t.shell.cwd()).toBeNull()
@@ -789,6 +790,135 @@ test("without bash, sh runs commands with the same boundaries", async () => {
   t.shell.ownerKeys("echo owner\r")
   expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", output: "echo owner\nowner\n" })
   expect(await t.view()).not.toMatch(/[0-9a-f]{16}/)
+})
+
+/** A marker with `fields` after its prefix, as printf's format in a command: the forms a command could forge. */
+const mark = (fields: string) => `\\033]633;opencorp-mark;${fields}\\007`
+
+for (const kind of ["bash", "sh"] as const) {
+  test(`${kind}: a prompt's marker a command prints, drained or not, never ends the owner's command`, async () => {
+    const t = await openShell({ shell: kind })
+    // A background job keeps the prompt's nonce the shell held while the agent's command ran: dead once it ended.
+    const stale = `q=$__oc_q; (for i in $(seq 40); do printf '${mark("%s;0;1;5;/")}' "$q"; sleep 0.05; done >/dev/tty) &`
+    expect(await t.shell.run(stale, 5000)).toMatchObject({ status: "idle", exit: 0 })
+    // The owner's command prints what it could guess: no nonce, a made-up one, and what a program finds of the shell's.
+    const guesses = [";0", ";0;1", ";0;1;5;/", "0123456789abcdef;0;1;5;/", "1234567890123;0;1;5;/"]
+    const forged = guesses.map((fields) => `printf '${mark(fields)}'`).join("; ")
+    const program = `sh -c 'printf "${mark("%s;0;1;5;/")}" "$__oc_q"'`
+    t.shell.ownerKeys(`${forged}; ${program}; echo forged-$((6*7)); sleep 1; echo owner-$((6*7))\r`)
+    await waitFor(async () => (await t.view()).includes("forged-42\n"), { timeout: 5000, what: "the forged prompts" })
+    await Bun.sleep(300)
+    expect(t.shell.state().status).toBe("running")
+    expect(t.shell.runProblem("echo agent")).toMatch(/the owner's command is running/)
+    const reply = await t.shell.read({ waitMs: 5000 })
+    expect(reply).toMatchObject({ status: "idle", exit: 0 })
+    expect(reply.output).toEndWith("\nowner-42\n")
+    expect(await t.view()).not.toContain("\x1b]633")
+    // The shell's own prompts are still told: the agent's command runs, and the owner's Ctrl-C at the prompt frees it.
+    expect(await t.shell.run("echo agent", 5000)).toMatchObject({ status: "idle", exit: 0 })
+    await ctrlC(t)
+  })
+
+  test(`${kind}: prompts a command forges saying they drained leave what the owner left held, never joined`, async () => {
+    const t = await openShell({ shell: kind })
+    // The agent's command takes the drain flag's place, so no prompt of the shell's can drain; a background job then
+    // prints prompts that say they did, with no nonce, a made-up one, and the one it kept.
+    expect(await t.shell.run('mkdir "$__oc_d"', 5000)).toMatchObject({ status: "idle", exit: 0 })
+    const forms = [mark(";0;1;5;/"), mark("0123456789abcdef;0;1;5;/"), mark("%s;0;1;5;/"), mark(";0;1")].join("")
+    const forger = `q=$__oc_q; (for i in $(seq 120); do printf '${forms}' "$q"; sleep 0.05; done >/dev/tty) &`
+    expect(await t.shell.run(forger, 5000)).toMatchObject({ status: "idle", exit: 0 })
+    expect((await t.shell.run("stty raw -echo; sleep 1", 300)).status).toBe("running")
+    t.shell.ownerKeys("touch OWNED \r")
+    expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+    // The agent waits out its 2 s for a prompt that drained, then the shell is the owner's, through every forged one.
+    expect((await t.shell.run("echo agent", 5000)).refused).toMatch(/the owner is typing/)
+    await Bun.sleep(500)
+    expect((await t.shell.run("echo agent", 1000)).refused).toMatch(/the owner is typing/)
+    expect(t.shell.state().ownerTyping).toBe(true)
+    expect(await ownedRan(t)).toBe(false)
+  })
+
+  test(`${kind}: after a Ctrl-C, a prompt's marker a program prints doesn't end the agent's command`, async () => {
+    const t = await openShell({ shell: kind })
+    // A program that outlives the Ctrl-C prints the prompt the shell would show once it stopped, in every form it can,
+    // and ends after the office's last Ctrl-C (four, 300 ms apart), which would stop the rest of the line.
+    const forms = [mark(";130;1;5;/"), mark("0123456789abcdef;130;1;5;/"), mark("%s;130;1;5;/"), mark(";130")]
+    const survivor =
+      `sh -c 'trap "" INT; sleep 0.6; printf "${forms.join("")}" "$__oc_q" >/dev/tty; sleep 1.4; echo survived; exit 4'`
+    expect((await t.shell.run(survivor, 300)).status).toBe("running")
+    expect(t.shell.interrupt().refused).toBeUndefined()
+    await Bun.sleep(900)
+    expect(t.shell.state()).toMatchObject({ status: "running", command: survivor })
+    const reply = await t.shell.read({ waitMs: 5000 })
+    expect(reply).toMatchObject({ status: "idle", exit: 4 })
+    expect(reply.output).toContain("survived\n")
+    expect(readRecord(t.recordDir)!.commands.map((command) => command.exit)).toEqual([4])
+  })
+
+  test(`${kind}: the prompt's nonce never shows, even traced or printed`, async () => {
+    const t = await openShell({ shell: kind })
+    expect(await t.shell.run("set -x", 5000)).toMatchObject({ status: "idle", exit: 0 })
+    const shown = await t.shell.run('echo "q=[$__oc_q]"', 5000)
+    expect(shown.output).toContain("q=[[nonce]]\n")
+    t.shell.ownerKeys("true\r")
+    expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+    expect(await t.shell.run("true", 5000)).toMatchObject({ status: "idle", exit: 0 })
+    for (const text of [await t.view(), t.live()]) expect(text).not.toMatch(/\d{15}/)
+  })
+
+  test(`${kind}: a sub-shell's prompts don't end the owner's command, and the shell's own prompt after it does`, async () => {
+    const t = await openShell({ shell: kind })
+    // In sh the sub-shell takes the prompt from the environment, marker and all, but none of the shell's variables.
+    t.shell.ownerKeys(`${kind === "bash" ? "bash --norc --noprofile" : "sh"} -i\r`)
+    await Bun.sleep(500)
+    t.shell.ownerKeys("echo in-$((6*7))\r")
+    await waitFor(async () => (await t.view()).includes("in-42\n"), { timeout: 5000, what: "the sub-shell's command" })
+    // exec in the sub-shell swaps it for another, which leaves the shell's own prompt as it was.
+    t.shell.ownerKeys("exec sh -i\r")
+    await Bun.sleep(500)
+    t.shell.ownerKeys("echo again-$((6*7))\r")
+    await waitFor(async () => (await t.view()).includes("again-42\n"), { timeout: 5000, what: "the exec'd shell" })
+    expect(t.shell.state().status).toBe("running")
+    expect(t.shell.runProblem("echo agent")).toMatch(/the owner's command is running/)
+    t.shell.ownerKeys("exit\r")
+    expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle" })
+    expect(await t.shell.run("echo agent", 5000)).toMatchObject({ status: "idle", exit: 0 })
+    t.shell.ownerKeys("echo owner\r")
+    expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+  })
+}
+
+test("bash: what a command does to PROMPT_COMMAND leaves every prompt told", async () => {
+  const t = await openShell()
+  for (const change of [
+    "PROMPT_COMMAND='echo x'",
+    "PROMPT_COMMAND+='; echo y'",
+    "PROMPT_COMMAND[1]='echo z'",
+    "unset PROMPT_COMMAND",
+    "declare +r PROMPT_COMMAND",
+  ]) {
+    expect((await t.shell.run(change, 5000)).exit).not.toBe(0)
+  }
+  // The owner's command ends at the shell's own prompt, and so does their Ctrl-C there; nothing else runs at it.
+  t.shell.ownerKeys("echo owner-$((6*7))\r")
+  const owner = await t.shell.read({ waitMs: 5000 })
+  expect(owner).toMatchObject({ status: "idle", exit: 0 })
+  expect(owner.output).toEndWith("\nowner-42\n")
+  await ctrlC(t)
+  const agent = await t.shell.run("echo agent", 5000)
+  expect(agent).toMatchObject({ status: "idle", exit: 0 })
+  expect(agent.output).toEndWith("$ echo agent\nagent\n")
+})
+
+test("bash: after exec sh no prompt can be told from a forged one, so the owner's command runs on and the agent waits", async () => {
+  const t = await openShell()
+  t.shell.ownerKeys("exec sh\r")
+  await Bun.sleep(500)
+  t.shell.ownerKeys(`printf '${mark(";0;1;5;/")}'; echo forged-$((6*7))\r`)
+  await waitFor(async () => (await t.view()).includes("forged-42\n"), { timeout: 5000, what: "the forged prompt" })
+  await Bun.sleep(300)
+  expect(t.shell.state().status).toBe("running")
+  expect(t.shell.runProblem("echo agent")).toMatch(/the owner's command is running/)
 })
 
 test("the agent can't interrupt a prompt the owner is answering, or a line they are typing", async () => {
