@@ -1,7 +1,8 @@
-// Esc and Ctrl+C in a chat, as Claude Code's: while the employee works, Esc and Ctrl+C interrupt them and keep the
+// Esc, Ctrl+C and ↑ in a chat, as Claude Code's: while the employee works, Esc and Ctrl+C interrupt them and keep the
 // draft, and the person's unread and queued messages stay for the next turn; idle, Esc does nothing on one press and
 // Esc Esc clears the draft into the history, and Ctrl+C clears the draft, or on an empty prompt asks to be pressed
-// again to leave.
+// again to leave. ↑ at the top of the prompt takes the person's unread messages back into it, the newest first, and
+// with none left it walks the history as before.
 import type { Message, Session } from "@opencorp/protocol"
 import { expect, test } from "bun:test"
 import { createFakeOffice, createStub } from "../../fixture/fake-office"
@@ -47,6 +48,9 @@ async function boot(status: Session["status"], more: (sid: string) => Message[] 
     office.requests.filter((r) => r.path.startsWith(`/sessions/${s.id}/inbox/`)).map((r) => [r.method, r.path])
   return { office, app, s, interrupts, takes }
 }
+
+/** How many rows of `f` hold `text`. */
+const rowsWith = (f: string, text: string) => f.split("\n").filter((row) => row.includes(text)).length
 
 test("working, with a draft: Esc interrupts the turn and keeps the draft", async () => {
   const { office, app, interrupts } = await boot("busy")
@@ -219,6 +223,66 @@ test("idle, with a draft: Ctrl+C clears it into the history, and ↑ brings it b
     expect(interrupts()).toBe(0)
     app.input.pressArrow("up")
     await app.until((f) => f.includes("short one"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("↑ on the empty prompt takes back the newest unread message, then the one before it, ahead of it", async () => {
+  const { office, app, s, takes } = await boot("busy", (sid) => [
+    message(sid, "M3", "user", "Also mention Rome.", { unread: true }),
+    message(sid, "Q1", "user", "Then book the hotel.", { unread: true, queued: true }),
+  ])
+  try {
+    let f = await app.until((f) => f.includes("1 queued · Then book the hotel."))
+    expect(f).toContain("Press ↑ to edit unread messages")
+    // The newest first: the queued one leaves the dock for the prompt.
+    app.input.pressArrow("up")
+    f = await app.until((f) => !f.includes("queued ·") && rowsWith(f, "Then book the hotel.") === 1)
+    expect(takes()).toEqual([["DELETE", `/sessions/${s.id}/inbox/Q1`]])
+    // The next goes ahead of it, on a line of its own, and leaves the transcript.
+    app.input.pressArrow("up")
+    await until(() => takes().length === 2)
+    f = await app.until((f) => {
+      const rows = f.split("\n")
+      const rome = rows.findIndex((r) => r.includes("Also mention Rome."))
+      const hotel = rows.findIndex((r) => r.includes("Then book the hotel."))
+      return rome > -1 && hotel === rome + 1 && rowsWith(f, "Also mention Rome.") === 1
+    })
+    expect(takes()).toEqual([
+      ["DELETE", `/sessions/${s.id}/inbox/Q1`],
+      ["DELETE", `/sessions/${s.id}/inbox/M3`],
+    ])
+    expect(f).not.toContain("Press ↑ to edit unread messages")
+    // Enter sends what was taken back as one message.
+    app.input.pressEnter()
+    await until(() => office.requests.some((r) => r.path === `/sessions/${s.id}/prompt`))
+    const sent = office.requests.find((r) => r.path === `/sessions/${s.id}/prompt`)!
+    expect(sent.body).toEqual({ text: "Also mention Rome.\nThen book the hotel." })
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("↑ takes back only the viewer's own unread messages, and with none it walks the history", async () => {
+  const text = "Sent before, recalled after."
+  const { office, app, s, takes } = await boot("busy", (sid) => [
+    { ...message(sid, "M3", "user", "Someone else's steer.", { unread: true }), author: "lan" },
+  ])
+  try {
+    await app.until((f) => f.includes("Someone else's steer."))
+    await app.input.typeText(text)
+    app.input.pressEnter()
+    await until(() => (office.state.messages[s.id] ?? []).some((m) => JSON.stringify(m.parts).includes(text)))
+    // Shown once, in the transcript: the prompt is clear.
+    await Bun.sleep(200)
+    const f = await app.until((f) => rowsWith(f, text) === 1)
+    expect(f).not.toContain("Press ↑ to edit unread messages")
+    app.input.pressArrow("up")
+    await app.until((f) => rowsWith(f, text) === 2)
+    expect(takes()).toEqual([])
   } finally {
     await app.stop()
     office.stop()

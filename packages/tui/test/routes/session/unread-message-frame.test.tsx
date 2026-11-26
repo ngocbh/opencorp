@@ -60,7 +60,9 @@ test("an unread message has a grey border and nothing under its text, and looks 
     const f = await app.until((f) => f.includes("Also mention Rome.") && f.includes("@minh · busy"))
     // Its box holds its text and nothing else: no hint line.
     expect(messageRows(f, "Also mention Rome.").slice(1).every((r) => r.replace("┃", "").trim() === "")).toBe(true)
-    expect(f).not.toContain("unread")
+    // The only word of it is the prompt's: ↑ takes it back.
+    expect(f).toContain("Press ↑ to edit unread messages")
+    expect(f.replace("Press ↑ to edit unread messages", "")).not.toContain("unread")
     expect(f).not.toContain("esc to interrupt so")
     const spans = app.setup.captureSpans().lines
     expect(border(spans, "Also mention Rome.")).toEqual(theme.border)
@@ -84,7 +86,7 @@ test("over the cost cap an unread message is grey too, with nothing under it", a
   const { office, app } = await boot("waiting", { capped: true })
   try {
     const f = await app.until((f) => f.includes("cost cap reached") && f.includes("Also mention Rome."))
-    expect(f).not.toContain("unread")
+    expect(f.replace("Press ↑ to edit unread messages", "")).not.toContain("unread")
     expect(border(app.setup.captureSpans().lines, "Also mention Rome.")).toEqual(theme.border)
   } finally {
     await app.stop()

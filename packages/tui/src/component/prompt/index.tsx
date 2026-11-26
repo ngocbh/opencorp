@@ -69,6 +69,11 @@ export type PromptProps = {
   onInterrupt?: () => void
   /** Enter on an empty prompt, as upstream's: steers the first queued message; true when it did. */
   onEmptySubmit?: () => Promise<boolean>
+  /** Whether the viewer has unread messages of their own in the chat, which ↑ at the top of the prompt takes back. */
+  unread?: boolean
+  /** ↑ at the top of the prompt while `unread`, as Claude Code's: takes the viewer's newest unread message back from
+   *  the employee and gives its text, or undefined when there was none to take or the office refused. */
+  onTakeBack?: () => Promise<string | undefined>
   ref?: (ref: PromptRef | undefined) => void
   hint?: JSX.Element
   right?: JSX.Element
@@ -662,6 +667,9 @@ export function Prompt(props: PromptProps) {
               return
             }
 
+            // At the top, the viewer's unread messages come back first, the newest first, as Claude Code's queue.
+            if (props.unread && props.onTakeBack) return takeBack()
+
             const item = history.move(-1, input.plainText)
             if (!item) return false
             showHistory(item)
@@ -736,6 +744,35 @@ export function Prompt(props: PromptProps) {
     props.onInterrupt?.()
     office.client.sessions.interrupt(sessionID).catch(showError("Interrupting failed"))
     dialog.clear()
+  }
+
+  // One take at a time, in the order ↑ was pressed, so each message taken back goes ahead of the one before it.
+  let taking: Promise<void> = Promise.resolve()
+  /** Takes the viewer's newest unread message back (`onTakeBack`) and puts it ahead of what the prompt holds. */
+  function takeBack() {
+    taking = taking.then(async () => {
+      if (!props.unread || !props.onTakeBack) return
+      const text = await props.onTakeBack()
+      if (text !== undefined && !gone()) prepend(text)
+    })
+  }
+
+  /** Puts `text` on its own line ahead of what the prompt holds, as Claude Code puts what ↑ takes back, its parts
+   *  moved along; the cursor goes to the start, so the next ↑ takes back the message before it. */
+  function prepend(text: string) {
+    const held = store.prompt.input
+    const head = held ? `${text}\n` : text
+    const shift = promptOffsetWidth(head)
+    const parts = store.prompt.parts.map((part) => {
+      const span = part.source?.text
+      if (!part.source || !span) return part
+      return { ...part, source: { ...part.source, text: { ...span, start: span.start + shift, end: span.end + shift } } }
+    }) as PromptInfo["parts"]
+    history.reset()
+    input.setText(head + held)
+    setStore("prompt", { input: head + held, parts })
+    restoreExtmarksFromParts(parts)
+    input.cursorOffset = 0
   }
 
   function showError(title: string) {
@@ -983,6 +1020,8 @@ export function Prompt(props: PromptProps) {
   const borderHighlight = createMemo(() => tint(theme.border, highlight(), agentMetaAlpha()))
 
   const placeholderText = createMemo(() => {
+    // Claude Code's hint for what ↑ takes back.
+    if (props.unread && props.onTakeBack) return "Press ↑ to edit unread messages"
     if (props.showPlaceholder === false) return undefined
     if (!list().length) return undefined
     return `Ask anything… "${list()[store.placeholder % list().length]}"`
