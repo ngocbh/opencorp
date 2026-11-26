@@ -1241,6 +1241,8 @@ test("a page from a log's end reads back only as far as it needs, so earlier dam
   expect(texts(page!.messages)).toEqual([["user", ["third"]], ["assistant", ["re: third"]]])
   // Read back to the start, it meets the damage and reads the run whole, which has no message the cursor names.
   expect(transcript.pageNow(sid, ["r1"], { limit: 10, before: page!.next })).toBeNull()
+  // From then on the newest page is that whole read's: it stops at the damage.
+  expect(transcript.pageNow(sid, ["r1"], { limit: 2 })).toEqual({ messages: [], next: null })
   // A log of at most `smallLog` bytes is read whole at once, and so is one with no rest point near its end.
   for (const options of [{}, { ...FROM_END, tailScan: 1 }]) {
     expect(new Transcript(runs, { ...options, log: () => {} }).pageNow(sid, ["r1"], { limit: 2 })).toEqual({

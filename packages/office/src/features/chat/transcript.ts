@@ -242,9 +242,10 @@ const WARNED_CAP = 10_000
  *
  * A log line that isn't a record this version reads stops its run's transcript after the record before it: each later
  * read stops there again, and `log` gets one line for the run, naming the record and the error's type, never the
- * line. A read from the end checks only the lines it reads, so such a line before them is seen only by a whole read. A
- * run whose log or folder isn't there shows no messages; one whose log can't be opened (`EACCES`) shows none either,
- * logged once.
+ * line. A read from the end checks only the lines it reads; once a page reads back to such a line, the run is read
+ * whole, which stops there, so the newest page shows what that read shows and an older page's cursor names no message
+ * (`bad_cursor`), as the run's restore and its Run Logs, which read from the start, show the damage. A run whose log
+ * or folder isn't there shows no messages; one whose log can't be opened (`EACCES`) shows none either, logged once.
  */
 export class Transcript {
   private readonly runs: string
