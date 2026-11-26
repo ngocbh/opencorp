@@ -96,12 +96,24 @@ async function untilTheChat(t: Terminal, see = "@opencorp auto") {
   await t.see(see)
 }
 
-/** Ctrl-C twice: the chat ends, and with it init, which exits 130. */
+/** Ctrl-C twice once the chat is idle (`idle`): the chat ends, and with it init, which exits 130. */
 async function leave(t: Terminal) {
+  await idle(t)
   t.keys("C-c")
   await t.see("Press again to leave")
   t.keys("C-c")
   expect(await t.exit(60_000)).toBe("exit=130")
+}
+
+/** Waits until the prompt no longer offers `esc to interrupt`: the employee neither works nor waits. A reply's text
+ *  shows before its turn ends, and Ctrl-C while the employee works interrupts the turn and never counts toward
+ *  leaving. */
+async function idle(t: Terminal, ms = 60_000) {
+  const deadline = performance.now() + ms
+  while (t.screen().includes("esc to interrupt")) {
+    if (performance.now() > deadline) throw new Error(`still at work after ${ms} ms:\n${t.screen()}`)
+    await Bun.sleep(100)
+  }
 }
 
 /** Nothing of the home's is left running, the tmux server aside, once a few seconds have passed. */
