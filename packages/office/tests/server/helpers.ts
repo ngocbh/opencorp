@@ -217,7 +217,7 @@ export function storedRun(
 
 /** Sets `office.live` to a relay over a transcript that shows nothing; its viewers end when the test finishes. */
 export function liveRelay(office: Office): LiveRelay {
-  const relay = new LiveRelay({ bus: office.bus, transcript: { messages: () => [] }, log: () => {} })
+  const relay = new LiveRelay({ bus: office.bus, transcript: { recent: () => [] }, log: () => {} })
   office.live = relay
   onTestFinished(() => relay.close())
   return relay

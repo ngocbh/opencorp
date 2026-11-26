@@ -28,6 +28,7 @@ import {
   type ChatOffice,
   chatOffice,
   EMPTY,
+  expectSessionPages,
   fakeLlm,
   followWorkers,
   type HarnessOffice,
@@ -115,6 +116,7 @@ test("a message to a waiting run survives an office restart and is answered afte
   })
   expect(texts(o, sid, "user")).toEqual(["a", "b"])
   expect(session(o, sid).run_ids).toEqual([runId])
+  expectSessionPages(o, sid)
 })
 
 test("restore advances a run with an answer that never reached it", async () => {

@@ -18,6 +18,7 @@ import { z } from "zod"
 import { HarnessError } from "../../runtime/sessions/state.ts"
 import { strip } from "../../util/redact.ts"
 import type { SessionHarness } from "../../runtime/sessions/harness.ts"
+import { pageOf, type TranscriptPage } from "../../features/chat/transcript.ts"
 import type { SessionRecord } from "../../runtime/store/store.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, type Params, type Route } from "../http.ts"
@@ -95,7 +96,13 @@ export async function harnessCall<T>(fn: () => T | Promise<T>): Promise<T> {
 export async function listMessages(ctx: RequestContext, params: Params) {
   const session = stored(ctx, params.id!)
   const actor = harness(ctx, "GET /sessions/:id/messages")
-  return messagesReply(ctx.query, session.id, () => harnessCall(() => actor.messages(session.id)))
+  const paged = actor.messagesPage?.bind(actor)
+  return messagesReply(
+    ctx.query,
+    session.id,
+    () => harnessCall(() => actor.messages(session.id)),
+    paged && ((limit, before) => harnessCall(() => paged(session.id, limit, before))),
+  )
 }
 
 /** The longest cursor a page gives: a message id is far shorter. */
@@ -134,25 +141,25 @@ function cursorId(raw: string, sessionId: string): string {
  * when absent; 422 otherwise) before the message `before` names, or the newest of all, oldest first, with `next`, the
  * cursor of the page before it, null at the first message. A cursor names a message, so newer ones arriving don't
  * move it; one this session's pages didn't give, or whose message the transcript no longer has, is 400 `bad_cursor`.
- * The no-office host serves its session's messages through it too.
+ * `readPage`, when given, reads the page itself (`pageOf`'s), and `read` is cut into it otherwise. The no-office host
+ * serves its session's messages through it too.
  */
 export async function messagesReply(
   query: URLSearchParams,
   sessionId: string,
   read: () => Promise<Message[]>,
+  readPage?: (limit: number, before: string | null) => Promise<TranscriptPage | null>,
 ): Promise<Message[] | MessagePage> {
   const last = (name: string) => query.getAll(name).at(-1)
   const [rawLimit, rawBefore] = [last("limit"), last("before")]
   if (rawLimit === undefined && rawBefore === undefined) return read()
   const n = limit(rawLimit)
   const before = rawBefore === undefined ? null : cursorId(rawBefore, sessionId)
-  const messages = await read()
-  const end = before === null ? messages.length : messages.findIndex((m) => m.id === before)
-  if (end < 0) {
+  const page = readPage === undefined ? pageOf(await read(), n, before) : await readPage(n, before)
+  if (page === null) {
     throw new HttpError(400, "bad_cursor", "before names a message this session's transcript no longer has")
   }
-  const start = Math.max(0, end - n)
-  return { messages: messages.slice(start, end), next: start > 0 ? cursor(sessionId, messages[start]!.id) : null }
+  return { messages: page.messages, next: page.next === null ? null : cursor(sessionId, page.next) }
 }
 
 /** Start a person's main chat in a folder, opened by the request's person, on the model the office chooses. */

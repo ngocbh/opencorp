@@ -52,6 +52,7 @@ import {
   chatOffice,
   EMPTY,
   errors,
+  expectSessionPages,
   fakeLlm,
   free,
   livingWorkers,
@@ -1400,6 +1401,7 @@ test("a move a stop cut between its withdraw and its send goes on at the next st
     "Also Rome.",
     "And Florence.",
   ])
+  expectSessionPages(o, sid)
 })
 
 test("an office stop between a move's withdraw and its send keeps the move, and the next start finishes it", async () => {

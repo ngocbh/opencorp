@@ -90,6 +90,14 @@ export interface SessionHarness extends CardActor {
   removeRule?(sessionId: string, rule: RemoveRuleRequest, options: { by: string }): Promise<void>
   /** What a client reads of the session before following its live events. */
   messages(sessionId: string): Message[] | Promise<Message[]>
+  /** The newest `limit` of `messages` before the message `before` names, or the newest of all, and `next`, the id of
+   *  the page's first message when older ones come before it; null when `before` names no message of the session.
+   *  The chat harness implements it, reading a yian chat from its logs' ends. */
+  messagesPage?(
+    sessionId: string,
+    limit: number,
+    before: string | null,
+  ): Promise<{ messages: Message[]; next: string | null } | null>
   /** What memory says about its runs, for Run Logs; the chat harness implements it. */
   live?(): Live
   /** Closes each parked worker whose connection changed; the chat harness implements it. Never rejects. */

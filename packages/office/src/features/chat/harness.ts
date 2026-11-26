@@ -48,7 +48,7 @@ import { EmployeeCodex } from "./codex.ts"
 import { EmployeeClaude } from "./claude.ts"
 import type { ClaudeSessions } from "../claude/sessions.ts"
 import { speakers } from "../../runtime/sessions/speakers.ts"
-import type { Transcript } from "./transcript.ts"
+import { pageOf, type Transcript, type TranscriptPage } from "./transcript.ts"
 
 /** How long, in milliseconds, the stop waits for worker requests, office tool bodies and actor jobs still running. */
 const STOP_WAIT_MS = 10_000
@@ -701,6 +701,29 @@ export class ChatHarness implements SessionHarness {
     if (last === undefined || !LIVE.includes(session.status)) return messages
     for (const message of messages) if (message.unread) this.#ctx.live.unreadShown(last, message.id)
     return messages
+  }
+
+  /** A page of the session's messages (`pageOf`'s): a yian chat's read from its runs' logs' ends (`Transcript.page`),
+   *  newest run first, once what is cached of them is read on in slices; null when `before` names no message of the
+   *  session. As `messages`, the live relay is told which of the page show unread; 404 `not_found` without the
+   *  session. */
+  async messagesPage(sessionId: string, limit: number, before: string | null): Promise<TranscriptPage | null> {
+    const claude = this.#claudeFor(sessionId)
+    if (claude) return pageOf(claude.messages(sessionId), limit, before)
+    const codex = this.#codexFor(sessionId)
+    if (codex) return pageOf(codex.messages(sessionId), limit, before)
+    const ran = this.store.getSession(sessionId)
+    if (ran === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    await this.transcript.refresh(ran.run_ids, { cached: true })
+    const handed = this.#codexFor(sessionId)
+    if (handed) return pageOf(handed.messages(sessionId), limit, before)
+    const session = this.store.getSession(sessionId)
+    if (session === undefined) throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    const page = await this.transcript.page(sessionId, session.run_ids, { limit, before }, this.#actors.get(sessionId))
+    const last = session.run_ids.at(-1)
+    if (page === null || last === undefined || !LIVE.includes(session.status)) return page
+    for (const message of page.messages) if (message.unread) this.#ctx.live.unreadShown(last, message.id)
+    return page
   }
 
   /**

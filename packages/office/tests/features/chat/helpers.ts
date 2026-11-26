@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url"
 import { HttpResponse } from "@ngocbh/yian/llm_clients"
 import { realScheduler, type Scheduler } from "@ngocbh/yian/platform"
 import { agentCall, agentCalls, type AgentToolResult, iterRunRecords, type RunLogEntry } from "@ngocbh/yian/run"
-import { type LiveEvent, now, OFFICE, Session, WorkItem } from "@opencorp/protocol"
+import { type LiveEvent, type Message, now, OFFICE, Session, WorkItem } from "@opencorp/protocol"
 import { ConnectionFile } from "../../../src/models/connections.ts"
 import { ChatHarness } from "../../../src/features/chat/harness.ts"
 import { Hooks } from "../../../src/runtime/sessions/hooks.ts"
@@ -19,7 +19,7 @@ import { mainSpec, type RunSpec } from "../../../src/features/chat/run_spec.ts"
 import { EmployeeTerminal } from "../../../src/features/chat/terminal.ts"
 import { MAIN_CHAT } from "../../../src/company/chat_flow.ts"
 import { type ActorContext, type ActorWorker, SessionActor, type Wait } from "../../../src/features/chat/session_actor.ts"
-import { Transcript } from "../../../src/features/chat/transcript.ts"
+import { type LiveCalls, pageOf, Transcript } from "../../../src/features/chat/transcript.ts"
 import { loadRepo } from "../../../src/company/loader.ts"
 import { LiveRelay } from "../../../src/features/chat/live.ts"
 import { register as registerQuestions } from "../../../src/features/questions/extension.ts"
@@ -366,6 +366,52 @@ export async function interruptMidReply(
   // The queued message the cut reply never read is the next turn, taken by the same worker.
   expect(waitingAt(cut)).toEqual(["chat#2/heard"])
   return cut
+}
+
+/** What a transcript is made with. */
+export type TranscriptOptions = ConstructorParameters<typeof Transcript>[1]
+
+/** The options of a transcript that reads every run from its log's end, however small, and never switches to a whole
+ *  read for what is left. */
+export const FROM_END = { smallLog: 0, wholePastHalf: false }
+
+/**
+ * Checks that the runs `runIds` under `runs`, read from their logs' ends by fresh transcripts made with `options`
+ * (`FROM_END` on top), give every page of each size that `pageOf` cuts from `read`, their whole read with `live`, from
+ * the newest page back to the first, and that the last run's newest messages (`recent`, as the live relay reads them)
+ * are the end of that run's whole read, from an assistant message on when it has one.
+ */
+export function expectPages(
+  runs: string,
+  sessionId: string,
+  runIds: readonly string[],
+  read: Message[],
+  { live, options = {} }: { live?: LiveCalls; options?: TranscriptOptions } = {},
+): void {
+  for (const limit of [1, 2, 3, 20]) {
+    const transcript = new Transcript(runs, { ...options, ...FROM_END })
+    const got: Message[] = []
+    for (let before: string | null = null; ; ) {
+      const page = transcript.pageNow(sessionId, runIds, { limit, before }, live)
+      expect([limit, before, page]).toEqual([limit, before, pageOf(read, limit, before)])
+      got.unshift(...page!.messages)
+      if (page!.next === null) break
+      before = page!.next
+    }
+    expect(got).toEqual(read)
+  }
+  const last = runIds.at(-1)
+  if (last === undefined) return
+  const own = new Transcript(runs, options).messages(sessionId, [last], live)
+  const recent = new Transcript(runs, { ...options, ...FROM_END }).recent(sessionId, last, live)
+  expect(recent).toEqual(own.slice(own.length - recent.length))
+  if (own.some((m) => m.role === "assistant")) expect(recent.some((m) => m.role === "assistant")).toBe(true)
+}
+
+/** `expectPages` for session `sid` of `o`, against its whole read: call it once its runs rest. */
+export function expectSessionPages(o: ChatOffice, sid: string): void {
+  const runIds = session(o, sid).run_ids
+  expectPages(o.office.paths.runs, sid, runIds, new Transcript(o.office.paths.runs).messages(sid, runIds))
 }
 
 /** Writes the leading records of the run log `log` while `keep` holds for each to `<runs>/<run id>/log.jsonl`, under

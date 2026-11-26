@@ -4,11 +4,13 @@ import path from "node:path"
 import {
   checkMessage,
   iterRunRecords,
+  iterRunRecordsBackwards,
   type LiveViewCall,
   type Message as RunMessage,
   PoolCommitRecord,
   RunLogChangedError,
   type RunLogEntry,
+  RunLogLineTooLongError,
   takeInboxes,
   TypedValue,
 } from "@ngocbh/yian/run"
@@ -42,6 +44,10 @@ const KINDS: ReadonlySet<string> = new Set([
 export const LINE_CAP = HUGE_LINE
 /** About how many bytes past a fold's end one scan looks at before yian's reader reads them. */
 const SCAN_WINDOW = 8 * CHUNK
+/** The most bytes a read from a log's end scans back for a rest point (`restBefore`) before it reads the run whole. */
+const TAIL_SCAN = 2 * CHUNK
+/** A log of at most this many bytes is read whole: a page of it read from its end would read most of it twice. */
+const SMALL_LOG = CHUNK / 4
 /** How long a refresh reads at a time before it yields to the event loop, in milliseconds. */
 const SLICE_MS = 10
 /** The bytes of a line over the cap read for its kind and fields, and for its seq. */
@@ -88,7 +94,22 @@ type Item =
   | { kind: "start"; node: string; seq: number; at: string }
   | { kind: "step"; node: string; n: number; seq: number; at: string; step: Step }
 
-/** What one run's log has said so far, folded record by record. */
+/**
+ * A rest point of a run's log: a `run_waiting` record whose only waiting node is a turn whose take of the chat's inbox
+ * and queue waits (its `node_waiting` is the record just before). Yian lets a take wait only while the inboxes it reads
+ * hold no unread send, and settles every other node first, so at a rest point no reply is at work and every send
+ * before it has been read or withdrawn. What the transcript shows after a rest point is thus folded from the records
+ * after it alone. A rest point is named by its line's start (`offset`) and end, its seq and its run id.
+ */
+interface Rest {
+  offset: number
+  end: number
+  seq: number
+  runId: string
+}
+
+/** What one run's log has said so far, folded record by record: the whole log, or a segment of it that starts after
+ *  a rest point. */
 interface Fold {
   /** Every send, by seq, in seq order. */
   sends: Map<number, Send>
@@ -115,10 +136,16 @@ interface Fold {
   runId: string
   /** About how many bytes of memory what the fold keeps takes: what the cache charges it. */
   held: number
+  /** The rest point the fold starts after; null for a fold from the log's start. */
+  from: Rest | null
+  /** Whether a record named something before the fold's start that a fold from a rest point never meets (a send a
+   *  take, a steer or a withdraw names, a take a turn's success accepts, or the start of a reply it has a record of):
+   *  then the run is read whole. */
+  undecided: boolean
 }
 
-/** A fold of no record yet. */
-function emptyFold(): Fold {
+/** A fold of no record yet, from the log's start or after the rest point `from`. */
+function emptyFold(from: Rest | null = null): Fold {
   return {
     sends: new Map(),
     read: new Set(),
@@ -129,11 +156,33 @@ function emptyFold(): Fold {
     started: new Set(),
     settled: new Set(),
     ended: false,
-    end: 0,
-    seq: null,
-    runId: "",
+    end: from?.end ?? 0,
+    seq: from?.seq ?? null,
+    runId: from?.runId ?? "",
     held: 0,
+    from,
+    undecided: false,
   }
+}
+
+/** The first seq a run's read in `segments` (oldest first) covers: 0 when it reads the log from its start. */
+function firstSeq(segments: readonly Fold[]): number {
+  const from = segments[0]!.from
+  return from === null ? 0 : from.seq + 1
+}
+
+/** The send at `seq` that one of `segments` holds. */
+function sendIn(segments: readonly Fold[], seq: number): Send | undefined {
+  for (const segment of segments) {
+    const send = segment.sends.get(seq)
+    if (send !== undefined) return send
+  }
+  return undefined
+}
+
+/** Whether a take or a steer in one of `segments` read the send at `seq`. */
+function readIn(segments: readonly Fold[], seq: number): boolean {
+  return segments.some((segment) => segment.read.has(seq))
 }
 
 /** True for a run id that names a folder directly under the runs folder. */
@@ -146,6 +195,29 @@ export function messageId(runId: string, seq: number): string {
   return `${runId}:${String(seq).padStart(12, "0")}`
 }
 
+/** The seq in the id of a message of the run `runId` (`messageId`), or null for an id of no message of that run. */
+function seqOf(id: string, runId: string): number | null {
+  const at = id.lastIndexOf(":")
+  if (id.slice(0, at) !== runId || !/^[0-9]{1,15}$/.test(id.slice(at + 1))) return null
+  return Number(id.slice(at + 1))
+}
+
+/** A page of a session's messages, oldest first, and `next`: the id of its first message when older ones come before
+ *  it (the next, older page ends before it), else null. */
+export interface TranscriptPage {
+  messages: Message[]
+  next: string | null
+}
+
+/** The page of the newest `limit` of `messages` (a whole transcript) before the message `before` names, or the
+ *  newest of all; null when no message has that id. */
+export function pageOf(messages: readonly Message[], limit: number, before: string | null): TranscriptPage | null {
+  const end = before === null ? messages.length : messages.findIndex((m) => m.id === before)
+  if (end < 0) return null
+  const start = Math.max(0, end - limit)
+  return { messages: messages.slice(start, end), next: start > 0 ? messages[start]!.id : null }
+}
+
 /** The kinds of warning a run's transcript logs once each: an unopenable log, a line that stops the read. */
 const WARNINGS = ["eacces", "stops"] as const
 
@@ -153,32 +225,59 @@ const WARNINGS = ["eacces", "stops"] as const
 const WARNED_CAP = 10_000
 
 /**
- * A session's transcript, read from its runs' logs (`<runs>/<run_id>/log.jsonl`). Each run's fold is cached, least
- * recently read first, and each read folds only what its log added since; the cache keeps folds holding at most
+ * A session's transcript, read from its runs' logs (`<runs>/<run_id>/log.jsonl`). Each run's read is cached, least
+ * recently read first, and each read folds only what its log added since; the cache keeps reads holding at most
  * `maxBytes` (32 MiB by default), and always the run just read. A fold keeps copies of only what it shows, so a large
  * log whose transcript is small stays cached. A log line over `lineCap` (LINE_CAP by default) is never parsed: a reply
  * step shows its size instead.
  *
+ * A run is read whole, from its log's start, or from its end (`page`, `recent`): back to its newest rest point
+ * (`Rest`), then forward from there, then back one rest point at a time while more is wanted. Each segment between
+ * two rest points is folded alone, and what they show together is what a whole read shows. A read from the end
+ * becomes a whole read when no rest point lies within `tailScan` bytes (TAIL_SCAN by default) of where it reads back
+ * from, when a record after a rest point names something before it (`Fold.undecided`), when the log changed under it
+ * (`RunLogChangedError`), and when it meets a line it can't read; and, as that costs less, for a log of at most
+ * `smallLog` bytes (SMALL_LOG by default), and once what is left before it is at most half the log (unless
+ * `wholePastHalf` is false).
+ *
  * A log line that isn't a record this version reads stops its run's transcript after the record before it: each later
  * read stops there again, and `log` gets one line for the run, naming the record and the error's type, never the
- * line. A run whose log or folder isn't there shows no messages; one whose log can't be opened (`EACCES`) shows none
- * either, logged once.
+ * line. A read from the end checks only the lines it reads, so such a line before them is seen only by a whole read. A
+ * run whose log or folder isn't there shows no messages; one whose log can't be opened (`EACCES`) shows none either,
+ * logged once.
  */
 export class Transcript {
   private readonly runs: string
   private readonly maxBytes: number
   private readonly lineCap: number
   private readonly log: (line: string) => void
-  private readonly cache = new Map<string, Fold>()
+  private readonly tailScan: number
+  private readonly smallLog: number
+  private readonly wholePastHalf: boolean
+  /** Each run's read, its segments oldest first: one from the log's start for a whole read. */
+  private readonly cache = new Map<string, Fold[]>()
   private readonly refreshing = new Map<string, Promise<void>>()
   /** The warnings logged, by kind and run (`stops:<run_id>`), cleared at `WARNED_CAP`. */
   private readonly warned = new Set<string>()
 
-  constructor(runs: string, options: { maxBytes?: number; lineCap?: number; log?: (line: string) => void } = {}) {
+  constructor(
+    runs: string,
+    options: {
+      maxBytes?: number
+      lineCap?: number
+      log?: (line: string) => void
+      tailScan?: number
+      smallLog?: number
+      wholePastHalf?: boolean
+    } = {},
+  ) {
     this.runs = runs
     this.maxBytes = options.maxBytes ?? 32 * 1024 * 1024
     this.lineCap = options.lineCap ?? LINE_CAP
     this.log = options.log ?? (() => {})
+    this.tailScan = options.tailScan ?? TAIL_SCAN
+    this.smallLog = options.smallLog ?? SMALL_LOG
+    this.wholePastHalf = options.wholePastHalf ?? true
   }
 
   /** The messages of the runs `runIds` (session_runs order), then the last run's unread sends, steers and queued. */
@@ -186,17 +285,53 @@ export class Transcript {
     const out: Message[] = []
     runIds.forEach((runId, index) => {
       if (!safeRunId(runId)) return
-      const state = this.read(runId)
       const last = index === runIds.length - 1
-      render(out, sessionId, runId, state, last ? (live?.calls(runId) ?? null) : null, last)
-      // A replaced run's unread sends were moved into the fresh run, so only the last run's wait unread.
-      if (last) {
-        for (const send of state.sends.values()) {
-          if (!state.read.has(send.seq)) out.push(userMessage(sessionId, runId, send, true))
-        }
-      }
+      renderRun(out, sessionId, runId, this.read(runId), last ? (live?.calls(runId) ?? null) : null, last)
     })
     return out
+  }
+
+  /**
+   * The page of the messages of the runs `runIds` that `pageOf` cuts from `messages(sessionId, runIds, live)`: the
+   * newest `limit` before the message `before` names, or the newest of all; null when no message has that id. The
+   * runs are read from their logs' ends, newest run first, only until the page is full. A run that must be read whole
+   * is read in slices that yield to the event loop (`refresh`), then the page is read again.
+   */
+  async page(
+    sessionId: string,
+    runIds: readonly string[],
+    { limit, before = null }: { limit: number; before?: string | null },
+    live?: LiveCalls,
+  ): Promise<TranscriptPage | null> {
+    for (let tries = 0; ; tries++) {
+      // Past one wait per run, a run read whole meanwhile was dropped from the cache again: read it now.
+      const page = this.pageOf(sessionId, runIds, limit, before, live, tries > runIds.length)
+      if (page === null || !("whole" in page)) return page
+      await this.refresh([page.whole])
+    }
+  }
+
+  /** `page`'s page, read at once: a run that must be read whole is read so without a break. */
+  pageNow(
+    sessionId: string,
+    runIds: readonly string[],
+    { limit, before = null }: { limit: number; before?: string | null },
+    live?: LiveCalls,
+  ): TranscriptPage | null {
+    return this.pageOf(sessionId, runIds, limit, before, live, true) as TranscriptPage | null
+  }
+
+  /**
+   * The newest messages of the run `runId` as `messages(sessionId, [runId], live)` gives them, read from its log's end:
+   * from at least one assistant message on, and every message whose id is one of `covering`, when the run has them.
+   */
+  recent(sessionId: string, runId: string, live?: LiveCalls, covering: Iterable<string> = []): Message[] {
+    if (!safeRunId(runId)) return []
+    let since = Infinity
+    for (const id of covering) since = Math.min(since, seqOf(id, runId) ?? Infinity)
+    const enough = (messages: Message[], first: number) =>
+      first <= since && messages.some((message) => message.role === "assistant")
+    return this.newest(sessionId, runId, true, live, enough, true)!.messages
   }
 
   /** The send at `seq` of the run `runId`, read on from its log: the inbox it went to (the chat's or its queue), the
@@ -208,13 +343,13 @@ export class Transcript {
     seq: number,
   ): { inbox: string; by: string | null; state: "unread" | "read" | "withdrawn" } | null {
     if (!safeRunId(runId)) return null
-    const fold = this.read(runId)
+    const read = this.covering(runId, seq)
     const inboxOf = (queued: boolean) => (queued ? MAIN_CHAT.queue : MAIN_CHAT.inbox)
-    const withdrawn = fold.withdrawn.get(seq)
+    const withdrawn = read.find((segment) => segment.withdrawn.has(seq))?.withdrawn.get(seq)
     if (withdrawn !== undefined) return { inbox: inboxOf(withdrawn.queued), by: withdrawn.by, state: "withdrawn" }
-    const send = fold.sends.get(seq)
+    const send = sendIn(read, seq)
     if (send === undefined) return null
-    const state = fold.read.has(seq) ? "read" : "unread"
+    const state = readIn(read, seq) ? "read" : "unread"
     return { inbox: inboxOf(send.queued === true), by: send.by ?? null, state }
   }
 
@@ -237,48 +372,55 @@ export class Transcript {
    *  move's. */
   keyed(runId: string, key: string): boolean {
     if (!safeRunId(runId)) return false
-    return this.read(runId).keys.has(key)
+    return this.read(runId).some((segment) => segment.keys.has(key))
   }
 
   /** Whether the send at `seq` of the run `runId` waits unread in its inbox (its log holds it, no take or steer has
-   *  read it, and no withdraw took it back), read on from the run's cached fold; null when none is cached, so a caller
-   *  that must stay cheap never reads a whole log. */
+   *  read it, and no withdraw took it back), read on from the run's cached read, whole or from its end; null when
+   *  none is cached, so a caller that must stay cheap never reads a whole log. */
   unread(runId: string, seq: number): boolean | null {
     if (!safeRunId(runId) || !this.cache.has(runId)) return null
-    const state = this.read(runId)
-    return state.sends.has(seq) && !state.read.has(seq)
+    const read = this.slice(runId, Infinity, "cached").read
+    if (read === null) return null
+    // A read from the end holds every send still unread: none before a rest point is.
+    return sendIn(read, seq) !== undefined && !readIn(read, seq)
   }
 
   /** The user message of the send at `seq` of the run `runId` (session `sessionId`'s), unread or not as its log says;
    *  null when its log holds no such send. */
   sentMessage(sessionId: string, runId: string, seq: number): Message | null {
     if (!safeRunId(runId)) return null
-    const state = this.read(runId)
-    const send = state.sends.get(seq)
-    return send === undefined ? null : userMessage(sessionId, runId, send, !state.read.has(seq))
+    const read = this.covering(runId, seq)
+    const send = sendIn(read, seq)
+    return send === undefined ? null : userMessage(sessionId, runId, send, !readIn(read, seq))
   }
 
   /** The id of the first message of the reply still running in the run `runId` (its last reply, if it started, hasn't
    *  succeeded or failed, and the run wasn't cancelled or failed), or null. */
   runningReply(runId: string): string | null {
     if (!safeRunId(runId)) return null
-    const state = this.read(runId)
-    const start = state.items.findLast((item) => item.kind === "start")
-    if (state.ended || start === undefined || state.settled.has(start.node)) return null
+    const read = this.read(runId)
+    const items = read.flatMap((segment) => segment.items)
+    const start = items.findLast((item) => item.kind === "start")
+    if (read.some((segment) => segment.ended) || start === undefined) return null
+    if (read.some((segment) => segment.settled.has(start.node))) return null
     return messageId(runId, start.seq)
   }
 
   /** Reads the logs of the runs `runIds` on, about SLICE_MS at a time with the event loop served in between, so the
-   *  synchronous reads after it (`messages`, `runningReply`) read only what was added since. Calls made while a run's
-   *  refresh runs share it. A run's refresh stops early once its fold leaves the cache (forgotten, or evicted).
-   *  Rejects as `messages` throws for a log it can't read. */
-  async refresh(runIds: readonly string[]): Promise<void> {
+   *  synchronous reads after it (`messages`, `runningReply`) read only what was added since: whole, or with `cached`,
+   *  only a run whose read is cached, whole or from its end. Calls made while a run's refresh runs share it. A run's
+   *  refresh stops early once its read leaves the cache (forgotten, or evicted). Rejects as `messages` throws for a log
+   *  it can't read. */
+  async refresh(runIds: readonly string[], { cached = false }: { cached?: boolean } = {}): Promise<void> {
+    const mode = cached ? "cached" : "whole"
     for (const runId of runIds) {
-      if (!safeRunId(runId)) continue
-      let running = this.refreshing.get(runId)
+      if (!safeRunId(runId) || (cached && !this.cache.has(runId))) continue
+      const key = `${mode}:${runId}`
+      let running = this.refreshing.get(key)
       if (running === undefined) {
-        running = this.refreshRun(runId).finally(() => this.refreshing.delete(runId))
-        this.refreshing.set(runId, running)
+        running = this.refreshRun(runId, mode).finally(() => this.refreshing.delete(key))
+        this.refreshing.set(key, running)
       }
       await running
     }
@@ -292,61 +434,210 @@ export class Transcript {
     }
   }
 
-  private async refreshRun(runId: string): Promise<void> {
+  private async refreshRun(runId: string, mode: "whole" | "cached"): Promise<void> {
     for (;;) {
-      if (this.slice(runId, performance.now() + SLICE_MS).done) return
+      const { read, done } = this.slice(runId, performance.now() + SLICE_MS, mode)
+      if (done || read === null) return
       await new Promise((resolve) => setImmediate(resolve))
       if (!this.cache.has(runId)) return
     }
   }
 
-  /** The fold of the run `runId`, its cached fold read on to the end of its log, or to the last record before a line
-   *  that can't be read; a run with no log yet, or a log that can't be opened, has an empty fold, not cached. */
-  private read(runId: string): Fold {
-    return this.slice(runId, Infinity).fold
+  /** `page`'s page; with `whole`, a run that must be read whole is read so, else the run is named (`whole`). */
+  private pageOf(
+    sessionId: string,
+    runIds: readonly string[],
+    limit: number,
+    before: string | null,
+    live: LiveCalls | undefined,
+    whole: boolean,
+  ): TranscriptPage | null | { whole: string } {
+    // One more than the page, to tell whether older messages come before it.
+    const want = limit + 1
+    let index = runIds.length - 1
+    let cursor: number | null = null
+    if (before !== null) {
+      // A message's id names its run, and only that run's read shows it.
+      index = runIds.findIndex((runId) => seqOf(before, runId) !== null)
+      if (index < 0) return null
+      cursor = seqOf(before, runIds[index]!)
+    }
+    const older: Message[] = []
+    for (let i = index; i >= 0 && older.length < want; i--) {
+      const runId = runIds[i]!
+      if (!safeRunId(runId)) {
+        if (i === index && cursor !== null) return null
+        continue
+      }
+      const last = i === runIds.length - 1
+      const atCursor = i === index && cursor !== null
+      const need = want - older.length
+      // A read from the end shows every message whose id's seq is `first` or later, so a cursor at or past it that the
+      // read doesn't show names no message.
+      const enough = (messages: Message[], first: number) => {
+        if (!atCursor) return messages.length >= need
+        const end = messages.findIndex((m) => m.id === before)
+        return end >= need || (end < 0 && cursor! >= first)
+      }
+      const read = this.newest(sessionId, runId, last, live, enough, whole)
+      if (read === null) return { whole: runId }
+      const end = atCursor ? read.messages.findIndex((m) => m.id === before) : read.messages.length
+      if (end < 0) return null
+      older.unshift(...read.messages.slice(Math.max(0, end - need), end))
+    }
+    const messages = older.slice(-limit)
+    return { messages, next: older.length > limit ? messages[0]!.id : null }
   }
 
-  /** The fold of the run `runId`, its cached fold read on until its log's end or the last record before a line that
-   *  can't be read (`done`), or `deadline` (a `performance.now()` time); a run with no log yet, or a log that can't be
-   *  opened, has an empty fold, not cached. */
-  private slice(runId: string, deadline: number): { fold: Fold; done: boolean } {
+  /**
+   * The newest messages of the run `runId` (the session's last run when `last`), as a whole read renders them, read
+   * from its log's end back one rest point at a time until `enough` (given them and the first seq the read covers)
+   * says so or the read reaches the log's start (`first` 0). Null, without `whole`, when the run must be read whole
+   * first.
+   */
+  private newest(
+    sessionId: string,
+    runId: string,
+    last: boolean,
+    live: LiveCalls | undefined,
+    enough: (messages: Message[], first: number) => boolean,
+    whole: boolean,
+  ): { messages: Message[]; first: number } | null {
+    for (let read = this.tail(runId, whole); read !== null; read = this.extend(runId, whole)) {
+      const messages: Message[] = []
+      renderRun(messages, sessionId, runId, read, last ? (live?.calls(runId) ?? null) : null, last)
+      const first = firstSeq(read)
+      if (first === 0 || enough(messages, first)) return { messages, first }
+    }
+    return null
+  }
+
+  /** The cached read of the run `runId`, read on, else a read of its newest records from its newest rest point on
+   *  (`restBefore`), cached; else a whole read: of a small log (`smallLog`) or one that isn't there always, and of any
+   *  other only with `whole` (null without). */
+  private tail(runId: string, whole: boolean): Fold[] | null {
+    const cached = this.slice(runId, Infinity, "cached").read
+    if (cached !== null) return cached
     const log = path.join(this.runs, runId, "log.jsonl")
-    const cached = this.cache.get(runId)
+    let rest: Rest | "start" | null
+    try {
+      if (fs.statSync(log).size <= this.smallLog) return this.read(runId)
+      rest = restBefore(log, null, this.lineCap, this.tailScan)
+    } catch (error) {
+      // A whole read says what is wrong, as it does without this: at once for a system error, such as a missing log.
+      if (typeof (error as NodeJS.ErrnoException | null)?.code === "string") return this.read(runId)
+      rest = null
+    }
+    if (rest !== null && rest !== "start") {
+      this.cache.set(runId, [emptyFold(rest)])
+      const read = this.slice(runId, Infinity, "cached").read
+      if (read !== null) return read
+    }
+    return whole ? this.read(runId) : null
+  }
+
+  /** The cached read of the run `runId` read on, with one more segment before it: back to the rest point before its
+   *  oldest, or the log's start; the read as it is when it reads from the log's start already. Else as `tail`. */
+  private extend(runId: string, whole: boolean): Fold[] | null {
+    const read = this.slice(runId, Infinity, "cached").read
+    if (read === null) return this.tail(runId, whole)
+    const oldest = read[0]!.from
+    if (oldest === null) return read
+    const log = path.join(this.runs, runId, "log.jsonl")
+    let rest: Rest | "start" | null = null
+    try {
+      // Once what is left before the read is at most half the log, one read of the whole costs less than reading the
+      // rest back and on.
+      if (!this.wholePastHalf || 2 * oldest.offset > fs.statSync(log).size) {
+        rest = restBefore(log, oldest, this.lineCap, this.tailScan)
+      }
+    } catch {
+      rest = null
+    }
+    if (rest !== null) {
+      const segment = emptyFold(rest === "start" ? null : rest)
+      if (foldSegment(log, runId, segment, this.lineCap, oldest.end)) {
+        this.cache.delete(runId)
+        read.unshift(segment)
+        this.cache.set(runId, read)
+        this.evict(runId)
+        return read
+      }
+    }
+    return whole ? this.read(runId) : null
+  }
+
+  /** The cached read of the run `runId` read on when it covers the record at `seq` (a send there, and whatever read or
+   *  withdrew it, comes after), else its whole read. */
+  private covering(runId: string, seq: number): Fold[] {
+    const cached = this.slice(runId, Infinity, "cached").read
+    return cached !== null && seq >= firstSeq(cached) ? cached : this.read(runId)
+  }
+
+  /** The whole read of the run `runId`, read on to the end of its log, or to the last record before a line that
+   *  can't be read; a run with no log yet, or a log that can't be opened, reads as nothing, not cached. */
+  private read(runId: string): Fold[] {
+    return this.slice(runId, Infinity, "whole").read!
+  }
+
+  /**
+   * The read of the run `runId`, its cached read read on until its log's end or the last record before a line that
+   * can't be read (`done`), or `deadline` (a `performance.now()` time). `whole` reads the log from its start unless
+   * the cached read does; `cached` reads on only a cached read, whole or from the end, and gives null for none. A read
+   * from the end that the log no longer continues, that meets a line it can't read or that can't decide what it shows
+   * (`Fold.undecided`) is dropped, and gives null. A run with no log yet, or a log that can't be opened, reads as
+   * nothing, not cached.
+   */
+  private slice(runId: string, deadline: number, mode: "whole" | "cached"): { read: Fold[] | null; done: boolean } {
+    const log = path.join(this.runs, runId, "log.jsonl")
+    let cached = this.cache.get(runId)
+    if (mode === "whole" && cached !== undefined && cached[0]!.from !== null) cached = undefined
+    if (cached === undefined && mode === "cached") return { read: null, done: true }
     // Out of the cache while it is read, so a read that throws leaves no half-read fold, and put back last.
     this.cache.delete(runId)
-    let state = cached ?? emptyFold()
-    let read: ReadEnd
+    const fromEnd = cached !== undefined && cached[0]!.from !== null
+    let read = cached ?? [emptyFold()]
+    let state = read.at(-1)!
+    let end: ReadEnd
     try {
       try {
-        read = readOn(log, runId, state, this.lineCap, deadline)
+        end = readOn(log, runId, state, this.lineCap, deadline)
       } catch (error) {
         if (!(error instanceof RunLogChangedError)) throw error
-        state = emptyFold()
-        read = readOn(log, runId, state, this.lineCap, deadline)
+        if (fromEnd) return { read: null, done: true }
+        read = [emptyFold()]
+        state = read[0]!
+        end = readOn(log, runId, state, this.lineCap, deadline)
       }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException | null)?.code
-      if (code === "ENOENT" || code === "ENOTDIR") return { fold: emptyFold(), done: true }
+      if (code === "ENOENT" || code === "ENOTDIR") return { read: [emptyFold()], done: true }
       if (code !== "EACCES") throw error
       this.warnOnce("eacces", runId, `run ${runId}: its log can't be read (EACCES); it shows no messages`)
-      return { fold: emptyFold(), done: true }
+      return { read: [emptyFold()], done: true }
     }
-    if (read.stopped !== null) {
+    if (fromEnd && (end.stopped !== null || state.undecided)) return { read: null, done: true }
+    if (end.stopped !== null) {
       // Only the record count and the error's type: yian's message quotes the log's path and the line's values.
       const where = state.seq === null ? "before its first record" : `after record ${state.seq}`
-      const why = `${errorName(read.stopped)}: a line of its log can't be read`
+      const why = `${errorName(end.stopped)}: a line of its log can't be read`
       this.warnOnce("stops", runId, `run ${runId}: the transcript stops ${where} (${why})`)
     }
-    this.cache.set(runId, state)
+    this.cache.set(runId, read)
+    this.evict(runId)
+    return { read, done: end.done }
+  }
+
+  /** Drops the least recently read runs but `keep` until what the cache holds fits `maxBytes`. */
+  private evict(keep: string): void {
     let bytes = 0
-    for (const fold of this.cache.values()) bytes += fold.held
-    for (const [id, fold] of this.cache) {
+    for (const read of this.cache.values()) for (const fold of read) bytes += fold.held
+    for (const [id, read] of this.cache) {
       if (bytes <= this.maxBytes) break
-      if (id === runId) continue
+      if (id === keep) continue
       this.cache.delete(id)
-      bytes -= fold.held
+      for (const fold of read) bytes -= fold.held
     }
-    return { fold: state, done: read.done }
   }
 
   /** Logs `line` unless a warning of `kind` was logged for the run `runId` already. */
@@ -359,6 +650,72 @@ export class Transcript {
   }
 }
 
+/**
+ * The newest rest point (`Rest`) of the run log `log` before the record `before` (its end when null), read back with
+ * no payload but the candidates', at most `maxBytes` bytes back; "start" when the read reaches the log's start
+ * first, and null when it reads `maxBytes` first or meets a line over `cap` whose seq it can't tell.
+ *
+ * @throws the errors of yian's backward reader, `RunLogChangedError` among them.
+ */
+function restBefore(log: string, before: Rest | null, cap: number, maxBytes: number): Rest | "start" | null {
+  let cursor = before === null ? {} : { beforeOffset: before.offset, beforeSeq: before.seq, runId: before.runId }
+  let top = before?.offset ?? null
+  // The record after (newer than) the one read, which is a rest point when it waits and the one read is its wait.
+  let newer: Rest & { kind: string } | null = null
+  for (;;) {
+    try {
+      for (const entry of iterRunRecordsBackwards(log, { ...cursor, payloads: false, maxLineBytes: cap })) {
+        top ??= entry.end
+        if (top - entry.offset > maxBytes) return null
+        if (newer?.kind === "run_waiting" && entry.kind === "node_waiting" && MAIN_CHAT.isTurn(entry.nodeId)
+          && isRest(log, entry, cap)) {
+          return { offset: newer.offset, end: newer.end, seq: newer.seq, runId: newer.runId }
+        }
+        newer = { kind: entry.kind, offset: entry.offset, end: entry.end, seq: entry.seq, runId: entry.runId }
+      }
+      return "start"
+    } catch (error) {
+      if (!(error instanceof RunLogLineTooLongError) || error.seq === null || error.runId === null) throw error
+      // A line over the cap is no rest point, nor its wait: read on back past it.
+      top ??= error.end
+      if (top - error.offset > maxBytes) return null
+      newer = null
+      cursor = { beforeOffset: error.offset, beforeSeq: error.seq, runId: error.runId }
+    }
+  }
+}
+
+/** Whether the `node_waiting` record `waiting` of the log `log` and the record after it make a rest point: the wait is
+ *  a take of the chat's inbox and its queue, and the record after it a `run_waiting` of that node alone. */
+function isRest(log: string, waiting: RunLogEntry<null>, cap: number): boolean {
+  const resume = { afterOffset: waiting.offset, runId: waiting.runId, afterSeq: waiting.seq - 1, maxLineBytes: cap }
+  const records = iterRunRecords(log, resume)
+  try {
+    const wait = records.next().value?.envelope.record as { waits?: readonly { tool?: string; inbox?: unknown }[] }
+    const rest = records.next().value?.envelope.record as { nodeIds?: readonly string[] }
+    const take = wait?.waits?.length === 1 ? wait.waits[0]! : null
+    if (take?.tool !== "take" || (typeof take.inbox !== "string" && !Array.isArray(take.inbox))) return false
+    const inboxes = takeInboxes(take.inbox as string | string[])
+    if (!inboxes.includes(MAIN_CHAT.inbox) || !inboxes.includes(MAIN_CHAT.queue)) return false
+    return rest?.nodeIds?.length === 1 && rest.nodeIds[0] === waiting.nodeId
+  } finally {
+    records.return()
+  }
+}
+
+/** Folds into `segment` the records of the log `log` (of the run `runId`) from its start to the byte `limit`, where
+ *  the segment after it starts; whether it read all of them and what they show stands alone (no record named
+ *  something before the segment, and every send in it was read or withdrawn in it). */
+function foldSegment(log: string, runId: string, segment: Fold, cap: number, limit: number): boolean {
+  try {
+    const end = readOn(log, runId, segment, cap, Infinity, limit)
+    if (end.stopped !== null || segment.end !== limit || segment.undecided) return false
+  } catch {
+    return false
+  }
+  return [...segment.sends.keys()].every((seq) => segment.read.has(seq))
+}
+
 /** Where a read of a log ended: at the end of its complete lines or at a line that isn't a record this version reads
  *  (`done`), or at its deadline; `stopped` is that line's error, else null. */
 interface ReadEnd {
@@ -367,24 +724,28 @@ interface ReadEnd {
 }
 
 /** Where a read of `log` from `from` stops (`stop`): the end of the last complete line scanned, CHUNK at a time for
- *  newlines only, before the first line over `cap` (`big`, its start and end, or null). `more` says the scan stopped
- *  after about SCAN_WINDOW bytes with more to scan. A line over `cap` with no newline yet stops the scan before it.
- *  Throws RunLogChangedError when the log is now shorter than `from`. */
+ *  newlines only, before the first line over `cap` (`big`, its start and end, or null), and at `limit` at the latest.
+ *  `more` says the scan stopped after about SCAN_WINDOW bytes with more to scan. A line over `cap` with no newline yet
+ *  stops the scan before it. Throws RunLogChangedError when the log is now shorter than `from` or a finite `limit`. */
 function scan(
   log: string,
   from: number,
   cap: number,
+  limit = Infinity,
 ): { stop: number; big: { start: number; end: number } | null; more: boolean } {
   const fd = fs.openSync(log, "r")
   try {
     const size = fs.fstatSync(fd).size
-    if (size < from) throw new RunLogChangedError("the run log is shorter than where it was read to")
+    if (size < from || (limit !== Infinity && size < limit)) {
+      throw new RunLogChangedError("the run log is shorter than where it was read to")
+    }
+    const top = Math.min(size, limit)
     // Sized to what is there now, so a read of a small tail (each live chunk's) doesn't allocate a whole CHUNK.
-    const chunk = Buffer.allocUnsafe(Math.min(CHUNK, Math.max(64 << 10, size - from)))
+    const chunk = Buffer.allocUnsafe(Math.min(CHUNK, Math.max(64 << 10, top - from)))
     let pos = from
     let lineStart = from
     for (;;) {
-      const count = fs.readSync(fd, chunk, 0, chunk.length, pos)
+      const count = pos >= limit ? 0 : fs.readSync(fd, chunk, 0, Math.min(chunk.length, limit - pos), pos)
       if (count === 0) return { stop: lineStart, big: null, more: false }
       const data = chunk.subarray(0, count)
       for (let nl = data.indexOf(0x0a); nl !== -1; nl = data.indexOf(0x0a, nl + 1)) {
@@ -402,15 +763,15 @@ function scan(
 
 /**
  * Folds into `state` the records of the log `log` (of the run `runId`) after the last one it folded, until the end of
- * its complete lines, a line that isn't a record this version reads (a `RangeError`, `RunLogSchemaError` among them,
- * with `state` folded up to the record before it), or `deadline`. Each stretch of lines is scanned before yian's
- * reader reads it, so a line over `cap` is never held or parsed (`foldBig`).
+ * its complete lines or the byte `limit`, a line that isn't a record this version reads (a `RangeError`,
+ * `RunLogSchemaError` among them, with `state` folded up to the record before it), or `deadline`. Each stretch of
+ * lines is scanned before yian's reader reads it, so a line over `cap` is never held or parsed (`foldBig`).
  *
  * @throws RunLogChangedError when the log no longer continues `state`; the error of a failed open or read.
  */
-function readOn(log: string, runId: string, state: Fold, cap: number, deadline: number): ReadEnd {
+function readOn(log: string, runId: string, state: Fold, cap: number, deadline: number, limit = Infinity): ReadEnd {
   for (;;) {
-    const { stop, big, more } = scan(log, state.end, cap)
+    const { stop, big, more } = scan(log, state.end, cap, limit)
     if (stop > state.end) {
       // Every kind is read, not only KINDS, so the read can stop at exactly the scanned end.
       const resume = state.seq === null ? {} : { afterOffset: state.end, runId: state.runId, afterSeq: state.seq }
@@ -558,10 +919,17 @@ function slim(step: Step): Step | null {
 }
 
 /** Folds the log record `record` (seq `seq`, written at `at`, of kind `kind` by node `nodeId`) into `state`, keeping
- *  copies of only what the render reads. */
+ *  copies of only what the render reads. A fold from a rest point marks itself `undecided` at a record that names
+ *  something before its start. */
 function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string | null, record: unknown): void {
   const { inbox, queue } = MAIN_CHAT
   const reply = MAIN_CHAT.isReply(nodeId) ? nodeId! : null
+  const first = state.from === null ? 0 : state.from.seq + 1
+  const before = (events: readonly (number | bigint)[]) => events.some((event) => Number(event) < first)
+  // A reply's record whose start the fold hasn't read: the reply started before the fold's rest point.
+  if (state.from !== null && reply !== null && kind !== "node_started" && !state.started.has(reply)) {
+    state.undecided = true
+  }
   if (kind === "pool_commit" && record instanceof PoolCommitRecord) {
     const queued = record.key === `${record.nodeId}.${queue}`
     if (record.value !== null && (queued || record.key === `${record.nodeId}.${inbox}`)) {
@@ -592,9 +960,11 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
       && takeInboxes(record.take.inbox).includes(inbox)) {
       // A take of several inboxes lists all their sends; only the chat inbox's and the queue's are in `sends`, to show.
       state.takes.set(seq, keep(state, record.take.events.map(Number)))
+      if (before(record.take.events)) state.undecided = true
     }
   } else if (kind === "node_succeeded") {
     const commit = (record as { commit: number }).commit
+    if (MAIN_CHAT.isTurn(nodeId) && commit < first) state.undecided = true
     const take = state.takes.get(commit)
     if (take !== undefined) {
       state.takes.delete(commit)
@@ -617,7 +987,10 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
     const kept = reply === null ? null : slim(step)
     if (reply !== null && kept !== null) {
       state.items.push(keep(state, { kind: "step", node: reply, n, seq, at, step: kept }))
-      if (kept.kind === "steer") for (const event of kept.from as readonly number[]) state.read.add(event)
+      if (kept.kind === "steer") {
+        for (const event of kept.from as readonly number[]) state.read.add(event)
+        if (before(kept.from as readonly number[])) state.undecided = true
+      }
     }
   } else if (kind === "run_cancelled" || kind === "run_failed") {
     state.ended = true
@@ -625,6 +998,7 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
     // Taken back before anything read them: they show no more, and one sent again shows under its new seq.
     const { inbox: from, events } = record as { inbox: string; events: readonly number[] }
     if (from !== inbox && from !== queue) return
+    if (before(events)) state.undecided = true
     for (const event of events) {
       const by = state.sends.get(Number(event))?.by ?? null
       state.sends.delete(Number(event))
@@ -634,20 +1008,42 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
   }
 }
 
+/** Appends to `out` the messages of the run `runId` from its read `read` (`render`), then, for the session's last
+ *  run (`last`), its sends no take or steer has read, unread. */
+function renderRun(
+  out: Message[],
+  sessionId: string,
+  runId: string,
+  read: readonly Fold[],
+  live: readonly LiveViewCall[] | null,
+  last: boolean,
+): void {
+  render(out, sessionId, runId, read, live, last)
+  // A replaced run's unread sends were moved into the fresh run, so only the last run's wait unread.
+  if (!last) return
+  for (const segment of read) {
+    for (const send of segment.sends.values()) {
+      if (!readIn(read, send.seq)) out.push(userMessage(sessionId, runId, send, true))
+    }
+  }
+}
+
 /**
- * Appends to `out` the messages of the run `runId` from its fold `state`: each accepted take's user messages, each
- * reply's assistant message, and the user messages a steer read, between what the reply said before and after.
- * `live` is the model calls in flight of a run a worker runs, null when none runs it; `last` says the run is the
- * session's last.
+ * Appends to `out` the messages of the run `runId` from its read `read`, whose segments' items it walks in log order:
+ * each accepted take's user messages, each reply's assistant message, and the user messages a steer read, between
+ * what the reply said before and after. `live` is the model calls in flight of a run a worker runs, null when none
+ * runs it; `last` says the run is the session's last.
  */
 function render(
   out: Message[],
   sessionId: string,
   runId: string,
-  state: Fold,
+  read: readonly Fold[],
   live: readonly LiveViewCall[] | null,
   last: boolean,
 ): void {
+  const ended = read.some((segment) => segment.ended)
+  const settled = (node: string) => read.some((segment) => segment.settled.has(node))
   const open = new Map<string, Message>() // reply node -> its open message
   const calls = new Map<string, Map<string, ToolPart>>() // reply node -> its last model call's tool parts, by call id
   const unresolved = new Map<ToolPart, string>() // tool part without a result -> its reply node
@@ -660,10 +1056,10 @@ function render(
     if (message.parts.length === 0) out.push(message)
     message.parts.push(part)
   }
-  for (const item of state.items) {
+  for (const item of read.flatMap((segment) => segment.items)) {
     if (item.kind === "take") {
       for (const seq of item.events) {
-        const send = state.sends.get(seq)
+        const send = sendIn(read, seq)
         if (send) out.push(userMessage(sessionId, runId, send, false))
       }
     } else if (item.kind === "start") {
@@ -717,7 +1113,7 @@ function render(
       } else if (step.kind === "steer") {
         // What the model says after reading a steer follows it, in a message of its own.
         for (const event of step.from as readonly number[]) {
-          const send = state.sends.get(event)
+          const send = sendIn(read, event)
           if (send) out.push(userMessage(sessionId, runId, send, false))
         }
         if (open.has(node)) open.set(node, assistantMessage(sessionId, runId, item.seq, item.at))
@@ -740,7 +1136,7 @@ function render(
   }
   // A call with no result runs on only while its reply can still finish it: a run nothing runs left it cut.
   for (const [part, node] of unresolved) {
-    const running = last && !state.ended && !state.settled.has(node) && (waiting.has(part) || live !== null)
+    const running = last && !ended && !settled(node) && (waiting.has(part) || live !== null)
     part.state = running ? "running" : "interrupted"
   }
 }

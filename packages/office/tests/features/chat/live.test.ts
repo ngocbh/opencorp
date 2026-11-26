@@ -13,7 +13,7 @@ import { type LiveJoin, LiveRelay, type LiveViewer, type LiveWorker, type Viewer
 import type { FakeLLM, ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import type { Frame } from "../../../src/runtime/worker/channel.ts"
 import type { Delivery, Job } from "../../../src/runtime/worker/job.ts"
-import { advance, fakeLlm, logPrefix, send, TemplateOffice, waitingAt, waitingChat } from "./helpers.ts"
+import { advance, fakeLlm, FROM_END, logPrefix, send, TemplateOffice, waitingAt, waitingChat } from "./helpers.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import { advanceJob, inProcessWorker, run, type TestWorker, waitsOf } from "../../runtime/worker/helpers.ts"
 
@@ -77,11 +77,12 @@ function makeRelay(
   relay: LiveRelay
   events: LiveEvent[]
   lines: string[]
-  transcript: Pick<Transcript, "messages">
+  transcript: Pick<Transcript, "messages" | "recent">
 } {
   const events: LiveEvent[] = []
   const lines: string[] = []
-  const transcript = runs === undefined ? { messages: () => [] } : new Transcript(runs)
+  // The relay reads every run from its log's end, as it does a long one.
+  const transcript = runs === undefined ? { messages: () => [], recent: () => [] } : new Transcript(runs, FROM_END)
   const relay = new LiveRelay({
     bus: { publishLive: (event) => void events.push(event) },
     transcript,
@@ -608,7 +609,7 @@ test("a render or publish that fails is logged by its type", async () => {
   }
   const rendering = new LiveRelay({
     bus: { publishLive: () => {} },
-    transcript: { messages: throwing },
+    transcript: { recent: throwing },
     log: (line) => void lines.push(line),
   })
   expect(() => rendering.frame(new StubWorker(job), snapshot(lastSeq(job.log)))).not.toThrow()

@@ -29,6 +29,7 @@ import {
   card,
   type ChatOffice,
   chatOffice,
+  expectSessionPages,
   fakeLlm,
   noWorkersLeft,
   reopen,
@@ -309,6 +310,7 @@ test("after Esc a note waits for the owner's next message, and goes with it", as
   expect(fake.requests()).toHaveLength(3)
   expect(asked(fake, 3, heading("shell 1", "make all", 0)) && asked(fake, 3, "what happened?")).toBe(true)
   expect(notes(o, sid)).toHaveLength(1)
+  expectSessionPages(o, sid)
 })
 
 test("over the cost cap a note is held, opens no cap item, and the raise runs it", async () => {
@@ -469,6 +471,7 @@ test("Esc takes back the queue's messages too, so the turn after it reads the ow
     "later",
     "second",
   ])
+  expectSessionPages(o, sid)
 })
 
 test("Esc on the model's question holds the note waiting behind it", async () => {
@@ -678,6 +681,7 @@ test("a note unread at a model switch arrives in the new run signed by its shell
   await waitFor(() => texts(o, sid).includes("Again.") && status(o, sid) === "idle", { what: "the last reply" })
   expect(notes(o, sid)).toHaveLength(1)
   expect(loggedNotes(o, fresh)).toHaveLength(1)
+  expectSessionPages(o, sid)
 })
 
 test("after Esc, a model switch moves none of what Esc took back: each message and the note reach the model once", async () => {
@@ -836,6 +840,7 @@ test("a Codex turn that ends while the agent rests wakes it once with the turn's
   expect(fake.requests()).toHaveLength(3)
   expect(notes(o, sid).map((note) => note.split("\n")[0])).toEqual([CODEX_DONE])
   expect(notes(o, sid)[0]).toContain("Fixed: the test passes.")
+  expectSessionPages(o, sid)
 })
 
 test("no note when the agent waited on the turn and its reply carried the end", async () => {
