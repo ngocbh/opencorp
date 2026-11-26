@@ -180,24 +180,69 @@ nodes:
 output: \${l.output.n}
 `
 export const CODED_LOOP_HELPERS = 'export function fn(): string {\n  return "ready"\n}\n'
+// A CALL of a child flow `shout` whose END gathers its START's input and a CODE node's output (its function
+// CODED_LOOP_HELPERS); the run's END returns a record.
+export const CALL_FLOW = `id: calls
+name: calls
+input:
+  topic: !str
+defs:
+  shout:
+    input:
+      text: !str
+    nodes:
+      prep:
+        kind: code
+        code: ./helpers.ts:fn
+        output: !str
+    output:
+      loud: \${input.text + "!"}
+      ready: \${prep.output}
+nodes:
+  c:
+    kind: call
+    call: shout
+    input:
+      text: \${input.topic}
+output:
+  said: \${c.output.loud}
+`
+// An agent `reply` that answers `message`.
+export const REPLY_FLOW = `id: reply
+name: reply
+input:
+  message: !str
+nodes:
+  reply:
+    kind: agent
+    input:
+      message: \${input.message}
+    system_prompt: Help.
+    prompt: \${message}
+    output: !str
+output: \${reply.output}
+`
 
 /**
- * Runs `flow` to its end in this process, with no model: writes it as `flow.yaml` and each of `files` (name -> text)
- * in `dir`, loads it with its CODE references kept inside `dir`, and runs it as run `runId` (`r1` by default) to a log
- * under `dir/runs`. Returns the log and the code root.
+ * Runs `flow` to its end in this process, with no model unless `fake` serves it: writes it as `flow.yaml` and each of
+ * `files` (name -> text) in `dir`, loads it with its CODE references kept inside `dir`, and runs it with `inputs` as
+ * run `runId` (`r1` by default) to a log under `dir/runs`. Returns the log and the code root.
  */
 export async function realRun(
   dir: string,
   flow: string,
   files: Record<string, string> = {},
   runId = "r1",
+  { inputs = {}, fake }: { inputs?: Record<string, unknown>; fake?: FakeLLM } = {},
 ): Promise<{ log: string; codeRoot: string }> {
   for (const [name, text] of Object.entries({ "flow.yaml": flow, ...files })) {
     fs.writeFileSync(path.join(dir, name), text)
   }
   const loaded = await loadFlow(flow, { sourceLabel: "flow.yaml", baseDir: dir, codeRoot: dir })
   const log = runLogPath(path.join(dir, "runs"), runId)
-  const result = await runFlow(loaded, {}, { log, runId, numWorkers: 0, env: () => undefined })
+  const env = (name: string) => fake?.env()[name]
+  const model = fake ? { llmConfig: LLM_CONFIG } : {}
+  const result = await runFlow(loaded, inputs, { log, runId, numWorkers: 0, env, ...model })
   if (result.status !== "succeeded") throw new Error(`the run ended ${result.status}`)
   return { log, codeRoot: dir }
 }

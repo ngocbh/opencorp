@@ -391,10 +391,11 @@ test("one runs routes are on the allowlist", async () => {
   const file = office.runs.logPath(runId)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   chatLog(file)
-  for (const suffix of ["", "/nodes", "/events", "/events/0", "/log"])
+  for (const suffix of ["", "/nodes", "/nodes/1", "/events", "/events/0", "/log"])
     expect([(await client.get(`/api/runs/${runId}${suffix}`)).status, suffix]).toEqual([200, suffix])
-  // No HEAD on the download: HQ's GET catch-all answers it, as any method HQ doesn't serve.
-  expect((await client.request("HEAD", `/api/runs/${runId}/log`)).status).toBe(404)
+  // No HEAD on the download or a node's detail: HQ's GET catch-all answers it, as any method HQ doesn't serve.
+  for (const suffix of ["/log", "/nodes/1"])
+    expect([(await client.request("HEAD", `/api/runs/${runId}${suffix}`)).status, suffix]).toEqual([404, suffix])
 })
 
 test("a run's model calls are on the allowlist, behind sign-in, for this office's runs only", async () => {

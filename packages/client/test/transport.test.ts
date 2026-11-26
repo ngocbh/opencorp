@@ -284,6 +284,7 @@ const GUARDED: [string, (c: Client, bad: string) => Promise<unknown>, (bad: stri
   ["questions.dismissCarried", (c, b) => c.questions.dismissCarried(b), (b) => `no question ${b}`],
   ["runs.get", (c, b) => c.runs.get(b), (b) => `no run ${b}`],
   ["runs.nodes", (c, b) => c.runs.nodes(b), (b) => `no run ${b}`],
+  ["runs.node", (c, b) => c.runs.node(b, 1), (b) => `no run ${b}`],
   ["runs.events", (c, b) => c.runs.events(b), (b) => `no run ${b}`],
   ["runs.event", (c, b) => c.runs.event(b, 1), (b) => `no run ${b}`],
   ["runs.calls", (c, b) => c.runs.calls(b, "reply"), (b) => `no run ${b}`],

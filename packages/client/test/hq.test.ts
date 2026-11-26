@@ -172,6 +172,7 @@ test("the Run Logs reads hit /api/runs with their query params", async () => {
   await c.runs.get(RUN)
   await c.runs.nodes(RUN)
   await c.runs.nodes(RUN, 80)
+  await c.runs.node(RUN, 41)
   await c.runs.events(RUN, 13)
   await c.runs.event(RUN, 7)
   await c.runs.calls(RUN, "chat#2/reply")
@@ -183,6 +184,7 @@ test("the Run Logs reads hit /api/runs with their query params", async () => {
     `GET /api/runs/${RUN}`,
     `GET /api/runs/${RUN}/nodes`,
     `GET /api/runs/${RUN}/nodes?before=80`,
+    `GET /api/runs/${RUN}/nodes/41`,
     `GET /api/runs/${RUN}/events?after=13`,
     `GET /api/runs/${RUN}/events/7`,
     `GET /api/runs/${RUN}/calls?node=chat%232%2Freply`,

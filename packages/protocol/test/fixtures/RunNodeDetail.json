@@ -1,0 +1,1 @@
+{"node": {"seq": 30, "end_seq": 36, "node_id": "chat#3/reply", "kind": "agent", "status": "succeeded"}, "model": "gpt-5", "started_at": "2026-10-20T10:00:00.000Z", "ended_at": "2026-10-20T10:00:04.250Z", "outputs": [{"name": "output", "seq": 34, "type": "str", "value": "Sure, I'll look."}, {"name": "new_messages", "seq": 35, "type": null, "missing": "not_rebuilt"}], "inputs": []}

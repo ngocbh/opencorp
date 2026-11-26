@@ -45,6 +45,7 @@ import type {
   RunDetail,
   RunEvent,
   RunEventPage,
+  RunNodeDetail,
   RunNodePage,
   RunPage,
   RunSummary,
@@ -166,6 +167,11 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
        * `isUnsupportedSchema` or `isNoLog`.
        */
       nodes: async (id: string, before?: number) => get<RunNodePage>(`${r(id)}/nodes${query({ before })}`),
+      /**
+       * Node attempt `seq` (its start record's seq), read from the log: its row, model, record times, outputs, inputs
+       * and error. Fails as `nodes` does, or with not_found when no attempt starts there.
+       */
+      node: async (id: string, seq: number) => get<RunNodeDetail>(`${r(id)}/nodes/${seq}`),
       /** Records after seq `after`; fails as `nodes` does. */
       events: async (id: string, after?: number) => get<RunEventPage>(`${r(id)}/events${query({ after })}`),
       /** One record by seq, evidence included; fails as `nodes` does. */
