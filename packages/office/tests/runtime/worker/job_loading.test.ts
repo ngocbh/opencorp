@@ -74,6 +74,55 @@ test("a flow reaching outside the pin is refused", async () => {
   expect(fake.requests()).toEqual([])
 })
 
+/** The yian package the office runs. */
+const YIAN = path.resolve(import.meta.dirname, "../../../../yian")
+
+/** A flow whose one TOOL node calls the company module's `quote` for 5. */
+const QUOTED =
+  "id: quoted\nname: quoted\nuses:\n  crm: ./crm.ts\nnodes:\n  q:\n    kind: call\n    call: {crm: quote}\n" +
+  "    input:\n      amount: 5\n    output: !str\noutput: ${q.output}\n"
+/** The module's `quote` tool, which quotes `amount` times `rate`; the module's own imports go before it. */
+const QUOTE_TOOL =
+  'export const quote = { name: "quote", description: "Quote a price.", parameters: { type: "object", properties: ' +
+  '{ amount: { type: "integer" } }, required: ["amount"] }, execute: (args) => `quoted ${args.amount * rate}` }\n'
+
+/** Runs `quoted` from a pin whose `crm.ts` is `module`, beside `outside` files written above the pin (`../<path>`);
+ *  returns the recorder. */
+async function quoted(module: string, outside: Record<string, string> = {}) {
+  const where = base()
+  writeFiles(where.root, outside)
+  writeFiles(where.pin, { "flows/quoted.yaml": QUOTED, "flows/crm.ts": module })
+  return await run(makeJob(where, "flows/quoted.yaml", { inputs: {} }), new Recorder())
+}
+
+test("a company module importing a file from outside the pin keeps the run from starting, naming the import", async () => {
+  const rec = await quoted('import { rate } from "../../outside.ts"\n' + QUOTE_TOOL, { "outside.ts": "export const rate = 2\n" })
+  expect(rec.returncode).toBe(1)
+  expect(String(rec.outcome?.message)).toContain("crm.ts imports '../../outside.ts', which resolves outside the code root")
+})
+
+test("a company module importing yian's code from a node_modules above the pin keeps the run from starting", async () => {
+  const where = base()
+  // The office's own yian, linked where a package lookup from the pin finds it.
+  fs.mkdirSync(path.join(where.root, "node_modules", "@ngocbh"), { recursive: true })
+  fs.symlinkSync(YIAN, path.join(where.root, "node_modules", "@ngocbh", "yian"))
+  const module = 'import { tool } from "@ngocbh/yian/tools"\nconst rate = typeof tool === "function" ? 2 : 0\n'
+  writeFiles(where.pin, { "flows/quoted.yaml": QUOTED, "flows/crm.ts": module + QUOTE_TOOL })
+  const rec = await run(makeJob(where, "flows/quoted.yaml", { inputs: {} }), new Recorder())
+  expect(rec.returncode).toBe(1)
+  // Bun names a package found outside by the real path of the file it loads.
+  expect(String(rec.outcome?.message)).toMatch(
+    /^RangeError: crm\.ts failed to import: Error: the code loads '[^']*\/yian\/src\/tools\/index\.ts', which is outside the code root$/,
+  )
+})
+
+test("a company module importing only yian's types runs", async () => {
+  const typed = 'import type { ToolOptions } from "@ngocbh/yian/tools"\nconst rate = 3\n'
+    + QUOTE_TOOL.replace(" }\n", " } satisfies ToolOptions\n")
+  const rec = await quoted(typed)
+  expect(rec.outcome).toMatchObject({ status: "succeeded", output: "quoted 15" })
+})
+
 test("pick skills filters and prefers personal skills", () => {
   const pin = writeFiles(path.join(tempDir(), "pin"), SKILLS)
   const picked = pickSkills(pin, "minh", ["code-review", "missing"])

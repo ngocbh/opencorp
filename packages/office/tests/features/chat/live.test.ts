@@ -13,7 +13,7 @@ import { type LiveJoin, LiveRelay, type LiveViewer, type LiveWorker, type Viewer
 import type { FakeLLM, ScriptedReply } from "../../../src/testing/fake_llm.ts"
 import type { Frame } from "../../../src/runtime/worker/channel.ts"
 import type { Delivery, Job } from "../../../src/runtime/worker/job.ts"
-import { advance, fakeLlm, logPrefix, send, TemplateOffice, waitingAt, waitingChat } from "./helpers.ts"
+import { advance, fakeLlm, FROM_END, logPrefix, send, TemplateOffice, waitingAt, waitingChat } from "./helpers.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import { advanceJob, inProcessWorker, run, type TestWorker, waitsOf } from "../../runtime/worker/helpers.ts"
 
@@ -77,11 +77,12 @@ function makeRelay(
   relay: LiveRelay
   events: LiveEvent[]
   lines: string[]
-  transcript: Pick<Transcript, "messages">
+  transcript: Pick<Transcript, "messages" | "recent">
 } {
   const events: LiveEvent[] = []
   const lines: string[] = []
-  const transcript = runs === undefined ? { messages: () => [] } : new Transcript(runs)
+  // The relay reads every run from its log's end, as it does a long one.
+  const transcript = runs === undefined ? { messages: () => [], recent: () => [] } : new Transcript(runs, FROM_END)
   const relay = new LiveRelay({
     bus: { publishLive: (event) => void events.push(event) },
     transcript,
@@ -608,7 +609,7 @@ test("a render or publish that fails is logged by its type", async () => {
   }
   const rendering = new LiveRelay({
     bus: { publishLive: () => {} },
-    transcript: { messages: throwing },
+    transcript: { recent: throwing },
     log: (line) => void lines.push(line),
   })
   expect(() => rendering.frame(new StubWorker(job), snapshot(lastSeq(job.log)))).not.toThrow()
@@ -843,6 +844,32 @@ test("the first contact shows a run from its floor and later renders only its ch
   relay.frame(again, snapshot(lastSeq(job.log)))
   relay.detach(again)
   expect(events).toEqual([])
+  expect(lines).toEqual([])
+})
+
+test("a show after one with no reply covers the whole run: replies across a rest point between both show", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "One." }, { content: "Two." })
+  const job = await waitingChat(fake)
+  const events: LiveEvent[] = []
+  const lines: string[] = []
+  const transcript = new Transcript(runsOf(job), FROM_END)
+  const bus = { publishLive: (event: LiveEvent) => void events.push(event) }
+  const relay = new LiveRelay({ bus, transcript, log: (line) => void lines.push(line) })
+  const first = new StubWorker(job)
+  relay.frame(first, snapshot(lastSeq(job.log)))
+  relay.detach(first)
+  expect(events).toEqual([])
+  // Two turns land while no worker feeds the relay, the run resting between them, and its read leaves the cache.
+  await advance(job, fake, [send("s1", "first")])
+  await advance(job, fake, [send("s2", "second")])
+  transcript.forget([job.run_id])
+  const again = new StubWorker(job)
+  relay.frame(again, snapshot(lastSeq(job.log)))
+  relay.detach(again)
+  const opened = events.filter((event) => event.type === "message.updated").map((event) => event.data.id)
+  expect(opened).toEqual(replyIds(job.log))
+  expect(opened).toHaveLength(2)
   expect(lines).toEqual([])
 })
 

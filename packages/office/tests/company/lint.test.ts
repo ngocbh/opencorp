@@ -663,7 +663,8 @@ test("a tool module whose imports resolve outside the company repo is a lint err
     expect(issues[0]!.severity).toBe("error")
     expect(issues[0]!.message).toContain("shared/flows/")
     expect(issues[0]!.message).toContain("resolves outside the company repo")
-    expect(issues[0]!.message).toContain("yian#1811")
+    expect(issues[0]!.message).toContain("Yian refuses it when a run starts")
+    expect(issues[0]!.message).not.toContain("yian#1811")
     expect(issues[0]!.message).not.toContain(outside)
   }
 })

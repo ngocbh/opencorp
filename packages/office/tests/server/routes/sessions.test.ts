@@ -7,7 +7,7 @@ import { type LiveEvent, Message, MessagePage } from "@opencorp/protocol"
 import { z } from "zod"
 import { newToken } from "../../../src/runtime/auth/tokens.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
-import { Transcript } from "../../../src/features/chat/transcript.ts"
+import { pageOf as cut, Transcript } from "../../../src/features/chat/transcript.ts"
 import type { Office } from "../../../src/server/office.ts"
 import { register } from "../../../src/features/questions/extension.ts"
 import * as fc from "../../../src/testing/fake_codex.ts"
@@ -246,6 +246,30 @@ test("a cursor alone reads a page of up to fifty, and no paging param reads the 
   expect(page.texts.at(-1)).toBe("m58")
   const whole = await get(sock, `/sessions/${sid}/messages`)
   expect(z.array(Message).parse(whole.json())).toHaveLength(60)
+})
+
+test("a harness that reads its own pages is asked for each, and the route makes their cursors", async () => {
+  const office = makeOffice()
+  const sid = office.store.createSession(session()).id
+  const list = z.array(Message).parse(Array.from({ length: 5 }, (_, i) => numbered(sid, i)))
+  const asked: [number, string | null][] = []
+  office.harness = standInHarness({
+    messages: () => Promise.reject(new Error("the whole list is not read")),
+    messagesPage: async (_id, limit, before) => {
+      asked.push([limit, before])
+      return cut(list, limit, before)
+    },
+  })
+  const { sock } = await served(office)
+  const first = await pageOf(sock, sid, [["limit", "2"]])
+  expect(first.texts).toEqual(["m3", "m4"])
+  const older = await pageOf(sock, sid, [["limit", "3"], ["before", first.next!]])
+  expect(older).toEqual({ texts: ["m0", "m1", "m2"], next: null })
+  expect(asked).toEqual([[2, null], [3, list[3]!.id]])
+  // A page the harness can't find the cursor's message for is a bad cursor.
+  const gone = Buffer.from(JSON.stringify({ session: sid, id: `${ULID}:000000000099` })).toString("base64url")
+  const r = await get(sock, `/sessions/${sid}/messages` + query([["limit", "2"], ["before", gone]]))
+  expect([r.status, errorOf(r)]).toEqual([400, "bad_cursor"])
 })
 
 /** `value` as JSON in base64url, as a cursor's form. */

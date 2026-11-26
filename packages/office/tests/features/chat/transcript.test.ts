@@ -5,17 +5,25 @@ import path from "node:path"
 import { iterRunRecords, type LiveViewCall, type PoolCommitRecord, type RunLogEntry } from "@ngocbh/yian/run"
 import { pending } from "@ngocbh/yian/tools"
 import { Message, type ToolPart } from "@opencorp/protocol"
-import { type LiveCalls, tooLargeText, Transcript, withdrawnSends } from "../../../src/features/chat/transcript.ts"
+import {
+  type LiveCalls,
+  pageOf,
+  tooLargeText,
+  Transcript,
+  withdrawnSends,
+} from "../../../src/features/chat/transcript.ts"
 import { MAIN_CHAT } from "../../../src/company/chat_flow.ts"
 import { newId } from "../../../src/runtime/store/store.ts"
 import type { FakeLLM } from "../../../src/testing/fake_llm.ts"
 import type { Delivery, Job } from "../../../src/runtime/worker/job.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
-import { failed, line, RUN, runStarted, started } from "../../runtime/runs/helpers.ts"
+import { failed, line, RUN, runStarted, started, succeeded as accepted } from "../../runtime/runs/helpers.ts"
 import { advanceJob, inProcessWorker, run, type TestWorker } from "../../runtime/worker/helpers.ts"
 import {
   advance,
+  expectPages,
   fakeLlm,
+  FROM_END,
   interruptMidReply,
   logPrefix,
   message,
@@ -24,6 +32,7 @@ import {
   send,
   TemplateOffice,
   templateJob,
+  type TranscriptOptions,
   waitingAt,
   waitingChat,
 } from "./helpers.ts"
@@ -31,17 +40,24 @@ import {
 setDefaultTimeout(30_000)
 
 /** The messages of the runs `runIds` under `runs`, read by `transcript` (a fresh one by default) with `live`, each
- *  checked against the protocol's `Message`, their ids checked to sort in transcript order. */
+ *  checked against the protocol's `Message`, their ids checked to sort in transcript order. Unless `pages` is false,
+ *  each page a read from the logs' ends gives (`expectPages`) is checked too, by transcripts made with `options`. */
 function messages(
   runs: string,
   sessionId: string,
   runIds: string[],
-  { transcript = new Transcript(runs), live }: { transcript?: Transcript; live?: LiveCalls } = {},
+  {
+    transcript = new Transcript(runs),
+    live,
+    pages = true,
+    options = {},
+  }: { transcript?: Transcript; live?: LiveCalls; pages?: boolean; options?: TranscriptOptions } = {},
 ): Message[] {
   const read = transcript.messages(sessionId, runIds, live)
   for (const message of read) Message.parse(message)
   const ids = read.map((m) => m.id)
   expect(ids).toEqual([...ids].sort())
+  if (pages) expectPages(runs, sessionId, runIds, read, { live, options })
   return read
 }
 
@@ -373,7 +389,8 @@ test("a live run shows a call without its result as running", async () => {
     },
   }
   expect(tools(messages(crashed, newId(), ["r1", "r2"], { live }))[2]).toEqual(["c3", "interrupted", {}, null])
-  expect(asked).toEqual(["r2"])
+  // Its pages ask too, of the last run only.
+  expect([...new Set(asked)]).toEqual(["r2"])
 })
 
 test("a node that never called a model writes nothing", async () => {
@@ -791,7 +808,8 @@ test("reads are incremental", async () => {
   await advance(job, fake, [send("s2", "second")])
   corrupt(job.log)
   expect(new Transcript(runs, { log: () => {} }).messages(sessionId, ["r1"])).toEqual([])
-  expect(texts(messages(runs, sessionId, ["r1"], { transcript }))).toEqual([
+  // A read from the end doesn't read back to the damaged first line before its oldest page.
+  expect(texts(messages(runs, sessionId, ["r1"], { transcript, pages: false }))).toEqual([
     ["user", ["first"]],
     ["assistant", ["one"]],
     ["user", ["second"]],
@@ -831,7 +849,7 @@ test("the cache keeps at most max bytes and forgets ended runs", async () => {
   expect(messages(runs, sessionId, ["b"], { transcript }).length).toBe(2)
   corrupt(a.log)
   corrupt(b.log)
-  expect(texts(messages(runs, sessionId, ["b"], { transcript }))).toEqual([
+  expect(texts(messages(runs, sessionId, ["b"], { transcript, pages: false }))).toEqual([
     ["user", ["to b"]],
     ["assistant", ["B."]],
   ])
@@ -889,7 +907,7 @@ test("a bad first line reads as no messages", async () => {
   corrupt(job.log)
   const logs: string[] = []
   const transcript = new Transcript(runs, { log: (line) => logs.push(line) })
-  expect(messages(runs, newId(), ["r1"], { transcript })).toEqual([])
+  expect(messages(runs, newId(), ["r1"], { transcript, pages: false })).toEqual([])
   expect(logs).toEqual([
     "run r1: the transcript stops before its first record (RangeError: a line of its log can't be read)",
   ])
@@ -1008,7 +1026,8 @@ test("a reply step over the line cap shows its size, and the turns after it stil
   const runs = tempDir()
   const { n, size } = await bigReply(runs)
   expect(size).toBeGreaterThan(16_384)
-  const read = messages(runs, newId(), ["r1"], { transcript: new Transcript(runs, { lineCap: 16_384 }) })
+  const cap = { lineCap: 16_384 }
+  const read = messages(runs, newId(), ["r1"], { transcript: new Transcript(runs, cap), options: cap })
   expect(texts(read)).toEqual([
     ["user", ["one"]],
     ["assistant", [tooLargeText(size)]],
@@ -1023,7 +1042,8 @@ test("a live call on a reply step over the line cap shows once", async () => {
   const runs = tempDir()
   const { n, size } = await bigReply(runs)
   const live = liveCalls([{ node: "chat#0/reply", n, text: "partial", nextIndex: 1 }])
-  const read = messages(runs, newId(), ["r1"], { transcript: new Transcript(runs, { lineCap: 16_384 }), live })
+  const cap = { lineCap: 16_384 }
+  const read = messages(runs, newId(), ["r1"], { transcript: new Transcript(runs, cap), live, options: cap })
   const parts = read.flatMap((m) => m.parts).filter((part) => part.id === `r1:chat#0/reply:${n}`)
   expect(parts).toEqual([{ id: `r1:chat#0/reply:${n}`, type: "text", text: tooLargeText(size) }])
 })
@@ -1048,14 +1068,15 @@ test("a tool result over the line cap completes its tool part with its size", ()
   const runs = tempDir()
   const size = bigToolResult(runs, "y".repeat(20_000))
   const transcript = new Transcript(runs, { lineCap: 16_384 })
-  const read = messages(runs, newId(), [RUN], { transcript })
+  const read = messages(runs, newId(), [RUN], { transcript, options: { lineCap: 16_384 } })
   expect(tools(read)).toEqual([["c1", "completed", tooLargeText(size), null]])
   expect(shown(read)).toEqual([["assistant", ["completed"]]])
 })
 
 test("a tool result over the line cap keeps its error or interruption", () => {
+  const cap = { lineCap: 16_384 }
   const capped = (runs: string) =>
-    messages(runs, newId(), [RUN], { transcript: new Transcript(runs, { lineCap: 16_384 }) })
+    messages(runs, newId(), [RUN], { transcript: new Transcript(runs, cap), options: cap })
   const errored = tempDir()
   const size = bigToolResult(errored, "y".repeat(20_000), { is_error: true })
   expect(tools(capped(errored))).toEqual([["c1", "error", {}, tooLargeText(size)]])
@@ -1073,7 +1094,7 @@ test("a run end over the line cap ends the run, and another node's line over it 
   fs.writeFileSync(log, Buffer.concat([runStarted(0), started(1, REPLY), commit]))
   const transcript = new Transcript(runs, { lineCap: 16_384 })
   expect(transcript.runningReply(RUN)).toBe(`${RUN}:${String(1).padStart(12, "0")}`)
-  expect(messages(runs, newId(), [RUN], { transcript })).toEqual([])
+  expect(messages(runs, newId(), [RUN], { transcript, options: { lineCap: 16_384 } })).toEqual([])
   fs.appendFileSync(log, line(3, "run_failed", { failure: { code: "x", message: big } }))
   expect(transcript.runningReply(RUN)).toBeNull()
 })
@@ -1190,8 +1211,210 @@ test("logs whose folds hold little stay cached however large the logs are", asyn
   expect(messages(runs, sessionId, ["a"], { transcript }).length).toBe(2)
   expect(messages(runs, sessionId, ["b"], { transcript }).length).toBe(2)
   corrupt(a.log)
-  expect(texts(messages(runs, sessionId, ["a"], { transcript }))).toEqual([
+  expect(texts(messages(runs, sessionId, ["a"], { transcript, pages: false }))).toEqual([
     ["user", ["to a"]],
     ["assistant", ["A."]],
   ])
+})
+
+// Reading from a log's end.
+
+/** A chat run under `runs` as `r1` that has answered `texts`, one turn each, the model saying "re: <text>". */
+async function turns(runs: string, texts: string[]): Promise<Job> {
+  const fake = await fakeLlm()
+  fake.script(...texts.map((text) => ({ content: `re: ${text}` })))
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  for (const [i, text] of texts.entries()) await advance(job, fake, [send(`s${i}`, text)])
+  return job
+}
+
+test("a page from a log's end reads back only as far as it needs, so earlier damage shows in whole reads", async () => {
+  const runs = tempDir()
+  const job = await turns(runs, ["first", "second", "third"])
+  const sid = newId()
+  const whole = messages(runs, sid, ["r1"])
+  corrupt(job.log)
+  expect(new Transcript(runs, { log: () => {} }).messages(sid, ["r1"])).toEqual([])
+  const transcript = new Transcript(runs, { ...FROM_END, log: () => {} })
+  const page = transcript.pageNow(sid, ["r1"], { limit: 2 })
+  expect(page).toEqual(pageOf(whole, 2, null))
+  expect(texts(page!.messages)).toEqual([["user", ["third"]], ["assistant", ["re: third"]]])
+  // Read back to the start, it meets the damage and reads the run whole, which has no message the cursor names.
+  expect(transcript.pageNow(sid, ["r1"], { limit: 10, before: page!.next })).toBeNull()
+  // From then on the newest page is that whole read's: it stops at the damage.
+  expect(transcript.pageNow(sid, ["r1"], { limit: 2 })).toEqual({ messages: [], next: null })
+  // A log of at most `smallLog` bytes is read whole at once, and so is one with no rest point near its end.
+  for (const options of [{}, { ...FROM_END, tailScan: 1 }]) {
+    expect(new Transcript(runs, { ...options, log: () => {} }).pageNow(sid, ["r1"], { limit: 2 })).toEqual({
+      messages: [],
+      next: null,
+    })
+  }
+})
+
+test("a read from the end goes on forward as the run goes on, and back as older pages are asked for", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "re: one" }, { content: "re: two" }, { content: "re: three" })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "one")])
+  await advance(job, fake, [send("s2", "two")])
+  const sid = newId()
+  const transcript = new Transcript(runs, FROM_END)
+  const first = transcript.pageNow(sid, ["r1"], { limit: 2 })!
+  expect(texts(first.messages)).toEqual([["user", ["two"]], ["assistant", ["re: two"]]])
+  await apply(job, fake, [queue("q1", "later")])
+  await advance(job, fake, [send("s3", "three")])
+  const whole = new Transcript(runs).messages(sid, ["r1"])
+  expect(transcript.pageNow(sid, ["r1"], { limit: 2 })).toEqual(pageOf(whole, 2, null))
+  expect(transcript.pageNow(sid, ["r1"], { limit: 3, before: first.next })).toEqual(pageOf(whole, 3, first.next))
+  const recent = transcript.recent(sid, "r1")
+  expect(recent).toEqual(whole.slice(whole.length - recent.length))
+  expect(transcript.unread("r1", Number(whole.at(-1)!.id.split(":")[1]))).toBe(false)
+  // What the cache holds reads on; a fresh read gives the same.
+  await apply(job, fake, [queue("q2", "much later")])
+  const now = new Transcript(runs).messages(sid, ["r1"])
+  expect(now.at(-1)).toMatchObject({ unread: true, queued: true })
+  expect(transcript.pageNow(sid, ["r1"], { limit: 1 })).toEqual(pageOf(now, 1, null))
+  expect(transcript.unread("r1", Number(now.at(-1)!.id.split(":")[1]))).toBe(true)
+  // A send's state and message come from the read from the end when it covers the send, else from a whole read.
+  const seqs = [...now.filter((m) => m.role === "user").map((m) => Number(m.id.split(":")[1])).reverse(), 1, 99_999]
+  const wholly = new Transcript(runs)
+  for (const seq of seqs) {
+    expect([seq, transcript.send("r1", seq)]).toEqual([seq, wholly.send("r1", seq)])
+    expect([seq, transcript.sentMessage(sid, "r1", seq)]).toEqual([seq, wholly.sentMessage(sid, "r1", seq)])
+  }
+  const queued = Number(now.at(-1)!.id.split(":")[1])
+  expect(new Transcript(runs, FROM_END).send("r1", queued)).toEqual({ inbox: "queued", by: null, state: "unread" })
+})
+
+test("a page's cursor that names no message of the session's runs reads as no page", async () => {
+  const runs = tempDir()
+  const job = await turns(runs, ["one", "two"])
+  const fake = await fakeLlm()
+  const unread = advanceJob(job, { advance: false, deliver: [send("w", "taken back")] })
+  const taken = (await run(unread, new TemplateOffice(), { env: fake.env() })).replies[0]!.seq as number
+  await apply(job, fake, [{ id: "x", op: "withdraw", inbox: "messages", events: [taken] }])
+  const sid = newId()
+  const whole = messages(runs, sid, ["r1"])
+  const transcript = new Transcript(runs, FROM_END)
+  const named = (seq: number) => `r1:${String(seq).padStart(12, "0")}`
+  for (const before of [named(taken), named(taken + 1000), "r2:000000000001", "r1:x", "nonsense"]) {
+    expect([before, transcript.pageNow(sid, ["r1"], { limit: 2, before })]).toEqual([before, null])
+    expect(pageOf(whole, 2, before)).toBeNull()
+  }
+  const before = whole[2]!.id
+  expect(await transcript.page(sid, ["r1"], { limit: 2, before })).toEqual(pageOf(whole, 2, before))
+})
+
+test("a log replaced under a read from its end is read from its end again", async () => {
+  const runs = tempDir()
+  await turns(runs, ["one", "two", "three"])
+  const other = tempDir()
+  const replacement = await turns(other, ["alpha", "beta"])
+  const sid = newId()
+  const transcript = new Transcript(runs, FROM_END)
+  expect(texts(transcript.pageNow(sid, ["r1"], { limit: 1 })!.messages)).toEqual([["assistant", ["re: three"]]])
+  fs.copyFileSync(replacement.log, path.join(runs, "r1", "log.jsonl"))
+  const whole = new Transcript(runs).messages(sid, ["r1"])
+  expect(texts(whole).at(-1)).toEqual(["assistant", ["re: beta"]])
+  expect(transcript.pageNow(sid, ["r1"], { limit: 1 })).toEqual(pageOf(whole, 1, null))
+  expectPages(runs, sid, ["r1"], whole)
+})
+
+/** The node_waiting and run_waiting lines (at `seq` and the next) of a rest point at the turn `heard`. */
+function rest(seq: number, heard: string): Buffer[] {
+  const callId = `${RUN}/${heard}`
+  const wait = { call_id: callId, deadline: null, inbox: ["messages", "queued"], mode: "all", tool: "take" }
+  return [
+    line(seq, "node_waiting", { node_id: heard, call_ids: [callId], steer_inbox: null, waits: [wait] }),
+    line(seq + 1, "run_waiting", { node_ids: [heard] }),
+  ]
+}
+
+/** A send of `text` to the chat's inbox at `seq`. */
+function sent(seq: number, text: string): Buffer {
+  const value = { author: null, parts: [{ type: "text", text }], role: "user" }
+  return line(seq, "pool_commit", { node_id: "__start__", key: "__start__.messages", kind: "object", value })
+}
+
+test("a read from the end reads the run whole when a record after its rest point names something before it", () => {
+  const output = { parts: [{ type: "text", text: "Said." }] }
+  const said = { kind: "model_call", purpose: "chat", error: null, output }
+  const [heard, later] = ["chat#1/heard", "chat#2/heard"]
+  const take = (seq: number, node: string, events: number[]) => {
+    const inbox = ["messages", "queued"]
+    return line(seq, "pool_commit", { node_id: node, key: node, inbox, events: events.map(BigInt), closed: [] })
+  }
+  // After the rest point, a turn takes "a" and "b"; then a record names something before the rest point, which makes
+  // the newest message: a read from the rest point on would end at "b".
+  const turn = [sent(5, "a"), sent(6, "b"), take(7, heard, [5, 6]), accepted(8, heard, 7)]
+  const logs: [string, Buffer[], string[]][] = [
+    // A reply that started before the rest point says something after it.
+    ["a reply's start", [started(1, REPLY), started(2, heard), ...rest(3, heard), ...turn,
+      line(9, "node_step", { node_id: REPLY, n: 1n, step: said })], ["a", "b", "Said."]],
+    // A take after the rest point reads a send before it.
+    ["a take's send", [sent(1, "early"), started(2, heard), ...rest(3, heard), ...turn, take(9, later, [1]),
+      accepted(10, later, 9)], ["a", "b", "early"]],
+    // A turn's success after the rest point accepts a take before it.
+    ["a take", [sent(1, "early"), take(2, later, [1]), ...rest(3, heard), ...turn, accepted(9, later, 2)],
+      ["a", "b", "early"]],
+    // A reply's steer after the rest point reads a send before it.
+    ["a steer's send", [sent(1, "early"), started(2, heard), ...rest(3, heard), ...turn, started(9, "chat#1/reply"),
+      line(10, "node_step", { node_id: "chat#1/reply", n: 1n, step: { kind: "steer", from: [1n] } })],
+      ["a", "b", "early"]],
+    // A withdraw after the rest point takes back a send before it, which shows nowhere.
+    ["a withdrawn send", [sent(1, "early"), started(2, heard), ...rest(3, heard), ...turn,
+      line(9, "inbox_withdrawn", { inbox: "messages", events: [1n] })], ["a", "b"]],
+  ]
+  for (const [what, records, shows] of logs) {
+    const runs = tempDir()
+    const log = path.join(runs, RUN, "log.jsonl")
+    fs.mkdirSync(path.dirname(log), { recursive: true })
+    fs.writeFileSync(log, Buffer.concat([runStarted(0), ...records]))
+    const logs: string[] = []
+    const whole = new Transcript(runs, { log: (text) => logs.push(text) }).messages("s", [RUN])
+    expect([what, texts(whole).map(([, parts]) => parts.join("")), whole.some((m) => m.unread), logs]).toEqual([
+      what,
+      shows,
+      false,
+      [],
+    ])
+    const transcript = new Transcript(runs, FROM_END)
+    const page = transcript.pageNow("s", [RUN], { limit: 1 })
+    expect([what, page]).toEqual([what, pageOf(whole, 1, null)])
+    expectPages(runs, "s", [RUN], whole)
+    // It read the run whole: older pages come from that read, though the log's start is damaged now.
+    corrupt(log)
+    expect([what, transcript.pageNow("s", [RUN], { limit: 5, before: page!.next })]).toEqual([
+      what,
+      pageOf(whole, 5, page!.next),
+    ])
+  }
+})
+
+test("a segment between rest points that leaves a send unread makes the run read whole", () => {
+  const take = (seq: number, node: string, events: number[]) => {
+    const inbox = ["messages", "queued"]
+    return line(seq, "pool_commit", { node_id: node, key: node, inbox, events: events.map(BigInt), closed: [] })
+  }
+  const turn = (seq: number, node: string, text: string) =>
+    [sent(seq, text), take(seq + 1, node, [seq]), accepted(seq + 2, node, seq + 1)]
+  // Three turns, a rest point after the first two; between them a send nothing reads or withdraws.
+  const records = [runStarted(0), ...turn(1, "chat#0/heard", "zero"), ...rest(4, "chat#1/heard"), sent(6, "stray"),
+    ...turn(7, "chat#1/heard", "one"), ...rest(10, "chat#2/heard"), ...turn(12, "chat#2/heard", "two")]
+  const runs = tempDir()
+  const log = path.join(runs, RUN, "log.jsonl")
+  fs.mkdirSync(path.dirname(log), { recursive: true })
+  fs.writeFileSync(log, Buffer.concat(records))
+  const whole = new Transcript(runs).messages("s", [RUN])
+  expect(texts(whole).map(([, parts]) => parts.join(""))).toEqual(["zero", "one", "two", "stray"])
+  expect(whole.map((m) => m.unread)).toEqual([false, false, false, true])
+  // The page reads back one segment, finds the send unread there, and reads the run whole.
+  const transcript = new Transcript(runs, FROM_END)
+  const page = transcript.pageNow("s", [RUN], { limit: 2 })
+  expect(page).toEqual(pageOf(whole, 2, null))
+  expectPages(runs, "s", [RUN], whole)
+  corrupt(log)
+  expect(transcript.pageNow("s", [RUN], { limit: 5, before: page!.next })).toEqual(pageOf(whole, 5, page!.next))
 })

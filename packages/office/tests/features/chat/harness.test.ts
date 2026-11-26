@@ -7,6 +7,7 @@ import type { Scheduler } from "@ngocbh/yian/platform"
 import { iterRunRecords, staticPathOf } from "@ngocbh/yian/run"
 import { type LiveEvent, type Message, type RunUpdated, WorkItem, now } from "@opencorp/protocol"
 import { INTERRUPTED_CALL, SessionActor } from "../../../src/features/chat/session_actor.ts"
+import { pageOf } from "../../../src/features/chat/transcript.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
 import { MAIN_CHAT } from "../../../src/company/chat_flow.ts"
 import { PING } from "../../../src/runtime/bus.ts"
@@ -1651,6 +1652,34 @@ test("a chat read that shows a message unread tells the live relay, so its read 
   expect((await h.harness.messages(id)).filter((message) => message.unread)).toHaveLength(1)
   ended.mockRestore()
   expect(told.mock.calls).toEqual([])
+  fake.release()
+  await waitFor(() => same(texts(h, id).slice(-1), ["Rome."]) && status(h, id) === "idle", { what: "the reply" })
+})
+
+test("a chat's page is what the whole read cuts, and the relay hears which of it show unread", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "One." }, { content: "Two." }, { content: "Working", hold: true }, { content: "Rome." })
+  const h = await makeHarness(fake)
+  const { id } = await start(h)
+  for (const [text, reply] of [["first", "One."], ["second", "Two."]]) {
+    await h.harness.prompt(id, text)
+    await waitFor(() => texts(h, id).includes(reply) && status(h, id) === "idle", { what: `the reply ${reply}` })
+  }
+  await h.harness.prompt(id, "Plan the trip.")
+  await fake.waitForRequests(3)
+  await replyRunning(h)
+  expect(await h.harness.prompt(id, "Also mention Rome.")).toBe("steer")
+  const told = spyOn(h.live, "unreadShown")
+  onTestFinished(() => told.mockRestore())
+  const whole = await h.harness.messages(id)
+  told.mockClear()
+  const page = await h.harness.messagesPage(id, 2, null)
+  expect(page).toEqual(pageOf(whole, 2, null))
+  const unread = page!.messages.filter((message) => message.unread).map((message) => message.id)
+  expect(unread).toHaveLength(1)
+  expect(told.mock.calls).toEqual([[h.store.getSession(id)!.run_ids.at(-1)!, unread[0]!]])
+  expect(await h.harness.messagesPage(id, 3, page!.next)).toEqual(pageOf(whole, 3, page!.next))
+  expect(await h.harness.messagesPage(id, 3, `${h.store.getSession(id)!.run_ids[0]}:000000999999`)).toBeNull()
   fake.release()
   await waitFor(() => same(texts(h, id).slice(-1), ["Rome."]) && status(h, id) === "idle", { what: "the reply" })
 })

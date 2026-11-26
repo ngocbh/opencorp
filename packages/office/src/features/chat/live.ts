@@ -10,7 +10,7 @@ import {
   type LiveViewCall,
 } from "@ngocbh/yian/run"
 import type { LiveEvent, Message, Part } from "@opencorp/protocol"
-import type { LiveCalls, Transcript } from "./transcript.ts"
+import { type LiveCalls, messageId, type Transcript } from "./transcript.ts"
 import type { Job } from "../../runtime/worker/job.ts"
 import { errorName } from "../../runtime/worker/rpc.ts"
 import { type Bus, PING } from "../../runtime/bus.ts"
@@ -173,10 +173,11 @@ interface Entry {
  * snapshot, then fed every later frame. A gap (a frame the view can't apply, a malformed frame, a snapshot that can't
  * be built) drops the view and asks the worker to follow again; frames are ignored until the next snapshot.
  *
- * After each snapshot that builds and each `start` or `record` it applies, it renders the worker's run with the
- * transcript and publishes, on the worker's session, what changed among its assistant messages since the run was last
- * shown, and each user message clients hold unread that the run has read since (`unreadShown`); a `chunk` of a shown
- * live part is published as a `part.delta`. What was shown is kept per run until `forget`.
+ * After each snapshot that builds and each `start` or `record` it applies, it renders the worker's run's newest
+ * messages with the transcript (`Transcript.recent`, read from the log's end and then on from there) and publishes, on
+ * the worker's session, what changed among its assistant messages since the run was last shown, and each user message
+ * clients hold unread that the run has read since (`unreadShown`); a `chunk` of a shown live part is published as a
+ * `part.delta`. What was shown is kept per run until `forget`.
  *
  * A viewer `join`s a run's view and gets every frame the view applies after it; a duplicate record or chunk the view
  * ignored isn't passed on. Each viewer queues at most `queueSize` items (a lagging viewer's chunks of one call merge
@@ -185,7 +186,7 @@ interface Entry {
  */
 export class LiveRelay implements LiveCalls {
   readonly #bus: Pick<Bus, "publishLive">
-  readonly #transcript: Pick<Transcript, "messages">
+  readonly #transcript: Pick<Transcript, "recent">
   readonly #log: (line: string) => void
   readonly #queueSize: number
   readonly #runs = new Map<string, Entry>()
@@ -195,7 +196,7 @@ export class LiveRelay implements LiveCalls {
 
   constructor(options: {
     bus: Pick<Bus, "publishLive">
-    transcript: Pick<Transcript, "messages">
+    transcript: Pick<Transcript, "recent">
     log: (line: string) => void
     queueSize?: number
   }) {
@@ -346,12 +347,18 @@ export class LiveRelay implements LiveCalls {
 
   /** Renders `worker`'s run with the relay's live calls of the run (none once no worker feeds it) and publishes its
    *  assistant messages' changes since it was last shown, and whole once each part whose live call ended since then,
-   *  then moves its floor; then publishes the user messages the run read since (`#read`). A render or publish that
-   *  throws is logged. */
+   *  then moves its floor; then publishes the user messages the run read since (`#read`). The render holds the run's
+   *  newest messages: from its last assistant message on, and from its floor (from the run's start when the last
+   *  show had no reply), each message shown since and each one clients hold unread, which is all of them this reads.
+   *  A render or publish that throws is logged. */
   #show(worker: LiveWorker): void {
     const { run_id: runId, session_id: sessionId } = worker.job
     try {
-      const all = this.#transcript.messages(sessionId, [runId], this)
+      const was = this.#shown.get(runId)
+      const covering = [...(this.#unread.get(runId) ?? [])]
+      // A floor of "" (no reply shown yet) is below every message: the render covers the run from its start.
+      if (was !== undefined) covering.push(was.floor === "" ? messageId(runId, 0) : was.floor, ...was.messages.keys())
+      const all = this.#transcript.recent(sessionId, runId, this, covering)
       const rendered = all.filter((m) => m.role === "assistant")
       const live = new Set((this.calls(runId) ?? []).map((call) => `${runId}:${call.node}:${call.n}`))
       const floor = floorOf(rendered, live)
