@@ -800,9 +800,11 @@ test("Claude Code with the network on is refused: its sandbox has no checked way
 
 test("the override is nested objects with no dotted key, and its paths are resolved", () => {
   const { root, ws, tmp, fence, permission, thread } = layout()
+  const links: string[] = []
   const link = (target: string, name: string): string => {
     const p = path.join(root, name)
     fs.symlinkSync(target, p)
+    links.push(p)
     return p
   }
   // Links to the folders are resolved; a temp folder or fence that is itself a link is refused (below).
@@ -818,7 +820,9 @@ test("the override is nested objects with no dotted key, and its paths are resol
   expect(filesystem[ws]).toBe("write")
   expect(filesystem[tmp]).toBe("write")
   expect(filesystem[fence]).toBe("deny")
-  expect(Object.keys(filesystem).filter((k) => k.includes("-link"))).toEqual([])
+  // No key is a link or under one; the temp folder's own name may hold "-link".
+  const viaLink = (k: string) => links.some((l) => k === l || k.startsWith(l + path.sep))
+  expect(Object.keys(filesystem).filter(viaLink)).toEqual([])
   expect(config.projects).toEqual({ [ws]: { trust_level: "untrusted" } })
   // Every value is a plain object, array, string or boolean: JSON round-trips it unchanged.
   expect(JSON.parse(JSON.stringify(config))).toEqual(config)
