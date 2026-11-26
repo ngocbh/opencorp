@@ -8,8 +8,9 @@ description: "Open the TUI in a project folder to talk to your employees, and hi
 ## Talk to your team
 
 Run `opencorp` in a project folder. In a folder nobody has worked in yet, it first asks "Who do you
-want to talk to?". `opencorp -c` continues the newest session in that folder. Ctrl+C twice leaves the chat; if the
-office can't be reached, `Connection lost…` covers the screen until it is back, and one Ctrl+C leaves.
+want to talk to?". `opencorp -c` continues the newest session in that folder. On an empty prompt, with your employee
+not working, Ctrl+C twice leaves the chat; if the office can't be reached, `Connection lost…` covers the screen until
+it is back, and one Ctrl+C leaves.
 
 In the chat, each run of your employee's tool calls shows as one line, such as `+ 3 commands, 1 edit, 4 reads`:
 click it to see the calls. "Verbosity" in the command list (ctrl+p) switches between Low (the default), Medium, which
@@ -20,10 +21,16 @@ Enter sends a message. While your employee works, they read it before their next
 border, and a click on it moves it to the queue or deletes it. ctrl+x Enter queues a message instead: it waits for
 their next turn, in a line above the prompt such as `2 queued · Then book the hotel.`. Click the line to see what is
 queued: Enter steers with one now, ctrl+d deletes it, and ctrl+u puts it back in the prompt. Enter on an empty prompt
-steers with the first. Esc stops your employee, and what is queued is their next turn. Anyone who may write in the
-chat may queue; only whoever opened it moves or deletes a message, and only their own, so the line above the prompt
-lists only yours, and someone else's queued message has a grey border in the chat. If a move can't finish, a toast says
-why, and the message goes back where it was, or into your prompt.
+steers with the first. Anyone who may write in the chat may queue; only whoever opened it moves, deletes or takes back
+a message, and only their own, so the line above the prompt lists only yours, and someone else's queued message has a
+grey border in the chat. If a move can't finish, a toast says why, and the message goes back where it was, or into
+your prompt.
+
+| Key | What it does |
+|---|---|
+| Esc | While your employee works, stops them and keeps what you typed; what you sent that they hadn't read, queued or not, is their next turn. Otherwise Esc twice clears what you typed |
+| Ctrl+C | While your employee works, stops them and keeps what you typed. Otherwise it clears what you typed |
+| ↑ at the top of the prompt | Takes back your newest message they haven't read, then the one before it, each on its own line ahead of what you typed. With none, brings back what you sent or cleared |
 
 A session's id in your employee's reply shows as a link named after that session, such as `@minh · codex 1` or
 `@minh · chat`; one of the chat's Codex or Claude Code sessions opens in [the pane](/instruments/#the-pane).

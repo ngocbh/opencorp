@@ -90,8 +90,8 @@ while a command runs), and a missing `.mcp.json` can still be created.
   `$` lines in their colour. A shell waiting for your password opens itself, with your keys unless you are typing a
   draft or a card is open; then press ctrl+x → to type the password there. Esc in the chat stops your employee and
   the command they were waiting on. A command they were told is still running goes on. A message you send while they
-  wait has a grey border until they read it before their next step; Esc stops them, and they read it next. One you
-  [queue](/team/#talk-to-your-team) waits for their next turn instead.
+  wait has a grey border until they read it before their next step; Esc stops them, and they read it next, unless ↑
+  takes it back into your prompt. One you [queue](/team/#talk-to-your-team) waits for their next turn instead.
 - **Typing in their shell.** A line you start in your employee's shell is yours until you finish it: their commands
   and keys wait, and they are told why. The pane's footer says how to give it back,
   `Enter or Ctrl-C (Ctrl-U at the prompt) gives it to @thanh`, and with your keys in the chat, a line there says the
