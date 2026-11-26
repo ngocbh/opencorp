@@ -13,6 +13,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { parseArgs } from "node:util"
+import { newestSource } from "@opencorp/office/util/checkout"
 import { noticeFiles } from "./notices"
 
 const TARGETS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"] as const
@@ -134,6 +135,10 @@ function replace(built: string, dir: string) {
 }
 
 const solidPlugin = createSolidTransformPlugin()
+// The binary's stamp: this checkout's newest source as the build begins, which the daemon reports and doctor compares
+// with the checkout's source then, so a copy or touch of an old build can't pass for a new one. A file changed during
+// the build is newer than the stamp, so doctor asks for another.
+const stamp = newestSource(path.join(CLI, "../.."))
 for (const { name, os, cpu, target } of builds) {
   const dir = path.join(outdir, `opencorp-${name}`)
   // Built beside `dir`, on the same file system, and renamed into place once whole.
@@ -153,8 +158,9 @@ for (const { name, os, cpu, target } of builds) {
     minify: { whitespace: true, syntax: true, identifiers: false },
     bytecode: true,
     splitting: true,
-    // Read by the TUI's commands, which then leave out the runtime Solid transform, and Babel with it.
-    define: { OPENCORP_COMPILED: "true" },
+    // OPENCORP_COMPILED is read by the TUI's commands, which then leave out the runtime Solid transform, and Babel
+    // with it; OPENCORP_SOURCE is the stamp, the office's `BUILT_FROM`.
+    define: { OPENCORP_COMPILED: "true", OPENCORP_SOURCE: String(stamp) },
     compile: {
       ...(target ? { target } : {}),
       outfile: path.join(staging, "bin/opencorp"),

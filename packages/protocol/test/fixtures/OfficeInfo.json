@@ -4,5 +4,6 @@
   "started_at": "2026-10-24T09:00:00.000Z",
   "version": "0.0.1",
   "tools": {"git": "/usr/bin/git"},
-  "guards": {"install": ["/opt/opencorp"], "tools": ["/usr/bin/git"], "path": ["/usr/bin", "/bin"]}
+  "guards": {"install": ["/opt/opencorp"], "tools": ["/usr/bin/git"], "path": ["/usr/bin", "/bin"]},
+  "built_from": 1761296400000
 }

@@ -55,7 +55,7 @@ import { fsHelper, run, startOnTerminal } from "../../runtime/sandbox/run.ts"
 import { latestVersion, newerStore, userVersion } from "../../runtime/store/migrate.ts"
 import { storeProblem } from "../../runtime/store/problem.ts"
 import { LIVE, StoreError } from "../../runtime/store/store.ts"
-import { CHECKOUT, binaryCheckout } from "../../util/checkout.ts"
+import { CHECKOUT, binaryCheckout, newestSource } from "../../util/checkout.ts"
 import { type Env, which } from "../../util/env.ts"
 import { strerror } from "../../util/errors.ts"
 import { OfficePaths } from "../../util/home.ts"
@@ -1053,67 +1053,33 @@ export const VERSION_UNREAD: Record<service.Unread, string> = {
     "run `opencorp restart`",
 }
 
-/** The newest modification time (ms) of the regular files under `dir`, at any depth; 0 when there are none. What
- *  can't be read is skipped. */
-function newestUnder(dir: string): number {
-  let entries: fs.Dirent[]
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true })
-  } catch {
-    return 0
-  }
-  let newest = 0
-  for (const entry of entries) {
-    const file = path.join(dir, entry.name)
-    if (entry.isDirectory()) newest = Math.max(newest, newestUnder(file))
-    else if (entry.isFile()) {
-      try {
-        newest = Math.max(newest, fs.statSync(file).mtimeMs)
-      } catch {
-        // removed while this ran, or unreadable
-      }
-    }
-  }
-  return newest
-}
-
-/** The source folders of the code the office runs from `checkout`: the office, protocol, CLI and Yian sources. */
-export function sourceRoots(checkout: string): string[] {
-  return ["office", "protocol", "cli", "yian"].map((pkg) => path.join(checkout, "packages", pkg, "src"))
-}
-
-/** The newest modification time (ms) of the source the office runs from `checkout`: the files under its
- *  `sourceRoots`. 0 when nothing is found, as for an npm install, which holds no source. */
-export function newestSource(checkout: string): number {
-  return Math.max(0, ...sourceRoots(checkout).map(newestUnder))
-}
-
-/** A binary built in a checkout (`binaryCheckout`) that a daemon runs: whether it is gone, and the newest of that
- *  checkout's source (ms), which it may be older than. */
+/** A binary built in a checkout (`binaryCheckout`) that a daemon runs: whether it is gone, the newest of that
+ *  checkout's source (ms), and the newest source it was built from, as its build stamped it (null without a stamp). */
 export interface Built {
   binary: string
   checkout: string
   gone: boolean
   source: number
+  from: number | null
 }
 
 /**
  * What the daemon behind `info` runs, judged by its own program, the last of the programs it pinned
  * (`guards.tools`): a binary built in a checkout is dated by its own file (0 once gone), beside that checkout's
- * newest source (`built`); a daemon on Bun runs the source of the checkout `here`, dated by its newest file. An npm
- * binary's install holds no source, so 0: its files are all dated 1985, and VERSION catches its upgrade.
+ * newest source and the source the daemon says its build was stamped with (`built`); a daemon on Bun runs the source
+ * of the checkout `here`, dated by its newest file. An npm binary's install holds no source, so 0: its files are all
+ * dated 1985, and VERSION catches its upgrade.
  */
 export function daemonCode(info: OfficeInfo, here: string): { newest: number; built?: Built } {
   const program = info.guards.tools.at(-1)
   const checkout = program === undefined ? null : binaryCheckout(program)
   if (program === undefined || checkout === null) return { newest: newestSource(here) }
-  let newest = 0
+  const built = { binary: program, checkout, source: newestSource(checkout), from: info.built_from ?? null }
   try {
-    newest = fs.statSync(program).mtimeMs
+    return { newest: fs.statSync(program).mtimeMs, built: { ...built, gone: false } }
   } catch {
-    return { newest, built: { binary: program, checkout, gone: true, source: newestSource(checkout) } }
+    return { newest: 0, built: { ...built, gone: true } }
   }
-  return { newest, built: { binary: program, checkout, gone: false, source: newestSource(checkout) } }
 }
 
 /** How to make an office running under the recorded service `mode` run this install's code. */
@@ -1125,10 +1091,10 @@ function restartHere(mode: string | null): string {
 
 /**
  * Whether `info` is this office's daemon (`launch`'s home), runs from this install (`here`, the first of its
- * `installPaths`), runs this install's version, runs a binary built from its checkout's current source (`built`,
- * when it runs one; `daemonCode`), and started after its code last changed (`newest`, ms). `mode` is the office's
- * recorded service mode, which decides how it picks up this install. An office from an install or a binary that's
- * gone fails: it starts each session's worker from there.
+ * `installPaths`), runs this install's version, started after its code last changed (`newest`, ms), and runs a binary
+ * built from its checkout's current source (`built`, when it runs one; `daemonCode`), as the binary's stamp says,
+ * whatever its file's date. `mode` is the office's recorded service mode, which decides how it picks up this install.
+ * An office from an install or a binary that's gone fails: it starts each session's worker from there.
  */
 export function versionCheck(
   launch: Launch,
@@ -1164,19 +1130,20 @@ export function versionCheck(
     const detail = `the office runs ${built.binary}, which is gone, so sessions can't start; run install.sh again, then \`opencorp restart\``
     return { name: "version", status: "fail", detail }
   }
-  // A restart would only start the same binary again, as a launchd or systemd service does.
-  if (built && newest < built.source) {
-    const detail =
-      `the office runs ${built.binary}, built before the source in ${built.checkout} last changed; run install.sh ` +
-      `again (or \`bun run build\` in ${built.checkout}/packages/cli), then \`opencorp restart\``
-    return { name: "version", status: "warn", detail }
-  }
+  // A binary whose file changed since the office started is another build than it runs: a restart starts it.
   if (Date.parse(info.started_at) < newest) {
     return {
       name: "version",
       status: "warn",
       detail: "the office started before its code last changed; restart it to run the new code",
     }
+  }
+  // A restart would only start the same binary again, as a launchd or systemd service does.
+  if (built && (built.from === null || built.from < built.source)) {
+    const detail =
+      `the office runs ${built.binary}, built before the source in ${built.checkout} last changed; run install.sh ` +
+      `again (or \`bun run build\` in ${built.checkout}/packages/cli), then \`opencorp restart\``
+    return { name: "version", status: "warn", detail }
   }
   return { name: "version", status: "ok", detail: `pid ${info.pid} runs the current code` }
 }
