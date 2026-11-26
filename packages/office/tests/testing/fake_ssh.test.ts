@@ -349,8 +349,14 @@ test("like ssh, a master outlives its stdin while a forwarded connection is open
   const sock = path.join(dir, "m")
   const m = await master(fake, sock)
   const port = await freePort()
-  await runAsync(fake, ["-F", "/dev/null", "-S", sock, "-O", "forward", "-L", `127.0.0.1:${port}:${dir}/hq.sock`, "--", "opencorp-hq"])
+  const forward = ["-F", "/dev/null", "-S", sock, "-O", "forward", "-L", `127.0.0.1:${port}:${dir}/hq.sock`, "--", "opencorp-hq"]
+  expect((await runAsync(fake, forward)).code).toBe(0)
   const c = await hold(port)
+  // The connection is the master's once it has accepted it, which may be after this side connected: a byte echoed
+  // back through the forward says it has.
+  const echoed = new Promise<void>((resolve) => c.once("data", () => resolve()))
+  c.write("x")
+  await echoed
   m.child.stdin!.end()
   expect(await stillRunning(m.child, 500)).toBe(true)
   c.destroy()
