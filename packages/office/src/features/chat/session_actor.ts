@@ -92,7 +92,7 @@ import { restoreHarnessNotes } from "./instrument.ts"
 import { type LiveCalls, messageId, sentUnread, type Transcript, userMessage, withdrawnSends } from "./transcript.ts"
 import { type Move, readMoves, sameMove, writeMoves } from "./moves.ts"
 import { readFlow } from "../../company/flow_yaml.ts"
-import { type ChatFlow, MAIN_CHAT } from "../../company/chat_flow.ts"
+import { actionOnly, type ChatFlow, MAIN_CHAT } from "../../company/chat_flow.ts"
 
 /** What every actor of an office shares. */
 export interface ActorContext {
@@ -307,6 +307,8 @@ class Pending {
   readonly fallback: Delivery | null
   /** The office's note this `send` carries, if it carries one. */
   readonly note: Note | null
+  /** For a person's `/model` action, the session's model it tells the run (null: the connection's own); else null. */
+  readonly told: { model: string | null } | null
   /** Settles with the caller's answer: `acked`, or the `HarnessError` the delivery is refused with. */
   readonly answer: Promise<unknown>
   #resolve!: (value: unknown) => void
@@ -319,13 +321,20 @@ class Pending {
       questionId = null,
       fallback = null,
       note = null,
-    }: { questionId?: string | null; fallback?: Delivery | null; note?: Note | null } = {},
+      told = null,
+    }: {
+      questionId?: string | null
+      fallback?: Delivery | null
+      note?: Note | null
+      told?: { model: string | null } | null
+    } = {},
   ) {
     this.delivery = delivery
     this.acked = acked
     this.questionId = questionId
     this.fallback = fallback
     this.note = note
+    this.told = told
     this.answer = new Promise((resolve, reject) => {
       this.#resolve = resolve
       this.#reject = reject
@@ -356,7 +365,8 @@ class WorkerRun {
   worker: ActorWorker | null = null
   /** The provider it was spawned with, whose key no hook or reason may show. */
   provider: Provider | null = null
-  /** The connection and model (null: the connection's own) that resolved to `provider`. */
+  /** The connection and model that resolved to `provider`; null for the connection's own config, on which the run
+   *  takes another model of the connection as a person's `/model` action (`#modelChoice`). */
   ranOn: { name: string; model: string | null } | null = null
   /** The prices its model calls count at toward the cost cap, by model (a model none lists is at `DEFAULT_PRICE`),
    *  and whether its connection is a subscription, which pays nothing for them (`Connections.capPrices`). */
@@ -552,8 +562,15 @@ export class SessionActor implements LiveCalls {
   #withdrawal: Pending | null = null
   /** The sends a person's withdraw or move takes back now, as `sendKeyOf` names them: no second one may start. */
   readonly #moving = new Set<string>()
-  /** Whether the session's flow keeps a queue (`#keepsQueue`), once read. */
-  #queueKept: boolean | null = null
+  /** The inputs the session's flow declares (`#inputsOf`), once read; null when they can't be. */
+  #declared: Record<string, unknown> | null | undefined = undefined
+  /** Whether the session's flow takes its model as a person's `/model` action (`#takesModel`), once read. */
+  #modelTaken: boolean | null = null
+  /** Who last switched the session's model, who signs the `/model` action that tells the run; the owner when
+   *  null. */
+  #modelBy: string | null = null
+  /** The last `/model` action given to a worker or a job (`#modelTell`): another is due only once it is answered. */
+  #telling: Pending | null = null
   /** The sends withdraws took back that went back to the run or wait with the held notes, by run and seq. */
   readonly #rehomed = new Set<string>()
   readonly #heldNotes: Note[] = []
@@ -853,7 +870,7 @@ export class SessionActor implements LiveCalls {
     const session = this.#session()
     try {
       const [name, model] = await connections.choice(session.connection, session.model)
-      const provider = await connections.resolve(name, model)
+      const { provider } = await this.#hostOf(session, name, model)
       return this.#recordCheck(this.#runId!, name, model, provider) !== null
     } catch (error) {
       if (error instanceof ProviderError || error instanceof BadConnectionName) return false
@@ -1354,18 +1371,37 @@ export class SessionActor implements LiveCalls {
   /** Whether the session's flow keeps a queue: it declares the queue as an inbox input. Read once, from the flow at
    *  the session's pinned commit; a flow that can't be read keeps none. */
   async #keepsQueue(session: SessionRecord): Promise<boolean> {
-    if (this.#queueKept !== null) return this.#queueKept
     const spec = await this.#specOf(session)
+    const declared = (await this.#inputsOf(session, spec))?.[spec.chat.queue]
+    return typeof declared === "string" && declared.startsWith("!Inbox(")
+  }
+
+  /** Whether the session's flow takes its model as a person's `/model` action: it declares a `model` input, which
+   *  the office starts it on, and keeps a queue, where the action waits for the next turn. Read once, as
+   *  `#keepsQueue` reads it. A flow that doesn't (a company's copy of an older template) gets each model in its
+   *  run's config, so a switch of model is a fresh run. */
+  async #takesModel(session: SessionRecord): Promise<boolean> {
+    if (this.#modelTaken === null) {
+      const keeps = await this.#keepsQueue(session)
+      const declared = (await this.#inputsOf(session, await this.#specOf(session)))?.model
+      this.#modelTaken = keeps && typeof declared === "string"
+    }
+    return this.#modelTaken
+  }
+
+  /** The inputs the session's flow declares, read once from the flow at its pinned commit; null (logged by its type)
+   *  when it can't be read. */
+  async #inputsOf(session: SessionRecord, spec: RunSpec): Promise<Record<string, unknown> | null> {
+    if (this.#declared !== undefined) return this.#declared
     try {
       const file = path.join(await this.#ctx.git.pin(session.repo_commit), spec.flow)
       const flow = readFlow(fs.readFileSync(file, "utf8")) as { input?: Record<string, unknown> } | null
-      const declared = flow?.input?.[spec.chat.queue]
-      this.#queueKept = typeof declared === "string" && declared.startsWith("!Inbox(")
+      this.#declared = flow?.input ?? null
     } catch (error) {
-      this.#log(`session ${this.sessionId}: its flow's queue can't be read (${errorName(error)})`)
-      this.#queueKept = false
+      this.#log(`session ${this.sessionId}: its flow's inputs can't be read (${errorName(error)})`)
+      this.#declared = null
     }
-    return this.#queueKept
+    return this.#declared
   }
 
   /**
@@ -1454,7 +1490,8 @@ export class SessionActor implements LiveCalls {
     for (const { seq, message, key: sentAs, by, inbox } of taken) {
       if (this.#rehomed.has(`${runId}:${seq}`)) continue
       this.#rehomed.add(`${runId}:${seq}`)
-      this.#publishRemoved(messageId(runId, seq))
+      // A person's action never showed.
+      if (!actionOnly(message)) this.#publishRemoved(messageId(runId, seq))
       // A note was sent under its instrument's key: it goes back under that key too, so it stays the instrument's.
       const owed = sentAs === null ? null : (OWED_KEY.exec(sentAs)?.[0] ?? null)
       if (owed === null) {
@@ -1835,20 +1872,29 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
-   * Switches the session to connection `connection` and `model` (null: the connection's own), clears its note and
-   * returns the stored session. A reply already running finishes where it is, on the old model; the next run call is
-   * a fresh run on the new pick (`#recordCheck`), and a message meanwhile waits for it (`#holdsSend`). The parked
-   * worker is closed unless it ran on the new pick. While a question waits on the run and no worker runs it, the
-   * fresh run starts now and the question goes stale (`#replaceAsked`). Refused with `409 not_live`, `409 ending` or
-   * `503 stopping`.
+   * Switches the session to connection `connection` and `model` (null: the connection's own) as `by` (the owner when
+   * null), clears its note and returns the stored session. A reply already running finishes where it is, on the old
+   * model. Another model of the run's connection stays in the run: `by`'s `/model` action tells it, ahead of the
+   * next message that may start a turn (`#modelTell`), and a running worker gets it now, in the queue, which the
+   * reply doesn't read. Another connection is a fresh run at the next run call (`#recordCheck`), and a message
+   * meanwhile waits for it (`#holdsSend`); so is another model the run can't take as an action (`#modelChoice`).
+   * The parked worker is closed unless it can go on with the new pick (`#onPick`). While a question waits on the run
+   * and no worker runs it, the fresh run starts now and the question goes stale (`#replaceAsked`). Refused with
+   * `409 not_live`, `409 ending` or `503 stopping`.
    */
-  setModel(connection: string, model: string | null): Promise<SessionRecord> {
+  setModel(connection: string, model: string | null, { by = null }: { by?: string | null } = {}): Promise<SessionRecord> {
     return this.#command(async () => {
       this.#live()
       this.#ctx.store.updateSession(this.sessionId, { connection, model, model_note: null })
+      this.#modelBy = by
       // A fresh run never reuses it, and it holds the old connection's key.
-      if (this.#parked !== null && !this.#onPick(this.#parked.ranOn)) await this.#releaseParked()
-      await this.#replaceAsked()
+      const parked = this.#parked
+      if (parked !== null && !this.#onPick(parked.ranOn, parked.provider)) await this.#releaseParked()
+      if (!(await this.#replaceAsked())) {
+        const run = this.#run
+        const live = run !== null && run.worker !== null && run.outcome === null && run.runId === this.#runId
+        if (live && this.#onPick(run.ranOn, run.provider)) await this.#tellLive(run)
+      }
       this.#trySettle("after a switch")
       return this.#session()
     })
@@ -2013,6 +2059,8 @@ export class SessionActor implements LiveCalls {
         this.#next.push(p)
         return false
       }
+      // A turn it may start runs on the session's model.
+      if (p.delivery.op === "send") await this.#tellLive(run)
       run.given.push(p)
       let sent: boolean
       try {
@@ -2039,21 +2087,94 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Whether a message now waits for the next worker though one runs the run: one already waits (messages keep their
-   *  order), or the session was switched off the worker's connection or model and no reply runs to read it as a
-   *  steer, so the worker's next turn would run it on the old model. The next run call is the fresh run, which
-   *  takes it. */
+   *  order), or the session was switched off where the worker's run can go on (`#onPick`) and no reply runs to read
+   *  it as a steer, so the worker's next turn would run it on the old connection. The next run call is the fresh
+   *  run, which takes it. */
   #holdsSend(): boolean {
     const run = this.#run
     if (run === null || run.worker === null || run.outcome !== null) return false
     if (this.#next.some((p) => p.delivery.op === "send")) return true
-    return !this.#replying() && !this.#onPick(run.ranOn)
+    return !this.#replying() && !this.#onPick(run.ranOn, run.provider)
   }
 
-  /** Whether `ranOn` is the session's connection and model now, compared as the record check compares them. */
-  #onPick(ranOn: { name: string; model: string | null } | null): boolean {
+  /** Whether a run spawned on `ranOn`, which gave it `provider`, goes on with the session's connection and model now,
+   *  as the record check decides: the same connection, and the same model, or the connection's own config, on which
+   *  the run takes the session's model as a person's action (`#modelChoice`). */
+  #onPick(ranOn: { name: string; model: string | null } | null, provider: Provider | null): boolean {
     const session = this.#ctx.store.getSession(this.sessionId)
-    if (ranOn === null || session === undefined) return false
-    return ranOn.name === (session.connection || OFFICE) && ranOn.model === session.model
+    if (ranOn === null || session === undefined || ranOn.name !== (session.connection || OFFICE)) return false
+    if (ranOn.model === session.model) return true
+    return ranOn.model === null && provider !== null && this.#modelChoice(provider, session.model) !== null
+  }
+
+  /**
+   * The `/model` choice the run takes for `model` (null: the connection's own) on `provider`, the connection's own
+   * config: its provider and the model, which the flow's reply and fold read each turn. Null when the session's flow
+   * doesn't take one (`#takesModel`, read at the spawn before) or the connection names no provider or own model, so
+   * the model goes in the run's config instead, and a switch of model is a fresh run.
+   */
+  #modelChoice(provider: Provider, model: string | null): { provider: string; model: string } | null {
+    if (this.#modelTaken !== true) return null
+    const named = provider.llm_config?.provider
+    const chosen = model ?? provider.llm_config?.model
+    return typeof named === "string" && typeof chosen === "string" ? { provider: named, model: chosen } : null
+  }
+
+  /**
+   * The person's `/model` action that tells run `runId`, spawned on `provider`, the session's model, when its row
+   * says it holds another and it takes the session's as an action (`#modelChoice`); null when none is due or one is
+   * on its way. It goes to the queue, which only the turn's take reads, so a running reply finishes on the model it
+   * has; it is signed and sent by who switched (`#modelBy`), else the owner, under a key of its own.
+   */
+  #modelTell(runId: string, provider: Provider | null): Pending | null {
+    if (this.#telling !== null && !this.#telling.done) return null
+    const { store } = this.#ctx
+    const session = store.getSession(this.sessionId)
+    const row = store.getRun(runId)
+    if (session === undefined || row === undefined || provider === null) return null
+    if ((row.connection ?? OFFICE) !== (session.connection || OFFICE) || row.model === session.model) return null
+    const choice = this.#modelChoice(provider, session.model)
+    const author = this.#modelBy ?? session.opened_by ?? this.#pins?.ceo ?? null
+    if (choice === null || author === null) return null
+    const action = { type: "action", tool: this.#chat.model, arguments: { connection: row.connection ?? OFFICE, ...choice } }
+    const event = { role: "user", author, parts: [action] }
+    const delivery: Delivery = {
+      id: newId(), op: "send", inbox: this.#chat.queue, event, key: `model:${newId()}`, ...byPerson(author),
+    }
+    this.#telling = new Pending(delivery, undefined, { told: { model: session.model } })
+    return this.#telling
+  }
+
+  /** Gives `run`'s running worker the `/model` action due (`#modelTell`), if any, ahead of what comes after it. One
+   *  the worker can no longer take is dropped: the next spawn's job tells the run instead. */
+  async #tellLive(run: WorkerRun): Promise<void> {
+    const tell = this.#modelTell(run.runId, run.provider)
+    if (tell === null || run.worker === null) return
+    run.given.push(tell)
+    let sent = false
+    try {
+      sent = await run.worker.deliver(tell.delivery)
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: a model switch can't be sent (${errorName(error)})`)
+    }
+    if (sent || tell.reply !== null) {
+      tell.live = true
+      return
+    }
+    run.given.splice(run.given.indexOf(tell), 1)
+    tell.resolve(undefined)
+  }
+
+  /** Run `runId` has the session's model `model` (null: the connection's own): its row says so, so no action tells
+   *  it again. A failure is logged by its type. */
+  #toldModel(runId: string, model: string | null): void {
+    const { store } = this.#ctx
+    try {
+      const row = store.getRun(runId)
+      if (row !== undefined) store.setRunConfig(runId, { connection: row.connection, model, configSha256: row.configSha256 })
+    } catch (error) {
+      this.#log(`session ${this.sessionId}: its run's model can't be recorded (${errorName(error)})`)
+    }
   }
 
   /** The decided reply of a message queued now: `queued` over the cost cap, where no turn runs until a raise, or
@@ -2180,7 +2301,7 @@ export class SessionActor implements LiveCalls {
     this.#nodes.clear()
     try {
       if (this.#closed) throw stopping()
-      const { session, name, model, provider, moved: removed } = await this.#checkProvider()
+      const { session, name, model, provider, given, moved: removed } = await this.#checkProvider()
       const spec = await this.#specOf(session)
       // A fresh run already decided needs no record check.
       const checked = kind === "advance" && advance && replace === null
@@ -2221,6 +2342,9 @@ export class SessionActor implements LiveCalls {
         }
       } else if (kind === "advance") {
         pendings.unshift(...this.#storedAnswers(pendings))
+        // First, so a turn the job's deliveries start runs on the session's model.
+        const tell = this.#modelTell(run.runId, provider)
+        if (tell !== null) pendings.unshift(tell)
       }
       const runId = run.runId
       // Read now, so every settle while the worker runs has the owner.
@@ -2236,6 +2360,10 @@ export class SessionActor implements LiveCalls {
         log: this.#logOf(runId),
         llmConfig: provider.llm_config,
         turns: session.turns,
+        // The model it starts on; null for the one in its config.
+        ...((await this.#takesModel(session))
+          ? { model: given === null && model !== null ? this.#modelChoice(provider, model) : null }
+          : {}),
         seed,
         deliver: pendings.map((p) => p.delivery),
         advance,
@@ -2249,7 +2377,7 @@ export class SessionActor implements LiveCalls {
       run.provider = provider
       // Read before the run starts, so a token its first call refreshes away is still scrubbed from its failure.
       runSecrets(provider)
-      run.ranOn = { name, model }
+      run.ranOn = { name, model: given }
       run.pricing = pricing
       run.seed = seed
       run.worker = await this.#launch(job, handlers, provider.env)
@@ -2403,34 +2531,52 @@ export class SessionActor implements LiveCalls {
     }
   }
 
-  /** The session, the connection, model and provider its next run uses, and whether it moved: a session whose
-   *  connection was removed is moved to the default's own model once that resolves, with a note. Throws when they
-   *  can't be resolved, having written nothing. */
+  /** The session, the connection, model and provider its next run uses, the model that provider was resolved on
+   *  (`given`), and whether it moved: a session whose connection was removed is moved to the default's own model once
+   *  that resolves, with a note. The provider is the connection's own config (`given` null) when the run takes the
+   *  model as a person's action (`#modelChoice`), so a switch of model keeps the run; else its config on the model.
+   *  Throws when they can't be resolved, having written nothing. */
   async #checkProvider(): Promise<{
     session: SessionRecord
     name: string
     model: string | null
     provider: Provider
+    given: string | null
     moved: boolean
   }> {
     const { store, connections } = this.#ctx
     let session = this.#session()
     const [name, model, moved] = await connections.choice(session.connection, session.model)
-    const provider = await connections.resolve(name, model)
+    const { provider, given } = await this.#hostOf(session, name, model)
     if (moved) {
       const uses = await named(connections, name, model)
       const note = `Connection '${session.connection}' was removed; this chat now uses ${uses}.`
       session = store.updateSession(this.sessionId, { connection: name, model, model_note: note })
     }
-    return { session, name, model, provider, moved }
+    return { session, name, model, provider, given, moved }
+  }
+
+  /** What a run of `session` on connection `name` and `model` is given: the connection's own config (`given` null)
+   *  when the run takes `model` as a person's action (`#modelChoice`), else its config on `model` (`given`). */
+  async #hostOf(
+    session: SessionRecord,
+    name: string,
+    model: string | null,
+  ): Promise<{ provider: Provider; given: string | null }> {
+    const { connections } = this.#ctx
+    await this.#takesModel(session)
+    const own = await connections.resolve(name, null)
+    if (model === null || this.#modelChoice(own, model) !== null) return { provider: own, given: null }
+    return { provider: await connections.resolve(name, model), given: model }
   }
 
   /**
    * Why run `runId` can't be advanced on connection `name` and `model`, which give `provider`, so that a fresh run
    * replaces it: `COULDNT_START` when it never started (its row has no config, or it has no log and never started,
    * `#ranStarted`), `COULDNT_RESUME` when it started and its log is gone, `NEW_MODEL` when it ran on
-   * another connection or model, or `provider` isn't the endpoint, key or config it had (an advance would replay them
-   * with whatever it is given); null when it can be advanced.
+   * another connection, or `provider` isn't the endpoint, key or config it had (an advance would replay them with
+   * whatever it is given), or it ran on another model that it can't take as a person's action (`#modelChoice`); null
+   * when it can be advanced, and told the model then (`#modelTell`).
    */
   #recordCheck(runId: string, name: string, model: string | null, provider: Provider): string | null {
     const row = this.#ctx.store.getRun(runId)
@@ -2441,9 +2587,11 @@ export class SessionActor implements LiveCalls {
       this.#log(`session ${this.sessionId}: its run's log is gone`)
       return COULDNT_RESUME
     }
-    if ((row.connection ?? OFFICE) !== name || row.model !== model) return NEW_MODEL
+    // A run keeps one connection for good: yian can't move a run's later calls to another one yet (yian#1713).
+    if ((row.connection ?? OFFICE) !== name) return NEW_MODEL
     // The provider in hand, not a second read: that is what the advance would be given.
     if (runRecord(name, model, provider).configSha256 !== row.configSha256) return NEW_MODEL
+    if (row.model !== model && this.#modelChoice(provider, model) === null) return NEW_MODEL
     return null
   }
 
@@ -2536,7 +2684,10 @@ export class SessionActor implements LiveCalls {
     for (const p of pendings) {
       const op = p.delivery.op
       if (lose && (op === "complete" || op === "release") && p.questionId !== null) this.#loseAnswer(p.questionId)
-      if (op === "send" || op === "close") {
+      if (p.told !== null) {
+        // A fresh run starts on the session's model.
+        p.resolve(undefined)
+      } else if (op === "send" || op === "close") {
         carry.push(p)
       } else if (op === "complete" && p.fallback !== null) {
         const sent = new Pending(p.fallback, "queued")
@@ -3010,6 +3161,12 @@ export class SessionActor implements LiveCalls {
     const op = p.delivery.op
     // A message a held fresh run carried was answered `queued` at once; it is still shown once taken.
     if (p.done && !(p.early && Object.hasOwn(reply, "seq") && !this.#finished)) return
+    // A person's model action, which the run has (a send again under its key appends nothing): it shows nothing.
+    if (p.told !== null && (Object.hasOwn(reply, "seq") || reply.refused === "key_reused")) {
+      this.#toldModel(run.runId, p.told.model)
+      p.resolve(p.acked)
+      return
+    }
     if (Object.hasOwn(reply, "seq")) {
       const closed = Array.isArray(reply.closed) ? reply.closed.map(String) : []
       for (const callId of closed) {
@@ -3107,6 +3264,8 @@ export class SessionActor implements LiveCalls {
    *  has read it already (`sentUnread`), and then the live relay publishes it again once the run has. `sent` is the
    *  message `prompt` or `queue` built. */
   #publishMessage(runId: string, seq: number, sent: unknown, key: string | undefined, queued: boolean): void {
+    // A person's action, as Esc's withdraw sends one again, is no message.
+    if (actionOnly(sent as RunMessage)) return
     const unread = sentUnread(this.#ctx.transcript, runId, seq, (line) => this.#log(`session ${this.sessionId}: ${line}`))
     try {
       const send = { seq, at: now(), message: sent as RunMessage, key, ...(queued ? { queued } : {}) }
@@ -3225,7 +3384,7 @@ export class SessionActor implements LiveCalls {
     if (!run.exited) {
       this.#keep(run, worker)
       // Switched since its spawn: the next run call is a fresh run, which never reuses it.
-      if (!this.#onPick(run.ranOn)) await this.#releaseParked()
+      if (!this.#onPick(run.ranOn, run.provider)) await this.#releaseParked()
     }
     await this.#callEnded(run)
   }
@@ -3574,6 +3733,9 @@ export class SessionActor implements LiveCalls {
   /** Puts `carry` in front of `#next`, each one's reply from the worker that dropped it forgotten, so the next
    *  worker's reply is the one read. */
   #requeue(carry: Pending[]): void {
+    // A model action is made again for the next job, if it is still due (`#modelTell`).
+    for (const p of carry) if (p.told !== null) p.resolve(undefined)
+    carry = carry.filter((p) => p.told === null)
     for (const p of carry) {
       p.reply = null
       p.late = false

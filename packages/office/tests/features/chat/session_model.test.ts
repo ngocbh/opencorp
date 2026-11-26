@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
+import { OFFICE } from "@opencorp/protocol"
 import { AUTH_FILE_ENV, ConnectionFile } from "../../../src/models/connections.ts"
 import { DEFAULT_PRICE } from "../../../src/models/cost.ts"
 import { ProviderError } from "../../../src/models/provider.ts"
@@ -411,7 +412,103 @@ test("a new chat on a second connection records it", async () => {
   expect(recordOf(h, s.id)).toEqual(["second", "stub-5"])
 })
 
-test("set model takes effect on the next turn with a fresh run", async () => {
+test("a switch to another model of the chat's connection keeps its run, and the next turn runs on it", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script({ content: "on one" }, { content: "on two" })
+  const s = await start(h)
+  const runs = h.store.getSession(s.id)!.run_ids
+  await tell(h, s.id, "first-turn-text")
+  const pid = await parkedPid(h, s.id)
+  expect(picked(await h.harness.setModel(s.id, OFFICE, "stub-2", { by: "ngocbh" }))).toEqual([OFFICE, "stub-2", null])
+  // Nothing runs for the switch alone, and the parked worker stays for the next turn.
+  expect(status(h, s.id)).toBe("idle")
+  expect(h.registry.get(s.id)?.pid).toBe(pid)
+  expect(await tell(h, s.id, "b")).toBe("on two")
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub", "stub-2"])
+  expect(h.registry.get(s.id)?.pid).toBe(pid)
+  expect(h.store.getSession(s.id)!.run_ids).toEqual(runs)
+  expect(recordOf(h, s.id)).toEqual([OFFICE, "stub-2"])
+  // The model reads the switch as ngocbh's own action, before the message, with the turns before it.
+  const [first, action, said] = userTexts(fake.requests()[1]!)
+  expect(first).toContain("first-turn-text")
+  expect(action).toContain('<authored_message author="ngocbh">')
+  expect(action).toContain('"tool":"/model"')
+  expect(said).toContain("b")
+  // It shows as no message.
+  expect(texts(h, s.id, "user")).toEqual(["first-turn-text", "b"])
+  expect(h.store.getSession(s.id)!.model_note).toBeNull()
+})
+
+test("a switch of model during a reply lets it finish on the old model; the next turn runs on the new one", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script({ content: "Done on one.", hold: 30 }, { content: "on two" })
+  const s = await start(h)
+  await h.harness.prompt(s.id, "a")
+  await fake.waitForRequests(1)
+  await replyRunning(h)
+  await h.harness.setModel(s.id, OFFICE, "stub-2")
+  fake.release()
+  await waitFor(() => texts(h, s.id).at(-1) === "Done on one." && status(h, s.id) === "idle", { what: "the reply" })
+  expect(await tell(h, s.id, "b")).toBe("on two")
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub", "stub-2"])
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(1)
+  expect(recordOf(h, s.id)).toEqual([OFFICE, "stub-2"])
+  expect(texts(h, s.id, "user")).toEqual(["a", "b"])
+})
+
+test("a switch back to the connection's own model is told to the run too", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script({ content: "on two" }, { content: "on one" })
+  const s = await start(h)
+  await h.harness.setModel(s.id, OFFICE, "stub-2")
+  expect(await tell(h, s.id, "a")).toBe("on two")
+  expect(picked(await h.harness.setModel(s.id, OFFICE, "stub"))).toEqual([OFFICE, null, null])
+  expect(await tell(h, s.id, "b")).toBe("on one")
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub-2", "stub"])
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(1)
+  expect(recordOf(h, s.id)).toEqual([OFFICE, null])
+})
+
+test("a new actor after a switch of model goes on in the same run, on the new model, with no note", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "on two" })
+  const h = await makeHarness(fake)
+  const s = await start(h)
+  const runs = h.store.getSession(s.id)!.run_ids
+  await h.harness.setModel(s.id, OFFICE, "stub-2")
+  await h.reopen()
+  expect(await tell(h, s.id, "b")).toBe("on two")
+  expect(fake.requests().at(-1)!.model).toBe("stub-2")
+  const stored = h.store.getSession(s.id)!
+  expect([stored.run_ids, stored.model_note]).toEqual([runs, null])
+})
+
+test("the cost cap counts each turn at its own model's price", async () => {
+  const fake = await fakeLlm()
+  // stub is free; stub-2 costs $1 an input token, so its turn's 10 tokens pass the company's $5 cap.
+  const prices = { stub: { input: 0, output: 0 }, "stub-2": { input: 1_000_000, output: 0 } }
+  const h = await makeHarness(fake, { prices })
+  fake.script({ content: "free" }, { content: "pricey" })
+  const s = await start(h)
+  await tell(h, s.id, "a")
+  expect(h.store.getSession(s.id)!.cost).toBe(0)
+  await h.harness.setModel(s.id, OFFICE, "stub-2")
+  await h.harness.prompt(s.id, "b")
+  await waitFor(() => h.store.listUsage(s.id).length === 2 && h.store.getSession(s.id)!.capped, {
+    what: "the second turn's charge",
+  })
+  expect(h.store.listUsage(s.id).map((usage) => [usage.model, usage.usd])).toEqual([
+    ["stub", 0],
+    ["stub-2", 10],
+  ])
+  expect(h.store.getSession(s.id)!.cost).toBe(10)
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(1)
+})
+
+test("a switch to another connection takes effect on the next turn with a fresh run", async () => {
   const fake = await fakeLlm()
   const h = await makeHarness(fake, { connections: { second: "stub-2" } })
   fake.script({ content: "on one" }, { content: "on five" })
@@ -684,7 +781,8 @@ test("a message after a switch waits for the fresh run", async () => {
   await waitFor(() => workers.length === 2, { what: "the fresh run's worker" })
   const fresh = workers[1]!
   expect(fresh.job.kind).toBe("chat")
-  expect(fresh.job.llm_config?.model).toBe("stub-5")
+  // On second's own config, starting on stub-5.
+  expect([fresh.job.llm_config?.model, fresh.job.inputs.model]).toEqual(["stub-2", { provider: "vllm", model: "stub-5" }])
   expect(fresh.job.deliver.map((d) => d.op)).toEqual(["send"])
   fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: fresh.job.deliver[0]!.id, seq: 3 })
   expect(await sent).toBe("queued")

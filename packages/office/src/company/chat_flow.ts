@@ -4,7 +4,8 @@ import { staticPathOf } from "@ngocbh/yian/run"
 /**
  * A conversation flow's shape: its inbox, its queue (an inbox only the turn's take reads, for the next turn), its turn
  * node (the take on both), its context node (which folds older turns once the take has run), its summarizer inside
- * that context, its reply node (which reads the inbox as its steer inbox), and its exit command.
+ * that context, its reply node (which reads the inbox as its steer inbox), its exit command, and the tool of a
+ * person's model action (`model`), whose `{provider, model}` arguments choose the model of the turns after it.
  */
 export class ChatFlow {
   readonly inbox: string
@@ -14,6 +15,7 @@ export class ChatFlow {
   readonly summarizer: string
   readonly reply: string
   readonly exit: string
+  readonly model: string
 
   constructor({
     inbox = "messages",
@@ -23,6 +25,7 @@ export class ChatFlow {
     summarizer = "chat/context/compacted/folded/summarize",
     reply = "chat/reply",
     exit = "/exit",
+    model = "/model",
   }: {
     inbox?: string
     queue?: string
@@ -31,6 +34,7 @@ export class ChatFlow {
     summarizer?: string
     reply?: string
     exit?: string
+    model?: string
   } = {}) {
     this.inbox = inbox
     this.queue = queue
@@ -39,6 +43,7 @@ export class ChatFlow {
     this.summarizer = summarizer
     this.reply = reply
     this.exit = exit
+    this.model = model
   }
 
   /** True for an occurrence of the turn node. */
@@ -73,3 +78,14 @@ export class ChatFlow {
 
 /** The shape of `shared/flows/chat.yaml`; a person's own main flow must keep these node names. */
 export const MAIN_CHAT = new ChatFlow()
+
+/** Whether `message` holds only `action` parts: something a person did themselves, which a conversation flow notes
+ *  for its next answered turn and never answers. */
+export function actionOnly(message: { readonly parts?: unknown } | null | undefined): boolean {
+  const parts = message?.parts
+  return (
+    Array.isArray(parts) &&
+    parts.length > 0 &&
+    parts.every((part) => (part as { type?: unknown } | null)?.type === "action")
+  )
+}

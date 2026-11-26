@@ -251,7 +251,8 @@ export function costCap(ctx: RequestContext, params: Params, body: unknown) {
 export function setModel(ctx: RequestContext, params: Params, body: unknown) {
   const { connection, model } = body as z.output<typeof SetModelRequest>
   const actor = harness(ctx, "POST /sessions/:id/model")
-  return harnessCall(() => actor.setModel(params.id!, connection, model))
+  const by = actingPerson(ctx)
+  return harnessCall(() => actor.setModel(params.id!, connection, model, { by }))
 }
 
 /** Switch the session's mode; only its approver may. */

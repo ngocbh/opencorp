@@ -370,6 +370,25 @@ test("an unread queued send is moved into the fresh run's queue, keeping who sen
   expect(userTexts(fake, 0)).toEqual(["now", "later"])
 })
 
+test("a person's /model action no turn read is not moved: the fresh run starts on its own model", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "ok" })
+  const r1 = await waitingChat(fake)
+  const action = { type: "action", tool: "/model", arguments: { connection: "office", provider: "vllm", model: "stub-2" } }
+  const chose = { id: "m1", op: "send", inbox: "queued", event: { role: "user", author: "minh", parts: [action] } } as const
+  const unread = advanceJob(r1, { advance: false, deliver: [chose, send("s1", "now")] })
+  expect(waitingAt(await run(unread, new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#0/heard"])
+  const r2 = nextRun(r1, { seed: seedOf(r1, fake) })
+  expect(waitingAt(await run(r2, new TemplateOffice(), { env: fake.env() }))).toEqual(["chat#1/heard"])
+  const moved = fs
+    .readFileSync(r2.log, "utf8")
+    .split("\n")
+    .filter((line) => line.includes('"key":"__start__.'))
+    .map((line) => (JSON.parse(line) as { payload: { key: string } }).payload.key)
+  expect(moved).toEqual(["__start__.messages"])
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub"])
+})
+
 test("a send a named withdraw took back is not moved, and one its turn read can't be taken back", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "ok" }, { content: "ok" })

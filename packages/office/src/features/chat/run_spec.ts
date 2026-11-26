@@ -231,8 +231,9 @@ export function managerSpec({
  * The worker job that runs `spec` for `session` as run `runId`, its office tools being `tools` (what
  * `spec.groups` built for this run).
  *
- * A new chat starts with an empty history at `turns`, the session's turns so far; with a `seed` (the run it
- * replaces) the worker replaces the empty `summary` and `history` with that run's. Only a `chat` job carries
+ * A new chat starts with an empty history at `turns`, the session's turns so far, and on `model`, the flow's `model`
+ * input when it takes one (left out when undefined); with a `seed` (the run it replaces) the worker replaces the
+ * empty `summary` and `history` with that run's. Only a `chat` job carries
  * `spec.parent`: an `advance` resumes a log that already records it. Every job names `spec.memories`, which the
  * worker binds on every run call. With `keep`, the worker stays parked after a run call that leaves the run waiting,
  * for the run's next job. Throws `JobError`, whose message holds no value, when a field is invalid.
@@ -248,6 +249,7 @@ export function chatJob(
     log,
     llmConfig,
     turns,
+    model,
     seed = null,
     deliver = [],
     advance = true,
@@ -260,6 +262,7 @@ export function chatJob(
     log: string
     llmConfig: Record<string, unknown> | null
     turns: number
+    model?: { provider: string; model: string } | null
     seed?: Seed | null
     deliver?: Delivery[]
     advance?: boolean
@@ -274,7 +277,7 @@ export function chatJob(
     pin,
     flow: spec.flow,
     log,
-    inputs: { ...spec.inputs, summary: "", history: [], turns },
+    inputs: { ...spec.inputs, summary: "", history: [], turns, ...(model === undefined ? {} : { model }) },
     llm_config: llmConfig,
     skills: spec.skills,
     groups: groupSpecs(tools),

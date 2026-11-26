@@ -103,6 +103,30 @@ test("setModel switches a live session; unknown connections and ended sessions f
   expect([over.status, over.code]).toEqual([409, "not_live"])
 }, 30_000)
 
+test("/model to another model of the chat's connection keeps one run: the transcript goes on, on the new model", async () => {
+  const { id } = await chat("one-run")
+  const runs = (await client().sessions.get(id)).run_ids
+  office.llm.script({ match: "Before the switch", content: "On stub." })
+  await client().sessions.prompt(id, { text: "Before the switch" })
+  await until(async () => (await client().sessions.messages(id)).length === 2, 20_000)
+  await reach(id, "idle")
+  // As the TUI's model dialog switches it.
+  await client().sessions.setModel(id, { connection: "office", model: "other-model" })
+  office.llm.script({ match: "After the switch", content: "On the other model." })
+  await client().sessions.prompt(id, { text: "After the switch" })
+  await until(async () => (await client().sessions.messages(id)).length === 4, 20_000)
+  await reach(id, "idle")
+  const messages = await client().sessions.messages(id)
+  expect(messages.map((m) => [m.role, m.parts.map((p) => (p.type === "text" ? p.text : p.type))])).toEqual([
+    ["user", ["Before the switch"]],
+    ["assistant", ["On stub."]],
+    ["user", ["After the switch"]],
+    ["assistant", ["On the other model."]],
+  ])
+  expect((await client().sessions.get(id)).run_ids).toEqual(runs)
+  expect(office.llm.requests().at(-1)!.model).toBe("other-model")
+}, 30_000)
+
 test("a stale profile write is a VersionConflictError", async () => {
   const p = await client().profiles.get("minh")
   await client().profiles.put("minh", { text: "v2", base_version: p.version })

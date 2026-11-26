@@ -240,6 +240,19 @@ test("a withdraw a person named hides its send, and only Esc's withdraws are the
   expect([transcript.keyed("r1", "moved:r0:1"), transcript.keyed("r1", "moved:r0:2")]).toEqual([true, false])
 })
 
+test("a person's action never shows: neither unread in the queue nor once a turn reads it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "On two." })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  const action = { type: "action", tool: "/model", arguments: { connection: "office", provider: "vllm", model: "stub-2" } }
+  const chose: Delivery = { id: "m1", op: "send", inbox: "queued", event: { role: "user", author: "minh", parts: [action] } }
+  await apply(job, fake, [chose])
+  expect(messages(runs, newId(), ["r1"])).toEqual([])
+  await advance(job, fake, [send("s1", "hi")])
+  expect(texts(messages(runs, newId(), ["r1"]))).toEqual([["user", ["hi"]], ["assistant", ["On two."]]])
+})
+
 test("a user message can name its author", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Done." })

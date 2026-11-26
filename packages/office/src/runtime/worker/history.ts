@@ -13,7 +13,7 @@ import {
   TypedValue,
 } from "@ngocbh/yian/run"
 import { errorName } from "./rpc.ts"
-import { MAIN_CHAT } from "../../company/chat_flow.ts"
+import { actionOnly, MAIN_CHAT } from "../../company/chat_flow.ts"
 
 /** A send of the replaced run that nothing read: its inbox (the main chat's or its queue), its seq there, its
  *  message, the key the office sent it under, if any, and who sent it (`by`), if its record says. */
@@ -43,6 +43,11 @@ type SeedOptions = { env: (name: string) => string | undefined; codeRoot: string
 // yian's fixed START id: the commit under this key holds the run's inputs, and a send commits under
 // `<START>.<inbox>`.
 const START = "__start__"
+/** Whether `message` is a person's `/model` action. */
+function modelAction(message: Message): boolean {
+  return actionOnly(message) && message.parts.some((part) => (part as { tool?: unknown }).tool === MAIN_CHAT.model)
+}
+
 /** The inboxes whose unread sends move, by the key a send to each commits under. */
 const SEND_KEYS = new Map([MAIN_CHAT.inbox, MAIN_CHAT.queue].map((inbox) => [`${START}.${inbox}`, inbox]))
 const INBOXES: ReadonlySet<string> = new Set(SEND_KEYS.values())
@@ -101,7 +106,8 @@ function carried(records: FoldedRun["records"]): { summary: string; history: Mes
  * The sends to the main chat's inbox and its queue, in log order, that no accepted take, steer step or withdraw
  * consumed, with their inboxes, keys and senders. A take commit counts once a success names it: an orphan one's events
  * go back to unread, as yian re-offers them. A withdraw's sends are the office's again (Esc sends them anew, a move to
- * the queue or back sends them to the other inbox, and a delete drops them), so none is moved.
+ * the queue or back sends them to the other inbox, and a delete drops them), so none is moved. Nor is a person's
+ * `/model` action: the fresh run starts on the session's model.
  */
 function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
   const sends = new Map<number, Omit<UnreadSend, "seq">>()
@@ -113,6 +119,8 @@ function unreadSends(entries: readonly RunLogEntry[]): UnreadSend[] {
       const inbox = record.nodeId === START ? SEND_KEYS.get(record.key) : undefined
       if (inbox !== undefined && record.value !== null) {
         const message = TypedValue.fromWire(record.value).toObject() as Message
+        // A model the replaced run hadn't taken yet: the fresh run starts on the session's.
+        if (modelAction(message)) continue
         sends.set(entry.seq, { inbox, message, key: record.sendKey, by: record.by })
       } else if (record.take !== null) {
         takes.set(entry.seq, record.take.events)
