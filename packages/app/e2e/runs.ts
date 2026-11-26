@@ -1,8 +1,9 @@
 // Run Logs data for the fixture HQ: top-level runs, newest first, and the runs started from each, as GET /api/runs and
 // GET /api/runs?parent= answer them; each run's page (its header, node and record pages) as GET /api/runs/{id} and its
-// routes answer them; and agent nodes' model calls, as GET /api/runs/{id}/calls and its routes answer them.
+// routes answer them; node attempts' detail, as GET /api/runs/{id}/nodes/{seq} answers it; and agent nodes' model
+// calls, as GET /api/runs/{id}/calls and its routes answer them.
 import type {
-  RunCall, RunCallEntry, RunCallMessage, RunDetail, RunDivider, RunEvent, RunNode, RunSummary,
+  RunCall, RunCallEntry, RunCallMessage, RunDetail, RunDivider, RunEvent, RunNode, RunNodeDetail, RunNodeValue, RunSummary,
 } from "@opencorp/protocol"
 
 /** A run id: "01JA1H" and `n`, 26 characters. */
@@ -132,21 +133,62 @@ export function runPages(data: Runs): RunPages {
   }
 }
 
-/** The whole record a node opens to, by run id and seq: run 5's reply and its failed reply, run 6's reply, and run 2's
- * debrief (a node whose static path has no model). */
+/** The whole record Raw opens, by run id and seq: run 5's failed reply, its traceback whole. */
 export const wholeEvents = (): Record<string, Record<number, RunEvent>> => ({
   [rid(5)]: {
-    32: { seq: 32, kind: "node_succeeded", node_id: "chat#2/reply", payload: { value: { output: "Done." } }, cut: [],
-      withheld: null, size: null },
     16: { seq: 16, kind: "node_failed", node_id: "chat#1/reply", payload: { failure: { message: "AuthError: 401 invalid key",
       traceback: "Traceback (most recent call last): …whole…" } }, cut: [],
       withheld: null, size: null },
   },
-  [rid(6)]: { 4: { seq: 4, kind: "node_succeeded", node_id: "chat#0/reply", payload: { value: { output: "Quota." } },
-    cut: [], withheld: null, size: null } },
-  [rid(2)]: { 2: { seq: 2, kind: "node_succeeded", node_id: "debrief", payload: { value: { output: { lessons: [] } } },
-    cut: [], withheld: null, size: null } },
 })
+
+/** Node details by run id and start seq, where a node's detail says more than its row (see `detailOf`). */
+export type NodeDetails = Record<string, Record<number, RunNodeDetail>>
+
+/** A value row as the office sends one. */
+export const valueRow = (name: string, value: unknown, over: Partial<RunNodeValue> = {}): RunNodeValue =>
+  ({ name, seq: 1, type: null, value, missing: null, size: null, cut: [], ...over })
+
+/** Node `node`'s detail in run `page` as the office sends it when its log says no more than its row: its model by
+ * static path, no record times, values or failure but its row's error. */
+export function detailOf(page: RunFixturePage, node: RunNode, over: Partial<RunNodeDetail> = {}): RunNodeDetail {
+  const path = node.node_id.split("/").map((s) => s.replace(/[#~]\d+$/, "")).join("/")
+  const models = page.detail.models ?? {}
+  return {
+    node, model: Object.hasOwn(models, path) ? models[path]! : null, started_at: null, ended_at: null, outputs: [],
+    inputs: [], failure: node.error ? { message: node.error, traceback: null, cut: [], size: null } : null, ...over,
+  }
+}
+
+/** The new messages run 5's `chat#2/reply` wrote. */
+export const NEW_MESSAGES = [
+  { role: "assistant", author: null, parts: [{ type: "text", text: "Saving the notes, then listing the folder." }] },
+  { role: "tool", author: null, parts: [{ type: "tool_result", name: "workspace_save", content: "saved notes.md" }] },
+  { role: "assistant", author: null, parts: [{ type: "text", text: "Done." }] },
+]
+
+/**
+ * The details that say more than a row: run 5's `chat#2/reply` (its model, when it ran, its reply and new messages)
+ * and its failed `chat#1/reply` (the whole traceback), run 6's reply, and run 2's debrief (a record, and no model).
+ */
+export function nodeDetails(pages: RunPages): NodeDetails {
+  const of = (id: string, seq: number, over: Partial<RunNodeDetail>) =>
+    detailOf(pages[id]!, pages[id]!.nodes.find((n) => n.seq === seq)!, over)
+  const started = new Date(BASE + 30 * 60_000).toISOString()
+  const ended = new Date(BASE + 30 * 60_000 + 4_250).toISOString()
+  return {
+    [rid(5)]: {
+      31: of(rid(5), 31, { started_at: started, ended_at: ended, outputs: [
+        valueRow("output", "Done.", { seq: 33, type: "str" }),
+        valueRow("new_messages", NEW_MESSAGES, { seq: 34, type: "list[object]" }),
+      ] }),
+      15: of(rid(5), 15, { started_at: started, ended_at: started, failure: { message: "AuthError: 401 invalid key",
+        traceback: "Traceback (most recent call last): …whole…", cut: [], size: null } }),
+    },
+    [rid(6)]: { 3: of(rid(6), 3, { outputs: [valueRow("output", "Quota.", { seq: 4, type: "str" })] }) },
+    [rid(2)]: { 1: of(rid(2), 1, { outputs: [valueRow("output", { lessons: [] }, { seq: 2, type: "object" })] }) },
+  }
+}
 
 /** A node's model calls: GET /api/runs/{id}/calls?node= lists `list`, and GET /api/runs/{id}/calls/{node}/{n} answers
  * the call one of whose attempts is `n`. */

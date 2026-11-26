@@ -21,6 +21,7 @@ import {
   Question,
   RunCall,
   RunCallList,
+  RunNodeDetail,
   RunPage,
   Session,
 } from "@opencorp/protocol"
@@ -150,8 +151,14 @@ async function script(hq: Browser, code: string): Promise<Seen[]> {
   const runs = await step("runs", hq.get("/api/runs"), readableIds(RunPage), (b) => b.runs[0])
   // The first run's newest reply node, its model calls, and its first call rebuilt.
   const run = (JSON.parse(runs.text).runs[0]?.run_id as string | undefined) ?? "NOPE"
-  const nodes = JSON.parse((await hq.get(`/api/runs/${run}/nodes`)).text).nodes as { node_id: string }[] | undefined
-  const reply = nodes?.find((n) => n.node_id.endsWith("/reply"))?.node_id ?? "reply"
+  const nodes = JSON.parse((await hq.get(`/api/runs/${run}/nodes`)).text).nodes as
+    | { seq: number; node_id: string }[]
+    | undefined
+  const replyNode = nodes?.find((n) => n.node_id.endsWith("/reply"))
+  const reply = replyNode?.node_id ?? "reply"
+  await step("node detail", hq.get(`/api/runs/${run}/nodes/${replyNode?.seq ?? 1}`), RunNodeDetail, (b) => b.outputs[0])
+  await step("node detail of no attempt", hq.get(`/api/runs/${run}/nodes/999999`))
+  await step("node detail with a bad seq", hq.get(`/api/runs/${run}/nodes/x`))
   const list = await step("model calls", hq.get(`/api/runs/${run}/calls?${new URLSearchParams({ node: reply })}`),
     readableIds(RunCallList), (b) => b.calls[0])
   const n = (JSON.parse(list.text).calls?.[0]?.n as number | undefined) ?? 1
@@ -188,6 +195,9 @@ const EXPECTED: [string, number, string | null][] = [
   ["file not in the tree", 404, "no_file"],
   ["file", 200, null],
   ["runs", 200, null],
+  ["node detail", 200, null],
+  ["node detail of no attempt", 404, "not_found"],
+  ["node detail with a bad seq", 422, "invalid_body"],
   ["model calls", 200, null],
   ["model call", 200, null],
   ["model calls without a node", 422, "invalid_body"],
@@ -302,7 +312,8 @@ test("the fixture answers the hq script as the real hq does", async () => {
   expect(want.map((s) => [s.step, s.status, s.error])).toEqual(EXPECTED)
   expect(want.filter((s) => s.parses === false).map((s) => s.step)).toEqual([])
   // The chat's session and run are there to compare with.
-  expect(want.filter((s) => s.item).map((s) => s.step)).toEqual(expect.arrayContaining(["sessions", "runs", "model calls"]))
+  expect(want.filter((s) => s.item).map((s) => s.step)).toEqual(
+    expect.arrayContaining(["sessions", "runs", "node detail", "model calls"]))
   // Items are compared where both sides have one; the other side's list is then checked by its schema only.
   want.forEach((w, i) => {
     const g = got[i]

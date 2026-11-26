@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
-import { node, rid } from "./runs"
+import { node, rid, valueRow } from "./runs"
 
 test.beforeEach(async ({ request }) => {
   await request.post("/__fixture/reset")
@@ -160,13 +160,17 @@ test("Expand gives node detail the whole width and back; Escape still closes it 
 })
 
 test("long output scrolls inside node detail and wraps", async ({ page, request }) => {
-  const rec = { cut: [], withheld: null, size: null }
   const long = `${"x".repeat(3000)}\n${Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n")}`
-  await request.post("/__fixture/run", { data: { id: rid(2), add: [node(62, "write")], addEvents: [
-    { seq: 63, kind: "node_succeeded", node_id: "write", payload: { value: long }, ...rec }] } })
+  const write = node(62, "write")
+  await request.post("/__fixture/run", { data: { id: rid(2), add: [write], details: { 62: { node: write, model: null,
+    started_at: null, ended_at: null, inputs: [], failure: null, outputs: [valueRow("output", long, { type: "str" })] } } } })
   await page.goto(`/runs/${rid(2)}`)
   await timeline(page).getByRole("treeitem", { name: /^write/ }).click()
   const d = detail(page)
+  // Its row is one line, cut; opened, it shows whole.
+  const row = await d.getByRole("region", { name: "Outputs" }).evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }))
+  expect(row.sw).toBeLessThanOrEqual(row.cw)
+  await d.getByRole("button", { name: "Open output" }).click()
   await expect(d).toContainText("line 199")
   const size = await d.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth, sh: el.scrollHeight, ch: el.clientHeight }))
   expect(size.sw).toBeLessThanOrEqual(size.cw)

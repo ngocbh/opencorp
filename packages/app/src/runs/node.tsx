@@ -1,13 +1,16 @@
-// One node attempt's detail on the run page: its output, route or error, and its model, read from the record that
-// ended it, and an agent's model calls, each of which opens in its place. Beside the Timeline on a desktop (or over its
+// One node attempt's detail on the run page, read from the office in one route, in one shape for every kind: Metadata,
+// Inputs, the work section its kind has (an agent's model calls, a case's route), Outputs and its Error, each a list
+// of labelled rows. A model call or a whole value opens in its place. Beside the Timeline on a desktop (or over its
 // whole width, expanded); a modal sheet over everything on a phone.
-import type { RunDetail, RunEvent, RunNode } from "@opencorp/protocol"
+import type { RunDetail, RunNode, RunNodeDetail, RunNodeValue } from "@opencorp/protocol"
+import ArrowLeft from "lucide-solid/icons/arrow-left"
 import Maximize2 from "lucide-solid/icons/maximize-2"
 import Minimize2 from "lucide-solid/icons/minimize-2"
 import {
   createEffect,
   createSignal,
   createUniqueId,
+  For,
   Index,
   on,
   onCleanup,
@@ -15,15 +18,18 @@ import {
   Show,
   type JSX,
 } from "solid-js"
+import { Dynamic } from "solid-js/web"
 import { useOffice } from "../data/office"
 import { CallList, CallView, type OpenedCall } from "./call"
 import type { LiveCall } from "./live"
 import { handleText, staticPath } from "./timeline"
+import { duration, preview, shownWhole, workOf, type WorkKind } from "./values"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
 const RING = "outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:focus-visible:ring-neutral-100"
 const ICON_BUTTON = "grid h-8 w-8 place-items-center rounded hover:bg-neutral-100 dark:hover:bg-neutral-800"
 const PRE = "overflow-x-auto rounded bg-neutral-100 p-2 font-mono text-xs whitespace-pre-wrap wrap-anywhere dark:bg-neutral-900"
+const ROWS = "grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1"
 
 /** A failed read, inline, with its message and a Retry button. */
 export function ReadError(props: { error: unknown; onRetry: () => void }) {
@@ -45,20 +51,139 @@ export const pretty = (value: unknown) => (typeof value === "string" ? value : J
 /** A record too large to preview, as a page and node detail say it. */
 export const tooLarge = (size: number) => `${(size / 2 ** 20).toFixed(1)} MB record: too large to preview; download the log`
 
-type Payload = Record<string, unknown>
-const asObject = (v: unknown): Payload | undefined => (v && typeof v === "object" && !Array.isArray(v) ? (v as Payload) : undefined)
+/** A time with seconds, in the browser's locale. */
+const clock = (t: string) => new Date(t).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" })
 
-/** A titled part of node detail. */
-function Part(props: { title: string; children: JSX.Element }) {
+/** A titled section of node detail. */
+function Section(props: { title: string; children: JSX.Element }) {
+  const id = createUniqueId()
   return (
-    <div class="space-y-1">
-      <h3 class={`text-xs font-semibold ${MUTED}`}>{props.title}</h3>
+    <section aria-labelledby={id} class="space-y-1">
+      <h3 id={id} class={`text-xs font-semibold ${MUTED}`}>
+        {props.title}
+      </h3>
       {props.children}
-    </div>
+    </section>
   )
 }
 
-/** A node attempt's detail, read from the record at its `end_seq`; no per-node tokens or times (the log has none). */
+/** One labelled row of a section. */
+function Row(props: { label: string; mono?: boolean; children: JSX.Element }) {
+  return (
+    <>
+      <dt class={`${MUTED} ${props.mono ? "font-mono wrap-anywhere" : ""}`}>{props.label}</dt>
+      <dd class="min-w-0 wrap-anywhere">{props.children}</dd>
+    </>
+  )
+}
+
+/** A section's values, a row each: its name, its type, a preview, and › to open it when the preview isn't all of it. */
+function Values(props: { values: RunNodeValue[]; onOpen: (value: RunNodeValue, button: HTMLElement) => void }) {
+  return (
+    <dl class={ROWS}>
+      <For each={props.values}>
+        {(v) => (
+          <Row label={v.name} mono>
+            <span class="flex min-w-0 items-baseline gap-2">
+              <Show when={v.type}>{(type) => <span class={`shrink-0 font-mono text-xs ${MUTED}`}>{type()}</span>}</Show>
+              <span class={`min-w-0 truncate ${v.missing ? MUTED : "font-mono text-xs"}`}>{preview(v)}</span>
+              <Show when={!shownWhole(v)}>
+                <button
+                  type="button"
+                  aria-label={`Open ${v.name}`}
+                  title="Open the whole value"
+                  class={`grid h-6 w-6 shrink-0 place-items-center rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 ${RING}`}
+                  onClick={(e) => props.onOpen(v, e.currentTarget)}
+                >
+                  <span aria-hidden="true">›</span>
+                </button>
+              </Show>
+            </span>
+          </Row>
+        )}
+      </For>
+    </dl>
+  )
+}
+
+/** A whole value opened from Inputs (`input`) or Outputs. */
+type OpenedValue = { value: RunNodeValue; input: boolean }
+
+/** A whole value opened from its row, headed by its section and name, with a way back. */
+function ValueView(props: { opened: OpenedValue; onBack: () => void }) {
+  const headingId = createUniqueId()
+  let heading!: HTMLHeadingElement
+  const value = () => props.opened.value
+  onMount(() => heading.focus())
+  return (
+    <section aria-labelledby={headingId} class="space-y-2">
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          aria-label="Back to the node"
+          title="Back to the node"
+          class={`${ICON_BUTTON} shrink-0 ${RING}`}
+          onClick={() => props.onBack()}
+        >
+          <ArrowLeft size={16} class="h-4 w-4" />
+        </button>
+        <h3 id={headingId} ref={heading} tabindex={-1} class={`rounded text-sm font-semibold wrap-anywhere ${RING}`}>
+          {props.opened.input ? "Input" : "Output"} <span class="font-mono">{value().name}</span>
+        </h3>
+      </div>
+      <Show when={value().type}>{(type) => <p class={`font-mono text-xs ${MUTED}`}>{type()}</p>}</Show>
+      <pre class={PRE}>{pretty(value().value ?? null)}</pre>
+      <Show when={(value().cut ?? []).length}>
+        <p class={MUTED}>Part of this value is too large to show whole; download the log.</p>
+      </Show>
+    </section>
+  )
+}
+
+/** What a work section takes. */
+type WorkProps = {
+  runId: string
+  node: RunNode
+  handle: string | null
+  live?: LiveCall[]
+  onOpenCall: (call: OpenedCall, button: HTMLElement) => void
+}
+
+/** Each kind's work section, between Inputs and Outputs: an agent's model calls (and their text so far while it
+ *  runs), a case's route. Another kind's slots in here and in `WORK_KINDS`. */
+const WORK: Record<WorkKind, (props: WorkProps) => JSX.Element> = {
+  agent: (props) => (
+    <>
+      <Show when={props.node.status === "open" && props.live?.length}>
+        <Section title="Live">
+          {/* By position, so a call's block updates in place as its text grows. */}
+          <div aria-live="polite" class="space-y-2">
+            <Index each={props.live}>{(call) => <pre class={PRE}>{call().text}</pre>}</Index>
+          </div>
+        </Section>
+      </Show>
+      <CallList runId={props.runId} node={props.node} onOpen={props.onOpenCall} />
+    </>
+  ),
+  case: (props) => (
+    <Show when={props.handle}>
+      {(handle) => (
+        <Section title="Route">
+          <dl class={ROWS}>
+            <Row label="Took">
+              <span class="font-mono">{handleText(handle())}</span>
+            </Row>
+          </dl>
+        </Section>
+      )}
+    </Show>
+  ),
+}
+
+/** What shows in place of the node's sections: a model call or a whole value. */
+type Opened = { call: OpenedCall } | { value: OpenedValue }
+
+/** A node attempt's detail, read from the office by its start seq, and read again as the attempt moves on. */
 export function NodeDetail(props: {
   /** Its element's id, for the splitter that resizes it. */
   id?: string
@@ -81,43 +206,34 @@ export function NodeDetail(props: {
   const headingId = createUniqueId()
   let root!: HTMLDivElement
   let heading!: HTMLHeadingElement
-  const [record, setRecord] = createSignal<RunEvent>()
+  const [read, setRead] = createSignal<RunNodeDetail>()
   const [error, setError] = createSignal<unknown>()
   // The read in flight; an answer to an older one (another node, or a retry since) is dropped.
   let reading = 0
   onCleanup(() => reading++)
 
-  /** The seq of the record to read: none while the node is open, or for an attempt a restart cut short. */
-  const wanted = () =>
-    props.node.status === "open" || props.node.status === "restarted" ? null : (props.node.end_seq ?? null)
-
-  function load(seq: number) {
+  function load() {
     const mine = ++reading
     setError(undefined)
-    office.client.runs.event(props.runId, seq).then(
-      (r) => mine === reading && setRecord(r),
+    office.client.runs.node(props.runId, props.node.seq).then(
+      (r) => mine === reading && setRead(r),
       (e) => mine === reading && setError(e),
     )
   }
-  createEffect(
-    on(wanted, (seq) => {
-      reading++
-      setRecord(undefined)
-      setError(undefined)
-      if (seq != null) load(seq)
-    }),
-  )
+  // The same node moving on (open, then succeeded) is read again, its last read showing meanwhile.
+  createEffect(on(() => [props.node.seq, props.node.status, props.node.end_seq], () => load()))
 
-  // The model call shown in place of the node's body, and the button that opened it, where focus goes back.
-  const [opened, setOpened] = createSignal<OpenedCall>()
-  let callOpener: HTMLElement | undefined
-  function openCall(call: OpenedCall, button: HTMLElement) {
-    callOpener = button
-    setOpened(call)
+  // A model call or a whole value shown in place of the node's sections, and the button that opened it, where focus
+  // goes back.
+  const [opened, setOpened] = createSignal<Opened>()
+  let opener: HTMLElement | undefined
+  function open(what: Opened, button: HTMLElement) {
+    opener = button
+    setOpened(what)
   }
-  function closeCall() {
+  function closeOpened() {
     setOpened(undefined)
-    if (callOpener?.isConnected) callOpener.focus()
+    if (opener?.isConnected) opener.focus()
     else heading.focus()
   }
   createEffect(on(() => props.node.seq, () => setOpened(undefined)))
@@ -125,12 +241,12 @@ export function NodeDetail(props: {
   // A sheet takes focus when it opens and when it moves to another node; beside the Timeline, focus stays on the row
   // so the Timeline's keys go on working.
   createEffect(on(() => props.node.seq, () => props.modal && heading.focus()))
-  // Escape goes back from a model call to the node, and closes the node, from anywhere but a text field or a select,
+  // Escape goes back from what opened to the node, and closes the node, from anywhere but a text field or a select,
   // which have their own use for it.
   const onKey = (e: KeyboardEvent) => {
     if (e.key !== "Escape" || e.defaultPrevented) return
     if (e.target instanceof Element && e.target.closest("input:not([type=checkbox]):not([type=radio]), select, textarea")) return
-    if (opened()) closeCall()
+    if (opened()) closeOpened()
     else props.onClose()
   }
   onMount(() => document.addEventListener("keydown", onKey))
@@ -143,12 +259,25 @@ export function NodeDetail(props: {
     })
   })
 
-  const model = () => props.detail.models?.[staticPath(props.node.node_id)]
-  const payload = () => asObject(record()?.payload)
-  const failure = () => asObject(payload()?.failure)
-  const handle = () => {
-    const h = payload()?.handle ?? props.node.handle
-    return typeof h === "string" ? h : null
+  /** The read, once it's of this node: another node's shows nothing of it. */
+  const detail = () => {
+    const r = read()
+    return r && r.node.seq === props.node.seq ? r : undefined
+  }
+  const model = () => detail()?.model ?? props.detail.models?.[staticPath(props.node.node_id)]
+  const handle = () => detail()?.node.handle ?? props.node.handle ?? null
+  const took = () => duration(detail()?.started_at, detail()?.ended_at)
+  const work = () => {
+    const kind = workOf({ kind: props.node.kind ?? null, handle: handle() })
+    return kind === null ? undefined : WORK[kind]
+  }
+  const openedCall = () => {
+    const o = opened()
+    return o && "call" in o ? o.call : undefined
+  }
+  const openedValue = () => {
+    const o = opened()
+    return o && "value" in o ? o.value : undefined
   }
 
   return (
@@ -190,78 +319,84 @@ export function NodeDetail(props: {
           </button>
         </div>
       </div>
-      <Show when={opened()}>{(call) => <CallView runId={props.runId} opened={call()} onBack={closeCall} />}</Show>
-      {/* Hidden, not gone, while a call shows: the button that opened it takes focus back. */}
-      <div hidden={!!opened()} class="space-y-3">
-        <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-          <dt class={MUTED}>Status</dt>
-          <dd>{props.node.status}</dd>
-          <Show when={model()}>
-            {(m) => (
-              <>
-                <dt class={MUTED}>Model</dt>
-                <dd class="font-mono">{m()}</dd>
-              </>
-            )}
-          </Show>
-        </dl>
+      <Show when={openedCall()}>{(call) => <CallView runId={props.runId} opened={call()} onBack={closeOpened} />}</Show>
+      <Show when={openedValue()}>{(value) => <ValueView opened={value()} onBack={closeOpened} />}</Show>
+      {/* Hidden, not gone, while something opened shows: the button that opened it takes focus back. */}
+      <div hidden={!!opened()} class="space-y-4">
+        <Section title="Metadata">
+          <dl class={ROWS}>
+            <Show when={props.node.kind}>{(kind) => <Row label="Kind">{kind()}</Row>}</Show>
+            <Row label="Status">{props.node.status}</Row>
+            <Show when={model()}>
+              {(m) => (
+                <Row label="Model">
+                  <span class="font-mono">{m()}</span>
+                </Row>
+              )}
+            </Show>
+            <Show when={detail()?.started_at}>
+              {(t) => (
+                <Row label="Started">
+                  <time datetime={t()} title={t()}>
+                    {clock(t())}
+                  </time>
+                </Row>
+              )}
+            </Show>
+            <Show when={took()}>{(text) => <Row label="Duration">{text()}</Row>}</Show>
+          </dl>
+        </Section>
+        <Show when={error()}>{(e) => <ReadError error={e()} onRetry={load} />}</Show>
+        <Show when={!detail() && !error()}>
+          <p class={MUTED}>reading…</p>
+        </Show>
+        <Show when={detail()?.inputs?.length}>
+          <Section title="Inputs">
+            <Values values={detail()!.inputs!} onOpen={(value, button) => open({ value: { value, input: true } }, button)} />
+          </Section>
+        </Show>
+        <Dynamic
+          component={work()}
+          runId={props.runId}
+          node={props.node}
+          handle={handle()}
+          live={props.live}
+          onOpenCall={(call: OpenedCall, button: HTMLElement) => open({ call }, button)}
+        />
         <Show when={props.node.status === "open"}>
-          <p class={MUTED}>running: its output appears when it ends</p>
-          <Show when={props.live?.length}>
-            <Part title="Live">
-              {/* By position, so a call's block updates in place as its text grows. */}
-              <div aria-live="polite" class="space-y-2">
-                <Index each={props.live}>{(call) => <pre class={PRE}>{call().text}</pre>}</Index>
-              </div>
-            </Part>
-          </Show>
+          <Section title="Outputs">
+            <p class={MUTED}>running: its output appears when it ends</p>
+          </Section>
         </Show>
         <Show when={props.node.status === "restarted"}>
-          <p class={MUTED}>interrupted: its partial work is only in the session's transcript</p>
+          <Section title="Outputs">
+            <p class={MUTED}>interrupted: its partial work is only in the session's transcript</p>
+          </Section>
         </Show>
-        <Show when={wanted() != null}>
-          <Show when={error()}>{(e) => <ReadError error={e()} onRetry={() => load(wanted()!)} />}</Show>
-          <Show when={!record() && !error()}>
-            <p class={MUTED}>reading…</p>
-          </Show>
-          <Show when={record()}>
-            {(r) => (
-              <>
-                <Show when={r().size}>{(size) => <p class={MUTED}>{tooLarge(size())}</p>}</Show>
-                <Show when={payload() && "value" in payload()!}>
-                  <Part title="Output">
-                    <pre class={PRE}>{pretty(payload()!.value)}</pre>
-                  </Part>
-                </Show>
-                <Show when={handle()}>
-                  {(h) => (
-                    <Part title="Route">
-                      <p class="font-mono">{handleText(h())}</p>
-                    </Part>
-                  )}
-                </Show>
-                <Show when={failure()}>
-                  {(f) => (
-                    <Part title="Error">
-                      <p class="wrap-anywhere text-red-700 dark:text-red-400">{pretty(f().message ?? "")}</p>
-                      <Show when={f().traceback != null}>
-                        <details>
-                          <summary class={`cursor-pointer rounded ${RING}`}>Traceback</summary>
-                          <pre class={`mt-1 ${PRE}`}>{pretty(f().traceback)}</pre>
-                        </details>
-                      </Show>
-                    </Part>
-                  )}
-                </Show>
-                <Show when={(r().cut ?? []).length}>
-                  <p class={MUTED}>Part of this record is too large to show whole; download the log.</p>
-                </Show>
-              </>
-            )}
-          </Show>
+        <Show when={detail()?.outputs?.length}>
+          <Section title="Outputs">
+            <Values
+              values={detail()!.outputs!}
+              onOpen={(value, button) => open({ value: { value, input: false } }, button)}
+            />
+          </Section>
         </Show>
-        <Show when={props.node.kind === "agent"}>
-          <CallList runId={props.runId} node={props.node} onOpen={openCall} />
+        <Show when={detail()?.failure}>
+          {(f) => (
+            <Section title="Error">
+              <Show when={f().size}>{(size) => <p class={MUTED}>{tooLarge(size())}</p>}</Show>
+              <p class="wrap-anywhere text-red-700 dark:text-red-400">{f().message}</p>
+              <Show when={f().traceback != null}>
+                <details>
+                  <summary class={`cursor-pointer rounded ${RING}`}>Traceback</summary>
+                  <pre class={`mt-1 ${PRE}`}>{f().traceback}</pre>
+                </details>
+              </Show>
+              <Show when={(f().cut ?? []).length}>
+                <p class={MUTED}>Part of this error is too large to show whole; download the log.</p>
+              </Show>
+            </Section>
+          )}
         </Show>
       </div>
     </div>

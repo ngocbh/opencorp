@@ -14,6 +14,23 @@ Run Logs lists the runs of your employees' flows. A run's page shows what ran an
 node attempts, and Raw, its log's records as stored; **Download** saves the log. Every signed-in person can read
 every run log.
 
+### Node view
+
+Click a node in the Timeline to see what happened in it, in these sections:
+
+- **Metadata**: its kind (agent, code, case, loop, call, start, end, …), its status, an agent's model, and when it
+  started and how long it took.
+- **Inputs**: what a node that only gathers values read, each by the name its flow reads it as, such as `input`
+  or `prep.output`. A flow's end shows what it gathered. The log doesn't record other nodes' inputs.
+- **Model calls** for an agent, or **Route** for a case: the case it took.
+- **Outputs**: what the node produced, a row each: an agent's `output` and `new_messages`, or, for a flow's start
+  and end, each field it received or returned. A row shows the value's name, its type and a preview; **›** opens
+  the whole value.
+- **Error**: a failed node's error, with its traceback folded.
+
+A value too large to show says so: download the log. The office rebuilds values the log names only by where they
+came from (an end's, a turn's start, an agent's new messages) for logs up to 16 MiB.
+
 ### Model calls
 
 Click an agent node in the Timeline: its detail lists the node's model calls, numbered from 1, each with its
@@ -23,13 +40,15 @@ interrupted or failed; hover for the finish reason Yian recorded). Click one to 
 - **Request**: the system prompt, the messages the model read (the history, your messages and tool results,
   each with who said it), the tools it could call, and the model and its settings. The settings show the
   provider, model, endpoint and organization the call used, never the model's key or the headers sent with it.
-- **Reply**: the model's thought, folded, and its text.
+- **Reply**: the model's thought, folded, and its text. A thought the provider didn't share says so, with the
+  reasoning tokens it cost when the provider reported them.
 - **Tool calls**: each call's arguments and result, and what the office decided for it: why it let the call
   run, a call it held for approval and who approved it, or a call it refused.
 - **Attempts**: each try, with its error and the wait before a retry, and its token usage. A reply an
   interrupt cut says so.
 
-A long text shows its first lines until you click **Show all**. **Back**, or Escape, returns to the node. The
+A long text shows its first lines until you click **Show all**. **Back**, or Escape, returns to the node, from a
+model call or a whole value. The
 model calls of a run whose log is over 16 MiB can't be opened here: download the log.
 
 ## HQ from another machine
