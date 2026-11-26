@@ -1,5 +1,5 @@
-// What the model call view says of a call: its line in a node's list, a long text's fold, the office's cuts, usage,
-// and a tool call's state and the gate's notes on it.
+// What the model call view says of a call: its line in a node's list, a long text's fold, the office's cuts, usage, a
+// thought the provider didn't share, and a tool call's state and the gate's notes on it.
 import type { RunCall, RunCallEntry, RunCallToolResult, RunCallUsage } from "@opencorp/protocol"
 
 /** A long text shows its first FOLD_LINES lines, at most FOLD_CHARS characters, until "Show all". */
@@ -80,6 +80,15 @@ export function usageText(usage: RunCallUsage | null | undefined): string {
     .filter(([count]) => count != null)
     .map(([count, what]) => `${count!.toLocaleString("en-US")} ${what}`)
     .join(" · ")
+}
+
+/** What a thought with no text says: the provider didn't share it (OpenAI shares only a summary, and only when asked),
+ *  and what it cost when `usage` reports reasoning tokens. */
+export function hiddenReasoning(usage: RunCallUsage | null | undefined): string {
+  const tokens = usage?.reasoning_tokens ?? 0
+  if (tokens <= 0) return "The provider didn't share its reasoning"
+  const count = `${tokens.toLocaleString("en-US")} token${tokens === 1 ? "" : "s"}`
+  return `Reasoned privately (${count}): the provider didn't share its reasoning`
 }
 
 /** A tool call's state in a word: how yian closed it (refused, skipped, interrupted…), waiting while it has no result,

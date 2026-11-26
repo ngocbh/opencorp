@@ -162,9 +162,9 @@ export const LISTING = Array.from({ length: 30 }, (_, i) => `notes-${String(i).p
 
 /**
  * Run 5's `chat#2/reply`: call 2, its first attempt cut short and retried, thinks, then saves the notes (held, then
- * released by @ngocbh) and lists the folder (allowed as read-only, its long listing folded); call 5 says "Done." and
- * writes HTML, its system prompt cut by the office. And
- * run 6's `chat#0/reply`: call 1, which an interrupt cut.
+ * released by @ngocbh) and lists the folder (allowed as read-only, its long listing folded); call 5 reasons without
+ * sharing it, says "Done." and writes HTML, its system prompt cut by the office. And
+ * run 6's `chat#0/reply`: call 1, which an interrupt cut, its reasoning not shared and no usage reported.
  */
 export function runCalls(): RunCalls {
   const at = (second: number) => new Date(BASE + 30 * 60_000 + second * 1000).toISOString()
@@ -218,7 +218,9 @@ export function runCalls(): RunCalls {
     digest_mismatch: false,
     attempts: [{ n: 5, started_at: at(11), first_token_at: at(12), finished_at: at(12), error: null, retry_in: null,
                  usage }],
-    reply: { role: "assistant", author: null, parts: [{ type: "text", text: "Done." }, { type: "text", text: HTML }] },
+    // A thought the provider didn't share: its text is empty, its tokens in the usage.
+    reply: { role: "assistant", author: null, parts: [{ type: "reasoning", text: "" }, { type: "text", text: "Done." },
+                                                       { type: "text", text: HTML }] },
     // As if its system prompt had been too long to send whole.
     tool_results: [], usage, finish: "stop", interrupted: false, cut: ["/request/system"],
   }
@@ -227,7 +229,7 @@ export function runCalls(): RunCalls {
     request: request([{ role: "user", author: "ann", parts: [{ type: "text", text: "What's our quota?" }] }]),
     attempts: [{ n: 1, started_at: at(0), first_token_at: at(1), finished_at: at(2), error: null, retry_in: null,
                  usage: null }],
-    reply: { role: "assistant", author: null, parts: [{ type: "text", text: "Let me" }] },
+    reply: { role: "assistant", author: null, parts: [{ type: "reasoning", text: "" }, { type: "text", text: "Let me" }] },
     tool_results: [], usage: null, finish: "interrupted", interrupted: true, cut: [],
   }
   const entry = (call: RunCall, model = "gpt-5"): RunCallEntry => ({

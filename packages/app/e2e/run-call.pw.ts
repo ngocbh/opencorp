@@ -83,6 +83,10 @@ test("Escape goes back from a call to its node, then closes the node", async ({ 
   await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 2/ }).click()
   const call = page.getByRole("region", { name: "Model call 2" })
   await expect(call.getByRole("region", { name: "Reply" })).toContainText("Done.")
+  // A thought the provider didn't share says so, with the tokens it cost, rather than showing an empty thought.
+  await expect(call.getByRole("region", { name: "Reply" })).toContainText(
+    "Reasoned privately (40 tokens): the provider didn't share its reasoning")
+  await expect(call.getByRole("region", { name: "Reply" }).getByText("Thought", { exact: true })).toHaveCount(0)
   // A text the office cut says where.
   await expect(call.getByRole("region", { name: "Request" })).toContainText("Cut at 64K characters here")
   // Its one attempt, the node's step 5, is numbered within the call.
@@ -113,6 +117,9 @@ test("an interrupted call says so", async ({ page }) => {
   const call = page.getByRole("region", { name: "Model call 1" })
   await expect(call).toContainText("An interrupt cut this reply")
   await expect(call.getByRole("region", { name: "Reply" })).toContainText("Let me")
+  // With no usage reported, it doesn't say what the reasoning cost.
+  await expect(call.getByRole("region", { name: "Reply" })).toContainText("The provider didn't share its reasoning")
+  await expect(call.getByRole("region", { name: "Reply" })).not.toContainText("Reasoned privately")
 })
 
 test("a call the office can't rebuild says why and can retry", async ({ page, request }) => {
