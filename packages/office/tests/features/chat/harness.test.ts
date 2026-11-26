@@ -1667,7 +1667,8 @@ test("a chat's page is what the whole read cuts, and the relay hears which of it
   }
   await h.harness.prompt(id, "Plan the trip.")
   await fake.waitForRequests(3)
-  await replyRunning(h)
+  // The third reply's start, not the first's: the two turns before already started theirs.
+  await replyRunning(h, 3)
   expect(await h.harness.prompt(id, "Also mention Rome.")).toBe("steer")
   const told = spyOn(h.live, "unreadShown")
   onTestFinished(() => told.mockRestore())
