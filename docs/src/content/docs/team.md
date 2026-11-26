@@ -32,6 +32,12 @@ your prompt.
 | Ctrl+C | While your employee works, stops them and keeps what you typed. Otherwise it clears what you typed |
 | ↑ at the top of the prompt | Takes back your newest message they haven't read, then the one before it, each on its own line ahead of what you typed. With none, brings back what you sent or cleared |
 
+`/model` picks the model of your employee's next replies, from the office's connections. Another model of the chat's
+connection takes over at the next reply, in the same chat run: a reply under way finishes on its model, and the
+commands and Codex or Claude Code turns your employee started keep running. Your employee reads the switch as
+something you did, and doesn't answer it. A model of another connection moves the chat to a fresh run, which keeps the
+conversation.
+
 A session's id in your employee's reply shows as a link named after that session, such as `@minh · codex 1` or
 `@minh · chat`; one of the chat's Codex or Claude Code sessions opens in [the pane](/instruments/#the-pane).
 
