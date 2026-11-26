@@ -480,10 +480,11 @@ function writableFolderCheck(name: string, folder: string, home: string): Check 
 }
 
 /**
- * A warning for the run logs in `runs` that yian refuses as older than the run-log schema this office reads
- * (`SCHEMA`), as an update leaves them: how many, and how to start clean, since there's no migration. Null when there
- * are none, or no runs folder (the runs line says why one can't be read). Only each regular file's first record is
- * read; a log that can't be read for any other reason is no concern of this check.
+ * A warning for the run logs in `runs` that yian refuses as of another run-log schema than the one this office reads
+ * (`SCHEMA`): older ones, as an update leaves them, and how to start clean, since there's no migration; and newer ones,
+ * as a downgrade leaves them, and to update OpenCorp, which reads them. How many of each. Null when there are none, or
+ * no runs folder (the runs line says why one can't be read). Only each regular file's first record is read; a log
+ * that can't be read for any other reason is no concern of this check.
  */
 export function runLogsCheck(runs: string): Check | null {
   let ids: string[]
@@ -492,8 +493,8 @@ export function runLogsCheck(runs: string): Check | null {
   } catch {
     return null
   }
-  const schemas = new Set<number>()
-  let old = 0
+  const older = new Map<number, number>()
+  const newer = new Map<number, number>()
   for (const id of ids) {
     const log = path.join(runs, id, "log.jsonl")
     try {
@@ -501,24 +502,38 @@ export function runLogsCheck(runs: string): Check | null {
       if (!fs.lstatSync(log).isFile()) continue
       for (const _ of iterRunRecords(log, { maxLineBytes: LOG_LINE_CAP })) break
     } catch (error) {
-      if (!(error instanceof RunLogSchemaError) || error.schema === null || error.schema >= SCHEMA) continue
-      schemas.add(error.schema)
-      old += 1
+      if (!(error instanceof RunLogSchemaError) || error.schema === null || error.schema === SCHEMA) continue
+      const counts = error.schema < SCHEMA ? older : newer
+      counts.set(error.schema, (counts.get(error.schema) ?? 0) + 1)
     }
   }
-  if (old === 0) return null
-  const named = [...schemas].sort((a, b) => a - b).join(" or ")
-  const logs = old === 1 ? `1 run log in ${runs} uses` : `${old} run logs in ${runs} use`
-  const them = old === 1 ? "it and its session starts" : "them and their sessions start"
-  return {
-    name: "run logs",
-    status: "warn",
-    detail:
-      `${logs} run-log schema ${named}, older than the ${SCHEMA} this office reads, so Run Logs can't show ${them}` +
-      " over without that history. There's no migration while OpenCorp isn't deployed: to start clean," +
-      " re-initialise the office (`opencorp offboard`, then `opencorp init`, or `opencorp onboard --from URL` for a" +
-      " company you pushed)",
+  /** How many logs `counts` holds, and of which schemas, as the start of a sentence; with its pronouns. */
+  const which = (counts: Map<number, number>) => {
+    const n = [...counts.values()].reduce((sum, count) => sum + count, 0)
+    const named = [...counts.keys()].sort((a, b) => a - b).join(" or ")
+    const logs = n === 1 ? `1 run log in ${runs} uses` : `${n} run logs in ${runs} use`
+    const its = n === 1 ? "its session starts" : "their sessions start"
+    return { logs: `${logs} run-log schema ${named}`, it: n === 1 ? "it" : "them", its }
   }
+  const parts: string[] = []
+  if (older.size) {
+    const { logs, it, its } = which(older)
+    parts.push(
+      `${logs}, older than the ${SCHEMA} this office reads, so Run Logs can't show ${it} and ${its} over without` +
+        " that history. There's no migration while OpenCorp isn't deployed: to start clean, re-initialise the office" +
+        " (`opencorp offboard`, then `opencorp init`, or `opencorp onboard --from URL` for a company you pushed)",
+    )
+  }
+  if (newer.size) {
+    const { logs, it, its } = which(newer)
+    parts.push(
+      `${logs}, newer than the ${SCHEMA} this office reads, as a later OpenCorp writes them, so Run Logs can't show` +
+        ` ${it} and ${its} over without that history. To read ${it}, update OpenCorp: run install.sh again, then` +
+        " `opencorp restart`",
+    )
+  }
+  if (!parts.length) return null
+  return { name: "run logs", status: "warn", detail: parts.join(". ") }
 }
 
 /** Whether systemd keeps this user's services running after logout; null if `loginctl` can't say. */

@@ -747,6 +747,40 @@ test("run logs of an older schema warn, saying how many and how to start clean; 
   expect(doctor.exitCode(found)).toBe(0)
 })
 
+test("run logs of a later schema than this office reads warn, saying how many and to update OpenCorp", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  /** Run `id`'s log, its first record of run-log schema `schema`. */
+  const log = (id: string, schema: number) => {
+    fs.mkdirSync(path.join(paths.runs, id), { recursive: true })
+    const first = runStarted(0).toString().replace(`"schema":${SCHEMA},`, `"schema":${schema},`)
+    fs.writeFileSync(path.join(paths.runs, id, "log.jsonl"), first)
+  }
+  log("r1", SCHEMA)
+  // A downgrade leaves the logs a later OpenCorp wrote.
+  log("r2", SCHEMA + 1)
+  const newer =
+    `1 run log in ${paths.runs} uses run-log schema ${SCHEMA + 1}, newer than the ${SCHEMA} this office reads, as a` +
+    " later OpenCorp writes them, so Run Logs can't show it and its session starts over without that history. To" +
+    " read it, update OpenCorp: run install.sh again, then `opencorp restart`"
+  expect(byName(await runChecks(dir, paths))["run logs"]).toEqual({ name: "run logs", status: "warn", detail: newer })
+  log("r3", SCHEMA + 2)
+  expect(byName(await runChecks(dir, paths))["run logs"]!.detail).toStartWith(
+    `2 run logs in ${paths.runs} use run-log schema ${SCHEMA + 1} or ${SCHEMA + 2}, newer than the ${SCHEMA} this` +
+      " office reads, as a later OpenCorp writes them, so Run Logs can't show them and their sessions start over" +
+      " without that history. To read them, update OpenCorp",
+  )
+  // Older logs too: one line says both, the older first.
+  log("r4", SCHEMA - 1)
+  const both = byName(await runChecks(dir, paths))["run logs"]!
+  expect(both.status).toBe("warn")
+  expect(both.detail).toStartWith(`1 run log in ${paths.runs} uses run-log schema ${SCHEMA - 1}, older than`)
+  expect(both.detail).toContain(
+    `opencorp onboard --from URL\` for a company you pushed). 2 run logs in ${paths.runs} use run-log schema`,
+  )
+  expect(both.detail).toEndWith("update OpenCorp: run install.sh again, then `opencorp restart`")
+})
+
 test("a fresh machine has no runs or sessions row", async () => {
   const dir = tempDir()
   const got = byName(await runChecks(dir, new OfficePaths(path.join(dir, "home"))))

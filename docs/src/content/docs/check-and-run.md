@@ -21,7 +21,9 @@ Yian reads only the run-log schema it writes, so an update can leave run logs th
 and doctor warns how many there are. The office still starts: Run Logs names such a log's schema but
 can't show it, and its session starts over at its next message, without that history. There's no
 migration. To start clean, run `opencorp offboard`, then `opencorp init`, or
-`opencorp onboard --from URL` for a company you pushed.
+`opencorp onboard --from URL` for a company you pushed. Going back to an older OpenCorp leaves logs
+of a later schema, which doctor counts too: update OpenCorp (run the installer again), then
+`opencorp restart`, and the office reads them again.
 
 Your company repo keeps its own copy of the flows its chats run, in `shared/flows/`, as `opencorp init` wrote them; an
 update doesn't change them. To take an update's flows, start clean as above, or copy
