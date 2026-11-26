@@ -169,6 +169,21 @@ test("the picker's keys are the upstream TUI's: ↓ toggles it, ↑ goes to the 
   expect(TuiKeybind.unknownKeys({ session_child_cycle: "none", session_child_cycle_reverse: "none" })).toHaveLength(2)
 })
 
+test("Esc, Ctrl+C and ↑ in a chat are Claude Code's keys: Esc interrupts, Ctrl+C interrupts or clears, then leaves", () => {
+  const config = createResolvedKeymapConfig()
+  const keys = (command: string) => config.keybinds.get(command).map((binding) => binding.key)
+  // Esc interrupts while the employee works or waits; idle, the prompt's own Esc Esc clears a draft.
+  expect(keys("session.interrupt")).toEqual(["escape"])
+  // Ctrl+C interrupts while they work, else clears the draft; on an empty prompt it is the first of the leave keys.
+  expect(keys("prompt.clear")).toEqual(["ctrl+c"])
+  expect(keys("app.exit")).toEqual(["ctrl+c,ctrl+d,<leader>q"])
+  expect(config.keybinds.get("prompt.clear")[0]?.desc).toBe("Interrupt the session, or clear the input field")
+  // ↑ takes back unread messages first, then walks the history.
+  expect(keys("prompt.history.previous")).toEqual(["up"])
+  // Nothing has Claude Code's ctrl+x ctrl+k yet.
+  expect(config.keybinds.bindings.filter((binding) => binding.key === "<leader>ctrl+k")).toEqual([])
+})
+
 test("the pane's keys are the upstream TUI's: ctrl+x ←/→ move the keys, ctrl+x ↑ closes it and ctrl+x ↓ opens the picker; ctrl+x f shows it split or full", () => {
   const config = createResolvedKeymapConfig()
   const keys = (command: string) => config.keybinds.get(command).map((binding) => binding.key)

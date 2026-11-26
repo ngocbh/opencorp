@@ -69,6 +69,8 @@ export const Definitions = {
   session_copy: keybind("none", "Copy session transcript"),
   session_new: keybind("<leader>n", "Create a new session"),
   session_list: keybind("<leader>l", "List all sessions"),
+  // Esc stops only the employee's turn, as Claude Code's does. Claude Code's ctrl+x ctrl+k, pressed twice within 3 s,
+  // goes here once Yian can cancel an agent's background calls without an interrupt: it will cancel the employee's.
   session_interrupt: keybind("escape", "Interrupt current session"),
   session_card_focus: keybind("ctrl+t", "Move between the open card and the prompt"),
   session_mode_cycle: keybind("shift+tab", "Cycle the chat's mode: auto, default, ask, dontAsk"),
@@ -123,7 +125,7 @@ export const Definitions = {
   prompt_stash_pop: keybind("none", "Pop stashed prompt"),
   prompt_stash_list: keybind("none", "List stashed prompts"),
 
-  input_clear: keybind("ctrl+c", "Clear input field"),
+  input_clear: keybind("ctrl+c", "Interrupt the session, or clear the input field"),
   input_paste: keybind({ key: "ctrl+v", preventDefault: false }, "Paste from clipboard"),
   input_submit: keybind("return", "Submit input"),
   input_newline: keybind("shift+return,ctrl+return,alt+return,ctrl+j", "Insert newline in input"),

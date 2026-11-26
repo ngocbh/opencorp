@@ -225,7 +225,7 @@ test("a pipes shell's view takes Ctrl-C as an interrupt, and Esc closes it", asy
     const shell = add(office, sid, { interactive: false, size: null, command: "make" })
     office.instrumentOutput(sid, shell.id, "compiling")
     office.updateSession(sid, { status: "busy" })
-    await app.until((f) => f.includes("esc interrupt") && f.includes("↓ 1 shell"))
+    await app.until((f) => f.includes("esc to interrupt") && f.includes("↓ 1 shell"))
     await openShell(app)
     const open = await app.until((f) => f.includes("compiling") && f.includes("esc close"))
     // A click in the view keeps the keys there.
@@ -246,12 +246,12 @@ test("a pipes shell's view takes Ctrl-C as an interrupt, and Esc closes it", asy
     expect(office.requests.some((r) => r.path.endsWith("/interrupt"))).toBe(false)
     expect(f).not.toContain("zq")
     expect(typed(office, shell.id)).toEqual(["\x03"])
-    // The prompt has the keys again.
+    // The prompt has the keys again: Esc there interrupts the working agent, the draft kept.
     app.input.typeText("hello")
     f = await app.until((f) => f.includes("hello"))
     app.input.pressEscape()
-    await app.until((f) => !f.includes("hello"))
-    expect(office.requests.some((r) => r.path.endsWith("/interrupt"))).toBe(false)
+    await until(() => office.requests.some((r) => r.path.endsWith("/interrupt")))
+    expect(await app.until(() => true)).toContain("hello")
   } finally {
     await app.stop()
     office.stop()
@@ -373,7 +373,7 @@ test("an ended shell can still be opened until the agent's turn ends, then leave
     add(office, sid, { ...done, status: "ended", updated_at: LATER })
     // A failed one leaves with it.
     add(office, sid, { name: "shell 3", command: "ssh h", status: "failed", error: "no sandbox", updated_at: MIDWAY })
-    await app.until((f) => f.includes("esc interrupt"))
+    await app.until((f) => f.includes("esc to interrupt"))
     // It doesn't run, so the picker lists it once ctrl+a shows those; it opens with its scrollback.
     let f = await openShell(app, "shell 2")
     f = await app.until((f) => f.includes("built it"))
@@ -690,7 +690,7 @@ test("Ctrl-C in an open shell goes to its command, not to the chat", async () =>
   try {
     const shell = add(office, sid, { command: "sleep 100" })
     office.updateSession(sid, { status: "busy" })
-    await app.until((f) => f.includes("esc interrupt") && f.includes("↓ 1 shell"))
+    await app.until((f) => f.includes("esc to interrupt") && f.includes("↓ 1 shell"))
     await openShell(app)
     await app.until((f) => f.includes("ctrl+x ← focus chat"))
     app.input.pressKey("c", { ctrl: true })
@@ -712,7 +712,7 @@ test("Esc and ctrl+o in a focused shell go to the shell; ctrl+x f shows it full 
   try {
     const shell = add(office, sid, { command: "vim notes.txt" })
     office.updateSession(sid, { status: "busy" })
-    await app.until((f) => f.includes("esc interrupt") && f.includes("↓ 1 shell"))
+    await app.until((f) => f.includes("esc to interrupt") && f.includes("↓ 1 shell"))
     await openShell(app)
     await app.until((f) => f.includes("ctrl+x f full screen"))
     await escape(app)
