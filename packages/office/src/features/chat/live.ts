@@ -10,7 +10,7 @@ import {
   type LiveViewCall,
 } from "@ngocbh/yian/run"
 import type { LiveEvent, Message, Part } from "@opencorp/protocol"
-import type { LiveCalls, Transcript } from "./transcript.ts"
+import { type LiveCalls, messageId, type Transcript } from "./transcript.ts"
 import type { Job } from "../../runtime/worker/job.ts"
 import { errorName } from "../../runtime/worker/rpc.ts"
 import { type Bus, PING } from "../../runtime/bus.ts"
@@ -348,14 +348,16 @@ export class LiveRelay implements LiveCalls {
   /** Renders `worker`'s run with the relay's live calls of the run (none once no worker feeds it) and publishes its
    *  assistant messages' changes since it was last shown, and whole once each part whose live call ended since then,
    *  then moves its floor; then publishes the user messages the run read since (`#read`). The render holds the run's
-   *  newest messages: from its last assistant message on, and from its floor, each message shown since and each one
-   *  clients hold unread, which is all of them this reads. A render or publish that throws is logged. */
+   *  newest messages: from its last assistant message on, and from its floor (from the run's start when the last
+   *  show had no reply), each message shown since and each one clients hold unread, which is all of them this reads.
+   *  A render or publish that throws is logged. */
   #show(worker: LiveWorker): void {
     const { run_id: runId, session_id: sessionId } = worker.job
     try {
       const was = this.#shown.get(runId)
       const covering = [...(this.#unread.get(runId) ?? [])]
-      if (was !== undefined) covering.push(was.floor, ...was.messages.keys())
+      // A floor of "" (no reply shown yet) is below every message: the render covers the run from its start.
+      if (was !== undefined) covering.push(was.floor === "" ? messageId(runId, 0) : was.floor, ...was.messages.keys())
       const all = this.#transcript.recent(sessionId, runId, this, covering)
       const rendered = all.filter((m) => m.role === "assistant")
       const live = new Set((this.calls(runId) ?? []).map((call) => `${runId}:${call.node}:${call.n}`))

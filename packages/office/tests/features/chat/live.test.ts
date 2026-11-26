@@ -847,6 +847,32 @@ test("the first contact shows a run from its floor and later renders only its ch
   expect(lines).toEqual([])
 })
 
+test("a show after one with no reply covers the whole run: replies across a rest point between both show", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "One." }, { content: "Two." })
+  const job = await waitingChat(fake)
+  const events: LiveEvent[] = []
+  const lines: string[] = []
+  const transcript = new Transcript(runsOf(job), FROM_END)
+  const bus = { publishLive: (event: LiveEvent) => void events.push(event) }
+  const relay = new LiveRelay({ bus, transcript, log: (line) => void lines.push(line) })
+  const first = new StubWorker(job)
+  relay.frame(first, snapshot(lastSeq(job.log)))
+  relay.detach(first)
+  expect(events).toEqual([])
+  // Two turns land while no worker feeds the relay, the run resting between them, and its read leaves the cache.
+  await advance(job, fake, [send("s1", "first")])
+  await advance(job, fake, [send("s2", "second")])
+  transcript.forget([job.run_id])
+  const again = new StubWorker(job)
+  relay.frame(again, snapshot(lastSeq(job.log)))
+  relay.detach(again)
+  const opened = events.filter((event) => event.type === "message.updated").map((event) => event.data.id)
+  expect(opened).toEqual(replyIds(job.log))
+  expect(opened).toHaveLength(2)
+  expect(lines).toEqual([])
+})
+
 test("a forgotten run is shown from its floor again", async () => {
   const { job, frames } = await recordedTurn("Hello there my good friend")
   const { relay, events } = makeRelay(runsOf(job))
