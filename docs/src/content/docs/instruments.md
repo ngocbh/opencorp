@@ -132,9 +132,12 @@ yourself.
 
 - Its top-level code runs at every run start and resume. A tool's argument validator, if it has one, reads the
   model's arguments before the mode and rules decide the call.
-- The company's lint reports an error for a module, or a repo file it imports, whose import resolves outside the repo:
-  a path that leaves it, an absolute path, a symlink out of it, or a package. It reads only imports written as literal
-  paths, never one computed at run time.
+- A module loads code only from inside the company repo. An import that resolves outside it, by a path that leaves
+  the repo, an absolute path, a symlink out of it or a package from a `node_modules` above it, is refused, and the
+  error names the import; one at the module's top keeps the run from starting. So a module can't load `@ngocbh/yian`
+  itself: write `import type { ToolOptions } from "@ngocbh/yian/tools"`, which loads nothing. The company's lint
+  reports such an import, in the module or a repo file it imports, before any run; it reads only imports written as
+  literal paths.
 - A module tool that returns `pending()` fails: nothing in the office answers it.
 
 ## Codex and Claude Code
@@ -337,11 +340,15 @@ a harness they use doesn't. Its lint warns about each allowed server.
 
 - **A flow's own steps.** Only the calls your employee's model makes go through the mode. A granted flow's own steps
   run without it: your rules see the module tools they call, but not what a CODE step does in its own code, which
-  runs on a worker thread with no sandbox, as you. Grant only flows you trust.
+  runs on a worker thread with no sandbox, as you, its imports held to the repo as a module's are. Grant only flows
+  you trust.
 - **Tool modules run as you.** A module gets nothing from the office through `ctx` (`ctx.context` is `undefined`), but
   it runs on a worker thread with no sandbox, as you: it can read the model connection's environment, the worker's
-  channel to the office and everything in `~/.opencorp`. The lint catches an import that leaves the repo, not one
-  computed at run time; [a Yian issue](https://github.com/ngocbh/yian/issues/1811) tracks confining them.
+  channel to the office and everything in `~/.opencorp`. Yian holds what its imports load to the company repo, but
+  that guard fixes which files load; it isn't a sandbox. A module can still read a file and `eval` it, start a
+  process or a `Worker` whose imports aren't held to the repo, or open a native library (see
+  [Imports under a code root](https://yian.readthedocs.io/code-and-tools/#imports-under-a-code-root)). What protects
+  you is that only you write the company repo.
 - **The harnesses run as you.** Only their commands, and Codex's file edits, are held to your employee's
   permission; those commands can't read the harnesses' own folders. Codex keeps its sign-in, sessions, logs and
   caches in your `~/.codex`. Claude Code keeps its sign-in in `~/.claude` (or the Keychain on macOS), and each

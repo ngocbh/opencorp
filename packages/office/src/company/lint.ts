@@ -332,8 +332,8 @@ const TRIED = ["", ".ts", ".tsx", ".mts", ".js", ".jsx", ".mjs", ".cjs", "/index
  * Why each of `modules` (tool modules company flows name) may load code from outside the company repo at `root`: an
  * import, in the module or in a repo file it imports in turn, that resolves outside the repo (a relative path that
  * leaves it, through a symlink too), names an absolute path, or names a package, which resolves from a
- * `node_modules` outside it. Built-ins pass. Only imports written as literal paths are read: one whose path is
- * computed at run time isn't seen, which yian#1811's confinement would catch.
+ * `node_modules` outside it. Built-ins pass. Only imports written as literal paths are read. It is an early warning:
+ * under the repo as its code root, Yian refuses each such import, a computed one too, when the module makes it.
  */
 function outsideImports(root: string, modules: readonly UsedModule[]): string[] {
   const found: string[] = []
@@ -353,7 +353,7 @@ function outsideImports(root: string, modules: readonly UsedModule[]): string[] 
       for (const spec of imports) {
         const outside = (shown: string) =>
           found.push(`${where(path.relative(root, file))} imports ${shown}, which resolves outside the company repo;`
-            + " a module runs with the owner's full power, so keep all of its code in the repo (yian#1811)")
+            + " Yian refuses it when a run starts, so keep all of the module's code in the repo")
         if (spec.startsWith("node:") || spec.startsWith("bun:") || builtinModules.includes(spec.split("/")[0]!)) continue
         if (path.isAbsolute(spec) || spec.startsWith("file:")) {
           outside(`.../${path.basename(spec)}`)
