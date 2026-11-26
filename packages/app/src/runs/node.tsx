@@ -1,7 +1,7 @@
 // One node attempt's detail on the run page: its output, route or error, and its model, read from the record that
 // ended it, and an agent's model calls, each of which opens in its place. Beside the Timeline on a desktop (or over its
 // whole width, expanded); a modal sheet over everything on a phone.
-import type { RunCallEntry, RunDetail, RunEvent, RunNode } from "@opencorp/protocol"
+import type { RunDetail, RunEvent, RunNode } from "@opencorp/protocol"
 import Maximize2 from "lucide-solid/icons/maximize-2"
 import Minimize2 from "lucide-solid/icons/minimize-2"
 import {
@@ -16,7 +16,7 @@ import {
   type JSX,
 } from "solid-js"
 import { useOffice } from "../data/office"
-import { CallList, CallView } from "./call"
+import { CallList, CallView, type OpenedCall } from "./call"
 import type { LiveCall } from "./live"
 import { handleText, staticPath } from "./timeline"
 
@@ -109,11 +109,11 @@ export function NodeDetail(props: {
   )
 
   // The model call shown in place of the node's body, and the button that opened it, where focus goes back.
-  const [opened, setOpened] = createSignal<RunCallEntry>()
+  const [opened, setOpened] = createSignal<OpenedCall>()
   let callOpener: HTMLElement | undefined
-  function openCall(entry: RunCallEntry, button: HTMLElement) {
+  function openCall(call: OpenedCall, button: HTMLElement) {
     callOpener = button
-    setOpened(entry)
+    setOpened(call)
   }
   function closeCall() {
     setOpened(undefined)
@@ -190,7 +190,7 @@ export function NodeDetail(props: {
           </button>
         </div>
       </div>
-      <Show when={opened()}>{(entry) => <CallView runId={props.runId} entry={entry()} onBack={closeCall} />}</Show>
+      <Show when={opened()}>{(call) => <CallView runId={props.runId} opened={call()} onBack={closeCall} />}</Show>
       {/* Hidden, not gone, while a call shows: the button that opened it takes focus back. */}
       <div hidden={!!opened()} class="space-y-3">
         <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">

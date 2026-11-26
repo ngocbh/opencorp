@@ -3,7 +3,9 @@ import type { RunCallEntry, RunCallToolResult } from "@opencorp/protocol"
 import {
   argsLine,
   callLine,
+  callParts,
   cutAt,
+  finishText,
   FOLD_CHARS,
   FOLD_LINES,
   foldedHead,
@@ -24,11 +26,30 @@ const result = (over: Partial<RunCallToolResult> = {}): RunCallToolResult => ({
   started_at: null, note: null, held: false, release_note: null, ...over,
 })
 
-test("a listed call names its step, model and finish, its retries and an interrupt", () => {
-  expect(callLine(entry())).toBe("Call 4 · gpt-5 · stop")
-  expect(callLine(entry({ attempts: 3, finish: "tool_calls" }))).toBe("Call 4 · gpt-5 · tool_calls · 3 attempts")
-  expect(callLine(entry({ finish: null }))).toBe("Call 4 · gpt-5 · failed")
-  expect(callLine(entry({ purpose: "structured_native" }))).toBe("Call 4 · gpt-5 · stop · structured_native")
+test("a listed call names its place among the node's calls, never its step, then its model, finish and retries", () => {
+  // Step 4 of the node, its second model call: tool results and retried attempts take step numbers too.
+  expect(callLine(entry(), 2)).toBe("Call 2 · gpt-5 · replied")
+  expect(callLine(entry({ attempts: 3, finish: "tool_calls" }), 1)).toBe("Call 1 · gpt-5 · asked for tools · 3 attempts")
+  expect(callLine(entry({ finish: null }), 3)).toBe("Call 3 · gpt-5 · failed")
+  expect(callLine(entry({ purpose: "structured_native" }), 1)).toBe("Call 1 · gpt-5 · replied · structured_native")
+  // The finish's raw value is its part's title; a failed call has none.
+  expect(callParts(entry({ finish: "tool_calls" }), 1)).toEqual([
+    { text: "Call 1" },
+    { text: "gpt-5" },
+    { text: "asked for tools", title: "tool_calls" },
+  ])
+  expect(callParts(entry({ finish: null }), 1)[2]).toEqual({ text: "failed" })
+})
+
+test("a finish reason reads in plain words, and any other provider text as it is", () => {
+  expect(finishText("stop")).toBe("replied")
+  expect(finishText("tool_calls")).toBe("asked for tools")
+  expect(finishText("length")).toBe("cut off at the token limit")
+  expect(finishText("content_filter")).toBe("refused by the provider")
+  expect(finishText("interrupted")).toBe("interrupted")
+  expect(finishText(null)).toBe("failed")
+  expect(finishText(undefined)).toBe("failed")
+  expect(finishText("end_turn")).toBe("end_turn")
 })
 
 test("a long text folds to its first lines, at most so many characters; a short one shows whole", () => {
