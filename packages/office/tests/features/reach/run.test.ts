@@ -668,7 +668,7 @@ test("--sign-in beside a running visit mints over its master and leaves the file
 test("--sign-in beside a visit that hasn't forwarded its port yet refuses and opens nothing", async () => {
   const signedIn = new Date(Date.now() - DAY).toISOString()
   const { dir, fake, remote, port, paths } = await approvedHome({}, { signed_in_at: signedIn })
-  remote.setCheck({ stdout: JSON.stringify(remote.status), delay: 3 })
+  remote.setCheck({ stdout: JSON.stringify(remote.status), held: true })
   const first = visitDeps(dir, fake)
   const done = visit({ signIn: false, open: false }, first.deps)
   const checks = () => fake.calls().filter((argv) => argv.at(-1)!.endsWith("'hq' '--check' '--json'"))
@@ -677,8 +677,9 @@ test("--sign-in beside a visit that hasn't forwarded its port yet refuses and op
   const other = http.createServer((_req, res) => res.end(JSON.stringify({ ok: true, other: 1 })))
   await new Promise<void>((resolve) => other.listen({ port, host: "127.0.0.1" }, resolve))
   onTestFinished(() => void other.close())
-  // Its check has read its 3 s; the second's answers at once, so the master is still up while it checks.
-  await Bun.sleep(500)
+  // Its check is held until the second is done, so the master is still up while the second checks; the second's
+  // answers at once.
+  await waitFor(() => remote.heldChecks() === 1, { what: "the running visit's check to be held" })
   remote.setCheck({ stdout: JSON.stringify(remote.status) })
   expect(isSocket(paths.node)).toBe(true)
   const second = visitDeps(dir, fake)
@@ -689,6 +690,7 @@ test("--sign-in beside a visit that hasn't forwarded its port yet refuses and op
   expect(mints(fake)).toEqual([])
   expect(redirects(paths)).toEqual([])
   expect((await readAccess(paths))?.signed_in_at).toBe(signedIn)
+  remote.release("check")
   expect(await done).toBe(1)
 })
 
