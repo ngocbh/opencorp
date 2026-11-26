@@ -7,6 +7,7 @@ import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { spawnPty } from "../../src/platform.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName, installFakeSsh } from "../../src/testing/fake_ssh.ts"
+import { freePort } from "../../src/testing/ports.ts"
 import { shortDir, waitFor } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -217,15 +218,6 @@ async function master(fake: FakeSsh, sock: string, args: string[] = [], host = "
 async function stillRunning(child: ChildProcess, ms: number): Promise<boolean> {
   await Bun.sleep(ms)
   return child.exitCode === null && child.signalCode === null
-}
-
-/** A port free on 127.0.0.1 a moment ago. */
-async function freePort(): Promise<number> {
-  const server = net.createServer()
-  await new Promise<void>((resolve) => server.listen({ port: 0, host: "127.0.0.1" }, resolve))
-  const { port } = server.address() as net.AddressInfo
-  await new Promise<void>((resolve) => server.close(() => resolve()))
-  return port
 }
 
 /** An echo server on the unix socket `file`, closed when the test finishes. */

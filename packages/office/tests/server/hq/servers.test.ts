@@ -12,7 +12,8 @@ import type { Hq } from "../../../src/server/hq/core.ts"
 import { HQ_LIMITS, Listeners, MAX_OPEN } from "../../../src/server/hq/servers.ts"
 import { shortDir, waitFor } from "../../helpers.ts"
 import { CEO, Conn, type Reply, ends, frames, makeOffice, request, serve, take, within } from "../helpers.ts"
-import { HqClient, freePort, hqClient, makeHq, pairCode } from "./helpers.ts"
+import { freePort } from "../../../src/testing/ports.ts"
+import { HqClient, hqClient, makeHq, pairCode } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -26,7 +27,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 async function setup(): Promise<{ office: Office; hq: Hq; logs: string[] }> {
   const office = makeOffice()
   const logs: string[] = []
-  const settings = { tcp: true, port: await freePort(), app_dir: path.join(office.paths.home, "dist") }
+  const settings = { tcp: true, port: await freePort({ loopback6: true }), app_dir: path.join(office.paths.home, "dist") }
   const hq = await makeHq(office, { settings, logs })
   // The host's real accounts would add a warning.
   hq.otherUsers = async () => []

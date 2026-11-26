@@ -4,12 +4,14 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
-import net from "node:net"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { claimCm } from "@opencorp/office/features/reach/paths"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "@opencorp/office/testing/fake_ssh"
 import type { TestOffice } from "@opencorp/office/testing/office"
+import { freePort } from "@opencorp/office/testing/ports"
+
+export { freePort }
 
 export const CHECKOUT = fs.realpathSync(fileURLToPath(new URL("../../..", import.meta.url)))
 export const WRAPPER = path.join(CHECKOUT, "packages/cli/bin/opencorp")
@@ -43,15 +45,6 @@ export function builtApp(dir: string): string {
   fs.writeFileSync(path.join(dir, "index.html"), "<!doctype html><title>HQ</title>\n")
   fs.writeFileSync(path.join(dir, "build.json"), JSON.stringify({ build: "b1", api: "x" }))
   return dir
-}
-
-/** A port free on 127.0.0.1 a moment ago. */
-export async function freePort(): Promise<number> {
-  const server = net.createServer()
-  await new Promise<void>((resolve) => server.listen({ port: 0, host: "127.0.0.1" }, resolve))
-  const { port } = server.address() as net.AddressInfo
-  await new Promise<void>((resolve) => server.close(() => resolve()))
-  return port
 }
 
 /** reach.sh for `office`: log in to login1 (leaving its master, which the node's hop rides), then print the spec. */

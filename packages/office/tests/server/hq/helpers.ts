@@ -8,7 +8,7 @@ import { expect, onTestFinished } from "bun:test"
 import { parse, stringify } from "yaml"
 import { type Limits, createServer } from "../../../src/server/http.ts"
 import type { Office } from "../../../src/server/office.ts"
-import { hasLoopback6, listenUnix } from "../../../src/util/sockets.ts"
+import { listenUnix } from "../../../src/util/sockets.ts"
 import { createHqApp } from "../../../src/server/hq/api.ts"
 import { type Hq, attach } from "../../../src/server/hq/core.ts"
 import { HEADERS, type Inner, hqGuard } from "../../../src/server/hq/guard.ts"
@@ -193,29 +193,6 @@ export function handEdit(company: string, handle: string, changes: Record<string
   for (const [key, value] of Object.entries(data)) if (value === undefined) delete data[key]
   fs.writeFileSync(file, stringify(data))
   git(company, "commit", "-qam", `edit ${handle}`)
-}
-
-/** Listens a plain `net` server on `host`:`port`; resolves to it, or to null if the bind fails. */
-function bindOn(host: string, port: number): Promise<net.Server | null> {
-  return new Promise((resolve) => {
-    const server = net.createServer()
-    server.once("error", () => resolve(null))
-    server.listen(port, host, () => resolve(server))
-  })
-}
-
-/** A TCP port that nothing listens on right now, on 127.0.0.1 and, when the host has one, on ::1, since HQ holds
- *  both (Python's `free_port`). */
-export async function freePort(): Promise<number> {
-  for (let tries = 0; tries < 20; tries++) {
-    const v4 = await bindOn("127.0.0.1", 0)
-    if (!v4) throw new Error("can't bind 127.0.0.1")
-    const port = (v4.address() as net.AddressInfo).port
-    const v6 = hasLoopback6() ? await bindOn("::1", port) : null
-    await Promise.all([v4, v6].map((s) => s && new Promise((resolve) => s.close(resolve))))
-    if (v6 || !hasLoopback6()) return port
-  }
-  throw new Error("no port free on both 127.0.0.1 and ::1")
 }
 
 /** One request the guard's listener got: whether its promise settled, and its response. */

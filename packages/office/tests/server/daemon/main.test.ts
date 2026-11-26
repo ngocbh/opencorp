@@ -50,7 +50,7 @@ import { EXIT_GRACE_MS, RegistryClosed, WorkerRegistry } from "../../../src/runt
 import { CHAT_FILES, fakeLlm } from "../../features/chat/helpers.ts"
 import { company, makeCompany, recordingGit } from "../../company/helpers.ts"
 import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir, waitFor } from "../../helpers.ts"
-import { freePort } from "../hq/helpers.ts"
+import { freePort } from "../../../src/testing/ports.ts"
 import { RUN, chatLog, committed, runStarted, startCommitted, started, succeeded } from "../../runtime/runs/helpers.ts"
 import { question, session } from "../../runtime/store/helpers.ts"
 import { Recorder, base, makeJob, testEnviron } from "../../runtime/worker/helpers.ts"
@@ -1700,7 +1700,7 @@ test(
   "a restart with an open web stream rebinds the port at once",
   async () => {
     const dir = daemonHome()
-    const port = await freePort()
+    const port = await freePort({ loopback6: true })
     fs.writeFileSync(path.join(dir, "office", "hq.json"), JSON.stringify({ tcp: true, port }))
     const listening = async (ms: number) => {
       const deadline = performance.now() + ms

@@ -20,8 +20,11 @@ import { exitAll, type ReachContext, writeSshFiles } from "../../../src/features
 import { DEFAULT_PORT, sha256, writeAccess } from "../../../src/features/reach/state.ts"
 import type { VisitDeps } from "../../../src/features/reach/run.ts"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../../src/testing/fake_ssh.ts"
+import { freePort } from "../../../src/testing/ports.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
 import { ACCOUNT, fakeSubscription, NO_LISTING, Script } from "../setup/helpers.ts"
+
+export { freePort }
 
 /** Limits short enough that a test which hits one still finishes. */
 export const SHORT_LIMITS = Object.freeze({ promptMs: 5000, stepMs: 5000, quietMs: 5000 })
@@ -74,15 +77,6 @@ export async function staleSocket(file: string) {
   fs.renameSync(file, `${file}.x`)
   await new Promise<void>((resolve) => server.close(() => resolve()))
   fs.renameSync(`${file}.x`, file)
-}
-
-/** A port free on 127.0.0.1 a moment ago. */
-export async function freePort(): Promise<number> {
-  const server = net.createServer()
-  await new Promise<void>((resolve) => server.listen({ port: 0, host: "127.0.0.1" }, resolve))
-  const { port } = server.address() as net.AddressInfo
-  await new Promise<void>((resolve) => server.close(() => resolve()))
-  return port
 }
 
 /** A server on the unix socket `file` that echoes and holds each connection; closed when the test finishes. */
