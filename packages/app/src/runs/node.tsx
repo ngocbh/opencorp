@@ -1,8 +1,10 @@
-// One node attempt's detail on the run page, read from the office in one route, in one shape for every kind: Metadata,
-// Inputs, the work section its kind has (an agent's model calls, a case's route), Outputs and its Error, each a list
-// of labelled rows. A model call or a whole value opens in its place. Beside the Timeline on a desktop (or over its
-// whole width, expanded); a modal sheet over everything on a phone.
-import type { RunDetail, RunNode, RunNodeDetail, RunNodeValue } from "@opencorp/protocol"
+// One node attempt on the run page, in one shape for every kind: Metadata, Inputs, the work section its kind has (an
+// agent's model calls, a case's route), Outputs and its Error, each a list of labelled rows. Its detail, read from its
+// records, answers at once and shows Metadata, Outputs and Error; its view, which the office reads by replaying the log
+// up to the node (seconds on a long run), comes after with Inputs and typed Outputs, a loading row meanwhile. A model
+// call or a whole value opens in its place. Beside the Timeline on a desktop (or over its whole width, expanded); a
+// modal sheet over everything on a phone.
+import type { RunDetail, RunNode, RunNodeDetail, RunNodeValue, RunNodeView } from "@opencorp/protocol"
 import ArrowLeft from "lucide-solid/icons/arrow-left"
 import Maximize2 from "lucide-solid/icons/maximize-2"
 import Minimize2 from "lucide-solid/icons/minimize-2"
@@ -23,7 +25,7 @@ import { useOffice } from "../data/office"
 import { CallList, CallView, type OpenedCall } from "./call"
 import type { LiveCall } from "./live"
 import { handleText, staticPath } from "./timeline"
-import { duration, preview, shownWhole, workOf, type WorkKind } from "./values"
+import { duration, nodeOutputs, preview, READING, shownWhole, workOf, type WorkKind } from "./values"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
 const RING = "outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:focus-visible:ring-neutral-100"
@@ -220,8 +222,32 @@ export function NodeDetail(props: {
       (e) => mine === reading && setError(e),
     )
   }
+  // Its view, by the seq it was read for. A read that another replaces is aborted, so the office drops it while it is
+  // still queued there.
+  const [viewed, setViewed] = createSignal<{ seq: number; view: RunNodeView }>()
+  const [viewError, setViewError] = createSignal<unknown>()
+  let viewing: AbortController | undefined
+  onCleanup(() => viewing?.abort())
+  function loadView() {
+    viewing?.abort()
+    const mine = (viewing = new AbortController())
+    const seq = props.node.seq
+    setViewError(undefined)
+    office.client.runs.view(props.runId, seq, { signal: mine.signal }).then(
+      (view) => viewing === mine && setViewed({ seq, view }),
+      (e) => viewing === mine && setViewError(e),
+    )
+  }
   // The same node moving on (open, then succeeded) is read again, its last read showing meanwhile.
-  createEffect(on(() => [props.node.seq, props.node.status, props.node.end_seq], () => load()))
+  createEffect(
+    on(
+      () => [props.node.seq, props.node.status, props.node.end_seq],
+      () => {
+        load()
+        loadView()
+      },
+    ),
+  )
 
   // A model call or a whole value shown in place of the node's sections, and the button that opened it, where focus
   // goes back.
@@ -267,12 +293,25 @@ export function NodeDetail(props: {
     const r = read()
     return r && r.node.seq === props.node.seq ? r : undefined
   }
+  /** The view, once it's of this node. */
+  const view = () => {
+    const v = viewed()
+    return v && v.seq === props.node.seq ? v.view : undefined
+  }
+  const viewLoading = () => !view() && !viewError()
+  /** Its inputs show while they're read or can't be, and when it has any. */
+  const showInputs = () => {
+    const v = view()
+    return !v || v.inputs == null || v.inputs.length > 0
+  }
+  const outputs = () => nodeOutputs(detail()?.outputs, view()?.outputs, viewLoading())
+  const kind = () => props.node.kind ?? view()?.kind ?? null
   const model = () => detail()?.model ?? props.detail.models?.[staticPath(props.node.node_id)]
   const handle = () => detail()?.node.handle ?? props.node.handle ?? null
   const took = () => duration(detail()?.started_at, detail()?.ended_at)
   const work = () => {
-    const kind = workOf({ kind: props.node.kind ?? null, handle: handle() })
-    return kind === null ? undefined : WORK[kind]
+    const shown = workOf({ kind: kind(), handle: handle() })
+    return shown === null ? undefined : WORK[shown]
   }
   const openedCall = () => {
     const o = opened()
@@ -328,7 +367,7 @@ export function NodeDetail(props: {
       <div hidden={!!opened()} class="space-y-4">
         <Section title="Metadata">
           <dl class={ROWS}>
-            <Show when={props.node.kind}>{(kind) => <Row label="Kind">{kind()}</Row>}</Show>
+            <Show when={kind()}>{(k) => <Row label="Kind">{k()}</Row>}</Show>
             {/* A flow call or a loop by what it came to, as its row in Overview says it. */}
             <Row label="Status">{detail()?.outcome ?? props.node.status}</Row>
             <Show when={model()}>
@@ -354,11 +393,20 @@ export function NodeDetail(props: {
         <Show when={!detail() && !error()}>
           <p class={MUTED}>reading…</p>
         </Show>
-        <Show when={detail()?.inputs?.length}>
+        <Show when={showInputs()}>
           <Section title="Inputs">
-            <Values values={detail()!.inputs!} onOpen={(value, button) => open({ value: { value, input: true } }, button)} />
-            <Show when={detail()?.inputs_more}>
-              {(more) => <p class={MUTED}>{`${more()} more, not shown here: download the log`}</p>}
+            <Show when={viewError()}>{(e) => <ReadError error={e()} onRetry={loadView} />}</Show>
+            <Show when={viewLoading()}>
+              <p class={MUTED}>{READING}</p>
+            </Show>
+            <Show when={view()}>
+              {(v) => (
+                <Show when={v().inputs} fallback={<p class={MUTED}>{v().missing ?? "its inputs couldn't be read"}</p>}>
+                  {(inputs) => (
+                    <Values values={inputs()} onOpen={(value, button) => open({ value: { value, input: true } }, button)} />
+                  )}
+                </Show>
+              )}
             </Show>
           </Section>
         </Show>
@@ -380,12 +428,9 @@ export function NodeDetail(props: {
             <p class={MUTED}>interrupted: its partial work is only in the session's transcript</p>
           </Section>
         </Show>
-        <Show when={detail()?.outputs?.length}>
+        <Show when={outputs().length}>
           <Section title="Outputs">
-            <Values
-              values={detail()!.outputs!}
-              onOpen={(value, button) => open({ value: { value, input: false } }, button)}
-            />
+            <Values values={outputs()} onOpen={(value, button) => open({ value: { value, input: false } }, button)} />
           </Section>
         </Show>
         <Show when={detail()?.failure}>

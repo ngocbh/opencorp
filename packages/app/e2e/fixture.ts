@@ -7,8 +7,8 @@ import { HEADERS } from "@opencorp/office/server/hq/guard"
 import type { BrowserSession, RunDetail, RunEvent, RunNode, RunSummary } from "@opencorp/protocol"
 import { acme, source, type Data, type Source } from "./company"
 import {
-  detailOf, nodeDetails, runCalls, runLogs, runPages, summaryOf, wholeEvents, type NodeDetails, type RunCalls, type RunPages,
-  type Runs,
+  detailOf, nodeDetails, nodeViews, runCalls, runLogs, runPages, summaryOf, viewOf, wholeEvents, type NodeDetails,
+  type NodeViews, type RunCalls, type RunPages, type Runs,
 } from "./runs"
 
 /** The value after the command-line flag `name`, or undefined. */
@@ -85,6 +85,8 @@ type Fixture = Data & {
   wholeEvents: Record<string, Record<number, RunEvent>>
   /** What GET /api/runs/{id}/nodes/{seq} answers, by run id and seq, where it says more than the node's row. */
   nodeDetails: NodeDetails
+  /** What GET /api/runs/{id}/nodes/{seq}/view answers, by run id and seq, where it says more than the node's detail. */
+  nodeViews: NodeViews
   /** Agent nodes' model calls, by run id and node id. */
   calls: RunCalls
   /** An office older than Run Logs: /api/runs and everything under it answer 404 no_route. */
@@ -98,6 +100,7 @@ const fresh = (): Fixture => ({
   runPages: runPages(runLogs()),
   wholeEvents: wholeEvents(),
   nodeDetails: nodeDetails(runPages(runLogs())),
+  nodeViews: nodeViews(),
   calls: runCalls(),
   noRuns: false,
 })
@@ -261,8 +264,8 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   const callPath = /^\/api\/runs\/([^/]+)\/calls(?:\/(.+)\/([^/]+))?$/.exec(p)
   if (callPath) return callRoute(url, callPath[1]!, callPath[2], callPath[3])
-  const runPath = /^\/api\/runs\/([^/]+)(\/nodes|\/nodes\/([^/]+)|\/events|\/events\/(\d+)|\/log)?$/.exec(p)
-  if (runPath) return runRoute(url, runPath[1]!, runPath[2] ?? "", runPath[4], runPath[3])
+  const runPath = /^\/api\/runs\/([^/]+)(\/nodes|\/nodes\/([^/]+)(\/view)?|\/events|\/events\/(\d+)|\/log)?$/.exec(p)
+  if (runPath) return runRoute(url, runPath[1]!, runPath[2] ?? "", runPath[5], runPath[3], !!runPath[4])
   switch (p) {
     case "/api/whoami":
       return json(state.whoami)
@@ -359,8 +362,9 @@ function listRuns(url: URL): Response {
   return json({ runs: page, next: more ? page[page.length - 1]!.run_id : null })
 }
 
-/** One run's routes as the office answers them, from `state.runPages`; `nodeSeq` is a node detail's start seq. */
-function runRoute(url: URL, id: string, rest: string, seq: string | undefined, nodeSeq?: string): Response {
+/** One run's routes as the office answers them, from `state.runPages`; `nodeSeq` is a node detail's start seq, its view
+ *  when `view`. */
+function runRoute(url: URL, id: string, rest: string, seq: string | undefined, nodeSeq?: string, view = false): Response {
   log.runReads.push(`${id}${rest}${url.search}`)
   const page = state.runPages[id]
   if (!page) return json({ error: "not_found", message: `no run ${id}` }, 404)
@@ -387,7 +391,8 @@ function runRoute(url: URL, id: string, rest: string, seq: string | undefined, n
     const at = Number(nodeSeq)
     const found = page.nodes.find((n) => n.seq === at)
     if (!found) return json({ error: "not_found", message: `run ${id} has no node attempt at record ${at}` }, 404)
-    return json(state.nodeDetails[id]?.[at] ?? detailOf(page, found))
+    const detail = state.nodeDetails[id]?.[at] ?? detailOf(page, found)
+    return json(view ? (state.nodeViews[id]?.[at] ?? viewOf(detail)) : detail)
   }
   if (rest === "/events") {
     const after = Number(url.searchParams.get("after") ?? -1)
@@ -457,9 +462,9 @@ async function control(req: Request, url: URL): Promise<Response> {
     case "/__fixture/run": {
       // Changes one run's page: `detail` merges into its header (`detail.run` into its summary); `add` puts newer
       // node attempts before its others; `update` replaces attempts by seq (one that ended since); `addEvents` puts
-      // newer records after its others; `details` (by seq) are its nodes' details where they say more than a row;
-      // `fail` is an error code its record and node detail reads answer with (null for none). A run with no page gets
-      // one from its summary.
+      // newer records after its others; `details` (by seq) are its nodes' details where they say more than a row, and
+      // `views` their views where they say more than a detail; `fail` is an error code its record and node reads
+      // answer with (null for none). A run with no page gets one from its summary.
       const summary = summaryOf(state.runs, body.id)!
       const page = (state.runPages[body.id] ??= { nodes: [], dividers: [], events: [], detail: { run: summary,
         parent: null, repo_commit: "a".repeat(40), usage: null, models: {}, log_state: "ok" } as RunDetail })
@@ -470,6 +475,7 @@ async function control(req: Request, url: URL): Promise<Response> {
       if ("fail" in body) page.fail = body.fail
       if (body.addEvents) page.events = [...page.events, ...body.addEvents]
       if (body.details) state.nodeDetails[body.id] = { ...state.nodeDetails[body.id], ...body.details }
+      if (body.views) state.nodeViews[body.id] = { ...state.nodeViews[body.id], ...body.views }
       return json({ ok: true })
     }
   }
