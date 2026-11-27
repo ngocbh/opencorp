@@ -42,9 +42,10 @@ says why, such as too large to show (download the log).
 
 Metadata, Outputs and Error show at once. Inputs, and the types and rebuilt values of Outputs, come from
 replaying the log up to the node, which can take half a minute late in a long chat: the node view says
-`reading the log…` until they come, and a node opened again shows them at once. When the run's flow no longer
-loads (its files are gone), Inputs says why, and Outputs show what the log holds. The office reads these for
-logs up to 16 MiB.
+`reading the log…` until they come, and a node opened again shows them at once. When the office is still
+reading after three minutes, or is reading too many logs at once, it says so, with **Retry**. When the run's
+flow no longer loads (its files are gone), Inputs says why, and Outputs show what the log holds. The office reads
+these for logs up to 16 MiB.
 
 ### Model calls
 
