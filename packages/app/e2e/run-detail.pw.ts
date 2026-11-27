@@ -88,6 +88,8 @@ test("a failed node read says why and can retry", async ({ page, request }) => {
   await request.post("/__fixture/run", { data: { id: rid(6), fail: null } })
   await nodeDetail(page, "chat#0/reply").getByRole("button", { name: "Retry" }).click()
   await expect(nodeDetail(page, "chat#0/reply")).toContainText("Quota.")
+  // The one Retry read the node's view again too: nothing is left failed.
+  await expect(nodeDetail(page, "chat#0/reply").getByRole("alert")).toHaveCount(0)
 })
 
 test("on a phone node detail is a sheet over everything, and Escape returns to the row", async ({ page }) => {

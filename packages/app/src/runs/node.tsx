@@ -239,6 +239,12 @@ export function NodeDetail(props: {
       (e) => viewing === mine && setViewError(e),
     )
   }
+  // A failed read is one alert: the detail's, whose Retry reads the view again too when that failed as well; the
+  // view's own alert shows only while the detail reads.
+  function retry() {
+    load()
+    if (viewError()) loadView()
+  }
   // The same node moving on (open, then succeeded) is read again, its last read showing meanwhile.
   createEffect(
     on(
@@ -390,13 +396,19 @@ export function NodeDetail(props: {
             <Show when={took()}>{(text) => <Row label="Duration">{text()}</Row>}</Show>
           </dl>
         </Section>
-        <Show when={error()}>{(e) => <ReadError error={e()} onRetry={load} />}</Show>
+        <Show when={error()}>{(e) => <ReadError error={e()} onRetry={retry} />}</Show>
         <Show when={!detail() && !error()}>
           <p class={MUTED}>reading…</p>
         </Show>
         <Show when={showInputs()}>
           <Section title="Inputs">
-            <Show when={viewError()}>{(e) => <ReadError error={e()} onRetry={loadView} />}</Show>
+            <Show when={viewError()}>
+              {(e) => (
+                <Show when={!error()} fallback={<p class={MUTED}>its inputs couldn't be read</p>}>
+                  <ReadError error={e()} onRetry={loadView} />
+                </Show>
+              )}
+            </Show>
             <Show when={viewLoading()}>
               <p class={MUTED}>{READING}</p>
             </Show>
