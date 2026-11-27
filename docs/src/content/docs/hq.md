@@ -65,9 +65,10 @@ see it rebuilt from the run log, or a tool to see the call open at that tool's r
 - **Attempts**: each try, with its error and the wait before a retry, and its token usage. A reply an
   interrupt cut says so.
 
-A long text shows its first lines until you click **Show all**. **Back**, or Escape, returns to the node, from a
-model call or a whole value. The
-model calls of a run whose log is over 16 MiB can't be opened here: download the log.
+Rebuilding a call replays the log, as a node's inputs do: late in a long chat the call view says
+`rebuilding the call from the log…` for up to half a minute, and a call opened again shows at once. A long text
+shows its first lines until you click **Show all**. **Back**, or Escape, returns to the node, from a model call or
+a whole value. The model calls of a run whose log is over 16 MiB can't be opened here: download the log.
 
 ## HQ from another machine
 
