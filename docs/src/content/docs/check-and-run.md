@@ -53,6 +53,13 @@ that sandbox, so one that starts but fails on a command shows only when your emp
 For each employee you allow MCP servers, doctor lists those servers and whether Codex and Claude Code define each,
 by name only, and warns when a harness the employee uses doesn't ([MCP servers](/instruments/#mcp-servers)).
 
+On Linux, doctor warns when `kernel.yama.ptrace_scope` is 0, or the kernel has no Yama. Then any
+program of yours can read the memory of another, so a program your employee's command starts can read
+the shell it runs in, including the values OpenCorp uses to tell when a command there ends, and fake
+them: OpenCorp would take a command as ended while it still runs. Set it to 1 with
+`sudo sysctl kernel.yama.ptrace_scope=1`, and add `kernel.yama.ptrace_scope = 1` to a file in
+`/etc/sysctl.d/` to keep it.
+
 Codex and Claude Code run as you. Doctor fails, without running it, a Codex or Claude Code that
 someone else could change: one the group or others may write, or one in a folder an employee may
 write.

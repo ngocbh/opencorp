@@ -111,6 +111,7 @@ function runChecks(
     command = COMMAND,
     environ = {},
     assets,
+    ptraceScope,
   }: {
     runner?: Runner
     answers?: boolean
@@ -122,6 +123,7 @@ function runChecks(
     command?: readonly [string, ...string[]]
     environ?: Record<string, string>
     assets?: string | null
+    ptraceScope?: () => string | null
   } = {},
 ): Promise<Check[]> {
   const host = makeHost(dir, runner, { answers: async () => answers, locked, platform })
@@ -139,6 +141,7 @@ function runChecks(
     office: async () => "unreachable",
     ...(lstat ? { lstat } : {}),
     ...(assets !== undefined ? { assets } : {}),
+    ...(ptraceScope ? { ptraceScope } : {}),
   })
 }
 
@@ -1298,6 +1301,47 @@ test("doctor's terminal line says a sandboxed program runs on a terminal", async
   // Beside the sandbox line.
   const names = found.map((c) => c.name)
   expect(names[names.indexOf("sandbox") + 1]).toBe("terminal")
+})
+
+test("on Linux, doctor warns when a program can read the memory of the shell that runs it (ptrace_scope 0, or no Yama)", () => {
+  const reads =
+    "a program your employee's command starts can read its shell's memory, and with it the nonces that say where " +
+    "a command ends and that the prompt is back, so it can fake them"
+  expect(doctor.ptraceCheck("linux", "0\n")).toEqual({
+    name: "ptrace",
+    status: "warn",
+    detail:
+      `kernel.yama.ptrace_scope is 0: ${reads}; set it to 1 (\`sudo sysctl kernel.yama.ptrace_scope=1\`, and ` +
+      "`kernel.yama.ptrace_scope = 1` in a file in /etc/sysctl.d to keep it)",
+  })
+  // A kernel without Yama limits ptrace no more than 0 does.
+  expect(doctor.ptraceCheck("linux", null)).toEqual({
+    name: "ptrace",
+    status: "warn",
+    detail:
+      `this kernel has no Yama (no /proc/sys/kernel/yama/ptrace_scope): ${reads}; a kernel with Yama, at ` +
+      "ptrace_scope 1, stops it",
+  })
+  for (const scope of ["1\n", "2\n", "3\n"]) {
+    expect(doctor.ptraceCheck("linux", scope)).toEqual({
+      name: "ptrace",
+      status: "ok",
+      detail: `kernel.yama.ptrace_scope is ${scope.trim()}: no program can read the memory of the shell that runs it`,
+    })
+  }
+  // macOS lets no program read another's memory without the system's leave.
+  expect(doctor.ptraceCheck("darwin", "0")).toBeNull()
+})
+
+test("doctor's ptrace line follows the terminal's, on Linux only", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const linux = await runChecks(dir, paths, { platform: "linux", ptraceScope: () => "0\n" })
+  const names = linux.map((c) => c.name)
+  expect(names[names.indexOf("terminal") + 1]).toBe("ptrace")
+  expect(byName(linux).ptrace!.status).toBe("warn")
+  expect(doctor.exitCode(linux.filter((c) => c.name === "ptrace"))).toBe(0)
+  expect(byName(await runChecks(dir, paths, { ptraceScope: () => "0\n" })).ptrace).toBeUndefined()
 })
 
 test("doctor's terminal line fails with the fix when a sandboxed program can't run on a terminal", async () => {

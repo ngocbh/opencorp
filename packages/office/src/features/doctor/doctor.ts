@@ -1,6 +1,7 @@
 /** `opencorp doctor`: check the office home (there and private), company repo, provider and connections, the run and
  *  session folders (writable) and the run logs (of a schema this office reads), service, daemon, HQ, sandbox and its
- *  terminals, worked folders, Codex and Claude Code, and the MCP servers employees may use. */
+ *  terminals, whether a program can read its shell's memory (Linux's ptrace scope), worked folders, Codex and Claude
+ *  Code, and the MCP servers employees may use. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -534,6 +535,42 @@ export function runLogsCheck(runs: string): Check | null {
   }
   if (!parts.length) return null
   return { name: "run logs", status: "warn", detail: parts.join(". ") }
+}
+
+/** Where Linux's Yama says which processes a program may trace, and so read the memory of. */
+const PTRACE_SCOPE = "/proc/sys/kernel/yama/ptrace_scope"
+
+/** `PTRACE_SCOPE`'s value, or null when there is no such file (a kernel without Yama) or it can't be read. */
+function readPtraceScope(): string | null {
+  try {
+    return fs.readFileSync(PTRACE_SCOPE, "utf8")
+  } catch {
+    return null
+  }
+}
+
+/**
+ * On Linux, whether a program a shell's command starts can read that shell's memory, by Yama's `scope`
+ * (`PTRACE_SCOPE`'s text, null without Yama): at 0, or without Yama, a process may trace any of its user's, its
+ * parent included, and so read the nonces the shell's markers carry. Null elsewhere: macOS lets no program read
+ * another's memory without the system's leave.
+ */
+export function ptraceCheck(platform: NodeJS.Platform, scope: string | null): Check | null {
+  if (platform !== "linux") return null
+  const value = scope?.trim()
+  if (value !== undefined && value !== "" && value !== "0") {
+    const detail = `kernel.yama.ptrace_scope is ${value}: no program can read the memory of the shell that runs it`
+    return { name: "ptrace", status: "ok", detail }
+  }
+  const reads =
+    "a program your employee's command starts can read its shell's memory, and with it the nonces that say where " +
+    "a command ends and that the prompt is back, so it can fake them"
+  const detail =
+    value === undefined
+      ? `this kernel has no Yama (no ${PTRACE_SCOPE}): ${reads}; a kernel with Yama, at ptrace_scope 1, stops it`
+      : `kernel.yama.ptrace_scope is 0: ${reads}; set it to 1 (\`sudo sysctl kernel.yama.ptrace_scope=1\`, and ` +
+        "`kernel.yama.ptrace_scope = 1` in a file in /etc/sysctl.d to keep it)"
+  return { name: "ptrace", status: "warn", detail }
 }
 
 /** Whether systemd keeps this user's services running after logout; null if `loginctl` can't say. */
@@ -1415,6 +1452,9 @@ export interface CheckOptions {
   loadIdentity?: (file: string) => Promise<Identity | undefined>
   /** The binary's TUI assets folder, or null in a checkout (default `tuiAssetRoot()`). */
   assets?: string | null
+  /** Linux's Yama ptrace scope, as `/proc/sys/kernel/yama/ptrace_scope` holds it, or null without Yama (default reads
+   *  that file). */
+  ptraceScope?: () => string | null
 }
 
 /** Whether another process holds the office's lock (`host.locked`, else yian's `isLocked`); false when it can't be
@@ -1553,6 +1593,8 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
       ? { name: "terminal", status: "fail", detail: `${onTerminal}; ${SANDBOX_FIX}` }
       : { name: "terminal", status: "ok", detail: "sandboxed programs run on a terminal" },
   )
+  const ptrace = ptraceCheck(host.platform, (options.ptraceScope ?? readPtraceScope)())
+  if (ptrace !== null) found.push(ptrace)
   // A store that failed its own check has no worked folders to read.
   const folders =
     store?.status === "fail"
