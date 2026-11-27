@@ -1,9 +1,10 @@
 // The right pane beside the chat, the upstream TUI's split pane: Enter on a picker row opens a shell or a Codex or
 // Claude Code session there, split by default. The divider drags its width, which a double click puts back to half and
 // one setting on disk keeps for every pane; it keeps 24 columns and leaves the chat 44. Below 108 columns it is full
-// screen. ctrl+x ←/→ move the keys between the chat and the pane, a click in either side focuses it, ctrl+x ↑ closes
-// it, and ctrl+x f shows it full screen or split. Unlike upstream's, it sits in a box in its driver's colour, bright
-// with the keys and dim without; its header says who drives it.
+// screen. ctrl+x ←/→ move the keys between the chat and the pane, a click in either side focuses it, ctrl+x ↑ (or a
+// click on the × after the box's top-left corner) closes it, and ctrl+x f shows it full screen or split. Unlike
+// upstream's, it sits in a box in its driver's colour, bright with the keys and dim without; its header says who
+// drives it.
 import type { Instrument, Message, Session } from "@opencorp/protocol"
 import type { CapturedLine, RGBA } from "@opentui/core"
 import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test"
@@ -312,6 +313,81 @@ test("ctrl+x ↑ closes the pane and the chat gets the keys; ctrl+x ↓ opens th
     await app.until((f) => !f.includes("Running") && f.includes("ctrl+x → focus pane"))
     app.input.typeText("for the chat")
     await app.until((f) => f.includes("for the chat"))
+    expect(typed(office, sh.id)).toBe("")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+/** The character at column `x` of row `y`. */
+const at = (f: string, x: number, y: number) => rows(f)[y]![x]
+/** The foreground of the span holding column `x` of row `y`. */
+function fgAt(app: App, x: number, y: number) {
+  let left = 0
+  for (const span of app.setup.captureSpans().lines[y]!.spans) {
+    if (x < left + span.text.length) return span.fg
+    left += span.text.length
+  }
+}
+
+test("a × after the box's top-left corner, in its colour and lit under the mouse, closes the pane as ctrl+x ↑ does, beside the chat and full screen", async () => {
+  const { office, sid, app } = await boot()
+  try {
+    const sh = shell(office, sid)
+    await app.until((f) => f.includes("↓ 1 shell"))
+    let f = await openFirst(app)
+    expect(corner(f)).toEqual({ x: 60, y: 0 })
+    expect(at(f, 61, 0)).toBe("×")
+    expect(fgAt(app, 61, 0)).toEqual(MINH)
+    // The key and its hint stay.
+    await app.until((f) => f.includes("ctrl+x ↑ close"))
+    const mouse = app.setup.mockMouse
+    await mouse.moveTo(61, 0)
+    await app.until(() => fgAt(app, 61, 0)?.equals(theme.text) ?? false)
+    await mouse.moveTo(70, 0)
+    await app.until(() => fgAt(app, 61, 0)?.equals(MINH) ?? false)
+
+    // A click elsewhere on the border leaves the pane open, with the keys.
+    await mouse.click(62, 0)
+    await mouse.click(90, 0)
+    await mouse.click(119, 0)
+    await Bun.sleep(100)
+    f = await app.until(() => true)
+    expect(corner(f)).toEqual({ x: 60, y: 0 })
+    expect(at(f, 61, 0)).toBe("×")
+    expect(f).toContain("ctrl+x ← focus chat")
+
+    // With the keys in the chat, the × is as dim as the box, and a click on it closes the pane, the draft keeping them.
+    await leader(app, "left")
+    await app.until((f) => f.includes("ctrl+x → focus pane"))
+    expect(fgAt(app, 61, 0)).toEqual(dim(MINH))
+    app.input.typeText("draft")
+    await app.until((f) => f.includes("draft"))
+    await mouse.click(61, 0)
+    f = await app.until((f) => corner(f) === undefined)
+    expect(f).not.toContain("×")
+    app.input.typeText(" more")
+    await app.until((f) => f.includes("draft more"))
+    expect(typed(office, sh.id)).toBe("")
+
+    // Full screen, it sits after the corner too, and a click there closes the pane: the chat gets the keys.
+    await mouse.moveTo(30, 20)
+    app.input.pressKey("u", { ctrl: true })
+    await app.until((f) => !f.includes("draft more"))
+    await openFirst(app)
+    await leader(app, "f")
+    f = await app.until((f) => corner(f)?.x === 0)
+    expect(at(f, 1, 0)).toBe("×")
+    expect(fgAt(app, 1, 0)).toEqual(MINH)
+    await mouse.click(5, 0)
+    await Bun.sleep(100)
+    f = await app.until(() => true)
+    expect(corner(f)).toEqual({ x: 0, y: 0 })
+    await mouse.click(1, 0)
+    await app.until((f) => corner(f) === undefined && f.includes("@minh · idle"))
+    app.input.typeText("hello")
+    await app.until((f) => f.includes("hello"))
     expect(typed(office, sh.id)).toBe("")
   } finally {
     await app.stop()

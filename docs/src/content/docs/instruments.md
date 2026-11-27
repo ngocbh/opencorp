@@ -18,7 +18,7 @@ them.
 | Key | What it does |
 |---|---|
 | ctrl+x ← and ctrl+x →, or a click | Move your keys between the chat and the pane, or show a pane that waits |
-| ctrl+x ↑ | Close the pane; Esc does too when it takes no typing |
+| ctrl+x ↑, or a click on the × at the box's top-left corner | Close the pane; Esc does too when it takes no typing |
 | ctrl+x ↓ | Open the picker again |
 | ctrl+x f | Show the pane full screen, or beside the chat again; the next pane opens the same way. On a card for a command in a shell, with no pane open, open that shell beside the card |
 
