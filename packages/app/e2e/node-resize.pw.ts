@@ -6,7 +6,8 @@ test.beforeEach(async ({ request }) => {
   await request.post("/__fixture/set", { data: { signedIn: true } })
 })
 
-const timeline = (page: Page) => page.getByRole("tree", { name: "Timeline" })
+/** Overview, the run page's default view. */
+const timeline = (page: Page) => page.getByRole("tree", { name: "Overview" })
 const detail = (page: Page) => page.getByRole("region", { name: /^Node / })
 const splitter = (page: Page) => page.getByRole("separator", { name: "Resize node detail" })
 const box = async (l: Locator) => (await l.boundingBox())!

@@ -7,14 +7,16 @@ test.beforeEach(async ({ request }) => {
 })
 
 const timeline = (page: Page) => page.getByRole("tree", { name: "Timeline" })
+/** Overview, the run page's default view. */
+const overview = (page: Page) => page.getByRole("tree", { name: "Overview" })
 const nodeDetail = (page: Page, id: string) => page.getByRole("region", { name: `Node ${id}` })
 /** A section's title, in the order the node view shows them. */
 const sections = (detail: ReturnType<typeof nodeDetail>) => detail.locator("section > h3").allTextContents()
 
 test("an agent node: Metadata, its model calls and Outputs, a row each, and a whole value opens in place", async ({ page }) => {
   await page.goto(`/runs/${rid(5)}`)
-  await timeline(page).getByRole("treeitem", { name: /^iteration chat#2/ }).first().click()
-  await timeline(page).getByRole("treeitem", { name: /chat#2\/reply.*succeeded/ }).click()
+  await overview(page).getByRole("treeitem", { name: /^iteration chat#2/ }).first().click()
+  await overview(page).getByRole("treeitem", { name: /chat#2\/reply.*succeeded/ }).click()
   const detail = nodeDetail(page, "chat#2/reply")
   await expect(detail.getByRole("region", { name: "Outputs" })).toBeVisible()
   // No Inputs: the log doesn't name what an agent's binding read.
@@ -55,7 +57,9 @@ test("a START shows what it received; an END what it returned and what it gather
           inputs: [valueRow("input", { text: "owls" }, { seq: 9, type: "object" }),
                    valueRow("prep.output", "ready", { seq: 14, type: "str" })] },
   } } })
+  // Overview hides them: the Timeline shows them.
   await page.goto(`/runs/${rid(2)}`)
+  await page.getByRole("tab", { name: "Timeline" }).click()
   await timeline(page).getByRole("treeitem", { name: /^c\/__start__/ }).click()
   const opened = nodeDetail(page, "c/__start__")
   await expect(opened.getByRole("region", { name: "Outputs" })).toContainText('text"owls"')
@@ -80,11 +84,11 @@ test("a case's route is its work section; a node with nothing more shows its Met
     node(62, "triage", { kind: "case", status: "routed", handle: "billing" }), node(60, "plan", { kind: "code" }),
   ] } })
   await page.goto(`/runs/${rid(2)}`)
-  await timeline(page).getByRole("treeitem", { name: /^triage/ }).click()
+  await overview(page).getByRole("treeitem", { name: /^triage/ }).click()
   const routed = nodeDetail(page, "triage")
   await expect(routed.getByRole("region", { name: "Route" })).toContainText("Tookbilling")
   expect(await sections(routed)).toEqual(["Metadata", "Route"])
-  await timeline(page).getByRole("treeitem", { name: /^plan/ }).click()
+  await overview(page).getByRole("treeitem", { name: /^plan/ }).click()
   const plain = nodeDetail(page, "plan")
   await expect(plain.getByRole("region", { name: "Metadata" })).toContainText("Kindcode")
   await expect(plain).not.toContainText("reading…")
@@ -101,7 +105,7 @@ test("a value too large to show, or not rebuilt, says why and has nothing to ope
     ] },
   } } })
   await page.goto(`/runs/${rid(2)}`)
-  await timeline(page).getByRole("treeitem", { name: /^big/ }).click()
+  await overview(page).getByRole("treeitem", { name: /^big/ }).click()
   const outputs = nodeDetail(page, "big").getByRole("region", { name: "Outputs" })
   await expect(outputs).toContainText("3.0 MB: too large to show; download the log")
   await expect(outputs).toContainText("this office couldn't rebuild it from the log")

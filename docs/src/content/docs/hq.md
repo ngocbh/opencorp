@@ -10,13 +10,23 @@ save as a destination (see [Several offices](#several-offices)).
 
 ## Run Logs
 
-Run Logs lists the runs of your employees' flows. A run's page shows what ran and who drove it, its Timeline of
-node attempts, and Raw, its log's records as stored; **Download** saves the log. Every signed-in person can read
-every run log.
+Run Logs lists the runs of your employees' flows. A run's page shows what ran and who drove it, and three views of
+its log; **Download** saves the log. Every signed-in person can read every run log.
+
+- **Overview**, the default: the node attempts newest first, each loop turn under its header, without the trivial
+  ones: a flow's `__start__` and `__end__` nodes and expansion rows. A turn's header shows how it went, and so does
+  a flow call's row, such as `context succeeded · 1 step`: **▸** opens the call's own nodes under it, by the same
+  rules. A folded turn or call counts the rows it holds.
+- **Timeline**: every node attempt as it is.
+- **Raw**: the log's records as stored.
+
+The arrow keys move over the rows on show: Right opens a turn or a call, Left folds it, and Enter opens a node.
 
 ### Node view
 
-Click a node in the Timeline to see what happened in it, in these sections:
+Click a node in Overview or the Timeline to see what happened in it. The page's address names the node
+(`?node=<seq>`), so a link opens it; a link to a node Overview hides opens in the Timeline. The node view has
+these sections:
 
 - **Metadata**: its kind (agent, code, case, loop, call, start, end, …), its status, an agent's model, and when it
   started and how long it took.
@@ -33,7 +43,7 @@ came from (an end's, a turn's start, an agent's new messages) for logs up to 16 
 
 ### Model calls
 
-Click an agent node in the Timeline: its detail lists the node's model calls, numbered from 1, each with its
+Click an agent node: its detail lists the node's model calls, numbered from 1, each with its
 model and how it finished (replied, asked for tools, cut off at the token limit, refused by the provider,
 interrupted or failed; hover for the finish reason Yian recorded). Click one to see it rebuilt from the run log:
 

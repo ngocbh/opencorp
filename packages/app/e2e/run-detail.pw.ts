@@ -6,7 +6,8 @@ test.beforeEach(async ({ request }) => {
   await request.post("/__fixture/set", { data: { signedIn: true } })
 })
 
-const timeline = (page: Page) => page.getByRole("tree", { name: "Timeline" })
+/** Overview, the run page's default view. */
+const timeline = (page: Page) => page.getByRole("tree", { name: "Overview" })
 const nodeDetail = (page: Page, id: string) => page.getByRole("region", { name: `Node ${id}` })
 
 test("node detail: output, model, and an error with its traceback folded", async ({ page }) => {
@@ -31,13 +32,16 @@ test("a case that took its else route says no case matched; __start__ and __end_
     node(64, "__end__"), node(62, "triage", { status: "routed", handle: "#else" }), node(60, "__start__"),
   ], addEvents: [{ seq: 63, kind: "node_routed", node_id: "triage", payload: { handle: "#else" }, ...rec }] } })
   await page.goto(`/runs/${rid(2)}`)
-  const routed = timeline(page).getByRole("treeitem", { name: "triage routed → else (no case matched)" })
+  // The Timeline shows __start__ and __end__, which Overview hides.
+  await page.getByRole("tab", { name: "Timeline" }).click()
+  const tree = page.getByRole("tree", { name: "Timeline" })
+  const routed = tree.getByRole("treeitem", { name: "triage routed → else (no case matched)" })
   await expect(routed).toContainText("routed → else (no case matched)")
   await routed.click()
   const detail = nodeDetail(page, "triage")
   await expect(detail).toContainText("else (no case matched)")
   await expect(detail).not.toContainText("#else")
-  const id = (name: RegExp) => timeline(page).getByRole("treeitem", { name }).locator(".font-mono")
+  const id = (name: RegExp) => tree.getByRole("treeitem", { name }).locator(".font-mono")
   await expect(id(/^__end__/)).toHaveClass(/text-neutral-500/)
   await expect(id(/^__start__/)).toHaveClass(/text-neutral-500/)
   await expect(id(/^triage/)).not.toHaveClass(/text-neutral-500/)

@@ -1,8 +1,9 @@
-// One run's page: its header (what ran, who drove it, when, its links and usage), the state of its log, the Timeline
-// of its node attempts with the detail of the one selected, Raw and the download, kept current by run.updated.
+// One run's page: its header (what ran, who drove it, when, its links and usage), the state of its log, Overview and
+// the Timeline of its node attempts with the detail of the one selected (`?node=<seq>`), Raw and the download, kept
+// current by run.updated.
 import { isMissingRoute } from "@opencorp/client"
 import { OFFICE, type RunDetail, type RunDivider, type RunNode, type RunSummary } from "@opencorp/protocol"
-import { A } from "@solidjs/router"
+import { A, useSearchParams } from "@solidjs/router"
 import {
   batch,
   createEffect,
@@ -27,7 +28,18 @@ import { NodeDetail } from "./node"
 import { Raw, type RawApi } from "./raw"
 import { readQueue } from "./queue"
 import { detailBounds, detailWidth, readDetailWidth, saveDetailWidth, Splitter, SPLITTER_PX } from "./split"
-import { dividerText, isBoundary, nodeStatus, takeNewest, timeline, type Group, type Row } from "./timeline"
+import {
+  dividerText,
+  isBoundary,
+  linkedView,
+  nodeStatus,
+  overview,
+  pathTo,
+  takeNewest,
+  timelineTree,
+  type TreeItem,
+  type TreeRow,
+} from "./timeline"
 
 /** Live updates re-read the page at most this often. */
 const REFETCH_MS = 1_000
@@ -54,13 +66,21 @@ const at = (t: string) => new Date(t).toLocaleString(undefined, { dateStyle: "me
 /** A read's failure: its message. */
 type Failure = { message: string }
 
-/** What the Timeline can do for the page around it. */
-type TimelineApi = { focusNode: (seq: number) => void }
+/** What a tree of node attempts can do for the page around it. */
+type TimelineApi = {
+  /** Focuses a node's row, or the folded item it's in. */
+  focusNode: (seq: number) => void
+  /** Opens the items a node is in; false when the tree doesn't show it. */
+  reveal: (seq: number) => boolean
+}
 
-/** The Timeline's current treeitem, where focus goes when nothing better is left. */
-const currentItem = () => document.querySelector<HTMLElement>('[role="tree"] [role="treeitem"][tabindex="0"]') ?? undefined
+/** The shown tree's current treeitem, where focus goes when nothing better is left. */
+const currentItem = () =>
+  document.querySelector<HTMLElement>('[role="tabpanel"]:not([hidden]) [role="tree"] [role="treeitem"][tabindex="0"]') ??
+  undefined
 
-/** `/runs/<id>`: one run's header, log state, Timeline with node detail, and Raw, read from the office and kept current. */
+/** `/runs/<id>[?node=<seq>]`: one run's header, log state, Overview and the Timeline with node detail, and Raw, read from
+ *  the office and kept current. */
 export function RunPage(props: { id: string }) {
   const office = useOffice()
   // Stores reconciled by key: a refetch updates the page in place, so focus and folds stay where they were.
@@ -77,8 +97,7 @@ export function RunPage(props: { id: string }) {
   const [unavailable, setUnavailable] = createSignal(false)
   const [kidsError, setKidsError] = createSignal<string>()
   const [kidsLoading, setKidsLoading] = createSignal(false)
-  let olderButton: HTMLButtonElement | undefined
-  let timelineApi: TimelineApi | undefined
+  const apis: Partial<Record<Tab, TimelineApi>> = {}
 
   // The node whose detail shows, by seq, so a refetch that updates it (open, then succeeded) shows the update.
   const [selected, setSelected] = createSignal<number>()
@@ -89,9 +108,14 @@ export function RunPage(props: { id: string }) {
   /** The row that opened node detail, where focus goes back when it closes. */
   let opener: HTMLElement | undefined
   const returnTo = () => (opener?.isConnected ? opener : currentItem())
+  // The node shown is in the address, so a link opens it.
+  const [params, setParams] = useSearchParams<{ node?: string }>()
+  const showIn = (seq: number | undefined) =>
+    setParams({ node: seq === undefined ? undefined : String(seq) }, { replace: true, scroll: false })
   function select(node: RunNode, row: HTMLElement) {
     opener = row
     setSelected(node.seq)
+    showIn(node.seq)
   }
   // On a phone node detail is a sheet over the whole screen: nothing behind it can take focus.
   const desktop = useDesktop()
@@ -123,6 +147,7 @@ export function RunPage(props: { id: string }) {
       setExpanded(false)
       setSelected(undefined)
     })
+    showIn(undefined)
   }
 
   // Reads run one at a time, so a refetch and an older page never interleave; a keyed read waiting to start isn't
@@ -182,14 +207,14 @@ export function RunPage(props: { id: string }) {
       // A refresh that read the whole Timeline since has nothing older to add.
       if (disposed || log.next !== before) return
       // The button goes once the oldest page is in: focus moves to the first node it brought, not to the page.
-      const handOff = document.activeElement === olderButton && page.next_before == null
+      const handOff = !!document.activeElement?.closest("[data-older]") && page.next_before == null
       show({
         nodes: [...unwrap(log.nodes), ...page.nodes],
         dividers: [...unwrap(log.dividers), ...(page.dividers ?? [])],
         next: page.next_before ?? null,
         dropped: !!page.dropped,
       })
-      if (handOff && page.nodes.length) timelineApi?.focusNode(page.nodes[0]!.seq)
+      if (handOff && page.nodes.length) apis[tab()]?.focusNode(page.nodes[0]!.seq)
     })
   }
 
@@ -265,8 +290,8 @@ export function RunPage(props: { id: string }) {
     return d.log_message || LOG_STATE[d.log_state]
   }
 
-  // The Timeline and Raw tabs; Raw reads its first page when it's first shown, and both keep their place after.
-  const [tab, setTab] = createSignal<Tab>("timeline")
+  // Overview, the Timeline and Raw; Raw reads its first page when it's first shown, and each keeps its place after.
+  const [tab, setTab] = createSignal<Tab>("overview")
   const [rawShown, setRawShown] = createSignal(false)
   let rawApi: RawApi | undefined
   function chooseTab(to: Tab) {
@@ -274,6 +299,23 @@ export function RunPage(props: { id: string }) {
     if (to === "raw") setRawShown(true)
   }
   const tabsId = createUniqueId()
+
+  // A link to a node opens it once the page has read it: in the view shown, or in the Timeline when Overview hides it.
+  createEffect(
+    on(
+      // Again as older pages come in: the node may be on one.
+      () => [log.loaded, params.node, log.nodes.length] as const,
+      ([loaded, wanted]) => {
+        if (!loaded || !wanted || !/^[0-9]+$/.test(wanted) || selected() === Number(wanted)) return
+        const seq = Number(wanted)
+        if (!log.nodes.some((n) => n.seq === seq)) return
+        if (tab() === "overview" && linkedView(unwrap(log.nodes), unwrap(log.dividers), seq) === "timeline")
+          chooseTab("timeline")
+        apis[tab()]?.reveal(seq)
+        setSelected(seq)
+      },
+    ),
+  )
 
   return (
     <div>
@@ -330,33 +372,40 @@ export function RunPage(props: { id: string }) {
                 )}
               </Show>
               <Show when={d().log_state === "ok"}>
-                <div
-                  role="tabpanel"
-                  id={`${tabsId}-timeline-panel`}
-                  aria-labelledby={`${tabsId}-timeline`}
-                  hidden={tab() !== "timeline"}
-                  class="space-y-2"
-                >
-                  <Show when={log.loaded}>
-                    <Show when={log.nodes.length} fallback={<p class={`text-sm ${MUTED}`}>No node has started yet.</p>}>
-                      <Timeline
-                        nodes={log.nodes}
-                        dividers={log.dividers}
-                        api={(a) => (timelineApi = a)}
-                        selected={selected()}
-                        onSelect={select}
-                      />
-                    </Show>
-                    <Show when={log.next != null}>
-                      <button ref={olderButton} type="button" onClick={older} class={`text-sm ${LINK}`}>
-                        Older nodes
-                      </button>
-                    </Show>
-                    <Show when={log.dropped && log.next == null}>
-                      <p class={`text-sm ${MUTED}`}>older nodes: see Raw</p>
-                    </Show>
-                  </Show>
-                </div>
+                <For each={TREES}>
+                  {([view, label, rows]) => (
+                    <div
+                      role="tabpanel"
+                      id={`${tabsId}-${view}-panel`}
+                      aria-labelledby={`${tabsId}-${view}`}
+                      hidden={tab() !== view}
+                      class="space-y-2"
+                    >
+                      <Show when={log.loaded}>
+                        <Show
+                          when={log.nodes.length}
+                          fallback={<p class={`text-sm ${MUTED}`}>No node has started yet.</p>}
+                        >
+                          <NodeTree
+                            label={label}
+                            rows={rows(log.nodes, log.dividers)}
+                            api={(a) => (apis[view] = a)}
+                            selected={selected()}
+                            onSelect={select}
+                          />
+                        </Show>
+                        <Show when={log.next != null}>
+                          <button data-older type="button" onClick={older} class={`text-sm ${LINK}`}>
+                            Older nodes
+                          </button>
+                        </Show>
+                        <Show when={log.dropped && log.next == null}>
+                          <p class={`text-sm ${MUTED}`}>older nodes: see Raw</p>
+                        </Show>
+                      </Show>
+                    </div>
+                  )}
+                </For>
                 <Show when={rawShown()}>
                   <div
                     role="tabpanel"
@@ -410,14 +459,20 @@ export function RunPage(props: { id: string }) {
   )
 }
 
-/** The run page's two views of its log. */
-type Tab = "timeline" | "raw"
+/** The run page's views of its log: Overview, the Timeline without its trivial nodes, first. */
+type Tab = "overview" | "timeline" | "raw"
 const TABS: [Tab, string][] = [
+  ["overview", "Overview"],
   ["timeline", "Timeline"],
   ["raw", "Raw"],
 ]
+/** The views that are trees of node attempts, with each one's rows. */
+const TREES: [Tab, string, (nodes: RunNode[], dividers: RunDivider[]) => TreeRow[]][] = [
+  ["overview", "Overview", overview],
+  ["timeline", "Timeline", timelineTree],
+]
 
-/** The Timeline and Raw tabs: the WAI-ARIA tabs pattern, the arrow keys moving between them. */
+/** The Overview, Timeline and Raw tabs: the WAI-ARIA tabs pattern, the arrow keys moving between them. */
 function Tabs(props: { id: string; tab: Tab; onTab: (tab: Tab) => void }) {
   const buttons = new Map<Tab, HTMLButtonElement>()
   function onKey(e: KeyboardEvent) {
@@ -598,13 +653,6 @@ function Header(props: {
   )
 }
 
-/** A Timeline row's key: stable across refetches (a group by its iteration and its oldest node), for focus. */
-function rowKey(row: Row): string {
-  if (row.type === "node") return `n:${row.node.seq}`
-  if (row.type === "divider") return `d:${row.divider.seq}`
-  return `g:${row.group.key}:${row.group.nodes[row.group.nodes.length - 1]!.seq}`
-}
-
 /** A node status's color: open shows as live, failed as an error. */
 const STATUS_TEXT: Partial<Record<RunNode["status"], string>> = {
   open: "text-green-700 dark:text-green-400",
@@ -612,14 +660,19 @@ const STATUS_TEXT: Partial<Record<RunNode["status"], string>> = {
   restarted: MUTED,
 }
 
+/** A visible treeitem: its key, and the key of the item it's under. */
+type Visible = { key: string; parent?: string }
+
 /**
- * The Timeline: node attempts newest first, an iteration's consecutive nodes grouped (the latest open, the rest
- * folded), and the resume dividers, each describing the item after it. The WAI-ARIA tree pattern with nested groups
- * and a roving tabindex.
+ * A tree of node attempts (the Timeline's or Overview's rows): newest first, an iteration's nodes under it (the latest
+ * open, the rest folded) and a flow call's under its row (folded), and the resume dividers, each describing the item
+ * after it. The WAI-ARIA tree pattern with nested groups and a roving tabindex, its keys moving over the visible
+ * items only.
  */
-function Timeline(props: {
-  nodes: RunNode[]
-  dividers: RunDivider[]
+function NodeTree(props: {
+  /** Its accessible name: its tab's. */
+  label: string
+  rows: TreeRow[]
   api?: (api: TimelineApi) => void
   /** The seq of the node whose detail shows. */
   selected?: number
@@ -627,31 +680,45 @@ function Timeline(props: {
   onSelect: (node: RunNode, row: HTMLElement) => void
 }) {
   const uid = createUniqueId()
-  const rows = createMemo(() => timeline(props.nodes, props.dividers))
-  const byKey = createMemo(() => new Map(rows().map((r) => [rowKey(r), r])))
-  const keys = createMemo(() => [...byKey().keys()])
-  const groupOf = (key: string | undefined) => {
-    const row = key === undefined ? undefined : byKey().get(key)
-    return row?.type === "group" ? row.group : undefined
-  }
-  // A group's fold is kept for each of its nodes, so it holds when the group gains nodes: newer ones live, or older
-  // ones from an older page (which changes the group's key).
-  const [folds, setFolds] = createStore<Record<number, boolean>>({})
-  const foldOf = (group: Group) => group.nodes.map((n) => folds[n.seq]).find((f) => f !== undefined)
-  const setFold = (group: Group, open: boolean) => setFolds(Object.fromEntries(group.nodes.map((n) => [n.seq, open])))
-  // Every group that has been the latest iteration, which is open by default. When a newer iteration starts, the one
-  // before stays open, with focus inside. Kept as the first group is worked out, not set by an effect after it:
-  // an effect runs after the render, which would already have folded the group and dropped its focus.
+  // Built once per change of the nodes: reading `props.rows` builds them anew each time.
+  const rows = createMemo(() => props.rows)
+  /** Every item at any depth, by key. */
+  const byKey = createMemo(() => {
+    const map = new Map<string, TreeItem>()
+    const add = (it: TreeItem) => {
+      map.set(it.key, it)
+      it.children.forEach(add)
+    }
+    for (const r of rows()) if (r.type === "item") add(r.item)
+    return map
+  })
+  const rowKey = (r: TreeRow) => (r.type === "item" ? r.item.key : `d:${r.divider.seq}`)
+  const keys = createMemo(() => rows().map(rowKey))
+  const rowOf = createMemo(() => new Map(rows().map((r) => [rowKey(r), r])))
+  // An iteration's fold is kept for each of its nodes, so it holds when the iteration gains nodes: newer ones live,
+  // or older ones from an older page (which changes its key). A flow call's is kept by its node.
+  const [groupFolds, setGroupFolds] = createStore<Record<number, boolean>>({})
+  const [callFolds, setCallFolds] = createStore<Record<number, boolean>>({})
+  // Every iteration that has been the latest, which is open by default. When a newer iteration starts, the one before
+  // stays open, with focus inside. Kept as the first iteration is worked out, not set by an effect after it: an effect
+  // runs after the render, which would already have folded the iteration and dropped its focus.
   const wasFirst = new Set<string>()
   const firstGroup = createMemo(() => {
-    const key = keys().find((k) => k.startsWith("g:"))
+    const first = rows().find((r) => r.type === "item" && r.item.kind === "group")
+    const key = first?.type === "item" ? first.item.key : undefined
     if (key) wasFirst.add(key)
     return key
   })
-  const isOpen = (key: string) => {
-    const group = groupOf(key)
-    const first = firstGroup()
-    return (group && foldOf(group)) ?? (key === first || wasFirst.has(key))
+  const isOpen = (key: string): boolean => {
+    const it = byKey().get(key)
+    if (!it || it.kind === "node") return false
+    if (it.kind === "call") return callFolds[it.node!.seq] ?? false
+    const fold = it.seqs.map((seq) => groupFolds[seq]).find((f) => f !== undefined)
+    return fold ?? (key === firstGroup() || wasFirst.has(key))
+  }
+  const setOpen = (it: TreeItem, open: boolean) => {
+    if (it.kind === "call") setCallFolds(it.node!.seq, open)
+    else setGroupFolds(Object.fromEntries(it.seqs.map((seq) => [seq, open])))
   }
   /** The ids of what describes each row: the dividers just before it. */
   const describedBy = createMemo(() => {
@@ -660,21 +727,22 @@ function Timeline(props: {
     for (const r of rows()) {
       if (r.type === "divider") pending.push(`${uid}-d${r.divider.seq}`)
       else if (pending.length) {
-        by.set(rowKey(r), pending.join(" "))
+        by.set(r.item.key, pending.join(" "))
         pending = []
       }
     }
     return by
   })
-  /** The treeitems on show, in order, each with the group it's in. */
-  const items = createMemo(() =>
-    rows().flatMap((r): { key: string; parent?: string }[] => {
-      const key = rowKey(r)
-      if (r.type === "divider") return []
-      if (r.type === "node" || !isOpen(key)) return [{ key }]
-      return [{ key }, ...r.group.nodes.map((n) => ({ key: `n:${n.seq}`, parent: key }))]
-    }),
-  )
+  /** The treeitems on show, in order, each with the item it's under. */
+  const items = createMemo(() => {
+    const out: Visible[] = []
+    const walk = (it: TreeItem, parent?: string) => {
+      out.push({ key: it.key, parent })
+      if (isOpen(it.key)) for (const child of it.children) walk(child, it.key)
+    }
+    for (const r of rows()) if (r.type === "item") walk(r.item)
+    return out
+  })
   const [focused, setFocused] = createSignal<string>()
   /** The treeitem with tabindex 0: the focused one while it's on show, else the first. */
   const current = createMemo(() => {
@@ -686,13 +754,19 @@ function Timeline(props: {
     setFocused(key)
     elements.get(key)?.focus()
   }
-  /** Opens or folds a group; folding it over the focused node moves focus to the group. */
+  /** Opens or folds an item; folding it over the focused item moves focus to it. */
   function toggle(key: string) {
-    const group = groupOf(key)
-    if (!group) return
+    const it = byKey().get(key)
+    if (!it || it.kind === "node") return
     const open = isOpen(key)
-    if (open && items().find((i) => i.key === focused())?.parent === key) focus(key)
-    setFold(group, !open)
+    if (open) {
+      const inside = (k: string | undefined): boolean => {
+        const at = items().find((i) => i.key === k)
+        return !!at?.parent && (at.parent === key || inside(at.parent))
+      }
+      if (inside(focused())) focus(key)
+    }
+    setOpen(it, !open)
   }
   /** Keeps a treeitem's element, for moving focus to it. */
   const keep = (key: string) => (el: HTMLElement) => {
@@ -700,13 +774,19 @@ function Timeline(props: {
     onCleanup(() => elements.delete(key))
   }
   props.api?.({
-    // A node's own item while it's on show, else its folded group's.
+    // A node's own item while it's on show, else the outermost folded item it's in.
     focusNode(seq) {
-      const key = `n:${seq}`
-      const item = items().find((i) => i.key === key)
-      if (item) return focus(key)
-      const group = rows().find((r) => r.type === "group" && r.group.nodes.some((n) => n.seq === seq))
-      if (group) focus(rowKey(group))
+      const path = pathTo(rows(), seq)
+      if (path === null) return
+      const closed = path.find((key) => !isOpen(key))
+      focus(closed ?? `n:${seq}`)
+    },
+    // Opens every item a node is in, so its row shows; false when this tree doesn't show it at all.
+    reveal(seq) {
+      const path = pathTo(rows(), seq)
+      if (path === null) return false
+      for (const key of path) if (!isOpen(key)) setOpen(byKey().get(key)!, true)
+      return true
     },
   })
 
@@ -715,64 +795,157 @@ function Timeline(props: {
     const list = items()
     const i = list.findIndex((x) => x.key === key)
     if (!key || i < 0) return
-    const group = key.startsWith("g:")
+    const it = byKey().get(key)!
+    const folds = it.kind !== "node"
     let to: string | undefined
     if (e.key === "ArrowDown") to = list[i + 1]?.key
     else if (e.key === "ArrowUp") to = list[i - 1]?.key
     else if (e.key === "Home") to = list[0]?.key
     else if (e.key === "End") to = list[list.length - 1]?.key
-    else if (e.key === "ArrowRight" && group) {
+    else if (e.key === "ArrowRight" && folds) {
       if (!isOpen(key)) toggle(key)
-      else to = list[i + 1]?.key
+      else to = list[i + 1]?.parent === key ? list[i + 1]!.key : undefined
     } else if (e.key === "ArrowLeft") {
-      if (group && isOpen(key)) toggle(key)
+      if (folds && isOpen(key)) toggle(key)
       else to = list[i]!.parent
-    } else if ((e.key === "Enter" || e.key === " ") && group) toggle(key)
+    } else if ((e.key === "Enter" || e.key === " ") && it.kind === "group") toggle(key)
     else if (e.key === "Enter" || e.key === " ") {
-      const node = props.nodes.find((n) => `n:${n.seq}` === key)
       const row = elements.get(key)
-      if (node && row) props.onSelect(node, row)
+      if (it.node && row) props.onSelect(it.node, row)
     } else return
     e.preventDefault()
     if (to) focus(to)
   }
 
-  const NodeItem = (p: { node: RunNode; level: number; describedBy?: string }) => {
-    const key = `n:${p.node.seq}`
-    const error = `${uid}-e${p.node.seq}`
-    const failed = () => (p.node.status === "failed" && p.node.error) || undefined
+  /** One item at `level`: a node, a flow call (a node with its nodes under it), or an iteration. Read through `p`,
+   *  as a refetch builds the items anew; its key is its own. */
+  const ItemView = (p: { item: TreeItem; level: number; describedBy?: string }): JSX.Element => {
+    const key = p.item.key
+    const error = `${uid}-e${key}`
+    const node = () => p.item.node
+    const failed = () => (node()?.status === "failed" && node()!.error) || undefined
+    const count = () => `${p.item.children.length} ${p.item.noun}${p.item.children.length === 1 ? "" : "s"}`
+    const status = () => (
+      <span class={STATUS_TEXT[p.item.status.status] ?? MUTED}>{nodeStatus(p.item.status)}</span>
+    )
+    const name = () => (
+      <span
+        class={`font-mono wrap-anywhere ${isBoundary(node()?.node_id ?? "") ? MUTED : ""}`}
+        title={node() && p.item.name !== node()!.node_id ? node()!.node_id : undefined}
+      >
+        {p.item.name}
+      </span>
+    )
+    // By key, so a refetch updates each child in place and focus stays where it was.
+    const children = () => (
+      <Show when={isOpen(key) && p.item.children.length}>
+        <ul role="group" class="ml-4 border-l border-neutral-200 pl-2 dark:border-neutral-800">
+          <For each={p.item.children.map((c) => c.key)}>
+            {(child) => (
+              <Show when={byKey().get(child)}>{(it) => <ItemView item={it()} level={p.level + 1} />}</Show>
+            )}
+          </For>
+        </ul>
+      </Show>
+    )
+    if (p.item.kind === "group")
+      return (
+        <li
+          role="treeitem"
+          aria-level={p.level}
+          aria-expanded={isOpen(key)}
+          aria-label={`iteration ${p.item.name} ${nodeStatus(p.item.status)}`}
+          aria-describedby={p.describedBy}
+          data-key={key}
+          tabindex={current() === key ? 0 : -1}
+          ref={keep(key)}
+          onFocus={() => setFocused(key)}
+          onClick={(e) => {
+            // A click on an item inside the open iteration isn't a click on the iteration.
+            if ((e.target as HTMLElement).closest('[role="treeitem"]') !== e.currentTarget) return
+            toggle(key)
+          }}
+          class={`rounded ${RING}`}
+        >
+          <div class="flex cursor-default items-center gap-1.5 px-2 py-1 select-none">
+            <span aria-hidden="true" class={`w-3 text-xs ${MUTED}`}>
+              {isOpen(key) ? "▾" : "▸"}
+            </span>
+            <span class="font-mono">{p.item.name}</span>
+            {status()}
+            <Show when={!isOpen(key) && p.item.children.length}>
+              <span class={`text-xs ${MUTED}`}>{count()}</span>
+            </Show>
+          </div>
+          {children()}
+        </li>
+      )
+    const call = () => p.item.kind === "call"
+    const selected = () => props.selected === node()!.seq
     return (
       <li
         role="treeitem"
-        aria-label={`${p.node.node_id} ${nodeStatus(p.node)}`}
         aria-level={p.level}
-        aria-selected={props.selected === p.node.seq}
+        aria-expanded={call() ? isOpen(key) : undefined}
+        aria-label={`${node()!.node_id} ${nodeStatus(p.item.status)}`}
+        aria-selected={selected()}
         aria-describedby={[p.describedBy, failed() && error].filter(Boolean).join(" ") || undefined}
         data-key={key}
         tabindex={current() === key ? 0 : -1}
         ref={keep(key)}
         onFocus={() => setFocused(key)}
-        onClick={(e) => props.onSelect(p.node, e.currentTarget)}
-        class={`cursor-pointer rounded px-2 py-1 hover:bg-neutral-100 aria-selected:bg-neutral-200/70 dark:hover:bg-neutral-900 dark:aria-selected:bg-neutral-800 ${RING}`}
+        onClick={(e) => {
+          // A click on an item inside an open flow call isn't a click on the call; one on its chevron folds it.
+          if ((e.target as HTMLElement).closest('[role="treeitem"]') !== e.currentTarget) return
+          if ((e.target as HTMLElement).closest("[data-fold]")) return toggle(key)
+          props.onSelect(node()!, e.currentTarget)
+        }}
+        class={`rounded ${RING} ${
+          call()
+            ? ""
+            : "cursor-pointer px-2 py-1 hover:bg-neutral-100 aria-selected:bg-neutral-200/70 dark:hover:bg-neutral-900 dark:aria-selected:bg-neutral-800"
+        }`}
       >
-        <span class={`font-mono wrap-anywhere ${isBoundary(p.node.node_id) ? MUTED : ""}`}>{p.node.node_id}</span>{" "}
-        <span class={STATUS_TEXT[p.node.status] ?? MUTED}>{nodeStatus(p.node)}</span>
+        <Show
+          when={call()}
+          fallback={
+            <>
+              {name()} {status()}
+            </>
+          }
+        >
+          <div
+            class={`flex cursor-pointer flex-wrap items-baseline gap-x-1.5 rounded px-2 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-900 ${
+              selected() ? "bg-neutral-200/70 dark:bg-neutral-800" : ""
+            }`}
+          >
+            {name()}
+            {status()}
+            <Show when={!isOpen(key)}>
+              <span class={`text-xs ${MUTED}`}>· {count()}</span>
+            </Show>
+            <span data-fold aria-hidden="true" class={`w-3 text-xs select-none ${MUTED}`}>
+              {isOpen(key) ? "▾" : "▸"}
+            </span>
+          </div>
+        </Show>
         <Show when={failed()}>
           {(text) => (
-            <span id={error} class="block text-xs wrap-anywhere text-red-700 dark:text-red-400">
+            <span id={error} class={`block text-xs wrap-anywhere text-red-700 dark:text-red-400 ${call() ? "px-2" : ""}`}>
               {text().length > ERROR_CHARS ? `${text().slice(0, ERROR_CHARS)}…` : text()}
             </span>
           )}
         </Show>
+        {children()}
       </li>
     )
   }
 
   return (
-    <ul role="tree" aria-label="Timeline" onKeyDown={onKey} class="text-sm">
+    <ul role="tree" aria-label={props.label} onKeyDown={onKey} class="text-sm">
       <For each={keys()}>
         {(key) => (
-          <Show when={byKey().get(key)}>
+          <Show when={rowOf().get(key)}>
             {(row) => {
               const r = row()
               if (r.type === "divider")
@@ -783,44 +956,12 @@ function Timeline(props: {
                     <span aria-hidden="true" class="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
                   </li>
                 )
-              if (r.type === "node") return <NodeItem node={r.node} level={1} describedBy={describedBy().get(key)} />
-              const group = () => (row() as Extract<Row, { type: "group" }>).group
               return (
-                <li
-                  role="treeitem"
-                  aria-level={1}
-                  aria-expanded={isOpen(key)}
-                  aria-label={`iteration ${group().key} ${nodeStatus(group().nodes[0]!)}`}
-                  aria-describedby={describedBy().get(key)}
-                  data-key={key}
-                  tabindex={current() === key ? 0 : -1}
-                  ref={keep(key)}
-                  onFocus={() => setFocused(key)}
-                  onClick={(e) => {
-                    // A click on a node inside the open group isn't a click on the group.
-                    if ((e.target as HTMLElement).closest('[role="treeitem"]') !== e.currentTarget) return
-                    toggle(key)
-                  }}
-                  class={`rounded ${RING}`}
-                >
-                  <div class="flex cursor-default items-center gap-1.5 px-2 py-1 select-none">
-                    <span aria-hidden="true" class={`w-3 text-xs ${MUTED}`}>
-                      {isOpen(key) ? "▾" : "▸"}
-                    </span>
-                    <span class="font-mono">{group().key}</span>
-                    <span class={STATUS_TEXT[group().nodes[0]!.status] ?? MUTED}>{nodeStatus(group().nodes[0]!)}</span>
-                    <Show when={!isOpen(key)}>
-                      <span class={`text-xs ${MUTED}`}>
-                        {group().nodes.length} {group().nodes.length === 1 ? "node" : "nodes"}
-                      </span>
-                    </Show>
-                  </div>
-                  <Show when={isOpen(key)}>
-                    <ul role="group" class="ml-4 border-l border-neutral-200 pl-2 dark:border-neutral-800">
-                      <For each={group().nodes}>{(node) => <NodeItem node={node} level={2} />}</For>
-                    </ul>
-                  </Show>
-                </li>
+                <ItemView
+                  item={(row() as Extract<TreeRow, { type: "item" }>).item}
+                  level={1}
+                  describedBy={describedBy().get(key)}
+                />
               )
             }}
           </Show>

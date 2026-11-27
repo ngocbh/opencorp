@@ -238,11 +238,11 @@ test("Source's syntax colors: YAML, JSON, Markdown, a big file, hostile text and
   expect(await violations()).toEqual([])
 })
 
-test("a run page: the header and the Timeline unfolded, older nodes, and the phone layout, with no CSP violation", async ({ page, request }) => {
+test("a run page: the header and Overview unfolded, older nodes, and the phone layout, with no CSP violation", async ({ page, request }) => {
   await request.post("/__fixture/set", { data: { signedIn: true } })
   const violations = await watchCsp(page)
   await page.goto("/runs/01JA1H00000000000000000005")
-  const tree = page.getByRole("tree", { name: "Timeline" })
+  const tree = page.getByRole("tree", { name: "Overview" })
   await tree.getByRole("treeitem", { name: /^iteration chat#2/ }).first().click()
   await page.getByRole("button", { name: "Older nodes" }).click()
   await violations()
@@ -256,7 +256,7 @@ test("a run page: a node's detail, Raw with an opened record, and the phone shee
   await request.post("/__fixture/set", { data: { signedIn: true } })
   const violations = await watchCsp(page)
   await page.goto("/runs/01JA1H00000000000000000005")
-  const tree = page.getByRole("tree", { name: "Timeline" })
+  const tree = page.getByRole("tree", { name: "Overview" })
   await tree.getByRole("treeitem", { name: /^iteration chat#2/ }).first().click()
   await tree.getByRole("treeitem", { name: /chat#2\/reply.*succeeded/ }).click()
   await expect(page.getByRole("region", { name: "Node chat#2/reply" })).toContainText("Done.")
@@ -277,7 +277,7 @@ test("a run page: node detail resized by drag and keys, remembered, clamped and 
   await request.post("/__fixture/set", { data: { signedIn: true } })
   const violations = await watchCsp(page)
   await page.goto("/runs/01JA1H00000000000000000005")
-  const row = page.getByRole("tree", { name: "Timeline" }).getByRole("treeitem", { name: /chat#3\/ask/ })
+  const row = page.getByRole("tree", { name: "Overview" }).getByRole("treeitem", { name: /chat#3\/ask/ })
   await row.click()
   const splitter = page.getByRole("separator", { name: "Resize node detail" })
   const b = (await splitter.boundingBox())!
@@ -293,7 +293,7 @@ test("a run page: node detail resized by drag and keys, remembered, clamped and 
   await page.reload()
   await row.click()
   await page.getByRole("region", { name: "Node chat#3/ask" }).getByRole("button", { name: "Expand" }).click()
-  await expect(page.getByRole("tree", { name: "Timeline" })).toBeHidden()
+  await expect(page.getByRole("tree", { name: "Overview" })).toBeHidden()
   await page.keyboard.press("Escape")
   await expect(row).toBeFocused()
   expect(await violations()).toEqual([])

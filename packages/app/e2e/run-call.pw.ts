@@ -6,7 +6,8 @@ test.beforeEach(async ({ request }) => {
   await request.post("/__fixture/set", { data: { signedIn: true } })
 })
 
-const timeline = (page: Page) => page.getByRole("tree", { name: "Timeline" })
+/** Overview, the run page's default view. */
+const timeline = (page: Page) => page.getByRole("tree", { name: "Overview" })
 const nodeDetail = (page: Page, id: string) => page.getByRole("region", { name: `Node ${id}` })
 
 /** Opens run 5's chat#2/reply and returns its detail. */

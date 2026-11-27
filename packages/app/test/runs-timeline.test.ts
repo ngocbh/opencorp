@@ -5,11 +5,17 @@ import {
   handleText,
   isBoundary,
   iterationOf,
+  linkedView,
   nodeStatus,
+  overview,
+  pathTo,
   staticPath,
   takeNewest,
   timeline,
+  timelineTree,
   type Shown,
+  type TreeItem,
+  type TreeRow,
 } from "../src/runs/timeline"
 
 const n = (seq: number, node_id: string, over: Partial<RunNode> = {}) => ({ seq, node_id, status: "succeeded", ...over }) as RunNode
@@ -71,4 +77,103 @@ test("a newest page that doesn't reach the older pages read keeps them, and thei
   expect(s.dividers.map((d) => d.seq)).toEqual([8, 4])
   expect(s.next).toBe(3)
   expect(s.dropped).toBe(true)
+})
+
+/** One finished turn of a chat, newest first: its START, the take, the route, a flow call to `context` that calls
+ *  `compacted`, the reply and its END; the loop's driver and the loop itself before it. */
+const turn = (over: Record<string, Partial<RunNode>> = {}): RunNode[] =>
+  ([
+    [30, "chat#5/__end__"], [25, "chat#5/reply"], [22, "chat#5/context/__end__"], [21, "chat#5/context/compacted/__end__"],
+    [19, "chat#5/context/compacted/over", { status: "routed", handle: "done" }], [18, "chat#5/context/compacted/__start__"],
+    [17, "chat#5/context/compacted", { status: "expanded" }], [16, "chat#5/context/__start__"],
+    [15, "chat#5/context", { status: "expanded" }], [14, "chat#5/route", { status: "routed", handle: "context" }],
+    [12, "chat#5/heard"], [11, "chat#5/__start__"], [10, "chat~5", { status: "expanded" }], [1, "chat", { status: "expanded" }],
+  ] as [number, string, Partial<RunNode>?][]).map(([seq, id, o]) => n(seq, id, { ...o, ...over[id] }))
+
+/** Each item as `name status (count)` and its children indented, as the tree reads. */
+function outline(rows: TreeRow[]): string[] {
+  const out: string[] = []
+  const walk = (item: TreeItem, depth: number) => {
+    const count = item.kind === "node" ? "" : ` (${item.children.length} ${item.noun}s)`
+    out.push(`${"  ".repeat(depth)}${item.name} ${nodeStatus(item.status)}${count}`)
+    for (const child of item.children) walk(child, depth + 1)
+  }
+  for (const row of rows) row.type === "item" ? walk(row.item, 0) : out.push(`-- ${dividerText(row.divider)}`)
+  return out
+}
+
+test("Overview hides starts, ends and expansions, folding their status into the turn and each flow call's row", () => {
+  expect(outline(overview(turn(), []))).toEqual([
+    "chat#5 succeeded (4 nodes)",
+    "  reply succeeded",
+    "  context succeeded (1 steps)",
+    "    compacted succeeded (1 steps)",
+    "      over routed → done",
+    "  route routed → context",
+    "  heard succeeded",
+  ])
+  // A flow call's row opens its node; an iteration's opens none.
+  const group = (overview(turn(), [])[0] as Extract<TreeRow, { type: "item" }>).item
+  expect([group.kind, group.node, group.key]).toEqual(["group", null, "g:chat#5:10"])
+  expect(group.children.map((c) => [c.kind, c.key])).toEqual([["node", "n:25"], ["call", "n:15"], ["node", "n:14"], ["node", "n:12"]])
+})
+
+test("a flow call still running is open, one that failed inside failed, and so is its turn", () => {
+  const open = { "chat#5/context/compacted/over": { status: "open" as const }, "chat#5/__end__": { status: "open" as const } }
+  expect(outline(overview(turn(open).slice(1), [])).slice(0, 4)).toEqual([
+    "chat#5 open (4 nodes)",
+    "  reply succeeded",
+    "  context open (1 steps)",
+    "    compacted open (1 steps)",
+  ])
+  const failed = turn({ "chat#5/context/compacted/over": { status: "failed", error: "boom" } })
+    .filter((x) => !x.node_id.endsWith("__end__"))
+  expect(outline(overview(failed, [])).slice(0, 4)).toEqual([
+    "chat#5 failed (4 nodes)",
+    "  reply succeeded",
+    "  context failed (1 steps)",
+    "    compacted failed (1 steps)",
+  ])
+})
+
+test("Timeline shows every node as it is, a turn's nodes flat under it", () => {
+  const rows = timelineTree(turn(), [])
+  expect(outline(rows)[0]).toBe("chat#5 succeeded (13 nodes)")
+  expect(outline(rows).slice(1, 4)).toEqual(["  chat#5/__end__ succeeded", "  chat#5/reply succeeded",
+                                            "  chat#5/context/__end__ succeeded"])
+  expect(outline(rows).at(-1)).toBe("chat expanded")
+})
+
+test("Overview keeps dividers, a node outside any turn, and a turn whose nodes haven't started", () => {
+  const nodes = [n(40, "chat~6", { status: "expanded" }), ...turn(), n(0, "__start__")]
+  expect(outline(overview(nodes, [{ seq: 35, retried: [] }])).map((l) => l.split(" (")[0])).toEqual([
+    "chat#6 expanded", "-- resumed", "chat#5 succeeded", "  reply succeeded", "  context succeeded",
+    "    compacted succeeded", "      over routed → done", "  route routed → context", "  heard succeeded",
+  ])
+  const loop = [n(9, "l~2"), n(8, "l#1/a"), n(6, "l~1", { status: "expanded" }), n(4, "l#0/a"), n(2, "l", { status: "expanded" }),
+                n(1, "c/prep"), n(0, "c", { status: "expanded" })]
+  expect(outline(overview(loop, []))).toEqual([
+    "l#2 succeeded (1 nodes)", "  l~2 succeeded", "l#1 succeeded (1 nodes)", "  a succeeded",
+    "l#0 succeeded (1 nodes)", "  a succeeded",
+    // A call with no END yet shows its expansion's status.
+    "c expanded (1 steps)", "  prep succeeded",
+  ])
+})
+
+test("where a node is in a tree: the items to open to show it, none when the tree hides it", () => {
+  const rows = overview(turn(), [])
+  expect(pathTo(rows, 19)).toEqual(["g:chat#5:10", "n:15", "n:17"])
+  expect(pathTo(rows, 25)).toEqual(["g:chat#5:10"])
+  for (const hidden of [30, 22, 17 - 1, 10, 1]) expect([hidden, pathTo(rows, hidden)]).toEqual([hidden, null])
+  // A flow call is its own row.
+  expect(pathTo(rows, 15)).toEqual(["g:chat#5:10"])
+  expect(pathTo(timelineTree(turn(), []), 30)).toEqual(["g:chat#5:10"])
+})
+
+test("a link to a node opens Overview, unless Overview hides it: a turn's END opens the Timeline", () => {
+  const nodes = turn()
+  expect(linkedView(nodes, [], 30)).toBe("timeline") // chat#5/__end__
+  expect(linkedView(nodes, [], 10)).toBe("timeline") // chat~5, an expansion
+  expect(linkedView(nodes, [], 19)).toBe("overview") // in a folded flow call, which opens
+  expect(linkedView(nodes, [], 25)).toBe("overview")
 })
