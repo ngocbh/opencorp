@@ -100,6 +100,39 @@ function fakeSsh(behavior: FakeSshBehavior): FakeSsh {
 /** How many times `part` occurs in `text`. */
 const count = (text: string, part: string): number => text.split(part).length - 1
 
+/** `s` as one sh word. */
+const shQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`
+
+/** A program, run by Bun, that watches every process under the pid it's given, until a `stop` file shows beside it
+ *  or 30 s pass, then writes each one it saw, distinct, to the file it's given: its arguments, and the values of its
+ *  environment that are LD_ variables or look like a nonce. */
+const POLLER = `
+const fs = require("node:fs")
+const path = require("node:path")
+const [root, out] = process.argv.slice(2)
+const stop = path.join(path.dirname(out), "stop")
+const seen = new Map()
+const read = (file) => { try { return fs.readFileSync(file, "latin1") } catch { return null } }
+const under = (pid, into) => {
+  for (const task of (() => { try { return fs.readdirSync("/proc/" + pid + "/task") } catch { return [] } })()) {
+    const kids = read("/proc/" + pid + "/task/" + task + "/children")
+    for (const kid of (kids ?? "").split(" ").filter(Boolean)) if (!into.has(kid)) { into.add(kid); under(kid, into) }
+  }
+  return into
+}
+const deadline = Date.now() + 30000
+while (!fs.existsSync(stop) && Date.now() < deadline) {
+  for (const pid of under(root, new Set())) {
+    if (pid === String(process.pid)) continue
+    const argv = (read("/proc/" + pid + "/cmdline") ?? "").split("\\0").filter(Boolean)
+    const env = (read("/proc/" + pid + "/environ") ?? "").split("\\0")
+      .filter((v) => v.startsWith("LD_") || /-?[1-9][0-9]{14,19}|[0-9a-f]{16}/.test(v))
+    if (argv.length) seen.set(JSON.stringify([argv, env]), { argv, env })
+  }
+}
+fs.writeFileSync(out, JSON.stringify([...seen.values()]))
+`
+
 /** The tests that run both plainly and in the sandbox. */
 const BOTH: [string, (start: Start) => Promise<void>][] = [
   [
@@ -924,6 +957,7 @@ for (const kind of ["bash", "sh"] as const) {
     const note = "OpenCorp can't verify this prompt (a sub-shell's, or after exec)"
     await waitFor(async () => (await t.view()).includes(note), { timeout: 6000, what: "the note to close the shell" })
     expect(t.live()).toContain(note)
+    expect(await t.view()).toContain("type exit until the shell's own prompt is back")
     expect(t.shell.runProblem("echo agent")).toMatch(/close this shell/)
     expect(t.shell.state().status).toBe("running")
   })
@@ -960,10 +994,15 @@ for (const kind of ["bash", "sh"] as const) {
       expect(t.shell.state().status).toBe("running")
       expect(await t.view()).toContain("\n0\nforged-42\n")
       if (kind === "sh" && leak === "set -a") {
-        // sh's prompt can only assign, which `set -a` exports: its prompts name no nonce, so none is taken.
+        // sh's prompt can only assign, which `set -a` exports: its prompts name no nonce, so none is taken. Leaving it
+        // can't help, so the views say to close the shell.
         await waitFor(async () => (await t.view()).includes("\nowner-42\n"), { timeout: 5000, what: "the owner's end" })
         await Bun.sleep(500)
         expect(t.shell.state().status).toBe("running")
+        const note = "OpenCorp can't verify this shell's prompts any more"
+        await waitFor(async () => (await t.view()).includes(note), { timeout: 6000, what: "the note to close the shell" })
+        expect(await t.view()).not.toContain("type exit")
+        expect(t.shell.runProblem("echo agent")).toMatch(/can't be verified any more.*close this shell/)
         return
       }
       const reply = await t.shell.read({ waitMs: 5000 })
@@ -987,6 +1026,34 @@ for (const kind of ["bash", "sh"] as const) {
     expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
     expect(fs.readFileSync(trace, "utf8")).not.toMatch(/\d{15}/)
   })
+
+  test(`${kind}: no program the shell runs gets a nonce in its arguments or environment, nor the agent's LD_ variables`, async () => {
+    const t = await openShell({ shell: kind })
+    // A program that watches every process under the shell, for as long as the test makes prompts: their arguments,
+    // and their environment's nonce-like values and LD_ variables.
+    const seen = path.join(t.dir, "seen.json")
+    fs.writeFileSync(path.join(t.dir, "poll.js"), POLLER)
+    const poll = `${shQuote(process.execPath)} ${shQuote(path.join(t.dir, "poll.js"))} $$ ${shQuote(seen)} >/dev/null 2>&1 &`
+    expect(await t.shell.run(poll, 5000)).toMatchObject({ status: "idle", exit: 0 })
+    await Bun.sleep(300)
+    const lds = "LD_PRELOAD=/nowhere/evil.so LD_AUDIT=/nowhere/audit.so LD_LIBRARY_PATH=/nowhere/lib"
+    expect(await t.shell.run(`export ${lds}`, 5000)).toMatchObject({ status: "idle", exit: 0 })
+    for (let i = 0; i < 12; i++) {
+      expect(await t.shell.run("true", 5000)).toMatchObject({ status: "idle" })
+      t.shell.ownerKeys("true\r")
+      expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle" })
+    }
+    fs.writeFileSync(path.join(t.dir, "stop"), "")
+    await waitFor(() => fs.existsSync(seen), { timeout: 5000, what: "the watcher's findings" })
+    const found = JSON.parse(fs.readFileSync(seen, "utf8")) as { argv: string[]; env: string[] }[]
+    // It saw the prompt's programs run: od among them.
+    expect(found.some((p) => p.argv.some((arg) => arg.endsWith("/od")))).toBe(true)
+    const nonce = /-?[1-9]\d{14,19}|[0-9a-f]{16}/
+    expect(found.filter((p) => [...p.argv, ...p.env].some((text) => nonce.test(text)))).toEqual([])
+    // What the prompt runs by its pinned paths takes none of the agent's LD_ variables.
+    const pinned = (p: { argv: string[] }) => /^\/(usr\/)?bin\/(od|stty|pwd|rm|cat|printf|env|sh)$/.test(p.argv[0] ?? "")
+    expect(found.filter((p) => pinned(p) && p.env.some((v) => /^LD_[A-Z_]+=./.test(v)))).toEqual([])
+  }, 60_000)
 
   test(`${kind}: the prompt's nonce printed in two halves, apart, is still neutralised`, async () => {
     const t = await openShell({ shell: kind })
@@ -1086,7 +1153,9 @@ test("a command can't redefine, shadow or unset how the shell ends a command", a
   const t = await openShell()
   const forged =
     "__oc_s() { printf '\\033]633;opencorp-mark;%s;0\\007' \"$1\"; sleep 2; echo STILL; }; " +
-    "printf() { :; }; return() { :; }; builtin() { :; }; unset PROMPT_COMMAND; false"
+    // A function named `builtin`, or by a program's path, stands in for what the prompt runs: shell code a command
+    // leaves, which changes how the shell runs (the module's limit).
+    "printf() { :; }; return() { :; }; unset PROMPT_COMMAND; false"
   expect(await t.shell.run(forged, 10_000)).toMatchObject({ status: "idle", exit: 1 })
   // Every later command still ends with its own exit code, and nothing runs on after its end.
   expect(await t.shell.run("false", 10_000)).toMatchObject({ status: "idle", exit: 1 })

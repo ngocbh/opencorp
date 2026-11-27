@@ -111,7 +111,8 @@ while a command runs), and a missing `.mcp.json` can still be created.
   ctrl+d leaves an ended shell alone: it is the record of what ran. A prompt that isn't the shell's own (a
   sub-shell's, or one after `exec`) never ends a command, so the shell shows running. After a few seconds the pane
   says so: type `exit` until the shell's own prompt is back (after `exec`, that ends the shell), or have your
-  employee close it, as they are told to.
+  employee close it, as they are told to. When even the shell's own prompts can't be told from forged ones (in `sh`,
+  `set -a` does that), it says to close the shell.
 - **Waits.** A command's reply waits 5 seconds unless your employee asks for longer (at most two minutes): a quick
   command replies with its output, and a longer one runs on while your employee does other work or ends their reply.
   A message for your employee, yours or a note, ends the wait at once, even one sent while their model was still
