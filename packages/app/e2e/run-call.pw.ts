@@ -147,16 +147,29 @@ test("an interrupted call says so", async ({ page }) => {
 
 test("a call the office is still rebuilding says so, asks again, and shows the call once it is rebuilt", async ({ page, request }) => {
   const path = `/api/runs/${rid(5)}/calls/chat%232/reply/5`
-  // The office answers "still loading" eight times, 200 ms apart.
-  await request.post("/__fixture/set", { data: { loading: { [path]: 8 } } })
+  // The office answers "still loading" three times: the app asks again after 0.5, 1 and 2 s.
+  await request.post("/__fixture/set", { data: { loading: { [path]: 3 } } })
   const detail = await openReply(page)
   await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 2/ }).click()
   const call = page.getByRole("region", { name: "Model call 2" })
   await expect(call).toContainText("rebuilding the call from the log…")
   await expect(call.getByRole("region", { name: "Reply" })).toHaveCount(0)
-  await expect(call.getByRole("region", { name: "Reply" })).toContainText("Done.")
+  await expect(call.getByRole("region", { name: "Reply" })).toContainText("Done.", { timeout: 10_000 })
   await expect(call).not.toContainText("rebuilding the call from the log…")
   await expect(call.getByRole("alert")).toHaveCount(0)
+})
+
+test("an office with too many logs to read says it's busy, and the call can retry", async ({ page, request }) => {
+  const path = `/api/runs/${rid(5)}/calls/chat%232/reply/5`
+  const busy = "the office is reading too many run logs at once; try again in a moment"
+  await request.post("/__fixture/set", { data: { fail: { [path]: { status: 503, error: "busy", message: busy } } } })
+  const detail = await openReply(page)
+  await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 2/ }).click()
+  const call = page.getByRole("region", { name: "Model call 2" })
+  await expect(call.getByRole("alert")).toHaveText(busy)
+  await request.post("/__fixture/set", { data: { fail: {} } })
+  await call.getByRole("button", { name: "Retry" }).click()
+  await expect(call.getByRole("region", { name: "Reply" })).toContainText("Done.")
 })
 
 test("a call the office can't rebuild says why and can retry", async ({ page, request }) => {
