@@ -23,6 +23,7 @@ import {
 import { MAIN_CHAT } from "../../company/chat_flow.ts"
 import { CallGate, releasedIn } from "../../features/chat/gate.ts"
 import { LiveRelay } from "../../features/chat/live.ts"
+import { escStands } from "../../features/chat/session_actor.ts"
 import { sentUnread, Transcript, userMessage } from "../../features/chat/transcript.ts"
 import { runSecrets } from "../../models/connections.ts"
 import { Bus } from "../../runtime/bus.ts"
@@ -544,7 +545,10 @@ export class LocalHost {
   async interrupt(): Promise<void> {
     this.#live()
     this.#stopCalls()
-    await this.#deliver({ id: newId(), op: "interrupt", inbox: MAIN_CHAT.inbox }, (frame) => {
+    // As the office's Esc, standing only before the turn's reply has started (`escStands`).
+    const log = path.join(this.#spec.folder, "runs", this.#runId, "log.jsonl")
+    const standing = escStands(log, MAIN_CHAT) ?? false
+    await this.#deliver({ id: newId(), op: "interrupt", inbox: MAIN_CHAT.inbox, standing }, (frame) => {
       if (!Array.isArray(frame.closed)) return
       for (const callId of frame.closed) {
         this.#closedCall(String(callId), "interrupted")
@@ -566,7 +570,8 @@ export class LocalHost {
     // A worker that never ends is asked to stop, then killed, so End always ends.
     this.#endTimer = setTimeout(() => void this.#workers.close(this.id, STOP_MS).catch(() => {}), END_STOP_MS)
     this.#endTimer.unref?.()
-    if (busy) await this.#deliver({ id: newId(), op: "interrupt", inbox: MAIN_CHAT.inbox })
+    // Standing: the session ends, so a turn that starts before the close lands is stopped before its model call.
+    if (busy) await this.#deliver({ id: newId(), op: "interrupt", inbox: MAIN_CHAT.inbox, standing: true })
     await this.#deliver({ id: newId(), op: "close", inbox: MAIN_CHAT.inbox })
   }
 

@@ -2,7 +2,7 @@
 import { HireRequest, validationMessage } from "@opencorp/protocol"
 import { type Owner, templateFiles } from "./template.ts"
 import { strip } from "../util/redact.ts"
-import { handleProblem } from "./naming.ts"
+import { handleProblem, labelProblems } from "./naming.ts"
 
 /** A first teammate: an agent reporting to the CEO, with a sentence that seeds their profile. */
 export interface Teammate {
@@ -35,7 +35,8 @@ function teammateProblem(t: Teammate, field: "name" | "title"): string | null {
 }
 
 /** Each problem with `draft`, after the field it is about (company, owner.name, owner.handle, teammate.name,
- *  teammate.title or teammate.handle), or null when it is about the whole. */
+ *  teammate.title or teammate.handle), or null when it is about the whole; a name or handle Yian refuses or that reads
+ *  as another person's among them (`labelProblems`). */
 export function fieldProblems(draft: Draft): FieldProblem[] {
   const { owner } = draft
   const found: FieldProblem[] = []
@@ -54,6 +55,9 @@ export function fieldProblems(draft: Draft): FieldProblem[] {
     }
   }
   const taken = new Set([owner.handle])
+  // The people Yian's label checks read, the owner first, so a teammate who reads as them is the teammate's problem.
+  const labelled: [who: "owner" | "teammate", person: { handle: string; name: string }][] = []
+  if (strip(owner.name) !== "" && !ownerWhy) labelled.push(["owner", owner])
   for (const t of draft.team) {
     const mine: FieldProblem[] = []
     for (const field of ["name", "title"] as const) {
@@ -72,6 +76,12 @@ export function fieldProblems(draft: Draft): FieldProblem[] {
       }
     }
     found.push(...mine)
+    // Trimmed, as init writes it.
+    if (mine.length === 0) labelled.push(["teammate", { handle: t.handle, name: t.name.trim() }])
+  }
+  // Only those with no other problem, so a name a field check refuses isn't refused twice.
+  for (const { index, field, message } of labelProblems(labelled.map(([, person]) => person))) {
+    found.push([`${labelled[index]![0]}.${field}`, message])
   }
   return found
 }

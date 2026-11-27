@@ -123,7 +123,7 @@ test("a not resumed advance refuses the deliveries it still holds", async () => 
   // Offline, the interrupt waits for RunResumed, which a refused advance never writes.
   const job = advanceJob(chat, {
     groups: shout("Whispers the text."),
-    deliver: [{ id: "i1", op: "interrupt", inbox: "steers" }],
+    deliver: [{ id: "i1", op: "interrupt", inbox: "steers", standing: false }],
   })
   const rec = await run(job, new Recorder(), { env: fake.env() })
   expect(rec.order).toEqual(["deliver_reply", "result"])

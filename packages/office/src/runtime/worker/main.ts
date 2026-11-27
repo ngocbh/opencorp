@@ -255,8 +255,10 @@ function applier(
             already_withdrawn: [...named.alreadyWithdrawn],
           }
         }
-        case "interrupt":
-          return { seq: null, closed: (await interrupt(log, delivery.inbox, options)).calls.map((call) => call.callId) }
+        case "interrupt": {
+          const cut = await interrupt(log, delivery.inbox, { ...options, standing: delivery.standing })
+          return { seq: cut.seq, closed: cut.calls.map((call) => call.callId) }
+        }
         case "cancel":
           return { seq: null, closed: (await cancel(log, options)).map((call) => call.callId) }
       }

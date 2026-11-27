@@ -20,9 +20,11 @@ import { ended, ownSleepers, sandboxAvailable } from "../../runtime/sandbox/help
 import {
   fakeLlm,
   type HarnessOffice,
+  interrupts,
   makeHarness,
   noWorkersLeft,
   running,
+  runLog,
   session,
   status,
   texts,
@@ -513,7 +515,7 @@ test("a switch to dontAsk answers the open approval cards with its refusal", asy
 
 test("Esc closes an open approval card as interrupted, and nothing runs", async () => {
   const fake = await fakeLlm()
-  fake.script(shell("ls"))
+  fake.script(shell("ls"), says("Not listed, then."))
   const h = await makeHarness(fake)
   const id = await chat(h, "ask")
   const [q] = await held(h, id, "list it")
@@ -521,6 +523,10 @@ test("Esc closes an open approval card as interrupted, and nothing runs", async 
   expect(h.store.getQuestion(q!.id)).toMatchObject({ status: "consumed", answer: INTERRUPTED, answer_kind: "interrupted" })
   await waitFor(() => status(h, id) === "idle", { what: "the turn's end" })
   expect(await calls(h, id)).toEqual([["interrupted", null]])
+  // The turn waiting on the card was cut, with no Stop left standing: the next message's turn answers in full.
+  expect(interrupts(runLog(h, id))).toEqual([{ inbox: "messages", nodes: [expect.stringMatching(/\/reply$/)], standing: false }])
+  await h.harness.prompt(id, "fine, skip it")
+  await replied(h, id, "Not listed, then.")
 })
 
 test("the card's stop does what Esc does", async () => {

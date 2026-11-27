@@ -310,6 +310,17 @@ export function advance(chat: Job, fake: FakeLLM, deliver: Delivery[], name = "c
   return run(advanceJob(chat, { deliver }), new TemplateOffice(name), { env: fake.env() })
 }
 
+/** The payloads of the `interrupted` records of run log `log`, in order. */
+export function interrupts(log: string): Record<string, unknown>[] {
+  return fs
+    .readFileSync(log, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { kind: string; payload: Record<string, unknown> })
+    .filter((record) => record.kind === "interrupted")
+    .map((record) => record.payload)
+}
+
 /** The nodes a waiting result waits at. */
 export function waitingAt(rec: Recorder): unknown[] {
   expect(rec.outcome?.status).toBe("waiting")
@@ -358,7 +369,7 @@ export async function interruptMidReply(
   }
   expect(await worker.deliver(send("queued", "queued"))).toBe(true)
   await waitFor(() => cut.replies.some((reply) => reply.id === "queued"), { timeout: 10_000, what: "the send" })
-  expect(await worker.deliver({ id: "cut", op: "interrupt", inbox: "messages" })).toBe(true)
+  expect(await worker.deliver({ id: "cut", op: "interrupt", inbox: "messages", standing: false })).toBe(true)
   await waitFor(() => cut.replies.some((reply) => reply.id === "cut"), { timeout: 10_000, what: "the interrupt" })
   fake.release()
   expect(await worker.wait()).not.toBeNull()
@@ -962,10 +973,15 @@ export async function card(o: ChatOffice, sid: string, source: string): Promise<
   return open()[0]!
 }
 
+/** The log of session `sid`'s latest run. */
+export function runLog(o: { office: Office }, sid: string): string {
+  return path.join(o.office.paths.runs, o.office.store.getSession(sid)!.run_ids.at(-1)!, "log.jsonl")
+}
+
 /** Each tool call the agent of session `sid`'s last run made, with its result, the gate's note, whether it was held
  *  and the note it was released with, in order, as yian reads them back from the run's log. */
 export async function toolResults(o: { office: Office }, sid: string): Promise<AgentToolResult[]> {
-  const log = path.join(o.office.paths.runs, o.office.store.getSession(sid)!.run_ids.at(-1)!, "log.jsonl")
+  const log = runLog(o, sid)
   const found: AgentToolResult[] = []
   for (const call of agentCalls(log)) found.push(...(await agentCall(log, call, { env: () => undefined })).toolResults)
   return found

@@ -161,6 +161,17 @@ test("a hire confirm repeats the preview; a taken handle is a lint issue on prev
   expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "@minh is already taken"])
 })
 
+test("a hire whose handle reads as a person's is a lint issue naming both on preview and a 422 on confirm", async () => {
+  const req = { name: "Rninh Tran", handle: "rninh", title: "QA", manager: "ngocbh" }
+  const message = "@rninh reads as @minh by Unicode's confusables: Yian can't tell them apart"
+  const preview = await client().people.hire({ ...req, confirm: false })
+  expect(preview.issues).toEqual([
+    { path: "people/rninh/person.yaml", code: "person.handle_clash", message, severity: "error" },
+  ])
+  const refused = await failure(client().people.hire({ ...req, confirm: true }))
+  expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", message])
+})
+
 test("a hire confirm never previewed is lint_failed", async () => {
   const req = { name: "Tuan", handle: "tuan", title: "QA", manager: "ngocbh" }
   const unseen = await failure(client().people.hire({ ...req, confirm: true }))

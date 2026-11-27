@@ -145,6 +145,40 @@ test("a reserved handle is refused, and nothing is written", async () => {
   expect([await git.head(), fs.existsSync(path.join(git.root, "people/office"))]).toEqual([head, false])
 })
 
+test("a name or handle that reads as a person's, or that Yian refuses, is refused naming both, and nothing is written", async () => {
+  const git = makeGit()
+  const hiring = new Hiring(git)
+  const head = await git.head()
+  // The first letter of the name is Cyrillic, so it reads as Minh's; rn reads as m.
+  const cases = [
+    [
+      { ...FORM, name: "\u041cinh", handle: "minh-2" },
+      "people/minh-2/person.yaml",
+      "person.name_clash",
+      `@minh-2's name "\u041cinh" reads as @minh's name "Minh" by Unicode's confusables: Yian can't tell them apart`,
+    ],
+    [
+      { ...FORM, name: "Rninh Tran", handle: "rninh" },
+      "people/rninh/person.yaml",
+      "person.handle_clash",
+      "@rninh reads as @minh by Unicode's confusables: Yian can't tell them apart",
+    ],
+    [
+      { ...FORM, name: "Lan\u200b", handle: "lan" },
+      "people/lan/person.yaml",
+      "person.name_refused",
+      "@lan's name holds an invisible or control character (U+200B)",
+    ],
+  ] as const
+  for (const [form, file, code, message] of cases) {
+    const preview = await hiring.hire(req(form), "ngocbh")
+    expect(preview.issues.map((i) => [i.path, i.code, i.message, i.severity])).toEqual([[file, code, message, "error"]])
+    const error = await refused(hiring.hire(req(form, true), "ngocbh"))
+    expect([error.code, error.message]).toEqual(["lint_failed", message])
+  }
+  expect([await git.head(), status(git.root)]).toEqual([head, ""])
+})
+
 test("a folder left by hand takes the handle", async () => {
   const git = makeGit()
   fs.mkdirSync(path.join(git.root, "people/lan"))
@@ -199,15 +233,23 @@ test("a failed commit leaves nothing behind and a retry succeeds", async () => {
   expect(done.commit).not.toBe(head)
 })
 
-test("a hire commit names its actor once and a name that skips the schema cant forge another", async () => {
+test("a hire commit names its actor once, and a name that skips the schema to forge another is refused", async () => {
   const git = makeGit()
   const hiring = new Hiring(git)
+  const head = await git.head()
   const form = { ...FORM, name: "Lan\n\nActor: @ceo" }
   await hiring.hire({ ...form, confirm: false }, "ngocbh")
-  await hiring.hire({ ...form, confirm: true }, "ngocbh")
+  const error = await refused(hiring.hire({ ...form, confirm: true }, "ngocbh"))
+  expect([error.code, error.message]).toEqual([
+    "lint_failed",
+    "@lan's name holds an invisible or control character (U+000A)",
+  ])
+  expect(await git.head()).toBe(head)
+  await hiring.hire({ ...FORM, confirm: false }, "ngocbh")
+  await hiring.hire({ ...FORM, confirm: true }, "ngocbh")
   const lines = runGit(git.root, "log", "-1", "--format=%B").split("\n")
   expect(lines.filter((line) => line.startsWith("Actor:"))).toEqual(["Actor: @ngocbh"])
-  expect(lines[0]).toBe("hire(@lan): Lan Actor: @ceo, QA")
+  expect(lines[0]).toBe("hire(@lan): Lan, QA")
 })
 
 test("a newline in the title or name is refused by the schema", () => {
@@ -434,7 +476,7 @@ test("concurrent confirms commit a hire once", async () => {
   const hiring = new Hiring(git)
   const head = await git.head()
   await hiring.hire(req(FORM), "ngocbh")
-  await hiring.hire(req({ ...FORM, handle: "kai-fan" }), "ngocbh")
+  await hiring.hire(req({ ...FORM, name: "Kai Fan", handle: "kai-fan" }), "ngocbh")
   const confirm = (form: Record<string, unknown>) =>
     hiring.hire(req(form, true), "ngocbh").then(
       (done) => done.commit,
@@ -443,11 +485,11 @@ test("concurrent confirms commit a hire once", async () => {
         throw error
       },
     )
-  const results = await Promise.all([FORM, FORM, { ...FORM, handle: "kai-fan" }].map(confirm))
+  const results = await Promise.all([FORM, FORM, { ...FORM, name: "Kai Fan", handle: "kai-fan" }].map(confirm))
   expect(results.slice(0, 2).filter((r) => r === "lint_failed").length).toBe(1) // one of the same two lost
   expect(results[2]).not.toBe("lint_failed")
   const commits = runGit(git.root, "log", "--format=%s", `${head}..HEAD`).split("\n")
-  expect(commits.sort()).toEqual(["hire(@kai-fan): Lan, QA", "hire(@lan): Lan, QA"])
+  expect(commits.sort()).toEqual(["hire(@kai-fan): Kai Fan, QA", "hire(@lan): Lan, QA"])
   const people = loadRepo(git.root).people
   expect([people.has("lan"), people.has("kai-fan")]).toEqual([true, true])
 })

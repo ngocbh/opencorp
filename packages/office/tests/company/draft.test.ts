@@ -83,5 +83,34 @@ test("a teammate's name and title are one line of text a hire takes", () => {
   expect(one("Minh", "Eng\u2028ineer")).toEqual([
     ["teammate.title", "the teammate @minh's title can't hold line breaks or control characters"],
   ])
-  expect(one("  Nguyễn Minh 👩‍💻 ", "Engineer")).toEqual([])
+  expect(one("  Nguyễn Minh ", "Engineer")).toEqual([])
+  // An emoji joined by a zero-width joiner is one line of text, but Yian refuses the joiner in a name.
+  expect(one("Nguyễn Minh 👩‍💻", "Engineer")).toEqual([
+    ["teammate.name", "@minh's name holds an invisible or control character (U+200D)"],
+  ])
+})
+
+test("init refuses a teammate whose name or handle reads as another person's, or that Yian refuses, naming both", () => {
+  const team = [
+    { name: "Kim", handle: "kim", title: "Engineer", about: "" },
+    { name: "Kirn", handle: "kirn", title: "QA", about: "" },
+    // The first letter is Cyrillic, so the name reads as the owner's.
+    { name: "\u041dong Ngoc Bui", handle: "hong", title: "Ops", about: "" },
+    { name: "Lan\u200b", handle: "lan", title: "QA", about: "" },
+  ]
+  expect(fieldProblems({ company: "Acme", owner: ME, team })).toEqual([
+    ["teammate.name", `@kirn's name "Kirn" reads as @kim's name "Kim" by Unicode's confusables: Yian can't tell them apart`],
+    ["teammate.handle", "@kirn reads as @kim by Unicode's confusables: Yian can't tell them apart"],
+    [
+      "teammate.name",
+      `@hong's name "\u041dong Ngoc Bui" reads as @ngocbh's name "Hong Ngoc Bui" by Unicode's confusables: Yian can't tell them apart`,
+    ],
+    ["teammate.name", "@lan's name holds an invisible or control character (U+200B)"],
+  ])
+})
+
+test("init refuses an owner name Yian refuses", () => {
+  expect(fieldProblems({ company: "Acme", owner: { ...ME, name: "Office" }, team: [] })).toEqual([
+    ["owner.name", "@ngocbh's name is reserved: nothing is signed yian or office"],
+  ])
 })

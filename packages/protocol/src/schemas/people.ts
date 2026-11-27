@@ -49,7 +49,8 @@ export type Group = z.input<typeof Group>
 
 /**
  * Text of one line: trimmed, then 1 to `max` UTF-16 code units, with no control character (C0, DEL, C1), lone
- * surrogate or Unicode line or paragraph separator. Format characters such as an emoji's zero-width joiner pass.
+ * surrogate or Unicode line or paragraph separator. Format characters such as an emoji's zero-width joiner pass here;
+ * the office's lint refuses a name Yian refuses as a speaker's label, theirs among them.
  */
 function oneLineText(max: number) {
   return z.string().trim().min(1).max(max).regex(/^[^\p{Cc}\p{Cs}\u2028\u2029]*$/u)

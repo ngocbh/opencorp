@@ -680,7 +680,7 @@ test("a reply interrupted after a tool call ends with the marker after it", asyn
   fake.script({ content: "Working", tool_calls: [{ id: "c1", name: "toolbox_stub" }] }, { content: "Unused." })
   const runs = tempDir()
   const job = await waitingChat(fake, "chat", {}, { runs })
-  const office = new DeliverDuringTool({ id: "cut", op: "interrupt", inbox: "messages" })
+  const office = new DeliverDuringTool({ id: "cut", op: "interrupt", inbox: "messages", standing: false })
   const rec = await run(advanceJob(job, { deliver: [send("s1", "Plan the trip.")] }), office, { env: fake.env() })
   expect(waitingAt(rec)).toEqual(["chat#1/heard"])
   const transcript = new Transcript(runs)
@@ -706,7 +706,7 @@ test("a reply interrupted during a tool call shows the call it cut and the marke
   fake.script({ content: "", tool_calls: calls }, { content: "Unused." })
   const runs = tempDir()
   const job = await waitingChat(fake, "chat", {}, { runs })
-  const office = new DeliverDuringTool({ id: "cut", op: "interrupt", inbox: "messages" })
+  const office = new DeliverDuringTool({ id: "cut", op: "interrupt", inbox: "messages", standing: false })
   const rec = await run(advanceJob(job, { deliver: [send("s1", "Plan the trip.")] }), office, { env: fake.env() })
   expect(waitingAt(rec)).toEqual(["chat#1/heard"])
   const reply = messages(runs, newId(), ["r1"])[1]!

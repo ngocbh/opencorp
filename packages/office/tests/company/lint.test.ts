@@ -39,6 +39,36 @@ test("a person with a reserved handle is a lint error", async () => {
   expect(await issues(root)).toContain("person.reserved_handle people/opencorp/person.yaml")
 })
 
+test("a person whose name or handle reads as another's, or Yian refuses, is a lint error naming both", async () => {
+  const root = makeCompany({
+    // The first letter of the name is Cyrillic, so it reads as Minh's.
+    "people/minh-2/person.yaml": person("minh", { handle: "minh-2", name: "\u041cinh" }),
+    "people/rninh/person.yaml": person("minh", { handle: "rninh", name: "Rninh Tran" }),
+    "people/zed/person.yaml": person("minh", { handle: "zed", name: "Zed\u200b" }),
+  })
+  const found = (await lint(loadRepo(root))).filter((issue) => issue.code.startsWith("person.name_") || issue.code.startsWith("person.handle_"))
+  expect(found.map((issue) => [issue.path, issue.code, issue.message, issue.severity])).toEqual([
+    [
+      "people/minh-2/person.yaml",
+      "person.name_clash",
+      `@minh-2's name "\u041cinh" reads as @minh's name "Minh" by Unicode's confusables: Yian can't tell them apart`,
+      "error",
+    ],
+    [
+      "people/rninh/person.yaml",
+      "person.handle_clash",
+      "@rninh reads as @minh by Unicode's confusables: Yian can't tell them apart",
+      "error",
+    ],
+    [
+      "people/zed/person.yaml",
+      "person.name_refused",
+      "@zed's name holds an invisible or control character (U+200B)",
+      "error",
+    ],
+  ])
+})
+
 test("unknown manager", async () => {
   const root = makeCompany({ "people/minh/person.yaml": person("minh", { manager: "ghost" }) })
   expect(await issues(root)).toContain("person.unknown_manager people/minh/person.yaml")

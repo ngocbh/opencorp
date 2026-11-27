@@ -67,6 +67,8 @@ test("bad jobs are refused", () => {
     [{ deliver: [{ id: "d1", op: "complete", call_id: "r1/ask", result: { error: 3 } }] }, "deliver"],
     [{ deliver: [{ id: "d1", op: "complete", result: { output: 1 } }] }, "deliver"],
     [{ deliver: [{ id: "d1", op: "cancel", inbox: "steers" }] }, "deliver"],
+    [{ deliver: [{ id: "d1", op: "interrupt", inbox: "steers" }] }, "deliver"],
+    [{ deliver: [{ id: "d1", op: "interrupt", inbox: "steers", standing: "no" }] }, "deliver"],
     [{ deliver: [{ id: "d1", op: "release", call_id: "r1/n/1/0", note: "" }] }, "deliver"],
     [{ deliver: [{ id: "d1", op: "release", note: "approved" }] }, "deliver"],
   ]
@@ -82,7 +84,8 @@ test("a job carries deliveries and the advance flag", () => {
     { id: "d1", op: "send", inbox: "steers", event: "hi" },
     { id: "d2", op: "complete", call_id: "r1/ask", result: { output: "Paris" } },
     { id: "d3", op: "close", inbox: "steers" },
-    { id: "d4", op: "interrupt", inbox: "steers" },
+    { id: "d4", op: "interrupt", inbox: "steers", standing: false },
+    { id: "d4b", op: "interrupt", inbox: "steers", standing: true },
     { id: "d5", op: "cancel" },
     { id: "d6", op: "release", call_id: "r1/n/1/0", note: "approved by @ngocbh" },
     { id: "d7", op: "release", call_id: "r1/n/1/1" },

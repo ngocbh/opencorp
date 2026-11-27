@@ -74,6 +74,24 @@ test("a taken handle shows the lint error and blocks the hire; editing previews 
   }
 })
 
+test("a handle that reads as another person's shows the office's reason and blocks the hire", async () => {
+  const office = createFakeOffice()
+  const app = await openHire(office)
+  try {
+    await fill(app, "Rninh Tran", "rninh", "Engineer")
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("Yian can't tell them apart") && f.includes("edit to fix"))
+    expect(f).toContain("error: people/rninh/person.yaml: @rninh reads as @minh")
+    expect(f).toContain("by Unicode's confusables: Yian can't tell them apart")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Fix the errors above"))
+    expect(office.requests.filter((r) => r.method === "POST")).toHaveLength(1)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("the form says what to fix before asking the office; office errors show inline", async () => {
   const office = createFakeOffice({ notImplemented: ["POST /people"] })
   const app = await openHire(office)
