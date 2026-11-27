@@ -21,7 +21,7 @@ import type {
 import type { RunIndexRow } from "@ngocbh/yian/run"
 import { NotFound, type RunRow, type SessionRecord, type Store } from "../store/store.ts"
 import { errorName } from "../worker/rpc.ts"
-import { attemptNumber, cameTo, nodeDetail, runNode } from "./attempt.ts"
+import { attemptNumber, cameTo, latestAttempt, nodeDetail, runNode } from "./attempt.ts"
 import { callAt, nodeCalls } from "./calls.ts"
 import { runUpdated } from "./notify.ts"
 import {
@@ -325,39 +325,49 @@ export class RunLogs {
     // Once settled, an attempt's view can't change; a flow call's or a loop's once what returns its value has.
     const settled = (a: Attempt) => a.status !== "open" && a.status !== "waiting"
     const keep = settled(attempt) && (attempt.status !== "expanded" || outcome === "succeeded" || outcome === "failed")
+    const fold = await this.#fold(session)
     const job: ReplayJob = {
       kind: "view",
       log: file,
       nodeId: attempt.nodeId,
       attempt: n,
       ender: ender === null || ender.status !== "succeeded" ? null : { nodeId: ender.nodeId, attempt: endN! },
-      codeRoot: (await this.#fold(session))?.codeRoot ?? null,
+      codeRoot: fold?.codeRoot ?? null,
+      maxBytes: this.#callBytes,
     }
     // One that can still change is read again once it moves on.
     const key = [index, "view", attempt.nodeId, n, keep ? "" : `${attempt.status}:${outcome}`] as const
-    return this.#ask<RunNodeView>(runId, key, job, keep, signal, "read this node's values")
+    const options = { keep, pinned: this.#pinned(fold), signal, what: "read this node's values" }
+    return this.#ask<RunNodeView>(runId, key, job, options)
+  }
+
+  /** Whether a replay read under `fold` read the session's pinned worktree: false when the pin failed, and a result
+   *  then may say the flow doesn't load where the pin would cure it. True with no pin to ask for. */
+  #pinned(fold: FoldOptions | undefined): boolean {
+    return this.#pin === undefined || fold !== undefined
   }
 
   /**
-   * The replay `job` under `key` (the log's index and what names the read in it), its failure a ReadFailed saying it
-   * couldn't `what` and naming only why; see `Replays.ask`.
+   * The replay `job` under `key` (the log's index and what names the read in it, beside the job's code root), its
+   * result kept when `keep` and the session's commit was `pinned` (one read without its worktree may say the flow
+   * doesn't load, which the pin cures), its failure a ReadFailed saying it couldn't `what` and naming only why;
+   * LogTooLarge for a log that grew past `callBytes` while the replay waited, ReplaysBusy for a full queue; see
+   * `Replays.ask`.
    */
   async #ask<T extends Replayed>(
     runId: string,
     [index, ...names]: readonly [Index, ...(string | number)[]],
     job: ReplayJob,
-    keep: boolean,
-    signal: AbortSignal | undefined,
-    what: string,
+    { keep, pinned, signal, what }: { keep: boolean; pinned: boolean; signal: AbortSignal | undefined; what: string },
   ): Promise<T | typeof LOADING> {
     // A log replaced at the same path is another log.
-    const key = JSON.stringify([job.log, `${index.dev}:${index.ino}`, ...names])
+    const key = JSON.stringify([job.log, `${index.dev}:${index.ino}`, job.codeRoot, ...names])
     try {
-      return await this.#replays.ask<T>(key, job, { keep, waitMs: this.#waitMs, signal })
+      return await this.#replays.ask<T>(key, job, { keep: keep && pinned, waitMs: this.#waitMs, signal })
     } catch (error) {
       if (!(error instanceof ReplayFailed)) throw error
       this.#log(`run ${runId}: this office couldn't ${what} (${error.message})`)
-      if (error.message === "LogGrew") throw this.#tooLarge("model calls")
+      if (error.message === "LogGrew") throw this.#tooLarge(job.kind === "call" ? "model calls" : "node values")
       throw new ReadFailed(`this office can't ${what} (${error.message})`)
     }
   }
@@ -390,7 +400,8 @@ export class RunLogs {
     const job: ReplayJob = { kind: "record", log: file, seq, codeRoot: fold.codeRoot, maxBytes: this.#callBytes }
     try {
       // A commit's value never changes once written.
-      return (await this.#ask<RunEvent | null>(runId, [index, "record", seq], job, true, signal, "rebuild a record")) ?? found
+      const options = { keep: true, pinned: true, signal, what: "rebuild a record" }
+      return (await this.#ask<RunEvent | null>(runId, [index, "record", seq], job, options)) ?? found
     } catch (error) {
       if (!(error instanceof ReadFailed)) throw error
       return found
@@ -407,22 +418,25 @@ export class RunLogs {
   /**
    * Model call `n` of agent node `node` (the `n` of any of its attempts), rebuilt by yian's `agentCall` under the
    * session's pinned commit on the viewer thread: its request, attempts, reply and tool results; LOADING while it is
-   * read. A call each of whose tool calls has its result is kept. NotFound when the node made no such call,
-   * LogTooLarge for a log over `callBytes` (when asked, or once its turn comes), ReadFailed when yian can't rebuild
-   * it, else as `calls`.
+   * read. It is kept once it can't change: its node's last attempt has ended, so no tool result or interrupt can still
+   * be recorded for it. NotFound when the node made no such call, LogTooLarge for a log over `callBytes` (when asked,
+   * or once its turn comes), ReadFailed when yian can't rebuild it, else as `calls`.
    */
   async call(runId: string, node: string, n: number, signal?: AbortSignal): Promise<RunCall | typeof LOADING> {
     const { file, index, session } = await this.#callLog(runId)
     const entry = callAt(this.#listed(runId, () => nodeCalls(file, node)), n)
     // The message names neither: they are what the client sent.
     if (entry === undefined) throw new NotFound(`run ${runId} has no such model call`)
+    const last = latestAttempt(index, node)
+    const keep = last !== null && last.status !== "open" && last.status !== "waiting"
+    const fold = await this.#fold(session)
+    const job: ReplayJob = { kind: "call", log: file, node, n: entry.n, codeRoot: fold?.codeRoot ?? null,
+                             maxBytes: this.#callBytes }
+    // One that can still change is read again once its node or one of its tool calls moves on.
     const results = entry.tool_calls?.filter((tool) => tool.result_n != null).length ?? 0
-    const keep = results === (entry.tool_calls?.length ?? 0)
-    const codeRoot = (await this.#fold(session))?.codeRoot ?? null
-    const job: ReplayJob = { kind: "call", log: file, node, n: entry.n, codeRoot, maxBytes: this.#callBytes }
-    // One whose tool calls are still running is read again once another has its result.
-    const key = [index, "call", node, entry.n, keep ? "" : results] as const
-    return this.#ask<RunCall>(runId, key, job, keep, signal, "rebuild this model call")
+    const key = [index, "call", node, entry.n, keep ? "" : `${last?.seq}:${last?.status}:${results}`] as const
+    const options = { keep, pinned: this.#pinned(fold), signal, what: "rebuild this model call" }
+    return this.#ask<RunCall>(runId, key, job, options)
   }
 
   /** The run's log, its index and its session, as `#logIndex` gives them; LogTooLarge when the log is over

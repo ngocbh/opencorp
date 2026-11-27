@@ -1,13 +1,15 @@
 /** One node attempt over the socket: its detail from its records (GET /runs/{id}/nodes/{seq}) and its view through
- *  yian's `nodeView` on the views thread (GET /runs/{id}/nodes/{seq}/view), from real runs (an agent against the fake
+ *  yian's `nodeView` on the viewer thread (GET /runs/{id}/nodes/{seq}/view), from real runs (an agent against the fake
  *  model, a memory input, a CODE node, a CALL and a LOOP, their STARTs and ENDs) and synthetic logs (a failure, open
  *  and restarted attempts, values too large to show whole). */
 import fs from "node:fs"
 import path from "node:path"
+import { Worker } from "node:worker_threads"
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { FileMemory } from "@ngocbh/yian"
 import { type RunEvent, RunNodeDetail, type RunNodeValue, RunNodeView } from "@opencorp/protocol"
 import type { Office } from "../../../src/server/office.ts"
+import { Replays } from "../../../src/runtime/runs/replays.ts"
 import { RunLogs } from "../../../src/runtime/runs/service.ts"
 import { newId } from "../../../src/runtime/store/store.ts"
 import { FakeLLM } from "../../../src/testing/fake_llm.ts"
@@ -249,6 +251,31 @@ test("a run whose flow no longer loads: its view says why, with what its records
   expect(rows((await detail(sock, runId, "c/prep")).outputs)).toEqual([["output", "str", "ready", null]])
 })
 
+test("a view read while the pin fails isn't kept: once the pin makes the worktree again, it is read whole", async () => {
+  const dir = tempDir()
+  const { log, codeRoot } = await realRun(dir, CALL_FLOW, { "helpers.ts": CODED_LOOP_HELPERS }, "r1", {
+    inputs: { topic: "owls" },
+  })
+  // The pinned worktree lost its CODE file, as a pruned one has; the pin fails until it makes it again.
+  const helpers = path.join(codeRoot, "helpers.ts")
+  fs.rmSync(helpers)
+  let pinning = false
+  const pin = async () => {
+    if (!pinning) throw new Error("the worktree can't be made")
+    fs.writeFileSync(helpers, CODED_LOOP_HELPERS)
+    return codeRoot
+  }
+  const { office, sock } = await servedNodes(undefined, { pin })
+  const runId = place(office, log)
+  const broken = await view(sock, runId, "c/__end__")
+  expect([broken.kind, broken.missing]).toEqual([null, expect.stringMatching(/^the run's flow doesn't load/)])
+  pinning = true
+  const whole = await view(sock, runId, "c/__end__")
+  expect([whole.kind, whole.missing, rows(whole.inputs)]).toEqual([
+    "end", null, [["loud", "Any", "owls!", null], ["ready", "str", "ready", null]],
+  ])
+})
+
 test("a derived record opens with the value it accepted, rebuilt on the viewer thread; as written with no pin", async () => {
   const dir = tempDir()
   const { log, codeRoot } = await realRun(dir, CODED_LOOP_FLOW, { "helpers.ts": CODED_LOOP_HELPERS })
@@ -296,6 +323,36 @@ test("a view the office can't read, or of a log over the limit, is a 409 that na
   const too = await get(small.sock, `/runs/${large}/nodes/1/view`)
   expect([too.status, (too.json() as { error: string }).error]).toEqual([409, "too_large"])
 })
+
+/** A viewer thread that holds each replay for `holdMs` first, as a long replay holds its thread: synchronously. */
+const slowThread = (holdMs: number) => () =>
+  new Worker(new URL("./slow_view_thread.ts", import.meta.url), { workerData: { holdMs } })
+
+test("while a view is read its asks answer 202 at once; one whose log grows past the limit by its turn is too large", async () => {
+  const dir = tempDir()
+  const { log, codeRoot } = await realRun(dir, CALL_FLOW, { "helpers.ts": CODED_LOOP_HELPERS }, "r1", {
+    inputs: { topic: "owls" },
+  })
+  const replays = new Replays({ start: slowThread(1000) })
+  const { office, sock } = await servedNodes(codeRoot, { replays, waitMs: 50, callBytes: fs.statSync(log).size + 10 })
+  const runId = place(office, log)
+  const target = `/runs/${runId}/nodes/${await seqOf(sock, runId, "c/__end__")}/view`
+  const started = performance.now()
+  const first = await request(sock, "GET", target)
+  expect([first.status, first.json(), first.headers["cache-control"]]).toEqual([
+    202, { loading: true, retry_ms: 500 }, "no-store",
+  ])
+  // The office's thread is free meanwhile.
+  expect((await request(sock, "GET", `/runs/${runId}/nodes`)).status).toBe(200)
+  expect(performance.now() - started).toBeLessThan(1000)
+  expect(RunNodeView.parse((await replayed(sock, target)).json()).kind).toBe("end")
+  // Another view waits its turn while the run writes on, past the limit.
+  const other = `/runs/${runId}/nodes/${await seqOf(sock, runId, "c/prep")}/view`
+  expect((await request(sock, "GET", other)).status).toBe(202)
+  fs.appendFileSync(office.runs.logPath(runId), "x".repeat(100))
+  const r = await replayed(sock, other)
+  expect([r.status, (r.json() as { error: string }).error]).toEqual([409, "too_large"])
+}, 30_000)
 
 test("a failed node has its error and traceback whole, and no outputs", async () => {
   const { office, sock } = await servedNodes()

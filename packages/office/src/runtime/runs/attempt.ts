@@ -116,6 +116,14 @@ export function attemptNumber(index: Index, a: Attempt): number | null {
   return n
 }
 
+/** A copy of node `nodeId`'s latest attempt the index holds; null when it holds none. */
+export function latestAttempt(index: Index, nodeId: string): Attempt | null {
+  for (let i = index.nodes.length - 1; i >= 0; i--) {
+    if (index.nodes[i]!.nodeId === nodeId) return { ...index.nodes[i]! }
+  }
+  return null
+}
+
 /**
  * Attempt `a`'s detail from the log `path` that `index` indexes, read from its records alone: its row, model and record
  * times; for a flow call or a loop, what it came to; the outputs its success (for a flow call or a loop, what returns

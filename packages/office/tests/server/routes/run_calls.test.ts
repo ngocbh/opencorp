@@ -9,7 +9,8 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { RunCall, RunCallList } from "@opencorp/protocol"
 import type { Office } from "../../../src/server/office.ts"
 import { readCall } from "../../../src/runtime/runs/calls.ts"
-import { Replays } from "../../../src/runtime/runs/replays.ts"
+import type { Replayed } from "../../../src/runtime/runs/replay.ts"
+import { type ReplayJob, Replays } from "../../../src/runtime/runs/replays.ts"
 import { RunLogs } from "../../../src/runtime/runs/service.ts"
 import { newId } from "../../../src/runtime/store/store.ts"
 import { FakeLLM } from "../../../src/testing/fake_llm.ts"
@@ -194,7 +195,7 @@ test("while a call is rebuilt, its reads answer 202 at once and the office's oth
   const answered = performance.now() - other
   expect((await request(sock, "GET", target)).status).toBe(202)
   expect([answered < 500, performance.now() - started < 1500]).toEqual([true, true])
-  // Asked again, it comes once rebuilt, as the call yian rebuilds; then it is kept, every tool call having its result.
+  // Asked again, it comes once rebuilt, as the call yian rebuilds; then it is kept, its node having ended.
   const done = await replayed(sock, target)
   expect(done.status).toBe(200)
   const fold = { env: () => undefined, codeRoot: null }
@@ -215,6 +216,44 @@ test("a live log that grows past the limit while its call waits for its turn is 
   const r = await replayed(sock, target)
   expect([r.status, body(r).error]).toEqual([409, "too_large"])
 }, 30_000)
+
+/** A host that remembers, for each ask, whether its result was to be kept. */
+class KeepSpy extends Replays {
+  readonly kept: boolean[] = []
+
+  override ask<T extends Replayed>(key: string, job: ReplayJob, options: Parameters<Replays["ask"]>[2]) {
+    this.kept.push(options.keep)
+    return super.ask<T>(key, job, options)
+  }
+}
+
+test("a call is kept only once its node has ended, when no later result or interrupt can change it", async () => {
+  // The gated run cut before its agent's success: every tool call has its result, but the node runs on.
+  const lines = fs.readFileSync(gated, "utf8").split("\n")
+  const ended = lines.findIndex((l) => l.includes('"kind":"node_succeeded"') && l.includes('"node_id":"writer"'))
+  expect(ended).toBeGreaterThan(0)
+  const replays = new KeepSpy()
+  const office = makeOffice({ log: () => {} })
+  office.runs = new RunLogs({ store: office.store, runsDir: office.paths.runs, replays })
+  const { sock } = await served(office)
+  const runId = place(office, gated, () => `${lines.slice(0, ended).join("\n")}\n`)
+  expect((await get(sock, `/runs/${runId}/calls/writer/1`)).status).toBe(200)
+  expect(replays.kept).toEqual([false])
+  // The node ends: now the call is kept.
+  fs.writeFileSync(office.runs.logPath(runId), fs.readFileSync(gated))
+  expect((await get(sock, `/runs/${runId}/calls/writer/1`)).status).toBe(200)
+  expect(replays.kept.at(-1)).toBe(true)
+})
+
+test("past the queue's cap a call is refused as busy, a 503 with Retry-After", async () => {
+  const office = makeOffice({ log: () => {} })
+  office.runs = new RunLogs({ store: office.store, runsDir: office.paths.runs, replays: new Replays({ queueCap: 0 }) })
+  const { sock } = await served(office)
+  const runId = place(office, gated)
+  const r = await request(sock, "GET", `/runs/${runId}/calls/writer/1`)
+  expect([r.status, body(r).error, r.headers["retry-after"]]).toEqual([503, "busy", "5"])
+  expect(body(r).message).toBe("the office is reading too many run logs at once; try again in a moment")
+})
 
 test("a call yian can't rebuild is a 409 naming only the error's type", async () => {
   const logged: string[] = []

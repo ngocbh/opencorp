@@ -16,6 +16,7 @@ import {
   RunPage,
 } from "@opencorp/protocol"
 import { type Index, lineEvent, logEvents, NotALog, UnreadableLog } from "../../runtime/runs/reader.ts"
+import { ReplaysBusy } from "../../runtime/runs/replays.ts"
 import { LOADING, LogTooLarge, NoLog, PAGE, ReadFailed } from "../../runtime/runs/service.ts"
 import { NotFound } from "../../runtime/store/store.ts"
 import { PING } from "../../runtime/bus.ts"
@@ -145,10 +146,23 @@ export function runNodeDetail(ctx: RequestContext, params: Params): Promise<RunN
 
 /** How long a client waits before it asks again for a read that replays the log, in milliseconds. */
 export const RETRY_MS = 500
+/** How long a client waits before it asks again when the office has too many replays queued, in seconds. */
+export const BUSY_RETRY_S = 5
 
-/** A read that replays the log: its result, or, while the office is still reading it, a 202 RunLoading. */
+/**
+ * A read that replays the log: its result; while the office is still reading it, a 202 RunLoading; when too many
+ * replays already wait their turn, a 503 `busy` with Retry-After.
+ */
 async function loaded<T>(read: () => Promise<T | typeof LOADING>): Promise<T | RawReply> {
-  const value = await runCall(read)
+  let value: T | typeof LOADING
+  try {
+    value = await runCall(read)
+  } catch (error) {
+    if (!(error instanceof ReplaysBusy)) throw error
+    const busy = { error: "busy", message: "the office is reading too many run logs at once; try again in a moment" }
+    const headers = { "retry-after": String(BUSY_RETRY_S), "cache-control": "no-store" }
+    return new RawReply(503, headers, JSON.stringify(busy))
+  }
   if (value !== LOADING) return value
   const loading: RunLoading = { loading: true, retry_ms: RETRY_MS }
   return new RawReply(202, { "cache-control": "no-store" }, JSON.stringify(loading))

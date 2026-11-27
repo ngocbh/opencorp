@@ -2,7 +2,7 @@
  * One node attempt's view for Run Logs, read with yian's `nodeView`: each input as the node bound it and what its
  * success accepted, with their types. Yian's values become the protocol's here: in the display form an opened record
  * shows, fitted as one opened record is. `nodeView` replays the log up to the attempt's end, which takes seconds on a
- * long run, so the office reads views on the views thread (`view_thread.ts`, hosted by `views.ts`).
+ * long run, so the office reads views on the viewer thread (`view_thread.ts`, hosted by `replays.ts`).
  */
 import { type NodeValue, nodeView } from "@ngocbh/yian/run"
 import type { RunNodeValue, RunNodeView } from "@opencorp/protocol"

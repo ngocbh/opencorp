@@ -3,7 +3,9 @@
  *  a kept result answers at once, any other is delivered once; a thread that dies or runs too long is replaced. A fake
  *  thread stands in. */
 import { expect, test } from "bun:test"
-import { LOADING, ReplayFailed, type ReplayJob, Replays, type ReplayThread } from "../../../src/runtime/runs/replays.ts"
+import {
+  LOADING, ReplayFailed, type ReplayJob, Replays, ReplaysBusy, type ReplayThread,
+} from "../../../src/runtime/runs/replays.ts"
 import { waitFor } from "../../helpers.ts"
 
 /** A thread event's listener: each event's takes its own argument. */
@@ -28,10 +30,11 @@ class FakeThread implements ReplayThread {
     for (const fn of this.#listeners.get(event) ?? []) (fn as (value: unknown) => void)(value)
   }
 
-  /** Answers the `i`th job sent with what it read (its record's seq), or with `error`. */
-  answer(i: number, error?: string): void {
+  /** Answers the `i`th job sent with what it read (its record's seq, and `pad`), or with `error`. */
+  answer(i: number, error?: string, pad = ""): void {
     const { id, job } = this.sent[i]!
-    this.emit("message", error === undefined ? { id, value: { read: (job as { seq: number }).seq } } : { id, error })
+    const value = { read: (job as { seq: number }).seq, ...(pad && { pad }) }
+    this.emit("message", error === undefined ? { id, value } : { id, error })
   }
 
   terminate(): Promise<number> {
@@ -45,7 +48,9 @@ class FakeThread implements ReplayThread {
 const job = (seq: number): ReplayJob => ({ kind: "record", log: "/runs/r1/log.jsonl", seq, codeRoot: "/w", maxBytes: 1 })
 
 /** A host whose threads are fakes, each kept in `threads` as it starts, on the clock `clock.now`. */
-function host(options: { limitMs?: number; abandonMs?: number } = {}) {
+function host(
+  options: { limitMs?: number; abandonMs?: number; queueCap?: number; keptResults?: number; keptBytes?: number } = {},
+) {
   const threads: FakeThread[] = []
   const clock = { now: 0 }
   const replays = new Replays({
@@ -103,6 +108,63 @@ test("a kept result answers every later ask at once", async () => {
   expect(await a).toEqual({ read: 1 })
   for (let i = 0; i < 3; i++) expect(await ask(replays, 1, { keep: true, waitMs: 0 })).toEqual({ read: 1 })
   expect(threads[0]!.sent).toHaveLength(1)
+})
+
+/** Reads record `seq` through `threads[0]`'s next job, kept, answered with `pad`. */
+async function keptRead(replays: Replays, threads: FakeThread[], seq: number, pad = "") {
+  const reading = ask(replays, seq, { keep: true })
+  await waitFor(() => (threads[0]?.sent.at(-1)?.job as { seq?: number } | undefined)?.seq === seq)
+  threads[0]!.answer(threads[0]!.sent.length - 1, undefined, pad)
+  return reading
+}
+
+test("past KEPT_RESULTS, the least recently used result is dropped and read again when asked", async () => {
+  const { replays, threads } = host({ keptResults: 2 })
+  await keptRead(replays, threads, 1)
+  await keptRead(replays, threads, 2)
+  // Using 1 makes 2 the least recently used.
+  expect(await ask(replays, 1, { keep: true, waitMs: 0 })).toEqual({ read: 1 })
+  await keptRead(replays, threads, 3)
+  expect(threads[0]!.sent).toHaveLength(3)
+  expect(await ask(replays, 1, { keep: true, waitMs: 0 })).toEqual({ read: 1 })
+  expect(await ask(replays, 3, { keep: true, waitMs: 0 })).toEqual({ read: 3 })
+  expect(await ask(replays, 2, { keep: true, waitMs: 0 })).toBe(LOADING)
+  expect(threads[0]!.sent.map((s) => (s.job as { seq: number }).seq)).toEqual([1, 2, 3, 2])
+})
+
+test("past KEPT_BYTES, the oldest results are dropped until the rest fit, and one larger than all isn't kept", async () => {
+  const { replays, threads } = host({ keptBytes: 2500 })
+  await keptRead(replays, threads, 1, "x".repeat(1000))
+  await keptRead(replays, threads, 2, "x".repeat(1000))
+  await keptRead(replays, threads, 3, "x".repeat(1000))
+  expect(await ask(replays, 3, { keep: true, waitMs: 0 })).toMatchObject({ read: 3 })
+  expect(await ask(replays, 2, { keep: true, waitMs: 0 })).toMatchObject({ read: 2 })
+  expect(await ask(replays, 1, { keep: true, waitMs: 0 })).toBe(LOADING)
+  expect(threads[0]!.sent).toHaveLength(4)
+  threads[0]!.answer(3)
+  await ask(replays, 1, { keep: true })
+  // A result over the cap is delivered once, and not kept.
+  expect(await keptRead(replays, threads, 4, "x".repeat(3000))).toMatchObject({ read: 4 })
+  expect(await ask(replays, 4, { keep: true, waitMs: 0 })).toBe(LOADING)
+})
+
+test("past QUEUE_CAP waiting replays, an ask for another is refused as busy; one no one asks for is dropped first", async () => {
+  const { replays, threads, clock } = host({ queueCap: 2, abandonMs: 5000 })
+  const running = ask(replays, 1)
+  await waitFor(() => threads[0]?.sent.length === 1)
+  expect([await ask(replays, 2, { waitMs: 0 }), await ask(replays, 3, { waitMs: 0 })]).toEqual([LOADING, LOADING])
+  await expect(ask(replays, 4, { waitMs: 0 })).rejects.toBeInstanceOf(ReplaysBusy)
+  // Asking again for one already queued isn't another.
+  expect(await ask(replays, 2, { waitMs: 0 })).toBe(LOADING)
+  // Once 3 hasn't been asked for in a while, it makes room.
+  clock.now = 4000
+  expect(await ask(replays, 2, { waitMs: 0 })).toBe(LOADING)
+  clock.now = 6000
+  expect(await ask(replays, 4, { waitMs: 0 })).toBe(LOADING)
+  threads[0]!.answer(0)
+  await running
+  await waitFor(() => threads[0]!.sent.length === 2)
+  expect(threads[0]!.sent.map((s) => (s.job as { seq: number }).seq)).toEqual([1, 2])
 })
 
 test("a queued read no one asks for any more is dropped when its turn comes", async () => {

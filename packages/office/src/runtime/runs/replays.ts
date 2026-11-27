@@ -2,10 +2,12 @@
  * The replays' host: reads each replay (`replay.ts`: a node view, a model call, a derived commit) on the viewer thread
  * (`view_thread.ts`), one at a time, so a replay that takes seconds never holds the daemon's event loop. An ask waits
  * a moment for its replay and says it's still loading when that isn't enough; the replay goes on, and the next ask
- * under the same key finds it. A queued replay no one has asked for within `abandonMs` (or whose only reader left) is
- * dropped when its turn comes. A result asked to be kept answers every later ask, up to KEPT_BYTES and KEPT_RESULTS;
- * any other result, and a failure, is delivered once. A replay that runs past `limitMs` is given up and its thread
- * stopped; a thread that stops fails the replay it was reading, and the next replay starts another.
+ * under the same key finds it. At most `queueCap` replays wait their turn: an ask for another is refused as busy. A
+ * queued replay no one has asked for within `abandonMs` (or whose only reader left) is dropped when its turn comes. A
+ * result asked to be kept answers every later ask, up to KEPT_BYTES and KEPT_RESULTS, the least recently used dropped
+ * first; any other result, a result over KEPT_BYTES alone and a failure are delivered once, or dropped once no one has
+ * asked for them within `abandonMs`. A replay that runs past `limitMs` is given up and its thread stopped; a thread
+ * that stops fails the replay it was reading, and the next replay starts another.
  */
 import { Worker } from "node:worker_threads"
 import { threadEntry } from "../../platform.ts"
@@ -16,10 +18,14 @@ export type { ReplayJob } from "./replay.ts"
 
 /** How long one replay may take before it is given up, in milliseconds. */
 export const REPLAY_MS = 120_000
-/** How long an ask waits for its replay before it says it's still loading, in milliseconds. */
-export const WAIT_MS = 2000
-/** How long a queued replay waits for its reader to ask again before it is dropped, in milliseconds. */
+/** How long an ask waits for its replay before it says it's still loading, in milliseconds: long enough for a short
+ *  replay to answer in one request, short enough to hold no connection. */
+export const WAIT_MS = 250
+/** How long a queued replay waits for its reader to ask again before it is dropped, in milliseconds: longer than a
+ *  client's longest wait between asks. */
 export const ABANDON_MS = 15_000
+/** The most replays waiting their turn. */
+export const QUEUE_CAP = 32
 /** The most bytes of results kept. */
 export const KEPT_BYTES = 32 << 20
 /** The most results kept. */
@@ -33,6 +39,11 @@ export const LOADING: unique symbol = Symbol("loading")
 /** A replay couldn't be read; the message names only why (an error's type, a stopped thread, the time it took). */
 export class ReplayFailed extends Error {
   override name = "ReplayFailed"
+}
+
+/** QUEUE_CAP replays already wait their turn: ask again later. */
+export class ReplaysBusy extends Error {
+  override name = "ReplaysBusy"
 }
 
 /** What the host uses of a thread; node's `Worker` fits. */
@@ -67,14 +78,16 @@ export class Replays {
   readonly #start: () => ReplayThread
   readonly #limitMs: number
   readonly #abandonMs: number
+  readonly #queueCap: number
   readonly #keptBytes: number
   readonly #keptResults: number
   readonly #now: () => number
   readonly #log: (line: string) => void
   readonly #entries = new Map<string, Entry>()
   readonly #queue: Entry[] = []
+  // The bytes and the number of the results kept.
   #held = 0
-  #done = 0
+  #kept = 0
   #thread: ReplayThread | null = null
   #current: { id: number; entry: Entry; timer: ReturnType<typeof setTimeout> } | null = null
   #ids = 0
@@ -85,6 +98,7 @@ export class Replays {
       start?: () => ReplayThread
       limitMs?: number
       abandonMs?: number
+      queueCap?: number
       keptBytes?: number
       keptResults?: number
       now?: () => number
@@ -94,6 +108,7 @@ export class Replays {
     this.#start = options.start ?? startThread
     this.#limitMs = options.limitMs ?? REPLAY_MS
     this.#abandonMs = options.abandonMs ?? ABANDON_MS
+    this.#queueCap = options.queueCap ?? QUEUE_CAP
     this.#keptBytes = options.keptBytes ?? KEPT_BYTES
     this.#keptResults = options.keptResults ?? KEPT_RESULTS
     this.#now = options.now ?? Date.now
@@ -103,8 +118,8 @@ export class Replays {
   /**
    * The result of `job`, the replay under `key`: at once when done (kept or not yet delivered), else once it is read,
    * if that's within `waitMs`; LOADING otherwise, or once `signal` aborts. A result is kept under `key` when `keep`
-   * (`job` must then never change its result). Rejects with ReplayFailed when the replay can't be read, or the host is
-   * closed.
+   * (`job` must then never change its result). Rejects with ReplaysBusy when it would be queued past `queueCap`, and
+   * with ReplayFailed when the replay can't be read, or the host is closed.
    */
   async ask<T extends Replayed>(
     key: string,
@@ -114,6 +129,8 @@ export class Replays {
     if (this.#closed) throw new ReplayFailed("the viewer thread is closed")
     let entry = this.#entries.get(key)
     if (entry === undefined) {
+      if (this.#queue.length >= this.#queueCap) this.#prune()
+      if (this.#queue.length >= this.#queueCap) throw new ReplaysBusy(`${this.#queueCap} replays wait their turn`)
       entry = { key, job, keep, state: "queued", bytes: 0, askedAt: 0, waiters: new Set() }
       this.#entries.set(key, entry)
       this.#queue.push(entry)
@@ -179,11 +196,24 @@ export class Replays {
     return outcome.value as T
   }
 
+  /** Whether no one will ask for queued `entry` any more: no ask waits on it, and none came within `abandonMs`. */
+  #abandoned(entry: Entry): boolean {
+    return entry.waiters.size === 0 && this.#now() - entry.askedAt > this.#abandonMs
+  }
+
+  /** Drops the queued replays no one will ask for any more. */
+  #prune(): void {
+    for (const entry of this.#queue.filter((queued) => this.#abandoned(queued))) {
+      this.#queue.splice(this.#queue.indexOf(entry), 1)
+      this.#entries.delete(entry.key)
+    }
+  }
+
   /** Starts the next queued replay unless one is being read, dropping those no one asks for any more. */
   #next(): void {
     while (this.#current === null && !this.#closed && this.#queue.length > 0) {
       const entry = this.#queue.shift()!
-      if (entry.waiters.size === 0 && this.#now() - entry.askedAt > this.#abandonMs) {
+      if (this.#abandoned(entry)) {
         this.#entries.delete(entry.key)
         continue
       }
@@ -243,15 +273,19 @@ export class Replays {
     this.#next()
   }
 
-  /** Marks `entry` done with `outcome`, wakes its waiters, and drops the least recently used past the caps. */
+  /**
+   * Marks `entry` done with `outcome`, wakes its waiters, and trims what is kept. A failure, and a result over
+   * KEPT_BYTES alone, isn't kept: it waits to be delivered once.
+   */
   #settle(entry: Entry, outcome: Entry["outcome"] & {}): void {
     entry.state = "done"
     entry.outcome = outcome
-    if ("value" in outcome) {
-      entry.bytes = Buffer.byteLength(JSON.stringify(outcome.value) ?? "")
+    entry.bytes = "value" in outcome ? Buffer.byteLength(JSON.stringify(outcome.value) ?? "") : 0
+    if ("error" in outcome || entry.bytes > this.#keptBytes) entry.keep = false
+    if (entry.keep) {
       this.#held += entry.bytes
+      this.#kept += 1
     }
-    this.#done += 1
     // Moved to the end: the map's order is the done entries' use, oldest first.
     this.#entries.delete(entry.key)
     this.#entries.set(entry.key, entry)
@@ -269,15 +303,20 @@ export class Replays {
   #forget(entry: Entry): void {
     if (this.#entries.get(entry.key) !== entry) return
     this.#entries.delete(entry.key)
+    if (!entry.keep) return
     this.#held -= entry.bytes
-    this.#done -= 1
+    this.#kept -= 1
   }
 
-  /** Drops the least recently used done entries past KEPT_RESULTS or KEPT_BYTES. */
+  /** Drops the undelivered outcomes no one asked for within `abandonMs`, then the least recently used kept results
+   *  past KEPT_RESULTS or KEPT_BYTES. */
   #trim(): void {
     for (const entry of this.#entries.values()) {
-      if (this.#done <= this.#keptResults && this.#held <= this.#keptBytes) return
-      if (entry.state === "done") this.#forget(entry)
+      if (entry.state === "done" && !entry.keep && this.#abandoned(entry)) this.#forget(entry)
+    }
+    for (const entry of this.#entries.values()) {
+      if (this.#kept <= this.#keptResults && this.#held <= this.#keptBytes) return
+      if (entry.state === "done" && entry.keep) this.#forget(entry)
     }
   }
 }
