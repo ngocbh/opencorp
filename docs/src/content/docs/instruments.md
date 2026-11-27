@@ -108,7 +108,10 @@ while a command runs), and a missing `.mcp.json` can still be created.
   Only the chat's approver may close its shells. The shell's record says you closed it, and your employee is told in
   a note from the shell, ``↳ shell 2: closed by @you.``: while they work, they read it before their next step; while
   they rest, it never wakes them, and goes with their next turn (your message or answer, or a note that wakes them).
-  ctrl+d leaves an ended shell alone: it is the record of what ran.
+  ctrl+d leaves an ended shell alone: it is the record of what ran. A prompt that isn't the shell's own (a
+  sub-shell's, or one after `exec`) never ends a command, so the shell shows running. After a few seconds the pane
+  says so: type `exit` until the shell's own prompt is back (after `exec`, that ends the shell), or have your
+  employee close it, as they are told to.
 - **Waits.** A command's reply waits 5 seconds unless your employee asks for longer (at most two minutes): a quick
   command replies with its output, and a longer one runs on while your employee does other work or ends their reply.
   A message for your employee, yours or a note, ends the wait at once, even one sent while their model was still

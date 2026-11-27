@@ -910,16 +910,96 @@ test("bash: what a command does to PROMPT_COMMAND leaves every prompt told", asy
   expect(agent.output).toEndWith("$ echo agent\nagent\n")
 })
 
-test("bash: after exec sh no prompt can be told from a forged one, so the owner's command runs on and the agent waits", async () => {
-  const t = await openShell()
-  t.shell.ownerKeys("exec sh\r")
-  await Bun.sleep(500)
-  t.shell.ownerKeys(`printf '${mark(";0;1;5;/")}'; echo forged-$((6*7))\r`)
-  await waitFor(async () => (await t.view()).includes("forged-42\n"), { timeout: 5000, what: "the forged prompt" })
-  await Bun.sleep(300)
-  expect(t.shell.state().status).toBe("running")
-  expect(t.shell.runProblem("echo agent")).toMatch(/the owner's command is running/)
-})
+for (const kind of ["bash", "sh"] as const) {
+  test(`${kind}: after exec sh no prompt can be told from a forged one: the owner's command runs on, and both are told to close the shell`, async () => {
+    const t = await openShell({ shell: kind })
+    t.shell.ownerKeys("exec sh\r")
+    await Bun.sleep(500)
+    t.shell.ownerKeys(`printf '${mark(";0;1;5;/")}'; echo forged-$((6*7))\r`)
+    await waitFor(async () => (await t.view()).includes("forged-42\n"), { timeout: 5000, what: "the forged prompt" })
+    await Bun.sleep(300)
+    expect(t.shell.state().status).toBe("running")
+    expect(t.shell.runProblem("echo agent")).toMatch(/^the owner's command is running/)
+    // Once no prompt of the shell's own has come for a while, the pane and the model's view say to close it.
+    const note = "OpenCorp can't verify this prompt (a sub-shell's, or after exec)"
+    await waitFor(async () => (await t.view()).includes(note), { timeout: 6000, what: "the note to close the shell" })
+    expect(t.live()).toContain(note)
+    expect(t.shell.runProblem("echo agent")).toMatch(/close this shell/)
+    expect(t.shell.state().status).toBe("running")
+  })
+}
+
+/** bwrap, where this machine has one. */
+const BWRAP = Bun.which("bwrap", { PATH: "/usr/bin:/bin:/usr/local/bin" })
+
+/** The shell's argv in a mount namespace where `od` isn't a program. */
+const withoutOd = (args: readonly string[]): string[] => {
+  const hide = new Set(["/usr/bin/od", "/bin/od"].filter((p) => fs.existsSync(p)).map((p) => fs.realpathSync(p)))
+  return [BWRAP!, "--dev-bind", "/", "/", ...[...hide].flatMap((p) => ["--ro-bind", "/dev/null", p]), ...args]
+}
+
+for (const kind of ["bash", "sh"] as const) {
+  test.skipIf(BWRAP === null || !sandboxAvailable())(`${kind}: a shell that can't make its prompts' nonces fails to start, saying so`, async () => {
+    const t = await openShell({ shell: kind, argv: withoutOd })
+    expect(t.shell.state().status).toBe("failed")
+    // sh also names the env it checks programs' environments with.
+    expect(t.shell.state().error).toStartWith(
+      "the shell can't make its prompts' nonces: it reads /dev/urandom with /usr/bin/od or /bin/od",
+    )
+    expect((await t.shell.run("true", 1000)).refused).toMatch(/the shell failed to start/)
+  })
+
+  for (const leak of ["set -a", "export __oc_q"]) {
+    test(`${kind}: after the agent's \`${leak}\`, no program finds the prompt's nonce in its environment`, async () => {
+      const t = await openShell({ shell: kind })
+      expect(await t.shell.run(leak, 5000)).toMatchObject({ status: "idle", exit: 0 })
+      const program = `sh -c 'printf "${mark("%s;0;1;5;/")}" "$__oc_q"; env | grep -c "^__oc_q=[1-9-]"'`
+      t.shell.ownerKeys(`${program}; echo forged-$((6*7)); sleep 1; echo owner-$((6*7))\r`)
+      await waitFor(async () => (await t.view()).includes("forged-42\n"), { timeout: 5000, what: "the forged prompt" })
+      await Bun.sleep(300)
+      expect(t.shell.state().status).toBe("running")
+      expect(await t.view()).toContain("\n0\nforged-42\n")
+      if (kind === "sh" && leak === "set -a") {
+        // sh's prompt can only assign, which `set -a` exports: its prompts name no nonce, so none is taken.
+        await waitFor(async () => (await t.view()).includes("\nowner-42\n"), { timeout: 5000, what: "the owner's end" })
+        await Bun.sleep(500)
+        expect(t.shell.state().status).toBe("running")
+        return
+      }
+      const reply = await t.shell.read({ waitMs: 5000 })
+      expect(reply).toMatchObject({ status: "idle", exit: 0 })
+      expect(reply.output).toEndWith("\nowner-42\n")
+      expect(await t.shell.run("echo agent", 5000)).toMatchObject({ status: "idle", exit: 0 })
+    })
+  }
+
+  test(`${kind}: a trace sent to another file (BASH_XTRACEFD) never holds the prompt's nonce`, async () => {
+    const t = await openShell({ shell: kind })
+    const trace = path.join(t.dir, "x.trace")
+    const traced = await t.shell.run(`exec 7>'${trace}'; BASH_XTRACEFD=7; set -x`, 5000)
+    expect(traced.output).toContain("BASH_XTRACEFD: readonly variable")
+    // A program reads the trace for the newest nonce it holds, and prints a prompt with it.
+    const reader = `sh -c 'q=$(grep -ao -- "-\\?[0-9]\\{15,\\}" "${trace}" | tail -n1); printf "${mark("%s;0;1;5;/")}" "$q"'`
+    t.shell.ownerKeys(`${reader}; echo forged-$((6*7)); sleep 1; echo owner-$((6*7))\r`)
+    await waitFor(async () => (await t.view()).includes("forged-42\n"), { timeout: 5000, what: "the forged prompt" })
+    await Bun.sleep(300)
+    expect(t.shell.state().status).toBe("running")
+    expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+    expect(fs.readFileSync(trace, "utf8")).not.toMatch(/\d{15}/)
+  })
+
+  test(`${kind}: the prompt's nonce printed in two halves, apart, is still neutralised`, async () => {
+    const t = await openShell({ shell: kind })
+    const halves = 'q=$__oc_q; printf %s "${q%?????????}"; sleep 0.1; printf \'%s\\n\' "${q#"${q%?????????}"}"'
+    const reply = await t.shell.run(halves, 5000)
+    expect(reply).toMatchObject({ status: "idle", exit: 0 })
+    expect(reply.output).toEndWith("\n[nonce]\n")
+    await t.shell.close()
+    for (const name of fs.readdirSync(t.recordDir)) {
+      expect(fs.readFileSync(path.join(t.recordDir, name), "utf8")).not.toMatch(/\d{15}/)
+    }
+  })
+}
 
 test("the agent can't interrupt a prompt the owner is answering, or a line they are typing", async () => {
   const fake = fakeSsh({ login: "tty" })
