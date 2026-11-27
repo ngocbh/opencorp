@@ -33,6 +33,7 @@ import {
   argsLine, callParts, cutAt, finishText, foldedHead, gateLines, hiddenReasoning, outcomeText, pointer, seconds, toolLine,
   toolState, usageText, wentWrong,
 } from "./calls"
+import { untilLoaded } from "./loaded"
 import { pretty, ReadError } from "./node"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
@@ -148,14 +149,17 @@ export function CallView(props: { runId: string; opened: OpenedCall; onBack: () 
   let heading!: HTMLHeadingElement
   const [call, setCall] = createSignal<RunCall>()
   const [error, setError] = createSignal<unknown>()
-  let reading = 0
-  onCleanup(() => reading++)
+  // Asked for again while the office still rebuilds it; it stops asking once it closes or is read again.
+  let reading: AbortController | undefined
+  onCleanup(() => reading?.abort())
   function load() {
-    const mine = ++reading
+    reading?.abort()
+    const mine = (reading = new AbortController())
     setError(undefined)
-    office.client.runs.call(props.runId, entry().node_id, entry().n).then(
-      (r) => mine === reading && setCall(r),
-      (e) => mine === reading && setError(e),
+    const read = () => office.client.runs.call(props.runId, entry().node_id, entry().n, { signal: mine.signal })
+    untilLoaded(read, mine.signal).then(
+      (r) => reading === mine && setCall(r),
+      (e) => reading === mine && setError(e),
     )
   }
   onMount(() => {

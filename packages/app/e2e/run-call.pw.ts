@@ -145,6 +145,20 @@ test("an interrupted call says so", async ({ page }) => {
   await expect(call.getByRole("region", { name: "Reply" })).not.toContainText("Reasoned privately")
 })
 
+test("a call the office is still rebuilding says so, asks again, and shows the call once it is rebuilt", async ({ page, request }) => {
+  const path = `/api/runs/${rid(5)}/calls/chat%232/reply/5`
+  // The office answers "still loading" eight times, 200 ms apart.
+  await request.post("/__fixture/set", { data: { loading: { [path]: 8 } } })
+  const detail = await openReply(page)
+  await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 2/ }).click()
+  const call = page.getByRole("region", { name: "Model call 2" })
+  await expect(call).toContainText("rebuilding the call from the log…")
+  await expect(call.getByRole("region", { name: "Reply" })).toHaveCount(0)
+  await expect(call.getByRole("region", { name: "Reply" })).toContainText("Done.")
+  await expect(call).not.toContainText("rebuilding the call from the log…")
+  await expect(call.getByRole("alert")).toHaveCount(0)
+})
+
 test("a call the office can't rebuild says why and can retry", async ({ page, request }) => {
   const path = `/api/runs/${rid(5)}/calls/chat%232/reply/5`
   await request.post("/__fixture/set", { data: { fail: { [path]: { status: 409, error: "not_supported",

@@ -71,6 +71,8 @@ type Fixture = Data & {
   delay: Record<string, number>
   /** A status to fail a route with (an `internal` error), or the whole error to answer, by path (as `delay`). */
   fail: Record<string, number | { status: number; error: string; message: string }>
+  /** How many more times a read that replays the log answers 202 RunLoading (the office still reading it), by path. */
+  loading: Record<string, number>
   /** Each human's password, by handle; an agent never has one. */
   passwords: Record<string, string>
   /** /api/login's throttle: `retryAfter` (seconds) answers every sign-in 429, `busy` answers 503. */
@@ -94,7 +96,8 @@ type Fixture = Data & {
 }
 const fresh = (): Fixture => ({
   ...acme(), signedIn: false, codes: {}, health: {}, whoami: { person: "ngocbh", device: "web-abc123" }, delay: {},
-  fail: {}, passwords: { ngocbh: "correct horse", ann: "ann's password" }, login: { retryAfter: null, busy: false },
+  fail: {}, loading: {}, passwords: { ngocbh: "correct horse", ann: "ann's password" },
+  login: { retryAfter: null, busy: false },
   source: source(),
   runs: runLogs(),
   runPages: runPages(runLogs()),
@@ -240,6 +243,10 @@ async function api(req: Request, url: URL): Promise<Response> {
   const fail = (parentRead && state.fail["/api/runs?parent"]) || state.fail[p]
   if (typeof fail === "number" && fail) return json({ error: "internal", message: `${p} failed` }, fail)
   if (typeof fail === "object") return json({ error: fail.error, message: fail.message }, fail.status)
+  if (state.loading[p]) {
+    state.loading[p] -= 1
+    return json({ loading: true, retry_ms: 200 }, 202)
+  }
   if (p === "/api/health") return log.health++, json(health())
   if (p === "/api/pair" && req.method === "POST") {
     const body = await req.json().catch(() => ({}))

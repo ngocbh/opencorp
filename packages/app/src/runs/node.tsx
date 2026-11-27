@@ -24,6 +24,7 @@ import { Dynamic } from "solid-js/web"
 import { useOffice } from "../data/office"
 import { CallList, CallView, type OpenedCall } from "./call"
 import type { LiveCall } from "./live"
+import { untilLoaded } from "./loaded"
 import { handleText, staticPath } from "./timeline"
 import { duration, nodeOutputs, preview, READING, shownWhole, workOf, type WorkKind } from "./values"
 
@@ -222,8 +223,8 @@ export function NodeDetail(props: {
       (e) => mine === reading && setError(e),
     )
   }
-  // Its view, by the seq it was read for. A read that another replaces is aborted, so the office drops it while it is
-  // still queued there.
+  // Its view, by the seq it was read for, asked for again while the office still reads it. A read that another
+  // replaces stops asking, so the office drops it while it is still queued there.
   const [viewed, setViewed] = createSignal<{ seq: number; view: RunNodeView }>()
   const [viewError, setViewError] = createSignal<unknown>()
   let viewing: AbortController | undefined
@@ -233,7 +234,7 @@ export function NodeDetail(props: {
     const mine = (viewing = new AbortController())
     const seq = props.node.seq
     setViewError(undefined)
-    office.client.runs.view(props.runId, seq, { signal: mine.signal }).then(
+    untilLoaded(() => office.client.runs.view(props.runId, seq, { signal: mine.signal }), mine.signal).then(
       (view) => viewing === mine && setViewed({ seq, view }),
       (e) => viewing === mine && setViewError(e),
     )

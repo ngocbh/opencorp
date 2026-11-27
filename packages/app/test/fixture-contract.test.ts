@@ -21,6 +21,7 @@ import {
   Question,
   RunCall,
   RunCallList,
+  RunLoading,
   RunNodeDetail,
   RunNodeView,
   RunPage,
@@ -160,12 +161,21 @@ async function script(hq: Browser, code: string): Promise<Seen[]> {
   await step("node detail", hq.get(`/api/runs/${run}/nodes/${replyNode?.seq ?? 1}`), RunNodeDetail, (b) => b.outputs[0])
   await step("node detail of no attempt", hq.get(`/api/runs/${run}/nodes/999999`))
   await step("node detail with a bad seq", hq.get(`/api/runs/${run}/nodes/x`))
-  await step("node view", hq.get(`/api/runs/${run}/nodes/${replyNode?.seq ?? 1}/view`), RunNodeView, (b) => b.inputs?.[0])
+  // A read that replays the log answers 202 RunLoading while the office reads it: asked again until it is read.
+  const replayed = async (target: string) => {
+    for (let r = await hq.get(target); ; r = await hq.get(target)) {
+      if (r.status !== 202) return r
+      expect(RunLoading.safeParse(JSON.parse(r.text)).success).toBe(true)
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  }
+  await step("node view", replayed(`/api/runs/${run}/nodes/${replyNode?.seq ?? 1}/view`), RunNodeView,
+    (b) => b.inputs?.[0])
   await step("node view of no attempt", hq.get(`/api/runs/${run}/nodes/999999/view`))
   const list = await step("model calls", hq.get(`/api/runs/${run}/calls?${new URLSearchParams({ node: reply })}`),
     readableIds(RunCallList), (b) => b.calls[0])
   const n = (JSON.parse(list.text).calls?.[0]?.n as number | undefined) ?? 1
-  await step("model call", hq.get(`/api/runs/${run}/calls/${reply.split("/").map(encodeURIComponent).join("/")}/${n}`),
+  await step("model call", replayed(`/api/runs/${run}/calls/${reply.split("/").map(encodeURIComponent).join("/")}/${n}`),
     RunCall)
   await step("model calls without a node", hq.get(`/api/runs/${run}/calls`))
   await step("model call of no node", hq.get(`/api/runs/${run}/calls/nope/1`))
