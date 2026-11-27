@@ -10,19 +10,19 @@ import type {
   RunDetail,
   RunEvent,
   RunEventPage,
-  RunNode,
+  RunNodeDetail,
   RunNodePage,
   RunPage,
   RunSummary,
 } from "@opencorp/protocol"
 import type { RunIndexRow } from "@ngocbh/yian/run"
-import { NotFound, cutReason, type RunRow, type SessionRecord, type Store } from "../store/store.ts"
+import { NotFound, type RunRow, type SessionRecord, type Store } from "../store/store.ts"
 import { errorName } from "../worker/rpc.ts"
+import { nodeDetail, runNode } from "./attempt.ts"
 import { hasCall, nodeCalls, readCall } from "./calls.ts"
-import { kindOf } from "./nodes.ts"
 import { runUpdated } from "./notify.ts"
 import {
-  ERROR_CHARS,
+  attemptAt,
   FOLD_BYTES,
   type FoldOptions,
   type Index,
@@ -256,7 +256,7 @@ export class RunLogs {
     return { log_state: "ok", flow_fingerprint: index.fingerprint, models: index.models }
   }
 
-  /** Node attempts that started before seq `before`, newest first, with their kinds, errors cut to ERROR_CHARS;
+  /** Node attempts that started before seq `before`, newest first, with their kinds, errors cut (see `runNode`);
    *  NotFound without the run, NoLog without its log, UnreadableLog for a log this office can't read. */
   async nodes(runId: string, { before, limit }: { before: number | null; limit: number }): Promise<RunNodePage> {
     const { file, index, session } = await this.#logIndex(runId)
@@ -264,20 +264,22 @@ export class RunLogs {
     const kinds = fold ? await this.#reader.kinds(file, index, fold) : null
     const page = nodePage(index, { before, limit })
     return {
-      nodes: page.nodes.map((a): RunNode => ({
-        seq: a.seq,
-        end_seq: a.endSeq,
-        node_id: a.nodeId,
-        kind: kindOf(kinds, a.nodeId),
-        // The protocol has no waiting node: a waiting node is in progress.
-        status: a.status === "waiting" ? "open" : a.status,
-        handle: a.handle,
-        error: a.error === null ? null : cutReason(a.error, ERROR_CHARS),
-      })),
+      nodes: page.nodes.map((a) => runNode(a, kinds)),
       dividers: page.dividers.map(([seq, retried]) => ({ seq, retried })),
       next_before: page.nextBefore,
       dropped: page.dropped,
     }
+  }
+
+  /** The node attempt whose start record is seq `seq`, with its detail from the log (see `nodeDetail`); NotFound
+   *  without the run or such an attempt, else as `nodes`. */
+  async node(runId: string, seq: number): Promise<RunNodeDetail> {
+    const { file, index, session } = await this.#logIndex(runId)
+    const attempt = attemptAt(index, seq)
+    if (attempt === null) throw new NotFound(`run ${runId} has no node attempt at record ${seq}`)
+    const fold = await this.#fold(session)
+    const kinds = fold ? await this.#reader.kinds(file, index, fold) : null
+    return nodeDetail(this.#reader, file, index, attempt, { fold, kinds })
   }
 
   /** Records after seq `after`, as stored but cut for size; NotFound, NoLog or UnreadableLog as `nodes`. */

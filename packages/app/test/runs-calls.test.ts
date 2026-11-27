@@ -10,6 +10,7 @@ import {
   FOLD_LINES,
   foldedHead,
   gateLines,
+  hiddenReasoning,
   pointer,
   seconds,
   toolState,
@@ -106,4 +107,14 @@ test("arguments in a row are their first string, else their JSON, cut to one sho
 
 test("a wait or a span in seconds", () => {
   expect([seconds(0.47043), seconds(12), seconds(0)]).toEqual(["0.5 s", "12 s", "0 s"])
+})
+
+test("a thought with no text says the provider kept it, with the tokens it cost when the call reported them", () => {
+  const usage = { input_tokens: 10, output_tokens: 5, cache_read_tokens: null, cache_creation_tokens: null,
+                  reasoning_tokens: 1200 }
+  expect(hiddenReasoning(usage)).toBe("Reasoned privately (1,200 tokens): the provider didn't share its reasoning")
+  expect(hiddenReasoning({ ...usage, reasoning_tokens: 1 })).toBe(
+    "Reasoned privately (1 token): the provider didn't share its reasoning")
+  for (const none of [{ ...usage, reasoning_tokens: 0 }, { ...usage, reasoning_tokens: null }, null, undefined])
+    expect(hiddenReasoning(none)).toBe("The provider didn't share its reasoning")
 })

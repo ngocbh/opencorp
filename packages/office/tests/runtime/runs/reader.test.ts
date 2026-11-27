@@ -12,6 +12,7 @@ import {
   ERROR_KEPT,
   EVENT_BYTES,
   FIELD_CHARS,
+  fitValues,
   HUGE_LINE,
   type Index,
   LINE_CAP,
@@ -1001,4 +1002,24 @@ test("a real log is in the schema this office reads and starts with the fields t
   expect(first).toContain(`"schema":${SCHEMA},`)
   const fields = (text: string) => Object.keys(JSON.parse(text).payload).sort()
   expect(fields(runStarted(0).toString())).toEqual(fields(first))
+})
+
+test("values over one detail's bytes are cut, then the largest replaced by their size, each measured once", () => {
+  const row = (name: string, value: unknown) => ({ name, seq: 1, type: null, value, missing: null, size: null, cut: [] })
+  // Lists of short strings: cutting them at FIELD_CHARS can't bring them under.
+  const list = (n: number) => Array.from({ length: n }, () => "abc")
+  const values = [row("a", list(200_000)), row("b", list(240_000)), row("c", list(160_000)), row("d", "small")]
+  const fitted = fitValues(values)
+  expect(fitted.map((v) => [v.name, v.missing ?? null])).toEqual([
+    ["a", "too_large"], ["b", "too_large"], ["c", null], ["d", null],
+  ])
+  expect(fitted[1]!.size).toBe(Buffer.byteLength(JSON.stringify(list(240_000))))
+  expect(Buffer.byteLength(JSON.stringify(fitted))).toBeLessThanOrEqual(EVENT_BYTES)
+  // Under the budget they are as they were.
+  expect(fitValues([row("d", "small")])).toEqual([row("d", "small")])
+  const stringify = spyOn(JSON, "stringify")
+  fitValues(Array.from({ length: 2_000 }, (_, i) => row(`v${i}`, "x".repeat(2_000))))
+  // Each value is measured a bounded number of times, not once per value replaced.
+  expect(stringify.mock.calls.length).toBeLessThan(4 * 2_000 + 10)
+  stringify.mockRestore()
 })

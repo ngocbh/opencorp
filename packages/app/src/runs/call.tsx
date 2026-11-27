@@ -8,6 +8,7 @@ import type {
   RunCallMessage,
   RunCallPart,
   RunCallToolResult,
+  RunCallUsage,
   RunNode,
 } from "@opencorp/protocol"
 import ArrowLeft from "lucide-solid/icons/arrow-left"
@@ -28,7 +29,7 @@ import {
 } from "solid-js"
 import { useOffice } from "../data/office"
 import {
-  argsLine, callParts, cutAt, finishText, foldedHead, gateLines, pointer, seconds, toolState, usageText,
+  argsLine, callParts, cutAt, finishText, foldedHead, gateLines, hiddenReasoning, pointer, seconds, toolState, usageText,
 } from "./calls"
 import { pretty, ReadError } from "./node"
 
@@ -219,7 +220,9 @@ function CallBody(props: { call: RunCall; model: string }) {
         >
           <div class="space-y-1.5">
             <For each={replyParts()}>
-              {({ part, j }) => <PartView part={part} call={props.call} at={pointer("reply", "parts", j)} />}
+              {({ part, j }) => (
+                <PartView part={part} call={props.call} at={pointer("reply", "parts", j)} usage={props.call.usage} />
+              )}
             </For>
             <Show when={!replyParts().length}>
               <p class={MUTED}>No text: only tool calls.</p>
@@ -343,8 +346,12 @@ function MessageView(props: { message: RunCallMessage; call: RunCall; at: string
   )
 }
 
-/** A message part: text as it is, a thought folded, a tool call by name and arguments, a tool result, a file. */
-function PartView(props: { part: RunCallPart; call: RunCall; at: string }) {
+/**
+ * A message part: text as it is, a thought folded (or a line saying the provider kept it), a tool call by name and
+ * arguments, a tool result, a file. `usage` is the reply's, for a thought with no text: a request's earlier replies
+ * have none here, as this call's tokens aren't theirs.
+ */
+function PartView(props: { part: RunCallPart; call: RunCall; at: string; usage?: RunCallUsage | null }) {
   const part = () => props.part
   return (
     <>
@@ -361,7 +368,11 @@ function PartView(props: { part: RunCallPart; call: RunCall; at: string }) {
               </div>
             )
           case "reasoning":
-            return <Thought text={p.text} cut={cutAt(props.call, `${props.at}/text`)} />
+            return p.text.trim() ? (
+              <Thought text={p.text} cut={cutAt(props.call, `${props.at}/text`)} />
+            ) : (
+              <p class={`text-xs ${MUTED}`}>{hiddenReasoning(props.usage)}</p>
+            )
           case "tool_call":
             return (
               <div class="flex min-w-0 items-center gap-1.5 text-xs">

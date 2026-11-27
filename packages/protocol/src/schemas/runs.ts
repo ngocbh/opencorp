@@ -134,6 +134,79 @@ export const RunNodePage = z.strictObject({
 })
 export type RunNodePage = z.input<typeof RunNodePage>
 
+/**
+ * One value of a node attempt's detail: an output its success accepted, or an input its binding read. Each is a
+ * pool_commit's value, in the display form an opened record shows.
+ */
+export const RunNodeValue = z.strictObject({
+  /**
+   * What a flow reads it as. An output: `output`, an agent's `new_messages`, or, for a START or END, one field of the
+   * record it received or returned. An input, relative to the node's flow: `input` for its START's record,
+   * `<node>.output`, `<node>.new_messages`, `system.<name>`, or a pool name from outside its flow as it is.
+   */
+  name: z.string().min(1),
+  /** The seq of the pool_commit that holds it. */
+  seq: z.int().min(0),
+  /** Its kind, such as str, object or list[object]; null when not known, as for a field of a record. */
+  type: z.string().nullable().default(null),
+  /** The value; null too when `missing` says why it isn't here. */
+  value: z.unknown().default(null),
+  /**
+   * Why the value isn't here: too_large, too large to show (see `size`; download the log); not_rebuilt, a derived
+   * value this office couldn't rebuild from the log.
+   */
+  missing: z.enum(["too_large", "not_rebuilt"]).nullable().default(null),
+  /** With too_large: the size in bytes. */
+  size: z.int().min(0).nullable().default(null),
+  /** JSON pointers (into `value`) of strings cut at 4K characters, as a detail too large to show whole is cut. */
+  cut: z.array(z.string()).default(() => []),
+})
+export type RunNodeValue = z.input<typeof RunNodeValue>
+
+/** A failed node attempt's error. */
+export const RunNodeFailure = z.strictObject({
+  message: z.string(),
+  traceback: z.string().nullable().default(null),
+  /** JSON pointers (`/message`, `/traceback`) of strings cut at 4K characters, the record being too large to show. */
+  cut: z.array(z.string()).default(() => []),
+  /** The size of its record when too large to show: `message` is then the error as the Timeline shows it. */
+  size: z.int().min(0).nullable().default(null),
+})
+export type RunNodeFailure = z.input<typeof RunNodeFailure>
+
+/**
+ * GET /runs/{id}/nodes/{seq}: one node attempt by its start record's seq, read from the log: its row of the node page
+ * (its route's handle whole), its model, when its start and end records were written, the values its success
+ * accepted and its binding read, and its error.
+ */
+export const RunNodeDetail = z.strictObject({
+  node: RunNode,
+  /** An agent's model, from the run start by static path; null for any other node. */
+  model: z.string().nullable().default(null),
+  /** When its start record was written. */
+  started_at: Timestamp.nullable().default(null),
+  /** When the record that ended it was written; for a flow call or a loop, the one that ended its END (its last
+   *  turn's driver). Null while open, once restarted, and while a flow call or loop hasn't returned. */
+  ended_at: Timestamp.nullable().default(null),
+  /**
+   * What an expanded flow call or loop came to: succeeded once its END (a loop's last turn) did, failed once that or
+   * a node in it failed, open while its nodes run; null for any other node, and while it's no more than expanded.
+   */
+  outcome: z.enum(["open", "succeeded", "failed"]).nullable().default(null),
+  /** The values its success accepted, one row each (a flow call's are its END's); none until it succeeds. */
+  outputs: z.array(RunNodeValue).default(() => []),
+  /**
+   * The values a derived node's binding read (an END's gathered values, a loop's or a call's result), one row each:
+   * the log names them only for those. A START's are its outputs.
+   */
+  inputs: z.array(RunNodeValue).default(() => []),
+  /** How many more inputs its binding read than `inputs` shows: at most 100 rows show, and no more than one detail
+   *  holds. */
+  inputs_more: z.int().min(0).default(0),
+  failure: RunNodeFailure.nullable().default(null),
+})
+export type RunNodeDetail = z.input<typeof RunNodeDetail>
+
 /** One run-log record as written. */
 export const RunEvent = z.strictObject({
   seq: z.int().min(0),

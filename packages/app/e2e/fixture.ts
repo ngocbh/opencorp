@@ -4,9 +4,12 @@
 import { existsSync, readFileSync, statSync } from "node:fs"
 import path from "node:path"
 import { HEADERS } from "@opencorp/office/server/hq/guard"
-import type { BrowserSession, RunDetail, RunEvent, RunSummary } from "@opencorp/protocol"
+import type { BrowserSession, RunDetail, RunEvent, RunNode, RunSummary } from "@opencorp/protocol"
 import { acme, source, type Data, type Source } from "./company"
-import { runCalls, runLogs, runPages, summaryOf, wholeEvents, type RunCalls, type RunPages, type Runs } from "./runs"
+import {
+  detailOf, nodeDetails, runCalls, runLogs, runPages, summaryOf, wholeEvents, type NodeDetails, type RunCalls, type RunPages,
+  type Runs,
+} from "./runs"
 
 /** The value after the command-line flag `name`, or undefined. */
 function arg(name: string): string | undefined {
@@ -80,6 +83,8 @@ type Fixture = Data & {
   runPages: RunPages
   /** The whole record GET /api/runs/{id}/events/{seq} answers, by run id and seq, where it differs from the page's. */
   wholeEvents: Record<string, Record<number, RunEvent>>
+  /** What GET /api/runs/{id}/nodes/{seq} answers, by run id and seq, where it says more than the node's row. */
+  nodeDetails: NodeDetails
   /** Agent nodes' model calls, by run id and node id. */
   calls: RunCalls
   /** An office older than Run Logs: /api/runs and everything under it answer 404 no_route. */
@@ -92,6 +97,7 @@ const fresh = (): Fixture => ({
   runs: runLogs(),
   runPages: runPages(runLogs()),
   wholeEvents: wholeEvents(),
+  nodeDetails: nodeDetails(runPages(runLogs())),
   calls: runCalls(),
   noRuns: false,
 })
@@ -255,8 +261,8 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   const callPath = /^\/api\/runs\/([^/]+)\/calls(?:\/(.+)\/([^/]+))?$/.exec(p)
   if (callPath) return callRoute(url, callPath[1]!, callPath[2], callPath[3])
-  const runPath = /^\/api\/runs\/([^/]+)(\/nodes|\/events|\/events\/(\d+)|\/log)?$/.exec(p)
-  if (runPath) return runRoute(url, runPath[1]!, runPath[2] ?? "", runPath[3])
+  const runPath = /^\/api\/runs\/([^/]+)(\/nodes|\/nodes\/([^/]+)|\/events|\/events\/(\d+)|\/log)?$/.exec(p)
+  if (runPath) return runRoute(url, runPath[1]!, runPath[2] ?? "", runPath[4], runPath[3])
   switch (p) {
     case "/api/whoami":
       return json(state.whoami)
@@ -353,8 +359,8 @@ function listRuns(url: URL): Response {
   return json({ runs: page, next: more ? page[page.length - 1]!.run_id : null })
 }
 
-/** One run's routes as the office answers them, from `state.runPages`. */
-function runRoute(url: URL, id: string, rest: string, seq: string | undefined): Response {
+/** One run's routes as the office answers them, from `state.runPages`; `nodeSeq` is a node detail's start seq. */
+function runRoute(url: URL, id: string, rest: string, seq: string | undefined, nodeSeq?: string): Response {
   log.runReads.push(`${id}${rest}${url.search}`)
   const page = state.runPages[id]
   if (!page) return json({ error: "not_found", message: `no run ${id}` }, 404)
@@ -374,7 +380,15 @@ function runRoute(url: URL, id: string, rest: string, seq: string | undefined): 
     return json({ nodes: shown, dividers: page.dividers.filter((d) => d.seq >= low && (before === null || d.seq < Number(before))),
                   next_before: older.length > shown.length ? low : null, dropped: false })
   }
+  if (nodeSeq !== undefined && !/^[0-9]+$/.test(nodeSeq))
+    return json({ error: "invalid_body", message: "seq must be an integer from 0 to 9007199254740991" }, 422)
   if (page.fail) return json({ error: page.fail, message: `${page.fail} here` }, 503)
+  if (nodeSeq !== undefined) {
+    const at = Number(nodeSeq)
+    const found = page.nodes.find((n) => n.seq === at)
+    if (!found) return json({ error: "not_found", message: `run ${id} has no node attempt at record ${at}` }, 404)
+    return json(state.nodeDetails[id]?.[at] ?? detailOf(page, found))
+  }
   if (rest === "/events") {
     const after = Number(url.searchParams.get("after") ?? -1)
     const events = page.events.filter((e) => e.seq > after)
@@ -442,16 +456,20 @@ async function control(req: Request, url: URL): Promise<Response> {
       return json({ ok: true })
     case "/__fixture/run": {
       // Changes one run's page: `detail` merges into its header (`detail.run` into its summary); `add` puts newer
-      // node attempts before its others; `addEvents` puts newer records after its others; `fail` is an error code its
-      // record reads answer with (null for none). A run with no page gets one from its summary.
+      // node attempts before its others; `update` replaces attempts by seq (one that ended since); `addEvents` puts
+      // newer records after its others; `details` (by seq) are its nodes' details where they say more than a row;
+      // `fail` is an error code its record and node detail reads answer with (null for none). A run with no page gets
+      // one from its summary.
       const summary = summaryOf(state.runs, body.id)!
       const page = (state.runPages[body.id] ??= { nodes: [], dividers: [], events: [], detail: { run: summary,
         parent: null, repo_commit: "a".repeat(40), usage: null, models: {}, log_state: "ok" } as RunDetail })
       const { run, ...rest } = body.detail ?? {}
       page.detail = { ...page.detail, ...rest, run: { ...page.detail.run, ...run } }
       if (body.add) page.nodes = [...body.add, ...page.nodes]
+      if (body.update) page.nodes = page.nodes.map((n) => body.update.find((u: RunNode) => u.seq === n.seq) ?? n)
       if ("fail" in body) page.fail = body.fail
       if (body.addEvents) page.events = [...page.events, ...body.addEvents]
+      if (body.details) state.nodeDetails[body.id] = { ...state.nodeDetails[body.id], ...body.details }
       return json({ ok: true })
     }
   }

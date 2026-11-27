@@ -1,9 +1,18 @@
-/** Run Logs routes: the list of runs, one run's children, and one run's page (its header, node attempts, records, one
- *  record, its log, and its agents' model calls), plus GET /runs/{id}/live, which streams a run's records and live
+/** Run Logs routes: the list of runs, one run's children, and one run's page (its header, node attempts, one node
+ *  attempt's detail, records, one record, its log, and its agents' model calls), plus GET /runs/{id}/live, which streams a run's records and live
  *  frames. Read-only, on the office socket and HQ's /api allowlist. */
 import fs from "node:fs"
 import path from "node:path"
-import { RunCall, RunCallList, RunDetail, RunEvent, RunEventPage, RunNodePage, RunPage } from "@opencorp/protocol"
+import {
+  RunCall,
+  RunCallList,
+  RunDetail,
+  RunEvent,
+  RunEventPage,
+  RunNodeDetail,
+  RunNodePage,
+  RunPage,
+} from "@opencorp/protocol"
 import { type Index, lineEvent, logEvents, NotALog, UnreadableLog } from "../../runtime/runs/reader.ts"
 import { CallsTooLarge, CallUnreadable, NoLog, PAGE } from "../../runtime/runs/service.ts"
 import { NotFound } from "../../runtime/store/store.ts"
@@ -124,6 +133,12 @@ export function runNodes(ctx: RequestContext, params: Params): Promise<RunNodePa
   const before = intParam(param(ctx, "before"), "before", 0, SEQ_MAX, null)
   const limit = intParam(param(ctx, "limit"), "limit", 1, 1000, 1000)
   return runCall(() => ctx.office.runs.nodes(params.id!, { before, limit }))
+}
+
+/** One node attempt by its start record's seq: its row, model, record times, outputs, inputs and error. */
+export function runNodeDetail(ctx: RequestContext, params: Params): Promise<RunNodeDetail> {
+  const seq = intParam(params.seq, "seq", 0, SEQ_MAX, 0)
+  return runCall(() => ctx.office.runs.node(params.id!, seq))
 }
 
 /** A run's records after seq `after`: at most `limit` (500) or 256 KiB. */
@@ -435,6 +450,8 @@ export function runRoutes(pingMs: number = PING_MS): Route<RequestContext>[] {
     { method: "GET", path: "/runs", reply: RunPage, handler: listRuns },
     { method: "GET", path: "/runs/:id", reply: RunDetail, handler: getRun },
     { method: "GET", path: "/runs/:id/nodes", reply: RunNodePage, handler: runNodes },
+    // No HEAD: this one may replay the log.
+    { method: "GET", path: "/runs/:id/nodes/:seq", head: false, reply: RunNodeDetail, handler: runNodeDetail },
     { method: "GET", path: "/runs/:id/events", reply: RunEventPage, handler: runEvents },
     { method: "GET", path: "/runs/:id/events/:seq", reply: RunEvent, handler: runEvent },
     // No HEAD: a handler can't tell it from GET, and this one opens the log.

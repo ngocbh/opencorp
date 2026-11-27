@@ -8,6 +8,11 @@ test.beforeEach(async ({ request }) => {
 
 const header = (page: Page) => page.getByRole("region", { name: "Run" })
 const timeline = (page: Page) => page.getByRole("tree", { name: "Timeline" })
+/** Opens run `id`'s page on the Timeline, every node attempt as it is. */
+async function openTimeline(page: Page, id: string) {
+  await page.goto(`/runs/${id}`)
+  await page.getByRole("tab", { name: "Timeline" }).click()
+}
 const logStatus = (page: Page) => page.getByRole("status", { name: "Log" })
 /**
  * When the fixture says run `n` was launched. Fixture times are relative to when its process started, so this asks
@@ -52,7 +57,7 @@ test("a debrief says its usage isn't recorded, under its flow", async ({ page })
 })
 
 test("the Timeline: newest first, the latest iteration open, older ones folded, older pages on unfold", async ({ page }) => {
-  await page.goto(`/runs/${rid(5)}`)
+  await openTimeline(page, rid(5))
   const items = timeline(page).getByRole("treeitem")
   await expect(items.first()).toContainText("chat#3")
   await expect(timeline(page).getByRole("treeitem", { name: /chat#3\/ask/ })).toContainText("open")
@@ -97,7 +102,7 @@ test("run.updated for this run refetches its page", async ({ page, request }) =>
 })
 
 test("a new live iteration keeps the one before open, and focus where it was", async ({ page, request }) => {
-  await page.goto(`/runs/${rid(5)}`)
+  await openTimeline(page, rid(5))
   const ask = timeline(page).getByRole("treeitem", { name: /^chat#3\/ask/ })
   await ask.focus()
   await request.post("/__fixture/run", { data: { id: rid(5), add: [
@@ -110,7 +115,7 @@ test("a new live iteration keeps the one before open, and focus where it was", a
 })
 
 test("the Timeline's keys move, open and fold; Older nodes hands focus to what it brought", async ({ page }) => {
-  await page.goto(`/runs/${rid(5)}`)
+  await openTimeline(page, rid(5))
   const item = (name: RegExp) => timeline(page).getByRole("treeitem", { name })
   const turn3 = item(/^iteration chat#3/)
   await turn3.focus()
@@ -143,7 +148,7 @@ test("the Timeline's keys move, open and fold; Older nodes hands focus to what i
 })
 
 test("a divider and a node's error describe the items they belong to", async ({ page }) => {
-  await page.goto(`/runs/${rid(5)}`)
+  await openTimeline(page, rid(5))
   const turn2 = timeline(page).getByRole("treeitem", { name: /^iteration chat#2/ })
   await expect(turn2.nth(1)).toHaveAccessibleDescription("resumed; retried reply")
   await timeline(page).getByRole("treeitem", { name: /^iteration chat#1/ }).click()
@@ -203,7 +208,7 @@ test("a run page opened while the office reconnects reads again once it's back",
 
 test("on a phone the header stacks", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto(`/runs/${rid(5)}`)
+  await openTimeline(page, rid(5))
   expect((await header(page).boundingBox())!.width).toBeLessThanOrEqual(390)
   await expect(timeline(page)).toBeVisible()
 })
