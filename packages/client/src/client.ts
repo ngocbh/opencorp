@@ -47,6 +47,7 @@ import type {
   RunEventPage,
   RunNodeDetail,
   RunNodePage,
+  RunNodeView,
   RunPage,
   RunSummary,
   SendBackRequest,
@@ -71,6 +72,12 @@ export const READ_TIMEOUT_MS = 15_000
 
 /** How long starting a chat waits for the office before failing with `OfficeTimeout`. */
 export const CREATE_TIMEOUT_MS = 30_000
+
+/**
+ * How long a node's view waits for the office before failing with `OfficeTimeout`: the office replays the log up to
+ * the node, which takes seconds on a long run, and gives a view up after 120 s.
+ */
+export const VIEW_TIMEOUT_MS = 130_000
 
 /**
  * How long adding a connection waits for the office before failing with `OfficeTimeout`: the office checks the
@@ -172,6 +179,17 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
        * and error. Fails as `nodes` does, or with not_found when no attempt starts there.
        */
       node: async (id: string, seq: number) => get<RunNodeDetail>(`${r(id)}/nodes/${seq}`),
+      /**
+       * Node attempt `seq`'s inputs and outputs with their types, read by replaying the log up to it, which can take
+       * seconds; `signal` aborting drops it while the office still has it queued. Fails as `node` does, with 409
+       * `too_large` for a log too long to read it from, or 409 `not_supported` when the office can't read it.
+       */
+      view: async (id: string, seq: number, { signal }: { signal?: AbortSignal } = {}) =>
+        request<RunNodeView>(transport, "GET", `${r(id)}/nodes/${seq}/view`, undefined, {
+          timeoutMs: VIEW_TIMEOUT_MS,
+          token,
+          signal,
+        }),
       /** Records after seq `after`; fails as `nodes` does. */
       events: async (id: string, after?: number) => get<RunEventPage>(`${r(id)}/events${query({ after })}`),
       /** One record by seq, evidence included; fails as `nodes` does. */

@@ -144,6 +144,7 @@ const TABLE: [string, string, string, unknown][] = [
   ["GET", "/runs/:id", "/runs/R1", null],
   ["GET", "/runs/:id/nodes", "/runs/R1/nodes", null],
   ["GET", "/runs/:id/nodes/:seq", "/runs/R1/nodes/3", null],
+  ["GET", "/runs/:id/nodes/:seq/view", "/runs/R1/nodes/3/view", null],
   ["GET", "/runs/:id/events", "/runs/R1/events", null],
   ["GET", "/runs/:id/events/:seq", "/runs/R1/events/3", null],
   ["GET", "/runs/:id/log", "/runs/R1/log", null],

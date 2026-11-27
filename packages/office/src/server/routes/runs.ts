@@ -1,6 +1,6 @@
 /** Run Logs routes: the list of runs, one run's children, and one run's page (its header, node attempts, one node
- *  attempt's detail, records, one record, its log, and its agents' model calls), plus GET /runs/{id}/live, which streams a run's records and live
- *  frames. Read-only, on the office socket and HQ's /api allowlist. */
+ *  attempt's detail and view, records, one record, its log, and its agents' model calls), plus GET /runs/{id}/live,
+ *  which streams a run's records and live frames. Read-only, on the office socket and HQ's /api allowlist. */
 import fs from "node:fs"
 import path from "node:path"
 import {
@@ -11,10 +11,11 @@ import {
   RunEventPage,
   RunNodeDetail,
   RunNodePage,
+  RunNodeView,
   RunPage,
 } from "@opencorp/protocol"
 import { type Index, lineEvent, logEvents, NotALog, UnreadableLog } from "../../runtime/runs/reader.ts"
-import { CallsTooLarge, CallUnreadable, NoLog, PAGE } from "../../runtime/runs/service.ts"
+import { LogTooLarge, NoLog, PAGE, ReadFailed } from "../../runtime/runs/service.ts"
 import { NotFound } from "../../runtime/store/store.ts"
 import { PING } from "../../runtime/bus.ts"
 import { HttpError, type Params, RawReply, type Route } from "../http.ts"
@@ -117,8 +118,8 @@ async function runCall<T>(read: () => Promise<T>): Promise<T> {
     if (error instanceof NotFound) throw new HttpError(404, "not_found", error.message)
     // An unknown or retired schema, a line that isn't a record, seqs out of order.
     if (error instanceof UnreadableLog) throw new HttpError(409, "unsupported_schema", error.message)
-    if (error instanceof CallsTooLarge) throw new HttpError(409, "too_large", error.message)
-    if (error instanceof CallUnreadable) throw new HttpError(409, "not_supported", error.message)
+    if (error instanceof LogTooLarge) throw new HttpError(409, "too_large", error.message)
+    if (error instanceof ReadFailed) throw new HttpError(409, "not_supported", error.message)
     throw error
   }
 }
@@ -135,10 +136,17 @@ export function runNodes(ctx: RequestContext, params: Params): Promise<RunNodePa
   return runCall(() => ctx.office.runs.nodes(params.id!, { before, limit }))
 }
 
-/** One node attempt by its start record's seq: its row, model, record times, outputs, inputs and error. */
+/** One node attempt by its start record's seq, from its records: its row, model, record times, outputs and error. */
 export function runNodeDetail(ctx: RequestContext, params: Params): Promise<RunNodeDetail> {
   const seq = intParam(params.seq, "seq", 0, SEQ_MAX, 0)
   return runCall(() => ctx.office.runs.node(params.id!, seq))
+}
+
+/** `GET /runs/{id}/nodes/{seq}/view`: the attempt's inputs and outputs with their types, by yian's `nodeView` on the
+ *  views thread; one still queued when the client leaves is dropped. */
+export function runNodeView(ctx: RequestContext, params: Params): Promise<RunNodeView> {
+  const seq = intParam(params.seq, "seq", 0, SEQ_MAX, 0)
+  return runCall(() => ctx.office.runs.view(params.id!, seq, ctx.signal))
 }
 
 /** A run's records after seq `after`: at most `limit` (500) or 256 KiB. */
@@ -450,8 +458,9 @@ export function runRoutes(pingMs: number = PING_MS): Route<RequestContext>[] {
     { method: "GET", path: "/runs", reply: RunPage, handler: listRuns },
     { method: "GET", path: "/runs/:id", reply: RunDetail, handler: getRun },
     { method: "GET", path: "/runs/:id/nodes", reply: RunNodePage, handler: runNodes },
-    // No HEAD: this one may replay the log.
-    { method: "GET", path: "/runs/:id/nodes/:seq", head: false, reply: RunNodeDetail, handler: runNodeDetail },
+    { method: "GET", path: "/runs/:id/nodes/:seq", reply: RunNodeDetail, handler: runNodeDetail },
+    // No HEAD: this one replays the log.
+    { method: "GET", path: "/runs/:id/nodes/:seq/view", head: false, reply: RunNodeView, handler: runNodeView },
     { method: "GET", path: "/runs/:id/events", reply: RunEventPage, handler: runEvents },
     { method: "GET", path: "/runs/:id/events/:seq", reply: RunEvent, handler: runEvent },
     // No HEAD: a handler can't tell it from GET, and this one opens the log.

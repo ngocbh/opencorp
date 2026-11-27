@@ -20,6 +20,7 @@ import {
   RunEventPage,
   RunNodeDetail,
   RunNodePage,
+  RunNodeView,
   RunPage,
   Session,
   WorkItem,
@@ -54,6 +55,7 @@ import {
   runModelCall,
   runNodeDetail,
   runNodes,
+  runNodeView,
 } from "../routes/runs.ts"
 import { listSessions } from "../routes/sessions.ts"
 import { getWorkItem } from "../routes/work_items.ts"
@@ -300,8 +302,9 @@ export const ROUTES: readonly Route<HqContext>[] = [
   { method: "GET", path: "/api/runs", reply: RunPage, handler: listRuns },
   { method: "GET", path: "/api/runs/:id", reply: RunDetail, handler: getRun },
   { method: "GET", path: "/api/runs/:id/nodes", reply: RunNodePage, handler: runNodes },
-  // No HEAD, as on the socket: it may replay the log.
-  { method: "GET", path: "/api/runs/:id/nodes/:seq", head: false, reply: RunNodeDetail, handler: runNodeDetail },
+  { method: "GET", path: "/api/runs/:id/nodes/:seq", reply: RunNodeDetail, handler: runNodeDetail },
+  // No HEAD, as on the socket: it replays the log.
+  { method: "GET", path: "/api/runs/:id/nodes/:seq/view", head: false, reply: RunNodeView, handler: runNodeView },
   { method: "GET", path: "/api/runs/:id/events", reply: RunEventPage, handler: runEvents },
   { method: "GET", path: "/api/runs/:id/events/:seq", reply: RunEvent, handler: runEvent },
   // No HEAD, as on the socket: the handler opens the log. The GET catch-all then answers HEAD with 404.

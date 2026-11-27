@@ -311,5 +311,6 @@ export class Office {
       }
     }
     await this.runIndex.close()
+    await this.runs.close()
   }
 }

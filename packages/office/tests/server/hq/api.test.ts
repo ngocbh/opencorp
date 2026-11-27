@@ -393,8 +393,11 @@ test("one runs routes are on the allowlist", async () => {
   chatLog(file)
   for (const suffix of ["", "/nodes", "/nodes/1", "/events", "/events/0", "/log"])
     expect([(await client.get(`/api/runs/${runId}${suffix}`)).status, suffix]).toEqual([200, suffix])
-  // No HEAD on the download or a node's detail: HQ's GET catch-all answers it, as any method HQ doesn't serve.
-  for (const suffix of ["/log", "/nodes/1"])
+  // A node's view is served: yian can't replay a synthetic log, whose flow was built in code.
+  const view = await client.get(`/api/runs/${runId}/nodes/1/view`)
+  expect([view.status, (view.json() as { error: string }).error]).toEqual([409, "not_supported"])
+  // No HEAD on the download or a node's view: HQ's GET catch-all answers it, as any method HQ doesn't serve.
+  for (const suffix of ["/log", "/nodes/1/view"])
     expect([(await client.request("HEAD", `/api/runs/${runId}${suffix}`)).status, suffix]).toEqual([404, suffix])
 })
 

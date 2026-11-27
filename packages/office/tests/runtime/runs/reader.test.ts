@@ -34,6 +34,7 @@ import {
   SCOPE_ENDED,
   SPARSE_BYTES,
   SPARSE_EVERY,
+  TOO_LARGE,
   UnreadableLog,
   UnsupportedSchema,
 } from "../../../src/runtime/runs/reader.ts"
@@ -1011,7 +1012,7 @@ test("values over one detail's bytes are cut, then the largest replaced by their
   const values = [row("a", list(200_000)), row("b", list(240_000)), row("c", list(160_000)), row("d", "small")]
   const fitted = fitValues(values)
   expect(fitted.map((v) => [v.name, v.missing ?? null])).toEqual([
-    ["a", "too_large"], ["b", "too_large"], ["c", null], ["d", null],
+    ["a", TOO_LARGE], ["b", TOO_LARGE], ["c", null], ["d", null],
   ])
   expect(fitted[1]!.size).toBe(Buffer.byteLength(JSON.stringify(list(240_000))))
   expect(Buffer.byteLength(JSON.stringify(fitted))).toBeLessThanOrEqual(EVENT_BYTES)

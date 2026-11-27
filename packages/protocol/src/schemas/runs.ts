@@ -135,28 +135,23 @@ export const RunNodePage = z.strictObject({
 export type RunNodePage = z.input<typeof RunNodePage>
 
 /**
- * One value of a node attempt's detail: an output its success accepted, or an input its binding read. Each is a
- * pool_commit's value, in the display form an opened record shows.
+ * One value of a node attempt: an output its success accepted, or an input as it bound it, in the display form an
+ * opened record shows (a memory as what the run recorded of it).
  */
 export const RunNodeValue = z.strictObject({
-  /**
-   * What a flow reads it as. An output: `output`, an agent's `new_messages`, or, for a START or END, one field of the
-   * record it received or returned. An input, relative to the node's flow: `input` for its START's record,
-   * `<node>.output`, `<node>.new_messages`, `system.<name>`, or a pool name from outside its flow as it is.
-   */
+  /** An output's name, `output` or an agent's `new_messages`; an input's, as the node declares it. */
   name: z.string().min(1),
-  /** The seq of the pool_commit that holds it. */
-  seq: z.int().min(0),
-  /** Its kind, such as str, object or list[object]; null when not known, as for a field of a record. */
+  /** The seq of the pool_commit that holds it, where a node's detail read it there; null in a node's view. */
+  seq: z.int().min(0).nullable().default(null),
+  /** Its type, such as `str` or `list(Message)` in a node's view, its stored kind (`str`, `object`) in its detail;
+   *  null when not known. */
   type: z.string().nullable().default(null),
   /** The value; null too when `missing` says why it isn't here. */
   value: z.unknown().default(null),
-  /**
-   * Why the value isn't here: too_large, too large to show (see `size`; download the log); not_rebuilt, a derived
-   * value this office couldn't rebuild from the log.
-   */
-  missing: z.enum(["too_large", "not_rebuilt"]).nullable().default(null),
-  /** With too_large: the size in bytes. */
+  /** Why the value isn't here, in words: too large to show (see `size`), not given, derived from other values, or why
+   *  it couldn't be rebuilt from the log. Null when it is here. */
+  missing: z.string().nullable().default(null),
+  /** When it is too large to show: its size in bytes. */
   size: z.int().min(0).nullable().default(null),
   /** JSON pointers (into `value`) of strings cut at 4K characters, as a detail too large to show whole is cut. */
   cut: z.array(z.string()).default(() => []),
@@ -175,9 +170,9 @@ export const RunNodeFailure = z.strictObject({
 export type RunNodeFailure = z.input<typeof RunNodeFailure>
 
 /**
- * GET /runs/{id}/nodes/{seq}: one node attempt by its start record's seq, read from the log: its row of the node page
- * (its route's handle whole), its model, when its start and end records were written, the values its success
- * accepted and its binding read, and its error.
+ * GET /runs/{id}/nodes/{seq}: one node attempt by its start record's seq, read from its records alone, so it answers at
+ * once: its row of the node page (its route's handle whole), its model, when its start and end records were written,
+ * the outputs its success's records hold, and its error. Its inputs, and its outputs with their types, are its view.
  */
 export const RunNodeDetail = z.strictObject({
   node: RunNode,
@@ -193,19 +188,34 @@ export const RunNodeDetail = z.strictObject({
    * a node in it failed, open while its nodes run; null for any other node, and while it's no more than expanded.
    */
   outcome: z.enum(["open", "succeeded", "failed"]).nullable().default(null),
-  /** The values its success accepted, one row each (a flow call's are its END's); none until it succeeds. */
-  outputs: z.array(RunNodeValue).default(() => []),
   /**
-   * The values a derived node's binding read (an END's gathered values, a loop's or a call's result), one row each:
-   * the log names them only for those. A START's are its outputs.
+   * What its success accepted (a flow call's or a loop's, what its END or last turn returned), as its records hold
+   * it: `output`, then an agent's `new_messages`, each with its stored kind; a value derived from others (one its
+   * commit names only by the commits it read) says so in `missing`. None until it succeeds.
    */
-  inputs: z.array(RunNodeValue).default(() => []),
-  /** How many more inputs its binding read than `inputs` shows: at most 100 rows show, and no more than one detail
-   *  holds. */
-  inputs_more: z.int().min(0).default(0),
+  outputs: z.array(RunNodeValue).default(() => []),
   failure: RunNodeFailure.nullable().default(null),
 })
 export type RunNodeDetail = z.input<typeof RunNodeDetail>
+
+/**
+ * GET /runs/{id}/nodes/{seq}/view: one node attempt's inputs and outputs with their types, as yian's `nodeView` reads
+ * them by replaying the log up to the attempt's end, which can take seconds on a long run: each input as the node bound
+ * it at its start, and what its success accepted (a flow call's or a loop's, what its END or last turn returned),
+ * derived values rebuilt.
+ */
+export const RunNodeView = z.strictObject({
+  /** The node's kind, from the flow the log recorded; null when that flow doesn't load. */
+  kind: z.string().nullable().default(null),
+  /** Each declared input (a map's, the list its items are bound from); null when they couldn't be rebuilt. */
+  inputs: z.array(RunNodeValue).nullable().default(null),
+  /** `output`, then an agent's `new_messages`; none without a success. */
+  outputs: z.array(RunNodeValue).default(() => []),
+  /** Why `inputs` is null, in words: the run's flow doesn't load or isn't the one that ran, or the node's binding
+   *  fails. Null when they are here. */
+  missing: z.string().nullable().default(null),
+})
+export type RunNodeView = z.input<typeof RunNodeView>
 
 /** One run-log record as written. */
 export const RunEvent = z.strictObject({

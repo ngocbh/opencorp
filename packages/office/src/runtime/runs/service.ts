@@ -1,5 +1,6 @@
 /** The Run Logs reads: the list of runs, from the office's rows, the session actor's memory and yian's run index
- *  (no run log is read for it); and, per run, its page and its agents' model calls, from its log. */
+ *  (no run log is read for it); and, per run, its page, its node attempts' views (on the views thread) and its agents'
+ *  model calls, from its log. */
 import fs from "node:fs"
 import path from "node:path"
 import type { Readable } from "node:stream"
@@ -12,16 +13,18 @@ import type {
   RunEventPage,
   RunNodeDetail,
   RunNodePage,
+  RunNodeView,
   RunPage,
   RunSummary,
 } from "@opencorp/protocol"
 import type { RunIndexRow } from "@ngocbh/yian/run"
 import { NotFound, type RunRow, type SessionRecord, type Store } from "../store/store.ts"
 import { errorName } from "../worker/rpc.ts"
-import { nodeDetail, runNode } from "./attempt.ts"
+import { attemptNumber, cameTo, nodeDetail, runNode } from "./attempt.ts"
 import { hasCall, nodeCalls, readCall } from "./calls.ts"
 import { runUpdated } from "./notify.ts"
 import {
+  type Attempt,
   attemptAt,
   FOLD_BYTES,
   type FoldOptions,
@@ -34,6 +37,7 @@ import {
   UnreadableLog,
 } from "./reader.ts"
 import { FAILED_ENDS, FINAL, Inspections, Live, readIndex, Summaries, YianRuns } from "./records.ts"
+import { NodeViews, ViewFailed } from "./views.ts"
 
 export const PAGE = 50
 /** How many rows a filtered list reads at a time. */
@@ -52,14 +56,15 @@ export class NoLog extends Error {
   override name = "NoLog"
 }
 
-/** The run's log is longer than the office reads model calls from. */
-export class CallsTooLarge extends Error {
-  override name = "CallsTooLarge"
+/** The run's log is longer than the office reads model calls or node views from. */
+export class LogTooLarge extends Error {
+  override name = "LogTooLarge"
 }
 
-/** Yian couldn't read the run's model calls, or rebuild one; the message names only its error's type. */
-export class CallUnreadable extends Error {
-  override name = "CallUnreadable"
+/** Yian couldn't read the run's model calls, rebuild one, or read a node's view; the message names only why (its
+ *  error's type). */
+export class ReadFailed extends Error {
+  override name = "ReadFailed"
 }
 
 /** Whether `error` says the log doesn't exist (its `fs` error), or isn't a regular file (NotALog). */
@@ -155,6 +160,8 @@ export class RunLogs {
   readonly #scanCap: number
   readonly #callBytes: number
   readonly #log: (line: string) => void
+  // Kept for the office's life, so a settled attempt's view stays kept.
+  readonly #views: NodeViews
 
   constructor(options: {
     store: Store
@@ -166,11 +173,13 @@ export class RunLogs {
     inspections?: Inspections
     batch?: number
     scanCap?: number
-    /** The longest log whose model calls are read (FOLD_BYTES by default): a list parses the whole log, and a call's
-     *  rebuild replays it, in memory. */
+    /** The longest log whose model calls and node views are read (FOLD_BYTES by default): a list parses the whole log,
+     *  and a call's rebuild and a view replay it, in memory. */
     callBytes?: number
     log?: (line: string) => void
     reader?: RunLogReader
+    /** Reads node views; the default on the views thread. */
+    views?: NodeViews
     /** The session's pinned company worktree for a commit: the code root a log's recorded flow compiles under. */
     pin?: (commit: string) => Promise<string>
   }) {
@@ -185,6 +194,12 @@ export class RunLogs {
     this.#batch = options.batch ?? BATCH
     this.#scanCap = options.scanCap ?? SCAN_CAP
     this.#callBytes = options.callBytes ?? FOLD_BYTES
+    this.#views = options.views ?? new NodeViews({ log: this.#log })
+  }
+
+  /** Stops the views thread; a view asked for after this fails. */
+  close(): Promise<void> {
+    return this.#views.close()
   }
 
   /** Top-level runs after run `before` (newest first) that the filters show, at most `limit`: a run shows when it
@@ -271,15 +286,59 @@ export class RunLogs {
     }
   }
 
-  /** The node attempt whose start record is seq `seq`, with its detail from the log (see `nodeDetail`); NotFound
+  /** The node attempt whose start record is seq `seq`, with its detail from its records (see `nodeDetail`); NotFound
    *  without the run or such an attempt, else as `nodes`. */
   async node(runId: string, seq: number): Promise<RunNodeDetail> {
     const { file, index, session } = await this.#logIndex(runId)
-    const attempt = attemptAt(index, seq)
-    if (attempt === null) throw new NotFound(`run ${runId} has no node attempt at record ${seq}`)
+    const attempt = this.#attempt(runId, index, seq)
     const fold = await this.#fold(session)
     const kinds = fold ? await this.#reader.kinds(file, index, fold) : null
-    return nodeDetail(this.#reader, file, index, attempt, { fold, kinds })
+    return nodeDetail(file, index, attempt, kinds)
+  }
+
+  /**
+   * The view of the node attempt whose start record is seq `seq`: its inputs and outputs with their types, read by
+   * yian's `nodeView` under the session's pinned commit on the views thread, one at a time (a flow call's or a loop's
+   * outputs from a second view, of what returns its value). A settled attempt's view is kept. Rejects with `signal`'s
+   * reason once it aborts while queued; NotFound, NoLog or UnreadableLog as `node`, LogTooLarge for a log over
+   * `callBytes`, ReadFailed when yian can't read it.
+   */
+  async view(runId: string, seq: number, signal?: AbortSignal): Promise<RunNodeView> {
+    const { file, index, session } = await this.#logIndex(runId)
+    const attempt = this.#attempt(runId, index, seq)
+    if (index.offset > this.#callBytes) throw this.#tooLarge("node values")
+    const { ender, outcome } = attempt.status === "expanded" ? cameTo(index, attempt) : { ender: null, outcome: null }
+    const n = attemptNumber(index, attempt)
+    const endN = ender === null ? null : attemptNumber(index, ender)
+    if (n === null || (ender !== null && endN === null)) {
+      throw new ReadFailed("this office can't read this node's values (its run has too many node attempts)")
+    }
+    // Once settled, an attempt's view can't change; a flow call's or a loop's once what returns its value has.
+    const settled = (a: Attempt) => a.status !== "open" && a.status !== "waiting"
+    const kept = settled(attempt) && (attempt.status !== "expanded" || outcome === "succeeded" || outcome === "failed")
+    const key = kept ? JSON.stringify([file, `${index.dev}:${index.ino}`, attempt.nodeId, n]) : null
+    const codeRoot = (await this.#fold(session))?.codeRoot ?? null
+    const job = {
+      log: file,
+      nodeId: attempt.nodeId,
+      attempt: n,
+      ender: ender === null || ender.status !== "succeeded" ? null : { nodeId: ender.nodeId, attempt: endN! },
+      codeRoot,
+    }
+    try {
+      return await this.#views.view(job, { key, signal })
+    } catch (error) {
+      if (!(error instanceof ViewFailed)) throw error
+      this.#log(`a node view of run ${runId} couldn't be read (${error.message})`)
+      throw new ReadFailed(`this office can't read this node's values (${error.message})`)
+    }
+  }
+
+  /** The attempt of run `runId` whose start record is seq `seq`; NotFound when none starts there. */
+  #attempt(runId: string, index: Index, seq: number): Attempt {
+    const attempt = attemptAt(index, seq)
+    if (attempt === null) throw new NotFound(`run ${runId} has no node attempt at record ${seq}`)
+    return attempt
   }
 
   /** Records after seq `after`, as stored but cut for size; NotFound, NoLog or UnreadableLog as `nodes`. */
@@ -297,7 +356,7 @@ export class RunLogs {
   }
 
   /** The model calls agent node `node` made, oldest first, as yian's `agentCalls` lists them; NotFound, NoLog or
-   *  UnreadableLog as `nodes`, CallsTooLarge for a log over `callBytes`, CallUnreadable when yian can't list them. */
+   *  UnreadableLog as `nodes`, LogTooLarge for a log over `callBytes`, ReadFailed when yian can't list them. */
   async calls(runId: string, node: string): Promise<RunCallList> {
     const { file } = await this.#callLog(runId)
     return { calls: this.#listed(runId, () => nodeCalls(file, node)) }
@@ -305,7 +364,7 @@ export class RunLogs {
 
   /** Model call `n` of agent node `node` (the `n` of any of its attempts), rebuilt by yian's `agentCall` under the
    *  session's pinned commit, one log replay at a time: its request, attempts, reply and tool results. NotFound when
-   *  the node made no such call, CallUnreadable when yian can't rebuild it, else as `calls`. */
+   *  the node made no such call, ReadFailed when yian can't rebuild it, else as `calls`. */
   async call(runId: string, node: string, n: number): Promise<RunCall> {
     const { file, session } = await this.#callLog(runId)
     // The message names neither: they are what the client sent.
@@ -313,37 +372,38 @@ export class RunLogs {
     const fold = await this.#fold(session)
     const read = async () => {
       // A live log may have grown while this waited for the replays before it.
-      if (fs.statSync(file).size > this.#callBytes) throw this.#tooLarge()
+      if (fs.statSync(file).size > this.#callBytes) throw this.#tooLarge("model calls")
       return readCall(file, node, n, fold ?? { env: () => undefined, codeRoot: null })
     }
     try {
       return await this.#reader.replay(read)
     } catch (error) {
-      if (error instanceof CallsTooLarge) throw error
+      if (error instanceof LogTooLarge) throw error
       this.#log(`a model call of run ${runId} couldn't be rebuilt (${errorName(error)})`)
-      throw new CallUnreadable(`this office can't rebuild this model call (${errorName(error)})`)
+      throw new ReadFailed(`this office can't rebuild this model call (${errorName(error)})`)
     }
   }
 
-  /** The run's log and session, as `#logIndex` gives them; CallsTooLarge when the log is over `callBytes`. */
+  /** The run's log and session, as `#logIndex` gives them; LogTooLarge when the log is over `callBytes`. */
   async #callLog(runId: string): Promise<{ file: string; session: SessionRecord }> {
     const { file, index, session } = await this.#logIndex(runId)
-    if (index.offset > this.#callBytes) throw this.#tooLarge()
+    if (index.offset > this.#callBytes) throw this.#tooLarge("model calls")
     return { file, session }
   }
 
-  #tooLarge(): CallsTooLarge {
+  /** A log over `callBytes`, too large to read its `what` (model calls, node values) here. */
+  #tooLarge(what: string): LogTooLarge {
     const mib = Math.floor(this.#callBytes / 2 ** 20)
-    return new CallsTooLarge(`this run's log is over ${mib} MiB, too large to read its model calls here; download it`)
+    return new LogTooLarge(`this run's log is over ${mib} MiB, too large to read its ${what} here; download it`)
   }
 
-  /** `read`, a read of yian's call list, its failure a CallUnreadable that names only its type. */
+  /** `read`, a read of yian's call list, its failure a ReadFailed that names only its type. */
   #listed<T>(runId: string, read: () => T): T {
     try {
       return read()
     } catch (error) {
       this.#log(`the model calls of run ${runId} couldn't be listed (${errorName(error)})`)
-      throw new CallUnreadable(`this office can't read this run's model calls (${errorName(error)})`)
+      throw new ReadFailed(`this office can't read this run's model calls (${errorName(error)})`)
     }
   }
 

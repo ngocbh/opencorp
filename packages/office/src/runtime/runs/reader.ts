@@ -699,6 +699,18 @@ function shown(value: unknown, pointer: string, cuts: Cuts, depth: number, cutti
   )
 }
 
+/** A yian value in its display form, whole but for containers DEPTH_CAP deep, with the JSON pointers of what was cut;
+ *  null when the cuts would name more than CUT_CHARS. */
+export function displayed(value: unknown): { value: unknown; cut: string[] } | null {
+  const cuts = new Cuts()
+  try {
+    return { value: shown(value, "", cuts, 0, false), cut: cuts.pointers }
+  } catch (error) {
+    if (!(error instanceof TooManyCuts)) throw error
+    return null
+  }
+}
+
 /** The payload of a record of kind `kind` in its display form; a commit's value is decoded from its typed-value wire
  *  first, and shown as parsed when that wire doesn't decode. A derived commit's rebuilt value `derived` is shown with
  *  its kind beside what the record holds. */
@@ -1001,10 +1013,14 @@ export function recordTime(path: string, index: Index, seq: number): string | nu
   }
 }
 
+/** What a node value too large to show says it is missing for; its size says how large. */
+export const TOO_LARGE = "too large to show; download the log"
+
 /**
  * `values` fitted to `budget` bytes of JSON, as one opened record is: as they are when they fit; else with each string
  * cut at FIELD_CHARS code points, its pointer (into its value) added to the value's `cut`; else with the largest
- * values, then the next largest, replaced by their size until the rest fit. Each value is measured once.
+ * values, then the next largest, replaced by their size (missing as TOO_LARGE) until the rest fit. Each value is
+ * measured once.
  */
 export function fitValues(values: RunNodeValue[], budget: number = EVENT_BYTES): RunNodeValue[] {
   const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v))
@@ -1014,7 +1030,7 @@ export function fitValues(values: RunNodeValue[], budget: number = EVENT_BYTES):
   const sum = (a: number[]) => a.reduce((t, n) => t + n, 0)
   if (sum(rest) + sum(sizes) <= budget) return values
   const tooLarge = (v: RunNodeValue, size: number): RunNodeValue =>
-    ({ ...v, value: null, missing: "too_large", size, cut: [] })
+    ({ ...v, value: null, missing: TOO_LARGE, size, cut: [] })
   const fitted = values.map((v, i): RunNodeValue => {
     if (v.missing) return v
     try {
@@ -1108,7 +1124,8 @@ function stamp(st: Stat): string {
 /**
  * The office's run-log indexes: built lazily per log on its first request, one build per log at a time; kept, node
  * table and all, in an LRU capped in bytes and logs, so a log is read whole once unless it is evicted. A log that
- * can't be read isn't read again until its file changes. Derived values are rebuilt one log replay at a time.
+ * can't be read isn't read again until its file changes. An opened record's derived value is rebuilt one log replay at
+ * a time.
  */
 export class RunLogReader {
   private readonly budget: number
@@ -1152,46 +1169,20 @@ export class RunLogReader {
     seq: number,
     { fold }: { fold?: FoldOptions } = {},
   ): Promise<RunEvent | null> {
-    return (await this.readEvents(path, index, [seq], { fold }))[0] ?? null
-  }
-
-  /** The records with `seqs`, each as `readEvent` reads it, the derived commits among them rebuilt by one replay. */
-  readEvents(
-    path: string,
-    index: Index,
-    seqs: readonly number[],
-    { fold }: { fold?: FoldOptions } = {},
-  ): Promise<(RunEvent | null)[]> {
-    return this.rebuilt(path, index, seqs, seqs.map((seq) => readEvent(path, index, seq)), { fold })
-  }
-
-  /** `events`, the records with `seqs` as the module's `readEvent` read them, the derived commits among them rebuilt
-   *  by one replay, as `readEvent` rebuilds one. */
-  async rebuilt(
-    path: string,
-    index: Index,
-    seqs: readonly number[],
-    events: readonly (RunEvent | null)[],
-    { fold }: { fold?: FoldOptions } = {},
-  ): Promise<(RunEvent | null)[]> {
-    const derived = events.map((event) => {
-      const payload = event?.payload
-      return event?.kind === "pool_commit" && isRecord(payload) && (payload.value ?? null) === null
-        && ["from", "take", "steps"].some((form) => (payload[form] ?? null) !== null)
-    })
-    if (fold === undefined || !derived.includes(true) || index.offset > this.foldBytes) return [...events]
+    const event = readEvent(path, index, seq)
+    const payload = event?.payload
+    const derived = event?.kind === "pool_commit" && isRecord(payload) && (payload.value ?? null) === null
+      && ["from", "take", "steps"].some((form) => (payload[form] ?? null) !== null)
+    if (fold === undefined || !derived || index.offset > this.foldBytes) return event
     // Replays queue behind each other and each reads the log as it is on its turn, so the size is checked again then.
     const replay = this.replay(async () => (fs.statSync(path).size > this.foldBytes ? null : foldRunLog(path, fold)))
-    let records: readonly ({ value: TypedValue | null } | undefined)[]
+    let value: TypedValue | null
     try {
-      records = (await replay)?.records ?? []
+      value = (await replay)?.records[seq]?.value ?? null
     } catch {
-      return [...events]
+      return event
     }
-    return events.map((event, i) => {
-      const value = derived[i] ? (records[seqs[i]!]?.value ?? null) : null
-      return value === null ? event : eventAt(path, index, seqs[i]!, value) ?? event
-    })
+    return value === null ? event : eventAt(path, index, seq, value) ?? event
   }
 
   /** Runs `work`, which replays a whole log, once the replays queued before it have settled: one replay at a time. */
