@@ -217,6 +217,10 @@ const STUCK =
 const LOST =
   "this shell's prompts can't be verified any more (in sh, `set -a` does that), so OpenCorp can't tell when a " +
   "command ends; close this shell and run in a new one"
+/** What the owner's view shows, muted, the first time the agent's command waits for that: why. */
+const WRITES_NOTE =
+  "\r\n\x1b[2m[your employee's commands wait: this shell writes what it reads or runs (set -v, set -x) somewhere " +
+  "other than its terminal; turn that off (set +vx), or send stderr back (exec 2>/dev/tty)]\x1b[22m\r\n"
 /** Why the agent's command waits while the shell writes what it reads or runs elsewhere (`OTHER_STDERR`). */
 const WRITES =
   "this shell writes what it reads or runs (`set -v`, `set -x`) somewhere other than its terminal, where a program " +
@@ -330,8 +334,9 @@ const SH_MARK =
   `"$(${drain("sh", true)})" "$-" "$__oc_s" "$__oc_q" >/dev/tty; } 2>/dev/null)`
 
 /** sh's prompt after a line a Ctrl-C stopped (its `__oc_a` still set): SIGINT to what the line left running, the
- *  shell's children, from a subshell that `exec` makes `pkill` itself, so it spares itself. It prints nothing. */
-const SH_ABORTED = '$(case ${__oc_a-} in (1) exec "$__oc_k" -INT -P $$ >/dev/null 2>&1;; esac)'
+ *  shell's children, from a subshell that `exec` makes `pkill` itself (without the loader's variables), so it spares
+ *  itself. It prints nothing. */
+const SH_ABORTED = `$(case \${__oc_a-} in (1) ${CLEAN.sh}exec "$__oc_k" -INT -P $$ >/dev/null 2>&1;; esac)`
 
 /** sh's end of the agent's command, which its typed line runs with `eval` (a special builtin, which sh finds before
  *  any function) once `set --` has put the command's nonce and exit code in `$1` and `$2`, which no program's
@@ -373,7 +378,7 @@ function setupLine(kind: "bash" | "sh", flag: string): string {
       `${flagged}readonly __oc_y __oc_f __oc_w __oc_t __oc_u __oc_c __oc_o __oc_k __oc_d; ` +
       `__oc_b() { __oc_a[0]=1; builtin printf "\\033]633;opencorp-mark;%s;start\\007" "$1" >/dev/tty; }; ` +
       `__oc_s() { __oc_a[0]=; __oc_n[0]=$1; ${CLEAN.bash}/bin/sh -c 'exit "$1"' sh "$2"; }; ` +
-      `__oc_p() { case \${__oc_a[0]-} in (1) "$__oc_k" -INT -P $$ >/dev/null 2>&1;; esac; ` +
+      `__oc_p() { case \${__oc_a[0]-} in (1) ${CLEAN.bash}"$__oc_k" -INT -P $$ >/dev/null 2>&1;; esac; ` +
       `__oc_a[0]=; builtin printf "\\033]633;opencorp-mark;%s;%d;%s;%s;%s\\007" "\${__oc_n[0]:-\${__oc_q[0]-}}" "$1" ` +
       `"$(${drain("bash")}; ${CLEAN.bash}"$__oc_y" "$__oc_t" </dev/tty 2>/dev/null),$2" "${NEXT_BASH}" ` +
       `"$(${CLEAN.bash}"$__oc_w" -P 2>/dev/null)" >/dev/tty; __oc_q[0]=\${__oc_z[0]}; __oc_n[0]=; } 2>/dev/null; ` +
@@ -516,8 +521,10 @@ export class PtyShell {
   private unverified: ReturnType<typeof setTimeout> | undefined
   /** What the views said then: that the prompt isn't the shell's own, or that its prompts name no nonce any more. */
   private stuck: "foreign" | "lost" | null = null
-  /** The last marker the office took said the shell writes what it reads or runs elsewhere (`OTHER_STDERR`). */
+  /** The last marker the office took said the shell writes what it reads or runs elsewhere (`OTHER_STDERR`), and
+   *  whether the owner's view has said why the agent's commands wait for it (`WRITES_NOTE`). */
   private writes = false
+  private writesSaid = false
   /** Its start token, and whether its start marker has come: the shell has read its line. */
   private startToken: string | null = null
   private begun = false
@@ -988,10 +995,12 @@ export class PtyShell {
     // sh's prompt after the agent's line may come once the agent's next line is typed, but always before it runs.
     if (!ending && !(prompt && (this.promptAfter || this.nonce === null || this.interrupted))) return this.doubt()
     this.took()
-    // Not after a Ctrl-C: that prompt's nonce is one the command could read.
-    this.lastNonce = ending || this.nonce === null || this.promptAfter ? nonce : null
-    this.nextNonce = promptNonce(next)
     this.writes = stderr === "o" && (this.kind === "sh" || /[vx]/.test(options))
+    if (!this.writes) this.writesSaid = false
+    // Not after a Ctrl-C, whose prompt's nonce is one the command could read; nor while the shell writes what it reads
+    // or runs elsewhere, as xtrace a line turns on writes that line's end, which a program could then read.
+    this.lastNonce = !this.writes && (ending || this.nonce === null || this.promptAfter) ? nonce : null
+    this.nextNonce = promptNonce(next)
     const exit = /^-?\d+$/.test(exitText) ? Number(exitText) : null
     this.prompted(drained)
     if (prompt && this.promptAfter) {
@@ -1313,8 +1322,13 @@ export class PtyShell {
     return reply
   }
 
-  /** A reply saying why nothing was done, with the shell's state, from where the agent last read. */
+  /** A reply saying why nothing was done, with the shell's state, from where the agent last read. The first refusal
+   *  while the shell writes what it reads elsewhere says why in the owner's view too. */
   refusal(why: string): Reply {
+    if (why === WRITES && !this.writesSaid) {
+      this.writesSaid = true
+      this.emit(bytesOf(WRITES_NOTE))
+    }
     const { status, exit, waiting } = this.current
     return { shell: this.id, status, exit, waiting, output: "", next: this.cursor, more: false, refused: why }
   }

@@ -1022,8 +1022,13 @@ for (const kind of ["bash", "sh"] as const) {
         `printf "${mark("%s;0;1;5;/")}" "$n" >/dev/tty; done; sleep 0.05; done' >/dev/null 2>&1 &`
       expect(await t.shell.run(reader, 5000)).toMatchObject({ status: "idle", exit: 0 })
       expect(await t.shell.run(`exec 2>${shQuote(log)}; set ${option}`, 5000)).toMatchObject({ status: "idle", exit: 0 })
-      // The shell can't turn it off before it reads the next line: the agent's lines wait until it's off.
+      // The shell can't turn it off before it reads the next line: the agent's lines wait until it's off, and the
+      // owner's view says why, once.
       expect((await t.shell.run("sleep 1; echo slept", 5000)).refused).toMatch(/somewhere other than its terminal/)
+      expect(t.shell.runProblem("echo again")).toMatch(/somewhere other than its terminal/)
+      expect((await t.shell.run("echo again", 5000)).refused).toMatch(/somewhere other than its terminal/)
+      const why = "your employee's commands wait: this shell writes what it reads or runs"
+      expect(count(t.live(), why)).toBe(1)
       // The owner's command ends only at the shell's own prompt; once theirs turns it off, the agent's run again.
       t.shell.ownerKeys(`sleep 1; set +${option.slice(1)}; exec 2>/dev/tty\r`)
       await Bun.sleep(600)
@@ -1039,6 +1044,30 @@ for (const kind of ["bash", "sh"] as const) {
       expect(new Set(written.match(/[0-9a-f]{16}/g) ?? []).size).toBe(option === "-x" ? 1 : 0)
     })
   }
+
+  test(`${kind}: the end nonce xtrace wrote to a file never ends the owner's command, after their Ctrl-C or not`, async () => {
+    const t = await openShell({ shell: kind })
+    const log = path.join(t.dir, "x.log")
+    // A program that reads the file for a nonce and prints the prompt it could forge with it: nothing written
+    // elsewhere, and a next nonce of its own, for 8 s.
+    const reader =
+      `sh -c 'for i in $(seq 160); do for n in $(grep -ao "[0-9a-f]\\{16\\}" ${shQuote(log)} 2>/dev/null); do ` +
+      `printf "${mark("%s;0;1,hiBHs,;42;/")}" "$n" >/dev/tty; done; sleep 0.05; done' >/dev/null 2>&1 &`
+    expect(await t.shell.run(reader, 5000)).toMatchObject({ status: "idle", exit: 0 })
+    // The line that turns xtrace on writes its own end there, a nonce the office has used.
+    expect(await t.shell.run(`exec 2>${shQuote(log)}; set -x`, 5000)).toMatchObject({ status: "idle", exit: 0 })
+    await waitFor(() => /[0-9a-f]{16}/.test(fs.readFileSync(log, "utf8")), { timeout: 5000, what: "the traced nonce" })
+    // The owner's program outlives their Ctrl-C, which would start a prompt over.
+    t.shell.ownerKeys(`sh -c 'trap "" INT; sleep 2; echo owner-$((6*7))'\r`)
+    await Bun.sleep(300)
+    t.shell.ownerKeys("\x03")
+    await Bun.sleep(800)
+    expect(t.shell.state().status).toBe("running")
+    expect(t.shell.runProblem("echo agent")).toMatch(/^the owner's command is running/)
+    expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle" })
+    // Still writing elsewhere: the agent's lines still wait.
+    expect(t.shell.runProblem("echo agent")).toMatch(/somewhere other than its terminal/)
+  })
 
   test(`${kind}: with history on, the agent's command can't read its own line's nonce`, async () => {
     const t = await openShell({ shell: kind })
@@ -1084,16 +1113,22 @@ for (const kind of ["bash", "sh"] as const) {
       expect(await t.shell.run("true", 5000)).toMatchObject({ status: "idle" })
       t.shell.ownerKeys("true\r")
       expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle" })
+      // A line a Ctrl-C stops: its prompt runs pkill for what the line left.
+      expect((await t.shell.run("sleep 5", 300)).status).toBe("running")
+      t.shell.interrupt()
+      expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle" })
     }
     fs.writeFileSync(path.join(t.dir, "stop"), "")
     await waitFor(() => fs.existsSync(seen), { timeout: 5000, what: "the watcher's findings" })
     const found = JSON.parse(fs.readFileSync(seen, "utf8")) as { argv: string[]; env: string[] }[]
-    // It saw the prompt's programs run: od among them.
+    // It saw the prompt's programs run: od among them, and pkill.
     expect(found.some((p) => p.argv.some((arg) => arg.endsWith("/od")))).toBe(true)
+    expect(found.some((p) => (p.argv[0] ?? "").endsWith("/pkill"))).toBe(true)
     const nonce = /-?[1-9]\d{14,19}|[0-9a-f]{16}/
     expect(found.filter((p) => [...p.argv, ...p.env].some((text) => nonce.test(text)))).toEqual([])
     // What the prompt runs by its pinned paths takes none of the agent's LD_ variables.
-    const pinned = (p: { argv: string[] }) => /^\/(usr\/)?bin\/(od|stty|pwd|rm|cat|printf|env|sh)$/.test(p.argv[0] ?? "")
+    const pinned = (p: { argv: string[] }) =>
+      /^\/(usr\/)?bin\/(od|stty|pwd|rm|cat|printf|env|sh|pkill)$/.test(p.argv[0] ?? "")
     expect(found.filter((p) => pinned(p) && p.env.some((v) => /^LD_[A-Z_]+=./.test(v)))).toEqual([])
   }, 60_000)
 
