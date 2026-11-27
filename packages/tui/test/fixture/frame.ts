@@ -6,10 +6,16 @@ import type { TuiInput } from "../../src/app"
 import type { Args } from "../../src/context/args"
 import { Global } from "../../src/core/global"
 
+/** A terminal's answer to Primary Device Attributes, which it sends after its answers to the queries before it. */
+const DA1_REPLY = "\x1b[?1;2c"
+
 /** Runs the app in a test renderer (100x30 unless `size` says) against `input`; returns frame helpers. */
 export async function bootFrame(input: Omit<TuiInput, "args">, args: Args = {}, size = { width: 100, height: 30 }) {
   const setup = await createTestRenderer(size)
   await setup.renderer.setupTerminal()
+  // The terminal answers its startup queries, as a real one does, with no theme colours: the app then starts at once
+  // on its default theme, instead of after waiting a second for colours that never come.
+  setup.renderer.stdin.emit("data", Buffer.from(DA1_REPLY))
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
   const { run } = await import("../../src/app")

@@ -20,8 +20,11 @@ import { exitAll, type ReachContext, writeSshFiles } from "../../../src/features
 import { DEFAULT_PORT, sha256, writeAccess } from "../../../src/features/reach/state.ts"
 import type { VisitDeps } from "../../../src/features/reach/run.ts"
 import { type FakeSsh, type FakeSshBehavior, installFakeSsh } from "../../../src/testing/fake_ssh.ts"
+import { freePort } from "../../../src/testing/ports.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
 import { ACCOUNT, fakeSubscription, NO_LISTING, Script } from "../setup/helpers.ts"
+
+export { freePort }
 
 /** Limits short enough that a test which hits one still finishes. */
 export const SHORT_LIMITS = Object.freeze({ promptMs: 5000, stepMs: 5000, quietMs: 5000 })
@@ -76,15 +79,6 @@ export async function staleSocket(file: string) {
   fs.renameSync(`${file}.x`, file)
 }
 
-/** A port free on 127.0.0.1 a moment ago. */
-export async function freePort(): Promise<number> {
-  const server = net.createServer()
-  await new Promise<void>((resolve) => server.listen({ port: 0, host: "127.0.0.1" }, resolve))
-  const { port } = server.address() as net.AddressInfo
-  await new Promise<void>((resolve) => server.close(() => resolve()))
-  return port
-}
-
 /** A server on the unix socket `file` that echoes and holds each connection; closed when the test finishes. */
 export async function holdingServer(file: string): Promise<{ server: net.Server; connections: Set<net.Socket> }> {
   const connections = new Set<net.Socket>()
@@ -120,13 +114,15 @@ export interface Answer {
   stdout?: string
   stderr?: string
   code?: number
-  /** Seconds to wait before answering. */
-  delay?: number
+  /** Whether each run waits, up to a minute and while the test's folder is there, for `release` before it answers
+   *  (what was set last by then). */
+  held?: boolean
 }
 
 /** HQ's machine, here: hq.sock at `<dir>/office/hq.sock` answering `/api/health` with `HEALTH` (and 404 else), and
  *  `<dir>/bin/opencorp`, a sh script that answers `hq --check --json` and `hq --json` from files `setCheck` and
- *  `setSignIn` rewrite; at first a good status and a code. Stopped when the test finishes. */
+ *  `setSignIn` rewrite; at first a good status and a code. Stopped, and every held run released, when the test
+ *  finishes. */
 export interface FakeRemote {
   readonly opencorp: string
   readonly socket: string
@@ -138,6 +134,10 @@ export interface FakeRemote {
   readonly status: HqStatus
   setCheck(answer: Answer): void
   setSignIn(answer: Answer): void
+  /** How many runs of `hq --check --json` have been held; one held stays so, whatever `setCheck` writes next. */
+  heldChecks(): number
+  /** Lets every held run of `name` ("check" or "signin") answer, and any later one until it's set held again. */
+  release(name: string): void
   stop(): Promise<void>
 }
 
@@ -148,8 +148,11 @@ export async function fakeRemote(dir: string): Promise<FakeRemote> {
   for (const d of [office, bin, answers]) fs.mkdirSync(d, { recursive: true })
   const socket = path.join(office, "hq.sock")
   const opencorp = path.join(bin, "opencorp")
-  const write = (name: string, { stdout = "", stderr = "", code = 0, delay = 0 }: Answer) => {
-    fs.writeFileSync(path.join(answers, `${name}.delay`), String(delay))
+  const write = (name: string, { stdout = "", stderr = "", code = 0, held = false }: Answer) => {
+    if (held) {
+      fs.rmSync(path.join(answers, `${name}.released`), { force: true })
+      fs.writeFileSync(path.join(answers, `${name}.held`), "")
+    } else fs.rmSync(path.join(answers, `${name}.held`), { force: true })
     fs.writeFileSync(path.join(answers, `${name}.stdout`), stdout)
     fs.writeFileSync(path.join(answers, `${name}.stderr`), stderr)
     fs.writeFileSync(path.join(answers, `${name}.code`), String(code))
@@ -164,7 +167,11 @@ export async function fakeRemote(dir: string): Promise<FakeRemote> {
       '  "hq --json") n=signin ;;',
       '  *) echo "fake opencorp: no $*" >&2; exit 2 ;;',
       "esac",
-      'sleep "$(cat "$d/$n.delay")"',
+      'if [ -e "$d/$n.held" ]; then',
+      '  echo "$n" >> "$d/holds"',
+      '  i=0',
+      '  while [ ! -e "$d/$n.released" ] && [ -d "$d" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done',
+      "fi",
       'cat "$d/$n.stdout"',
       'cat "$d/$n.stderr" >&2',
       'exit "$(cat "$d/$n.code")"',
@@ -201,8 +208,19 @@ export async function fakeRemote(dir: string): Promise<FakeRemote> {
     status,
     setCheck: (answer) => write("check", answer),
     setSignIn: (answer) => write("signin", answer),
+    heldChecks: () => {
+      const holds = path.join(answers, "holds")
+      return fs.existsSync(holds) ? fs.readFileSync(holds, "utf8").split("\n").filter((n) => n === "check").length : 0
+    },
+    release: (name) => fs.writeFileSync(path.join(answers, `${name}.released`), ""),
     stop: () =>
       new Promise<void>((resolve) => {
+        // A held run also ends once the test's folder is gone.
+        for (const name of ["check", "signin"]) {
+          try {
+            remote.release(name)
+          } catch {}
+        }
         server.closeAllConnections()
         server.close(() => resolve())
       }),

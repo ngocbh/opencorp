@@ -5,10 +5,10 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { spawn, type ChildProcess } from "node:child_process"
 import fs from "node:fs"
-import net from "node:net"
 import path from "node:path"
 import { createOfficeClient, officeFetch } from "@opencorp/client"
 import { startOffice, type TestOffice } from "@opencorp/office/testing/office"
+import { freePort } from "@opencorp/office/testing/ports"
 import {
   Ack,
   BrowserSession,
@@ -36,18 +36,6 @@ async function until(what: string, done: () => Promise<boolean>): Promise<void> 
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
-}
-
-/** A port free on 127.0.0.1 a moment ago. */
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer()
-    server.on("error", reject)
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as net.AddressInfo
-      server.close(() => resolve(port))
-    })
-  })
 }
 
 type Reply = { status: number; type: string; text: string }

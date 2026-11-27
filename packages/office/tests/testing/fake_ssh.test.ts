@@ -7,6 +7,7 @@ import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { spawnPty } from "../../src/platform.ts"
 import { type FakeSsh, type FakeSshBehavior, fakeControlName, installFakeSsh } from "../../src/testing/fake_ssh.ts"
+import { freePort } from "../../src/testing/ports.ts"
 import { shortDir, waitFor } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -219,15 +220,6 @@ async function stillRunning(child: ChildProcess, ms: number): Promise<boolean> {
   return child.exitCode === null && child.signalCode === null
 }
 
-/** A port free on 127.0.0.1 a moment ago. */
-async function freePort(): Promise<number> {
-  const server = net.createServer()
-  await new Promise<void>((resolve) => server.listen({ port: 0, host: "127.0.0.1" }, resolve))
-  const { port } = server.address() as net.AddressInfo
-  await new Promise<void>((resolve) => server.close(() => resolve()))
-  return port
-}
-
 /** An echo server on the unix socket `file`, closed when the test finishes. */
 async function echoServer(file: string): Promise<net.Server> {
   const server = net.createServer((c) => c.pipe(c))
@@ -357,8 +349,14 @@ test("like ssh, a master outlives its stdin while a forwarded connection is open
   const sock = path.join(dir, "m")
   const m = await master(fake, sock)
   const port = await freePort()
-  await runAsync(fake, ["-F", "/dev/null", "-S", sock, "-O", "forward", "-L", `127.0.0.1:${port}:${dir}/hq.sock`, "--", "opencorp-hq"])
+  const forward = ["-F", "/dev/null", "-S", sock, "-O", "forward", "-L", `127.0.0.1:${port}:${dir}/hq.sock`, "--", "opencorp-hq"]
+  expect((await runAsync(fake, forward)).code).toBe(0)
   const c = await hold(port)
+  // The connection is the master's once it has accepted it, which may be after this side connected: a byte echoed
+  // back through the forward says it has.
+  const echoed = new Promise<void>((resolve) => c.once("data", () => resolve()))
+  c.write("x")
+  await echoed
   m.child.stdin!.end()
   expect(await stillRunning(m.child, 500)).toBe(true)
   c.destroy()
