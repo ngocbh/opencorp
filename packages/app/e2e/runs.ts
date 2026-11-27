@@ -288,9 +288,17 @@ export function runCalls(): RunCalls {
     reply: { role: "assistant", author: null, parts: [{ type: "reasoning", text: "" }, { type: "text", text: "Let me" }] },
     tool_results: [], usage: null, finish: "interrupted", interrupted: true, cut: [],
   }
+  // A listed call's tool calls, as yian lists them from the steps its rebuilt results come from: each result its step
+  // after the call's.
   const entry = (call: RunCall, model = "gpt-5"): RunCallEntry => ({
     node_id: call.node_id, n: call.n, purpose: call.purpose, model, started_at: call.attempts[0]!.started_at,
     attempts: call.attempts.length, finish: call.finish ?? null,
+    tool_calls: (call.tool_results ?? []).map((r, k) => {
+      const done = r.output != null
+      const outcome = !done ? (r.held && !r.release_note ? "held" : "pending") : r.is_error ? "error" : "ok"
+      return { name: r.name, call_id: r.call_id, outcome, closed: r.closed ?? null, result_n: done ? call.n + k + 1 : null,
+               result_at: done ? (r.started_at ?? null) : null }
+    }),
   })
   return {
     [rid(5)]: { "chat#2/reply": { list: [entry(call2), entry(call5)], calls: [call2, call5] } },

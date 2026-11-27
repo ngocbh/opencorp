@@ -22,10 +22,16 @@ test("a model call opens from node detail: its request, reply, tool calls with t
   const detail = await openReply(page)
   const calls = detail.getByRole("list", { name: "Model calls" })
   // Numbered 1, 2 within the node, though they are its steps 2 and 5; each finish in words, its raw value the tooltip.
-  await expect(calls.getByRole("button")).toHaveText([
+  await expect(calls.getByRole("button", { name: /^Call / })).toHaveText([
     "Call 1 · gpt-5 · asked for tools · 2 attempts",
     "Call 2 · gpt-5 · replied",
   ])
+  // Under call 1, the tools its reply asked for, in call order, each as it stands; call 2 asked for none.
+  await expect(calls.getByRole("list", { name: "Tool calls of call 1" }).getByRole("button")).toHaveText([
+    /^↳\s*workspace_save\s*·\s*ok$/,
+    /^↳\s*terminal_run\s*·\s*ok$/,
+  ])
+  await expect(calls.getByRole("list", { name: "Tool calls of call 2" })).toHaveCount(0)
   await expect(calls.getByText("asked for tools", { exact: true })).toHaveAttribute("title", "tool_calls")
   await expect(calls.getByText("replied", { exact: true })).toHaveAttribute("title", "stop")
   await calls.getByRole("button", { name: "Call 1 · gpt-5 · asked for tools · 2 attempts" }).click()
@@ -77,6 +83,22 @@ test("a model call opens from node detail: its request, reply, tool calls with t
   await call.getByRole("button", { name: "Back to the node" }).click()
   await expect(call).toHaveCount(0)
   await expect(calls.getByRole("button", { name: /^Call 1/ })).toBeFocused()
+})
+
+test("a tool's row under its model call opens the call at that tool's result, and back returns to the row", async ({ page }) => {
+  const detail = await openReply(page)
+  const row = detail.getByRole("list", { name: "Tool calls of call 1" }).getByRole("button", { name: "terminal_run · ok" })
+  await row.click()
+  const call = page.getByRole("region", { name: "Model call 1" })
+  const tools = call.getByRole("region", { name: "Tool calls" })
+  // That tool's card opens on its result and takes focus; the other stays closed.
+  const opened = tools.getByRole("button", { name: /^terminal_run/ })
+  await expect(opened).toHaveAttribute("aria-expanded", "true")
+  await expect(opened).toBeFocused()
+  await expect(tools).toContainText("notes-00.md")
+  await expect(tools.getByRole("button", { name: /^workspace_save/ })).toHaveAttribute("aria-expanded", "false")
+  await call.getByRole("button", { name: "Back to the node" }).click()
+  await expect(row).toBeFocused()
 })
 
 test("Escape goes back from a call to its node, then closes the node", async ({ page }) => {
