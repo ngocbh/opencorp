@@ -1012,6 +1012,48 @@ for (const kind of ["bash", "sh"] as const) {
     })
   }
 
+  for (const option of ["-v", "-x"]) {
+    test(`${kind}: with \`set ${option}\` writing to a file, no line the office types goes there, and no program forges an end`, async () => {
+      const t = await openShell({ shell: kind })
+      const log = path.join(t.dir, "v.log")
+      // A program that reads the file for a nonce and prints the ends it could forge with it, for 6 s.
+      const reader =
+        `sh -c 'for i in $(seq 120); do for n in $(grep -ao "[0-9a-f]\\{16\\}" ${shQuote(log)} 2>/dev/null); do ` +
+        `printf "${mark("%s;0;1;5;/")}" "$n" >/dev/tty; done; sleep 0.05; done' >/dev/null 2>&1 &`
+      expect(await t.shell.run(reader, 5000)).toMatchObject({ status: "idle", exit: 0 })
+      expect(await t.shell.run(`exec 2>${shQuote(log)}; set ${option}`, 5000)).toMatchObject({ status: "idle", exit: 0 })
+      // The shell can't turn it off before it reads the next line: the agent's lines wait until it's off.
+      expect((await t.shell.run("sleep 1; echo slept", 5000)).refused).toMatch(/somewhere other than its terminal/)
+      // The owner's command ends only at the shell's own prompt; once theirs turns it off, the agent's run again.
+      t.shell.ownerKeys(`sleep 1; set +${option.slice(1)}; exec 2>/dev/tty\r`)
+      await Bun.sleep(600)
+      expect(t.shell.state().status).toBe("running")
+      expect(await t.shell.read({ waitMs: 5000 })).toMatchObject({ status: "idle", exit: 0 })
+      const reply = await t.shell.run("sleep 1; echo slept-$((6*7))", 5000)
+      expect(reply).toMatchObject({ status: "idle", exit: 0 })
+      expect(reply.output).toContain("slept-42\n")
+      // No prompt's nonce, nor any line's after: xtrace writes only the end of the line that turned it on, as that line
+      // runs on (the module's limit for a command that changes how the shell runs it).
+      const written = fs.readFileSync(log, "utf8")
+      expect(written).not.toMatch(/\d{15}/)
+      expect(new Set(written.match(/[0-9a-f]{16}/g) ?? []).size).toBe(option === "-x" ? 1 : 0)
+    })
+  }
+
+  test(`${kind}: with history on, the agent's command can't read its own line's nonce`, async () => {
+    const t = await openShell({ shell: kind })
+    expect(await t.shell.run("set -o history", 5000)).toMatchObject({ status: "idle" })
+    // The command looks for its own line in the history and prints the end it would forge, then runs on.
+    const forger =
+      `for n in $(history 1 2>/dev/null | grep -o "[0-9a-f]\\{16\\}"); do printf '${mark("%s;0;1;5;/")}' "$n" ` +
+      ">/dev/tty; done; sleep 1; echo slept-$((6*7))"
+    // No history keeps a line the office types, and none can be made to.
+    const reply = await t.shell.run(forger, 5000)
+    expect(reply).toMatchObject({ status: "idle", exit: 0 })
+    expect(reply.output).toContain("slept-42\n")
+    expect((await t.shell.run("HISTIGNORE=", 5000)).output).toContain("readonly variable")
+  })
+
   test(`${kind}: a trace sent to another file (BASH_XTRACEFD) never holds the prompt's nonce`, async () => {
     const t = await openShell({ shell: kind })
     const trace = path.join(t.dir, "x.trace")
@@ -1057,7 +1099,10 @@ for (const kind of ["bash", "sh"] as const) {
 
   test(`${kind}: the prompt's nonce printed in two halves, apart, is still neutralised`, async () => {
     const t = await openShell({ shell: kind })
-    const halves = 'q=$__oc_q; printf %s "${q%?????????}"; sleep 0.1; printf \'%s\\n\' "${q#"${q%?????????}"}"'
+    // The pause between the halves runs in the shell, with no program to start: shorter than the guard's hold however
+    // busy the machine, and still two reads.
+    const pause = "i=0; while [ $i -lt 3000 ]; do i=$((i+1)); done"
+    const halves = `q=$__oc_q; printf %s "\${q%?????????}"; ${pause}; printf '%s\\n' "\${q#"\${q%?????????}"}"`
     const reply = await t.shell.run(halves, 5000)
     expect(reply).toMatchObject({ status: "idle", exit: 0 })
     expect(reply.output).toEndWith("\n[nonce]\n")

@@ -369,6 +369,11 @@ a harness they use doesn't. Its lint warns about each allowed server.
 - **Claude Code still loads** managed settings (an administrator's), `~/.claude.json` and its built-in mods, so what
   they turn on applies to your employees' sessions too.
 - **Allowed MCP servers** run as you, outside the fence ([MCP servers](#mcp-servers)).
+- **What your employee leaves in their shell.** OpenCorp tells when a command in your employee's shell ends, and
+  when its prompt is back, from marks the shell prints with a secret each time. A program can't fake them, but shell
+  code a command leaves behind runs inside the shell and can: a function named `builtin` or `/usr/bin/od`, or a trap.
+  Such code can make OpenCorp take a command as ended while it still runs, or a shell as ready for your employee
+  while it isn't. The sandbox still holds every command to your employee's permission.
 - **Unix sockets.** Claude Code's commands can't see `/tmp`, `/run` or `/dev/shm` (nor `/var/folders` on macOS),
   where the sockets of your tmux, ssh-agent and desktop session live. Whether its Linux sandbox also blocks
   connecting to a socket elsewhere is unchecked.
