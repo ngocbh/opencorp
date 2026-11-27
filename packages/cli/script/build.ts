@@ -145,11 +145,13 @@ for (const { name, os, cpu, target } of builds) {
   const staging = `${dir}.new`
   fs.rmSync(staging, { recursive: true, force: true })
   const result = await Bun.build({
-    // The CODE worker and the run index thread start from their own files beside the main bundle.
+    // The CODE worker, the run index thread and the node views thread start from their own files beside the main
+    // bundle.
     entrypoints: [
       path.join(CLI, "src/main.ts"),
       path.join(CLI, "src/nodes/code/worker.ts"),
       path.join(CLI, "src/runs_indexer.ts"),
+      path.join(CLI, "src/runs_viewer.ts"),
     ],
     plugins: [solidPlugin],
     format: "esm",

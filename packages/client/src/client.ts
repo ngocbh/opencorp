@@ -45,8 +45,10 @@ import type {
   RunDetail,
   RunEvent,
   RunEventPage,
+  RunLoading,
   RunNodeDetail,
   RunNodePage,
+  RunNodeView,
   RunPage,
   RunSummary,
   SendBackRequest,
@@ -71,6 +73,11 @@ export const READ_TIMEOUT_MS = 15_000
 
 /** How long starting a chat waits for the office before failing with `OfficeTimeout`. */
 export const CREATE_TIMEOUT_MS = 30_000
+
+/** Whether a read that replays the log answered that the office is still reading it: ask again after `retry_ms`. */
+export function isLoading(reply: unknown): reply is RunLoading {
+  return typeof reply === "object" && reply !== null && (reply as { loading?: unknown }).loading === true
+}
 
 /**
  * How long adding a connection waits for the office before failing with `OfficeTimeout`: the office checks the
@@ -100,6 +107,9 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
   // A hung read would stall the bootstrap or a session load forever; writes aren't retried,
   // so they wait for the office's answer.
   const get = <T>(path: string) => request<T>(transport, "GET", path, undefined, { timeoutMs, token })
+  // A read that replays the log answers within moments, with its result or RunLoading.
+  const replayed = <T>(path: string, signal: AbortSignal | undefined) =>
+    request<T | RunLoading>(transport, "GET", path, undefined, { timeoutMs, token, signal })
   const post = <T>(path: string, body?: unknown) => call<T>("POST", path, body)
   // Each throws not_found, in the office's words, for an id no request can carry; the methods are async, so that
   // comes back as a rejected promise.
@@ -172,10 +182,22 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
        * and error. Fails as `nodes` does, or with not_found when no attempt starts there.
        */
       node: async (id: string, seq: number) => get<RunNodeDetail>(`${r(id)}/nodes/${seq}`),
+      /**
+       * Node attempt `seq`'s inputs and outputs with their types, read by replaying the log up to it, or `RunLoading`
+       * (see `isLoading`) while the office still reads them, which can take seconds: ask again after its `retry_ms`.
+       * Fails as `node` does, with 409 `too_large` for a log too long to read it from, or 409 `not_supported` when the
+       * office can't read it.
+       */
+      view: async (id: string, seq: number, { signal }: { signal?: AbortSignal } = {}) =>
+        replayed<RunNodeView>(`${r(id)}/nodes/${seq}/view`, signal),
       /** Records after seq `after`; fails as `nodes` does. */
       events: async (id: string, after?: number) => get<RunEventPage>(`${r(id)}/events${query({ after })}`),
-      /** One record by seq, evidence included; fails as `nodes` does. */
-      event: async (id: string, seq: number) => get<RunEvent>(`${r(id)}/events/${seq}`),
+      /**
+       * One record by seq, evidence included, a derived commit with the value it accepted, or `RunLoading` (see
+       * `isLoading`) while the office rebuilds it; fails as `nodes` does.
+       */
+      event: async (id: string, seq: number, { signal }: { signal?: AbortSignal } = {}) =>
+        replayed<RunEvent>(`${r(id)}/events/${seq}`, signal),
       /**
        * The model calls agent node `node` made, oldest first; fails as `nodes` does, or with 409 `too_large` for a log
        * too long to read them from.
@@ -183,11 +205,15 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       calls: async (id: string, node: string) => get<RunCallList>(`${r(id)}/calls${query({ node })}`),
       /**
        * Model call `n` of agent node `node` (the `n` of any of its attempts), rebuilt from the log: its request,
-       * attempts, reply and tool results. Fails as `calls` does, or with 409 `not_supported` when the office can't
-       * rebuild it. The node id's segments go as path segments, so one no path can carry is not_found.
+       * attempts, reply and tool results; `RunLoading` (see `isLoading`) while the office still rebuilds it. Fails as
+       * `calls` does, or with 409 `not_supported` when the office can't rebuild it. The node id's segments go as path
+       * segments, so one no path can carry is not_found.
        */
-      call: async (id: string, node: string, n: number) =>
-        get<RunCall>(`${r(id)}/calls/${node.split("/").map((s) => part(s, `no model call ${n} of ${node}`)).join("/")}/${n}`),
+      call: async (id: string, node: string, n: number, { signal }: { signal?: AbortSignal } = {}) =>
+        replayed<RunCall>(
+          `${r(id)}/calls/${node.split("/").map((s) => part(s, `no model call ${n} of ${node}`)).join("/")}/${n}`,
+          signal,
+        ),
       /**
        * Where the log downloads from, as stored, for a link (HQ only: the browser's cookie authorizes it). Unguarded:
        * it sends nothing, and HQ shows the link only once `get` found the run.

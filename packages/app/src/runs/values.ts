@@ -1,5 +1,5 @@
-// What node detail says of a node: a value's preview in its row and whether it opens, how long the node took, and
-// which work section its kind shows.
+// What node detail says of a node: a value's preview in its row and whether it opens, which outputs show while its view
+// is read, how long the node took, and which work section its kind shows.
 import type { RunNode, RunNodeValue } from "@opencorp/protocol"
 
 /** A preview shows at most this many characters of a string, or of a record's keys. */
@@ -18,11 +18,11 @@ const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`
 
 /**
  * A value in one short line: a string quoted, its first line cut to PREVIEW_CHARS; a list by its length, in messages
- * when it holds messages; a record by its keys; anything else as JSON. A value that isn't here says why.
+ * when it holds messages; a record by its keys; anything else as JSON. A value that isn't here says why, in the
+ * office's words, after its size when it is too large to show.
  */
 export function preview(v: RunNodeValue): string {
-  if (v.missing === "too_large") return `${((v.size ?? 0) / 2 ** 20).toFixed(1)} MB: too large to show; download the log`
-  if (v.missing === "not_rebuilt") return "this office couldn't rebuild it from the log"
+  if (v.missing) return v.size == null ? v.missing : `${(v.size / 2 ** 20).toFixed(1)} MB: ${v.missing}`
   const value = v.value ?? null
   if (typeof value === "string") {
     const first = value.split("\n", 1)[0]!
@@ -49,6 +49,20 @@ export function shownWhole(v: RunNodeValue): boolean {
   if (Array.isArray(value)) return value.length === 0
   if (isRecord(value)) return Object.keys(value).length === 0
   return true
+}
+
+/** What a value still being read says, in place of why it isn't here. */
+export const READING = "reading the log…"
+
+/** The outputs a node shows: its view's once read (`view`), with their types and derived values; until then its
+ *  detail's (`detail`), each that isn't here saying it's being read while `reading`. */
+export function nodeOutputs(
+  detail: RunNodeValue[] | undefined,
+  view: RunNodeValue[] | undefined,
+  reading: boolean,
+): RunNodeValue[] {
+  if (view) return view
+  return (detail ?? []).map((v) => (reading && v.missing ? { ...v, missing: READING, size: null } : v))
 }
 
 /** A span of `ms` milliseconds, as the Run Logs list says how long a run took: "450ms", "4.3s", "3m 5s", "2h 10m". */

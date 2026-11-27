@@ -89,7 +89,7 @@ export function reexec(argv: [string, ...string[]], env: Record<string, string>,
 }
 
 /** The file a `node:worker_threads` worker named `name` starts from, in both layouts. */
-export function threadEntry(name: "runs_indexer"): URL {
+export function threadEntry(name: "runs_indexer" | "runs_viewer"): URL {
   // A compiled binary's bundle has `import.meta.url` `file:///$bunfs/root/<outfile>`, with no `.js`,
   // so "not `.ts`" is the compiled check.
   return import.meta.url.endsWith(".ts")

@@ -22,8 +22,9 @@ const NAMES = [
   "CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "SetModeRequest", "SetDeliveryRequest",
   "DeliveryReply", "RepoIssue", "CompanyView", "CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile", "RunSummary",
   "RunPage", "RunUsage", "RunDetail", "RunNode", "RunDivider", "RunNodePage", "RunNodeValue", "RunNodeFailure",
-  "RunNodeDetail", "RunEvent", "RunEventPage", "RunLiveRecord", "RunLiveCall", "RunLiveStart", "RunLiveChunk",
-  "RunLiveEnd", "RunUpdated", "RunCallEntry",
+  "RunNodeDetail", "RunLoading", "RunNodeView", "RunEvent", "RunEventPage", "RunLiveRecord", "RunLiveCall",
+  "RunLiveStart", "RunLiveChunk",
+  "RunLiveEnd", "RunUpdated", "RunCallToolCall", "RunCallEntry",
   "RunCallList", "RunCallUsage", "RunCallAttempt", "RunCallPart", "RunCallMessage", "RunCallTool", "RunCallRequest",
   "RunCallToolResult", "RunCall", "PersonCost",
   "CostReport", "ApiVersion", "AppBuild", "Health", "HqTcp", "HqStatus",
@@ -132,7 +133,8 @@ const BODIES = [
   "SetPasswordRequest", "Connection", "ConnectionList", "ModelOption", "ModelList", "SetModelRequest",
   "SetModeRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin",
   "CompanyView", "CostReport", "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
-  "HqLoginRequest", "CompanyTree", "CompanyFile", "RunPage", "RunDetail", "RunNodePage", "RunNodeDetail", "RunEventPage",
+  "HqLoginRequest", "CompanyTree", "CompanyFile", "RunPage", "RunDetail", "RunNodePage", "RunNodeDetail", "RunNodeView",
+  "RunLoading", "RunEventPage",
   "RunEvent", "RunCallList", "RunCall", "OfficeInfo", "RuleList", "RemoveRuleRequest", "InstrumentKeysRequest",
   "InstrumentSizeRequest", "InstrumentScreen", "MessagePage", "SetDeliveryRequest", "DeliveryReply",
 ]
@@ -462,7 +464,7 @@ test("a commit names its author without an email", () => {
 
 const RUNS = [
   "RunSummary", "RunPage", "RunUsage", "RunDetail", "RunNode", "RunDivider", "RunNodePage", "RunNodeValue",
-  "RunNodeFailure", "RunNodeDetail", "RunEvent", "RunEventPage", "RunUpdated",
+  "RunNodeFailure", "RunNodeDetail", "RunNodeView", "RunEvent", "RunEventPage", "RunUpdated",
 ]
 const RUN_STATUSES = ["running", "waiting", "idle", "finished", "failed", "interrupted"]
 

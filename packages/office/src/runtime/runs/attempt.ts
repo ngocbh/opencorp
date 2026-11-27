@@ -1,26 +1,16 @@
 /**
- * One node attempt as Run Logs show it: its row of the node page, and its detail read from its log. The detail follows
- * the record that ended it: a success names its pool commits by seq, and a derived commit names, by `from`, the
- * commits its binding read; derived values are rebuilt by one replay of the log (see `RunLogReader.readEvents`).
+ * One node attempt as Run Logs show it: its row of the node page, and its detail read from its own records, so it
+ * answers at once however long the log: its times, a flow call's or a loop's outcome, its failure, and the outputs
+ * its success's commits hold. Its inputs, and a value derived from others, need a replay: that is its view (`view.ts`).
  */
 import { staticPathOf } from "@ngocbh/yian/run"
 import type { RunEvent, RunNode, RunNodeDetail, RunNodeFailure, RunNodeValue } from "@opencorp/protocol"
 import { cutReason } from "../store/store.ts"
 import { kindOf } from "./nodes.ts"
-import {
-  type Attempt,
-  ERROR_CHARS,
-  EVENT_BYTES,
-  fitValues,
-  type FoldOptions,
-  type Index,
-  readEvent,
-  recordTime,
-  type RunLogReader,
-} from "./reader.ts"
+import { type Attempt, ERROR_CHARS, fitValues, type Index, readEvent, recordTime, TOO_LARGE } from "./reader.ts"
 
-/** The field an agent's new messages are read under, after its id: `${<node>.new_messages}`. */
-const NEW_MESSAGES = "new_messages"
+/** What a value derived from others (a commit that names only the commits it read) says it is missing for. */
+export const DERIVED = "derived from other values"
 
 /** Attempt `a` as a node page lists it, with its node's kind from `kinds`, its error cut to ERROR_CHARS. */
 export function runNode(a: Attempt, kinds: ReadonlyMap<string, string> | null): RunNode {
@@ -36,10 +26,6 @@ export function runNode(a: Attempt, kinds: ReadonlyMap<string, string> | null): 
   }
 }
 
-/** Whether `nodeId` is a flow's START or END, whose record is shown a field at a time. */
-const isBoundary = (nodeId: string) => /(^|\/)__(start|end)__$/.test(nodeId)
-const isStart = (nodeId: string) => /(^|\/)__start__$/.test(nodeId)
-
 type Payload = Record<string, unknown>
 const asRecord = (v: unknown): Payload | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Payload) : null)
 const text = (v: unknown): string | null => (typeof v === "string" ? v : null)
@@ -49,44 +35,14 @@ function under(pointers: readonly string[] | undefined, prefix: string): string[
   return (pointers ?? []).flatMap((p) => (p === prefix || p.startsWith(`${prefix}/`) ? [p.slice(prefix.length)] : []))
 }
 
-/** `key` as a JSON pointer segment. */
-const segment = (key: string) => `/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`
-
-/** The value of commit `seq` as its record `event` shows it, named `name`: too large, not rebuilt (a derived commit
- *  shown as written), or its kind and value. */
+/** The value of commit `seq` as its record `event` shows it, named `name`: too large, derived from others, or its kind
+ *  and value. */
 function valueOf(name: string, seq: number, event: RunEvent | null): RunNodeValue {
   const none = { name, seq, type: null, value: null, size: null, cut: [] }
-  if (event?.size != null) return { ...none, missing: "too_large", size: event.size }
+  if (event?.size != null) return { ...none, missing: TOO_LARGE, size: event.size }
   const payload = event?.payload
-  if (!payload || !Object.hasOwn(payload, "kind")) return { ...none, missing: "not_rebuilt" }
+  if (!payload || !Object.hasOwn(payload, "kind")) return { ...none, missing: DERIVED }
   return { ...none, type: text(payload.kind), value: payload.value ?? null, missing: null, cut: under(event.cut, "/value") }
-}
-
-/** A START's or END's record, a row per field; any other value as it is. */
-function fields(row: RunNodeValue): RunNodeValue[] {
-  const record = row.type === "object" ? asRecord(row.value) : null
-  if (record === null) return [row]
-  return Object.entries(record).map(([key, value]) => ({
-    ...row,
-    name: key,
-    type: null,
-    value,
-    cut: under(row.cut, segment(key)),
-  }))
-}
-
-/**
- * Pool name `key` as node `nodeId`'s binding reads it, in its flow: `input` for the flow's START, `<node>.output`,
- * `<node>.new_messages`, `system.<name>`; a name from another flow as it is.
- */
-export function inputName(key: string, nodeId: string): string {
-  if (key.startsWith("system.")) return key
-  const scope = nodeId.slice(0, nodeId.lastIndexOf("/") + 1)
-  if (!key.startsWith(scope)) return key
-  const rest = key.slice(scope.length)
-  if (rest.includes("/")) return key
-  if (rest === "__start__") return "input"
-  return rest.endsWith(`.${NEW_MESSAGES}`) ? rest : `${rest}.output`
 }
 
 /** The failure `end` records for attempt `a`: its own (or a route's terminal one), else, when the record is too large
@@ -106,9 +62,6 @@ function failureOf(a: Attempt, end: RunEvent | null): RunNodeFailure | null {
   if (a.error === null) return null
   return { message: cutReason(a.error, ERROR_CHARS), traceback: null, cut: [], size: end?.size ?? null }
 }
-
-/** The most input rows one detail shows. */
-export const INPUT_ROWS = 100
 
 /** The index of the first attempt in `index.nodes` that starts at or after seq `seq`. */
 function from(index: Index, seq: number): number {
@@ -135,7 +88,7 @@ const isInside = (id: string, spawner: string) =>
  * attempt: the attempt that returns its value (its END, or a loop's last turn's driver, the latest that did more than
  * expand), and its outcome: open while a node in it is, succeeded once that attempt did, failed once a node in it did.
  */
-function cameTo(index: Index, a: Attempt): { ender: Attempt | null; outcome: RunNodeDetail["outcome"] } {
+export function cameTo(index: Index, a: Attempt): { ender: Attempt | null; outcome: RunNodeDetail["outcome"] } {
   const end = `${a.nodeId}/__end__`
   let ender: Attempt | null = null
   let open = false
@@ -152,23 +105,37 @@ function cameTo(index: Index, a: Attempt): { ender: Attempt | null; outcome: Run
   return { ender: ender && { ...ender }, outcome }
 }
 
-/** What reading `event` adds to a detail, for its budget. */
-const weight = (event: RunEvent | null) => (event === null ? 0 : Buffer.byteLength(JSON.stringify(event)))
+/** Which start of its node attempt `a` is, from 1, as yian's `nodeView` counts them; null when the index no longer
+ *  holds every attempt before it. */
+export function attemptNumber(index: Index, a: Attempt): number | null {
+  if (index.dropped) return null
+  let n = 0
+  for (let i = 0; i < index.nodes.length && index.nodes[i]!.seq <= a.seq; i++) {
+    if (index.nodes[i]!.nodeId === a.nodeId) n += 1
+  }
+  return n
+}
+
+/** A copy of node `nodeId`'s latest attempt the index holds; null when it holds none. */
+export function latestAttempt(index: Index, nodeId: string): Attempt | null {
+  for (let i = index.nodes.length - 1; i >= 0; i--) {
+    if (index.nodes[i]!.nodeId === nodeId) return { ...index.nodes[i]! }
+  }
+  return null
+}
 
 /**
- * Attempt `a`'s detail from the log `path` that `index` indexes: its row, model and record times; for a success, the
- * values its commits hold (rebuilt under `fold`) and, for a derived node other than a START, the values its binding
- * read, at most INPUT_ROWS of them and no more than one detail holds; for a flow call or a loop, what it came to and
- * the values its END (its last turn) returned; its route's handle whole; its failure. The values are fitted as one
- * opened record is.
+ * Attempt `a`'s detail from the log `path` that `index` indexes, read from its records alone: its row, model and record
+ * times; for a flow call or a loop, what it came to; the outputs its success (for a flow call or a loop, what returns
+ * its value) commits hold, a derived one as such, fitted as one opened record is; its route's handle whole; its
+ * failure.
  */
-export async function nodeDetail(
-  reader: RunLogReader,
+export function nodeDetail(
   path: string,
   index: Index,
   a: Attempt,
-  { fold, kinds }: { fold: FoldOptions | undefined; kinds: ReadonlyMap<string, string> | null },
-): Promise<RunNodeDetail> {
+  kinds: ReadonlyMap<string, string> | null,
+): RunNodeDetail {
   const node = runNode(a, kinds)
   const end = a.endSeq === null ? null : readEvent(path, index, a.endSeq)
   const handle = text(end?.payload?.handle)
@@ -177,36 +144,13 @@ export async function nodeDetail(
   // The success whose values show: the node's own, or what returns a flow call's or a loop's.
   const success = a.status === "succeeded" ? end
     : ender?.status === "succeeded" && ender.endSeq !== null ? readEvent(path, index, ender.endSeq) : null
-  let outputs: RunNodeValue[] = []
-  let inputs: RunNodeValue[] = []
-  let more = 0
+  const outputs: RunNodeValue[] = []
   const commit = success?.kind === "node_succeeded" ? success.payload?.commit : undefined
   if (typeof commit === "number") {
-    const messages = typeof success!.payload?.messages === "number" ? (success!.payload.messages as number) : null
-    const own = readEvent(path, index, commit)
-    const messageRead = messages === null ? [] : [readEvent(path, index, messages)]
-    // A derived commit names what its binding read, each by its commit's seq: read in name order until the rows or
-    // the bytes one detail shows.
-    const named = a.status === "succeeded" && !isStart(a.nodeId) ? Object.entries(asRecord(own?.payload?.from) ?? {}) : []
-    const sources = named.filter((entry): entry is [string, number] => typeof entry[1] === "number")
-    let used = weight(own) + weight(messageRead[0] ?? null)
-    const read: [string, number, RunEvent | null][] = []
-    for (const [key, seq] of sources) {
-      if (read.length >= INPUT_ROWS || used > EVENT_BYTES) break
-      const event = readEvent(path, index, seq)
-      used += weight(event)
-      read.push([key, seq, event])
-    }
-    more = sources.length - read.length
-    const seqs = [commit, ...(messages === null ? [] : [messages]), ...read.map(([, seq]) => seq)]
-    const events = await reader.rebuilt(path, index, seqs, [own, ...messageRead, ...read.map(([, , e]) => e)], { fold })
-    const value = valueOf("output", commit, events[0]!)
-    outputs = isBoundary(a.nodeId) || ender !== null ? fields(value) : [value]
-    if (messages !== null) outputs.push(valueOf(NEW_MESSAGES, messages, events[1]!))
-    const first = seqs.length - read.length
-    inputs = read.map(([key, seq], i) => valueOf(inputName(key, a.nodeId), seq, events[first + i]!))
+    outputs.push(valueOf("output", commit, readEvent(path, index, commit)))
+    const messages = success!.payload?.messages
+    if (typeof messages === "number") outputs.push(valueOf("new_messages", messages, readEvent(path, index, messages)))
   }
-  const fitted = fitValues([...outputs, ...inputs])
   // An expansion ends its attempt at once: a flow call or a loop ends when what returns its value does.
   const endedSeq = a.status === "expanded" ? (ender?.endSeq ?? null) : a.endSeq
   return {
@@ -215,9 +159,7 @@ export async function nodeDetail(
     started_at: recordTime(path, index, a.seq),
     ended_at: endedSeq === null ? null : recordTime(path, index, endedSeq),
     outcome,
-    outputs: fitted.slice(0, outputs.length),
-    inputs: fitted.slice(outputs.length),
-    inputs_more: more,
+    outputs: fitValues(outputs),
     failure: failureOf(a, end),
   }
 }

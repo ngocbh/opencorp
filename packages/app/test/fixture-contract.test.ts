@@ -21,7 +21,9 @@ import {
   Question,
   RunCall,
   RunCallList,
+  RunLoading,
   RunNodeDetail,
+  RunNodeView,
   RunPage,
   Session,
 } from "@opencorp/protocol"
@@ -159,10 +161,21 @@ async function script(hq: Browser, code: string): Promise<Seen[]> {
   await step("node detail", hq.get(`/api/runs/${run}/nodes/${replyNode?.seq ?? 1}`), RunNodeDetail, (b) => b.outputs[0])
   await step("node detail of no attempt", hq.get(`/api/runs/${run}/nodes/999999`))
   await step("node detail with a bad seq", hq.get(`/api/runs/${run}/nodes/x`))
+  // A read that replays the log answers 202 RunLoading while the office reads it: asked again until it is read.
+  const replayed = async (target: string) => {
+    for (let r = await hq.get(target); ; r = await hq.get(target)) {
+      if (r.status !== 202) return r
+      expect(RunLoading.safeParse(JSON.parse(r.text)).success).toBe(true)
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  }
+  await step("node view", replayed(`/api/runs/${run}/nodes/${replyNode?.seq ?? 1}/view`), RunNodeView,
+    (b) => b.inputs?.[0])
+  await step("node view of no attempt", hq.get(`/api/runs/${run}/nodes/999999/view`))
   const list = await step("model calls", hq.get(`/api/runs/${run}/calls?${new URLSearchParams({ node: reply })}`),
     readableIds(RunCallList), (b) => b.calls[0])
   const n = (JSON.parse(list.text).calls?.[0]?.n as number | undefined) ?? 1
-  await step("model call", hq.get(`/api/runs/${run}/calls/${reply.split("/").map(encodeURIComponent).join("/")}/${n}`),
+  await step("model call", replayed(`/api/runs/${run}/calls/${reply.split("/").map(encodeURIComponent).join("/")}/${n}`),
     RunCall)
   await step("model calls without a node", hq.get(`/api/runs/${run}/calls`))
   await step("model call of no node", hq.get(`/api/runs/${run}/calls/nope/1`))
@@ -198,6 +211,8 @@ const EXPECTED: [string, number, string | null][] = [
   ["node detail", 200, null],
   ["node detail of no attempt", 404, "not_found"],
   ["node detail with a bad seq", 422, "invalid_body"],
+  ["node view", 200, null],
+  ["node view of no attempt", 404, "not_found"],
   ["model calls", 200, null],
   ["model call", 200, null],
   ["model calls without a node", 422, "invalid_body"],
@@ -313,7 +328,7 @@ test("the fixture answers the hq script as the real hq does", async () => {
   expect(want.filter((s) => s.parses === false).map((s) => s.step)).toEqual([])
   // The chat's session and run are there to compare with.
   expect(want.filter((s) => s.item).map((s) => s.step)).toEqual(
-    expect.arrayContaining(["sessions", "runs", "node detail", "model calls"]))
+    expect.arrayContaining(["sessions", "runs", "node detail", "node view", "model calls"]))
   // Items are compared where both sides have one; the other side's list is then checked by its schema only.
   want.forEach((w, i) => {
     const g = got[i]

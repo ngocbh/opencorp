@@ -322,16 +322,19 @@ test("the CODE worker shim only imports the code-worker entry of yian", () => {
   expect(fs.realpathSync(resolved)).toBe(path.join(CHECKOUT, "packages/yian/src/nodes/code/worker.ts"))
 })
 
-test("the runs indexer shim only imports the run index thread of the office", () => {
-  const shim = path.join(CHECKOUT, "packages/cli/src/runs_indexer.ts")
-  expect(fs.existsSync(shim)).toBe(true)
-  const transpiler = new Bun.Transpiler({ loader: "ts" })
-  expect(transpiler.scanImports(fs.readFileSync(shim, "utf8")).map((entry) => entry.path)).toEqual([
-    "@opencorp/office/runtime/runs/index_thread",
-  ])
-  const resolved = Bun.resolveSync("@opencorp/office/runtime/runs/index_thread", path.join(CHECKOUT, "packages/cli"))
-  expect(fs.realpathSync(resolved)).toBe(path.join(CHECKOUT, "packages/office/src/runtime/runs/index_thread.ts"))
-})
+test.each([["runs_indexer", "index_thread"], ["runs_viewer", "view_thread"]])(
+  "the %s shim only imports the office's %s",
+  (name, thread) => {
+    const shim = path.join(CHECKOUT, `packages/cli/src/${name}.ts`)
+    expect(fs.existsSync(shim)).toBe(true)
+    const transpiler = new Bun.Transpiler({ loader: "ts" })
+    expect(transpiler.scanImports(fs.readFileSync(shim, "utf8")).map((entry) => entry.path)).toEqual([
+      `@opencorp/office/runtime/runs/${thread}`,
+    ])
+    const resolved = Bun.resolveSync(`@opencorp/office/runtime/runs/${thread}`, path.join(CHECKOUT, "packages/cli"))
+    expect(fs.realpathSync(resolved)).toBe(path.join(CHECKOUT, `packages/office/src/runtime/runs/${thread}.ts`))
+  },
+)
 
 test(
   "opencorp __worker and __fs-helper reach the office's modes",
@@ -1126,6 +1129,58 @@ describe("the built binary", () => {
     // Once the leader is reaped the cleanup can't match its start, so anything left in its group goes now.
     killGroup(pid)
   }, 150_000)
+
+  test("the binary reads a node's view on its viewer thread, from the file beside its bundle", async () => {
+    const office = await startOffice({ opencorp: bin })
+    cleanups.push(() => office.stop())
+    /** `method target` on the office's socket, with `body` as JSON: its status and parsed body. */
+    const call = (method: string, target: string, body?: unknown) =>
+      new Promise<{ status: number; body: any }>((resolve, reject) => {
+        const headers: Record<string, string> = body === undefined ? {} : { "content-type": "application/json" }
+        const req = http.request({ socketPath: office.socket, path: target, method, headers, timeout: 30_000 }, (res) => {
+          let text = ""
+          res.setEncoding("utf8").on("data", (chunk: string) => (text += chunk))
+          res.on("end", () => resolve({ status: res.statusCode!, body: text ? JSON.parse(text) : null }))
+        })
+        req.on("timeout", () => req.destroy(new Error(`${method} ${target} timed out`)))
+        req.on("error", reject)
+        req.end(body === undefined ? undefined : JSON.stringify(body))
+      })
+    /** Polls `done` every 200 ms; fails after 60 s. */
+    const until = async (what: string, done: () => Promise<boolean>) => {
+      const deadline = Date.now() + 60_000
+      while (!(await done())) {
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
+        await new Promise((resolve) => setTimeout(resolve, 200))
+      }
+    }
+    // One chat turn, so the office has a run with an agent node.
+    office.llm.script({ match: "Compiled view?", content: "Compiled view." })
+    const cwd = path.join(office.root, "proj")
+    fs.mkdirSync(cwd)
+    const { body: started } = await call("POST", "/sessions", { person: "minh", cwd })
+    const idle = async () => (await call("GET", `/sessions/${started.id}`)).body.status === "idle"
+    await until("the chat to start", idle)
+    const asked = office.llm.requests().length
+    expect((await call("POST", `/sessions/${started.id}/prompt`, { text: "Compiled view?" })).status).toBeLessThan(300)
+    await until("the reply", async () => office.llm.requests().length > asked && (await idle()))
+    let run = ""
+    await until("the run index to list the chat", async () => {
+      run = (await call("GET", "/runs")).body.runs[0]?.run_id ?? ""
+      return run !== ""
+    })
+    const nodes = (await call("GET", `/runs/${run}/nodes`)).body.nodes as { seq: number; node_id: string }[]
+    const reply = nodes.find((n) => n.node_id.endsWith("/reply"))!
+    // The view replays the log on the viewer thread: 202 until it is read.
+    let view = await call("GET", `/runs/${run}/nodes/${reply.seq}/view`)
+    await until("the view", async () => {
+      if (view.status !== 202) return true
+      view = await call("GET", `/runs/${run}/nodes/${reply.seq}/view`)
+      return false
+    })
+    expect([view.status, view.body.kind, Array.isArray(view.body.inputs)]).toEqual([200, "agent", true])
+    expect(JSON.stringify(view.body.outputs)).toContain("Compiled view.")
+  }, 180_000)
 
   test("the binary holds no Babel: its TUI's JSX was compiled when it was built", () => {
     const bytes = fs.readFileSync(bin)

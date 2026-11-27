@@ -222,6 +222,27 @@ nodes:
     output: !str
 output: \${reply.output}
 `
+// An agent `reply` that answers `message` with the `notes` memory in its prompt; the run's `extra` is optional, with no
+// default.
+export const MEMORY_FLOW = `id: remember
+name: remember
+input:
+  message: !str
+  notes: !FileMemory
+  extra: !Optional(str)
+nodes:
+  reply:
+    kind: agent
+    input:
+      message: \${input.message}
+      notes: \${input.notes}
+    system_prompt: |-
+      Help.
+      \${notes}
+    prompt: \${message}
+    output: !str
+output: \${reply.output}
+`
 
 /**
  * Runs `flow` to its end in this process, with no model unless `fake` serves it: writes it as `flow.yaml` and each of

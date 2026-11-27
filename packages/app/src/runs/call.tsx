@@ -1,6 +1,7 @@
-// An agent node's model calls in its detail, and one call rebuilt by the office from the run log: the request it sent
-// (system prompt, messages, tools, model and settings), the reply (thought, text), each tool call with its arguments,
-// the gate's notes and its result, and its attempts, usage and finish. Tool rows and thought blocks follow upstream's
+// An agent node's model calls in its detail, each with its tool calls nested under it, and one call rebuilt by the
+// office from the run log: the request it sent (system prompt, messages, tools, model and settings), the reply
+// (thought, text), each tool call with its arguments, the gate's notes and its result, and its attempts, usage and
+// finish. A tool call's row opens the call at that tool's result. Tool rows and thought blocks follow upstream's
 // session UI (its BasicTool and ThoughtRow), and a long text folds to its head until "Show all", as its tall diffs do.
 import type {
   RunCall,
@@ -29,8 +30,10 @@ import {
 } from "solid-js"
 import { useOffice } from "../data/office"
 import {
-  argsLine, callParts, cutAt, finishText, foldedHead, gateLines, hiddenReasoning, pointer, seconds, toolState, usageText,
+  argsLine, callParts, cutAt, finishText, foldedHead, gateLines, hiddenReasoning, outcomeText, pointer, seconds, toolLine,
+  toolState, usageText, wentWrong,
 } from "./calls"
+import { untilLoaded } from "./loaded"
 import { pretty, ReadError } from "./node"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
@@ -44,8 +47,9 @@ const RECENT = 8
 /** A time with seconds, in the browser's locale. */
 const clock = (t: string) => new Date(t).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })
 
-/** A model call opened from its node's list: the entry that opens it (by its `n`), and its place in the list. */
-export type OpenedCall = { entry: RunCallEntry; ordinal: number }
+/** A model call opened from its node's list: the entry that opens it (by its `n`), its place in the list, and the tool
+ *  call (by its id) whose result it opens at, when a tool's row opened it. */
+export type OpenedCall = { entry: RunCallEntry; ordinal: number; tool?: string }
 
 /**
  * The node's model calls, oldest first, numbered from 1, each a button that opens it; re-read when the node moves on.
@@ -100,6 +104,31 @@ export function CallList(props: {
                         )}
                       </For>
                     </button>
+                    <Show when={call.tool_calls?.length}>
+                      <ul aria-label={`Tool calls of call ${i() + 1}`} class="space-y-0.5 pl-4">
+                        <For each={call.tool_calls}>
+                          {(tool) => (
+                            <li>
+                              <button
+                                type="button"
+                                aria-label={toolLine(tool)}
+                                title="Open the call at this tool's result"
+                                class={`flex w-full min-w-0 items-baseline gap-1 rounded px-1 py-0.5 text-left text-xs hover:bg-neutral-100 dark:hover:bg-neutral-900 ${RING}`}
+                                onClick={(e) =>
+                                  props.onOpen({ entry: call, ordinal: i() + 1, tool: tool.call_id }, e.currentTarget)}
+                              >
+                                <span aria-hidden="true" class={MUTED}>↳</span>
+                                <span class="truncate font-mono">{tool.name}</span>
+                                <span aria-hidden="true">·</span>
+                                <span class={`shrink-0 ${wentWrong(tool) ? "text-red-700 dark:text-red-400" : MUTED}`}>
+                                  {outcomeText(tool)}
+                                </span>
+                              </button>
+                            </li>
+                          )}
+                        </For>
+                      </ul>
+                    </Show>
                   </li>
                 )}
               </For>
@@ -111,7 +140,8 @@ export function CallList(props: {
   )
 }
 
-/** One model call, read from the office by its `n`, headed by its place in the node's list, with a way back. */
+/** One model call, read from the office by its `n`, headed by its place in the node's list, with a way back; opened at
+ *  a tool call, that tool's result shows open and takes focus once the call is read. */
 export function CallView(props: { runId: string; opened: OpenedCall; onBack: () => void }) {
   const entry = () => props.opened.entry
   const office = useOffice()
@@ -119,14 +149,17 @@ export function CallView(props: { runId: string; opened: OpenedCall; onBack: () 
   let heading!: HTMLHeadingElement
   const [call, setCall] = createSignal<RunCall>()
   const [error, setError] = createSignal<unknown>()
-  let reading = 0
-  onCleanup(() => reading++)
+  // Asked for again while the office still rebuilds it; it stops asking once it closes or is read again.
+  let reading: AbortController | undefined
+  onCleanup(() => reading?.abort())
   function load() {
-    const mine = ++reading
+    reading?.abort()
+    const mine = (reading = new AbortController())
     setError(undefined)
-    office.client.runs.call(props.runId, entry().node_id, entry().n).then(
-      (r) => mine === reading && setCall(r),
-      (e) => mine === reading && setError(e),
+    const read = () => office.client.runs.call(props.runId, entry().node_id, entry().n, { signal: mine.signal })
+    untilLoaded(read, mine.signal).then(
+      (r) => reading === mine && setCall(r),
+      (e) => reading === mine && setError(e),
     )
   }
   onMount(() => {
@@ -153,7 +186,7 @@ export function CallView(props: { runId: string; opened: OpenedCall; onBack: () 
       <Show when={!call() && !error()}>
         <p class={MUTED}>rebuilding the call from the log…</p>
       </Show>
-      <Show when={call()}>{(c) => <CallBody call={c()} model={entry().model} />}</Show>
+      <Show when={call()}>{(c) => <CallBody call={c()} model={entry().model} tool={props.opened.tool} />}</Show>
     </section>
   )
 }
@@ -171,8 +204,8 @@ function Section(props: { title: string; children: JSX.Element }) {
   )
 }
 
-/** The call's facts, then its request, reply, tool calls and attempts. */
-function CallBody(props: { call: RunCall; model: string }) {
+/** The call's facts, then its request, reply, tool calls (tool call `tool`'s open) and attempts. */
+function CallBody(props: { call: RunCall; model: string; tool?: string }) {
   const request = () => props.call.request
   const replyParts = createMemo(() =>
     (props.call.reply?.parts ?? []).map((part, j) => ({ part, j })).filter(({ part }) => part.type !== "tool_call"),
@@ -234,7 +267,14 @@ function CallBody(props: { call: RunCall; model: string }) {
         <Section title="Tool calls">
           <div class="space-y-1.5">
             <For each={props.call.tool_results}>
-              {(result, k) => <ToolCard result={result} call={props.call} at={pointer("tool_results", k())} />}
+              {(result, k) => (
+                <ToolCard
+                  result={result}
+                  call={props.call}
+                  at={pointer("tool_results", k())}
+                  opened={result.call_id === props.tool}
+                />
+              )}
             </For>
           </div>
         </Section>
@@ -419,16 +459,25 @@ function Thought(props: { text: string; cut: boolean }) {
 
 /**
  * One tool call of the reply, as upstream's `BasicTool` shows a tool: a row with its name, its arguments in a line and
- * its state, which opens on its arguments and result. The gate's notes show under the row, open or not.
+ * its state, which opens on its arguments and result. The gate's notes show under the row, open or not. `opened`, the
+ * tool its node's list opened the call at, starts open, its result in view and its row in focus.
  */
-function ToolCard(props: { result: RunCallToolResult; call: RunCall; at: string }) {
-  const [open, setOpen] = createSignal(false)
+function ToolCard(props: { result: RunCallToolResult; call: RunCall; at: string; opened?: boolean }) {
+  const [open, setOpen] = createSignal(!!props.opened)
   const id = createUniqueId()
   const state = () => toolState(props.result)
-  const bad = () => state() !== "ran" && state() !== "waiting"
+  const bad = () => !["ok", "held", "pending"].includes(state())
+  let row!: HTMLButtonElement
+  let result: HTMLDivElement | undefined
+  onMount(() => {
+    if (!props.opened) return
+    row.focus({ preventScroll: true })
+    ;(result ?? row).scrollIntoView({ block: "nearest" })
+  })
   return (
     <div class={BOX}>
       <button
+        ref={row}
         type="button"
         aria-expanded={open()}
         aria-controls={id}
@@ -450,7 +499,7 @@ function ToolCard(props: { result: RunCallToolResult; call: RunCall; at: string 
               cut={cutAt(props.call, `${props.at}/arguments`)}
             />
           </div>
-          <div class="space-y-1">
+          <div ref={result} class="space-y-1">
             <p class={`text-xs ${MUTED}`}>
               result
               <Show when={props.result.started_at}>{(t) => <> · started {clock(t())}</>}</Show>

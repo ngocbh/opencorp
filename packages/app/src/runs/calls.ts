@@ -1,6 +1,7 @@
-// What the model call view says of a call: its line in a node's list, a long text's fold, the office's cuts, usage, a
-// thought the provider didn't share, and a tool call's state and the gate's notes on it.
-import type { RunCall, RunCallEntry, RunCallToolResult, RunCallUsage } from "@opencorp/protocol"
+// What the model call view says of a call: its line in a node's list and the rows of its tool calls under it, a long
+// text's fold, the office's cuts, usage, a thought the provider didn't share, and a tool call's state and the gate's
+// notes on it.
+import type { RunCall, RunCallEntry, RunCallToolCall, RunCallToolResult, RunCallUsage } from "@opencorp/protocol"
 
 /** A long text shows its first FOLD_LINES lines, at most FOLD_CHARS characters, until "Show all". */
 export const FOLD_LINES = 12
@@ -91,12 +92,25 @@ export function hiddenReasoning(usage: RunCallUsage | null | undefined): string 
   return `Reasoned privately (${count}): the provider didn't share its reasoning`
 }
 
-/** A tool call's state in a word: how yian closed it (refused, skipped, interrupted…), waiting while it has no result,
- *  else ran or error. */
+/** How yian closed a call it wrote the result of, in words: `timed_out` as "timed out"; another closer as it is. */
+const closedText = (closed: string) => (closed === "timed_out" ? "timed out" : closed)
+
+/** How a listed tool call stands, in words: the closer yian wrote its result with (crashed, refused, skipped…), else
+ *  its outcome (ok, error, held, pending); one a later yian adds as it is. */
+export const outcomeText = (tool: RunCallToolCall) => (tool.closed ? closedText(tool.closed) : tool.outcome)
+
+/** A listed tool call's row as text: "run_command · ok". */
+export const toolLine = (tool: RunCallToolCall) => `${tool.name} · ${outcomeText(tool)}`
+
+/** Whether a listed tool call went wrong: its result is an error, its tool's or one yian wrote in its place. */
+export const wentWrong = (tool: RunCallToolCall) => tool.outcome === "error"
+
+/** A rebuilt tool call's state in the words its listed row uses: how yian closed it, held while the gate holds it,
+ *  pending while it has no result, else ok or error. */
 export function toolState(result: RunCallToolResult): string {
-  if (result.closed) return result.closed
-  if (result.output == null) return "waiting"
-  return result.is_error ? "error" : "ran"
+  if (result.closed) return closedText(result.closed)
+  if (result.output == null) return result.held && !result.release_note ? "held" : "pending"
+  return result.is_error ? "error" : "ok"
 }
 
 /** What the office's gate said of a tool call, a line each: why it let it run, and a hold and how it ended. */

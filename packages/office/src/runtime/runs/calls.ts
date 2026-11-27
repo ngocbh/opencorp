@@ -1,6 +1,6 @@
 /**
- * A run's AGENT model calls for Run Logs, read with yian's reader: `agentCalls` lists them and `agentCall` rebuilds one
- * (its request, attempts, reply and tool results). Yian's view becomes the protocol's shape here: ints as JSON numbers,
+ * A run's AGENT model calls for Run Logs, read with yian's reader: `agentCalls` lists them, each with how its reply's
+ * tool calls stand, and `agentCall` rebuilds one (its request, attempts, reply and tool results). Yian's view becomes the protocol's shape here: ints as JSON numbers,
  * the provider data beside a message left out, a media part named by its type, and each string longer than
  * CALL_TEXT_CHARS cut with "…" and named in `cut`. Nothing is scrubbed: the view holds what the run log records, and
  * yian leaves the key, headers and connection out of the model config.
@@ -27,10 +27,10 @@ export function nodeCalls(log: string, node: string): RunCallEntry[] {
     .map(entryWire)
 }
 
-/** Whether node `node` made a model call one of whose attempts is step `n`: a call's attempts are its last `attempts`
- *  steps up to its `n`, with nothing between them. */
-export function hasCall(log: string, node: string, n: number): boolean {
-  return agentCalls(log).some((call) => call.nodeId === node && n <= call.n && n > call.n - call.attempts)
+/** The listed call of `calls` one of whose attempts is step `n`: a call's attempts are its last `attempts` steps up to
+ *  its `n`, with nothing between them. */
+export function callAt(calls: readonly RunCallEntry[], n: number): RunCallEntry | undefined {
+  return calls.find((call) => n <= call.n && n > call.n - call.attempts)
 }
 
 /** Model call `n` (any of its attempts) of node `node` in the log at `log`, rebuilt under `fold` (the run's
@@ -54,6 +54,14 @@ export function entryWire(call: AgentCallEntry): RunCallEntry {
     started_at: call.startedAt,
     attempts: call.attempts,
     finish: call.finish,
+    tool_calls: call.toolCalls.map((tool) => ({
+      name: tool.name,
+      call_id: tool.callId,
+      outcome: tool.outcome,
+      closed: tool.closed,
+      result_n: tool.resultN,
+      result_at: tool.resultAt,
+    })),
   }
 }
 

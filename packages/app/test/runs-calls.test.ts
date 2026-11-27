@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { RunCallEntry, RunCallToolResult } from "@opencorp/protocol"
+import type { RunCallEntry, RunCallToolCall, RunCallToolResult } from "@opencorp/protocol"
 import {
   argsLine,
   callLine,
@@ -11,10 +11,13 @@ import {
   foldedHead,
   gateLines,
   hiddenReasoning,
+  outcomeText,
   pointer,
   seconds,
+  toolLine,
   toolState,
   usageText,
+  wentWrong,
 } from "../src/runs/calls"
 
 const entry = (over: Partial<RunCallEntry> = {}): RunCallEntry => ({
@@ -81,20 +84,39 @@ test("usage says what was reported, and nothing when nothing was", () => {
   expect(usageText(null)).toBe("")
 })
 
-test("a tool call's state and the gate's notes on it", () => {
-  expect([toolState(result()), gateLines(result())]).toEqual(["ran", []])
+test("a tool call's state, in the words its listed row uses, and the gate's notes on it", () => {
+  expect([toolState(result()), gateLines(result())]).toEqual(["ok", []])
   expect([toolState(result({ note: "read-only" })), gateLines(result({ note: "read-only" }))])
-    .toEqual(["ran", ["Allowed: read-only"]])
+    .toEqual(["ok", ["Allowed: read-only"]])
   const released = result({ held: true, release_note: "approved by @ngocbh" })
-  expect([toolState(released), gateLines(released)]).toEqual(["ran", ["Held, then released: approved by @ngocbh"]])
+  expect([toolState(released), gateLines(released)]).toEqual(["ok", ["Held, then released: approved by @ngocbh"]])
   const answered = result({ held: true, output: "Not run: the user said no: use make", is_error: true })
   expect([toolState(answered), gateLines(answered)]).toEqual(["error", ["Held, then answered without running"]])
   const waiting = result({ held: true, output: null, is_error: null })
-  expect([toolState(waiting), gateLines(waiting)]).toEqual(["waiting", ["Held: waiting for an answer"]])
+  expect([toolState(waiting), gateLines(waiting)]).toEqual(["held", ["Held: waiting for an answer"]])
+  // Released, or never held, and no result yet.
+  expect(toolState(result({ held: true, release_note: "ok", output: null, is_error: null }))).toBe("pending")
+  expect(toolState(result({ output: null, is_error: null }))).toBe("pending")
   const refused = result({ closed: "refused", output: "Not run: a deny rule: rm *.", is_error: true })
   expect([toolState(refused), gateLines(refused)]).toEqual(["refused", ["Refused by the gate"]])
   expect(toolState(result({ closed: "skipped", output: "Not run: interrupted by the user.", is_error: true })))
     .toBe("skipped")
+  expect(toolState(result({ closed: "timed_out", output: "Not run: timed out.", is_error: true }))).toBe("timed out")
+})
+
+test("a listed tool call's row: its name and how it stands in words, a closer yian wrote in place of the outcome", () => {
+  const tool = (outcome: string, closed: string | null = null): RunCallToolCall =>
+    ({ name: "run_command", call_id: "c1", outcome, closed, result_n: 3, result_at: "2026-10-20T10:00:02.000Z" })
+  expect(["ok", "error", "held", "pending"].map((o) => outcomeText(tool(o)))).toEqual(["ok", "error", "held", "pending"])
+  expect(["skipped", "refused", "crashed", "interrupted", "timed_out", "failed"].map((w) => outcomeText(tool("error", w))))
+    .toEqual(["skipped", "refused", "crashed", "interrupted", "timed out", "failed"])
+  // An outcome or a closer a later yian adds shows as it is.
+  expect([outcomeText(tool("deferred")), outcomeText(tool("error", "vanished"))]).toEqual(["deferred", "vanished"])
+  expect(toolLine(tool("ok"))).toBe("run_command · ok")
+  expect(toolLine(tool("error", "crashed"))).toBe("run_command · crashed")
+  // Only an error reads as gone wrong; a hold or a call still running doesn't.
+  expect(["ok", "held", "pending", "deferred"].map((o) => wentWrong(tool(o)))).toEqual([false, false, false, false])
+  expect([wentWrong(tool("error")), wentWrong(tool("error", "refused"))]).toEqual([true, true])
 })
 
 test("arguments in a row are their first string, else their JSON, cut to one short line", () => {

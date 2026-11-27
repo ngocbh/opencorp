@@ -1,9 +1,10 @@
 // Run Logs data for the fixture HQ: top-level runs, newest first, and the runs started from each, as GET /api/runs and
 // GET /api/runs?parent= answer them; each run's page (its header, node and record pages) as GET /api/runs/{id} and its
-// routes answer them; node attempts' detail, as GET /api/runs/{id}/nodes/{seq} answers it; and agent nodes' model
-// calls, as GET /api/runs/{id}/calls and its routes answer them.
+// routes answer them; node attempts' detail and view, as GET /api/runs/{id}/nodes/{seq} and its /view answer them;
+// and agent nodes' model calls, as GET /api/runs/{id}/calls and its routes answer them.
 import type {
-  RunCall, RunCallEntry, RunCallMessage, RunDetail, RunDivider, RunEvent, RunNode, RunNodeDetail, RunNodeValue, RunSummary,
+  RunCall, RunCallEntry, RunCallMessage, RunDetail, RunDivider, RunEvent, RunNode, RunNodeDetail, RunNodeValue,
+  RunNodeView, RunSummary,
 } from "@opencorp/protocol"
 
 /** A run id: "01JA1H" and `n`, 26 characters. */
@@ -169,10 +170,22 @@ export function detailOf(page: RunFixturePage, node: RunNode, over: Partial<RunN
   const models = page.detail.models ?? {}
   return {
     node, model: Object.hasOwn(models, path) ? models[path]! : null, started_at: null, ended_at: null,
-    outcome: node.status === "expanded" ? cameTo(page.nodes, node) : null, outputs: [], inputs: [], inputs_more: 0,
+    outcome: node.status === "expanded" ? cameTo(page.nodes, node) : null, outputs: [],
     failure: node.error ? { message: node.error, traceback: null, cut: [], size: null } : null, ...over,
   }
 }
+
+/** Node views by run id and start seq, where a node's view says more than its detail (see `viewOf`). */
+export type NodeViews = Record<string, Record<number, RunNodeView>>
+
+/** What the office's detail says of a value derived from others. */
+export const DERIVED = "derived from other values"
+
+/** Node `detail`'s view as the office sends it when it says no more than the detail: no inputs, and the detail's
+ * outputs, a derived one as it was. */
+export const viewOf = (detail: RunNodeDetail): RunNodeView =>
+  ({ kind: detail.node.kind ?? null, inputs: [], outputs: (detail.outputs ?? []).map((o) => ({ ...o, seq: null })),
+     missing: null })
 
 /** The new messages run 5's `chat#2/reply` wrote. */
 export const NEW_MESSAGES = [
@@ -192,15 +205,40 @@ export function nodeDetails(pages: RunPages): NodeDetails {
   const ended = new Date(BASE + 30 * 60_000 + 4_250).toISOString()
   return {
     [rid(5)]: {
+      // Its new messages' commit names only the steps they were read from: its view rebuilds them.
       31: of(rid(5), 31, { started_at: started, ended_at: ended, outputs: [
         valueRow("output", "Done.", { seq: 33, type: "str" }),
-        valueRow("new_messages", NEW_MESSAGES, { seq: 34, type: "list[object]" }),
+        valueRow("new_messages", null, { seq: 34, missing: DERIVED }),
       ] }),
       15: of(rid(5), 15, { started_at: started, ended_at: started, failure: { message: "AuthError: 401 invalid key",
         traceback: "Traceback (most recent call last): …whole…", cut: [], size: null } }),
     },
     [rid(6)]: { 3: of(rid(6), 3, { outputs: [valueRow("output", "Quota.", { seq: 4, type: "str" })] }) },
     [rid(2)]: { 1: of(rid(2), 1, { outputs: [valueRow("output", { lessons: [] }, { seq: 2, type: "object" })] }) },
+  }
+}
+
+/** The profile memory of @kai, as a run records it. */
+export const PROFILE = { identity: "kai", type: "FileMemory", settings: { index: "profile.md", max_files: 1000 },
+                         version: "4f53cda1", recall: { text: "Ship small.", cut: null, hint: null }, tools: [] }
+
+/** The views that say more than a detail: run 5's `chat#2/reply`, each of its inputs and its outputs typed, its new
+ * messages rebuilt. */
+export function nodeViews(): NodeViews {
+  const said = [{ role: "user", author: "ngocbh", parts: [{ type: "text", text: "Save the notes, then list the folder." }] }]
+  const kai = { name: "Kai", handle: "kai", title: "Engineer", company: "Acme", reports_to: "" }
+  const input = (name: string, type: string, value: unknown, over: Partial<RunNodeValue> = {}) =>
+    valueRow(name, value, { seq: null, type, ...over })
+  return {
+    [rid(5)]: {
+      31: { kind: "agent", missing: null, inputs: [
+        input("summary", "str", ""), input("history", "list(Message)", []), input("said", "list(Message)", said),
+        input("person", "Person", kai), input("talking_to", "str", "You're talking with Ngoc (@ngocbh)."),
+        input("profile", "FileMemory", PROFILE), input("extra", "Optional(str)", null, { missing: "not given" }),
+      ], outputs: [
+        input("output", "Optional(str)", "Done."), input("new_messages", "list(Message)", NEW_MESSAGES),
+      ] },
+    },
   }
 }
 
@@ -288,9 +326,17 @@ export function runCalls(): RunCalls {
     reply: { role: "assistant", author: null, parts: [{ type: "reasoning", text: "" }, { type: "text", text: "Let me" }] },
     tool_results: [], usage: null, finish: "interrupted", interrupted: true, cut: [],
   }
+  // A listed call's tool calls, as yian lists them from the steps its rebuilt results come from: each result its step
+  // after the call's.
   const entry = (call: RunCall, model = "gpt-5"): RunCallEntry => ({
     node_id: call.node_id, n: call.n, purpose: call.purpose, model, started_at: call.attempts[0]!.started_at,
     attempts: call.attempts.length, finish: call.finish ?? null,
+    tool_calls: (call.tool_results ?? []).map((r, k) => {
+      const done = r.output != null
+      const outcome = !done ? (r.held && !r.release_note ? "held" : "pending") : r.is_error ? "error" : "ok"
+      return { name: r.name, call_id: r.call_id, outcome, closed: r.closed ?? null, result_n: done ? call.n + k + 1 : null,
+               result_at: done ? (r.started_at ?? null) : null }
+    }),
   })
   return {
     [rid(5)]: { "chat#2/reply": { list: [entry(call2), entry(call5)], calls: [call2, call5] } },

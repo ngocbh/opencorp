@@ -1,6 +1,6 @@
 /** Run Logs routes: the list of runs, one run's children, and one run's page (its header, node attempts, one node
- *  attempt's detail, records, one record, its log, and its agents' model calls), plus GET /runs/{id}/live, which streams a run's records and live
- *  frames. Read-only, on the office socket and HQ's /api allowlist. */
+ *  attempt's detail and view, records, one record, its log, and its agents' model calls), plus GET /runs/{id}/live,
+ *  which streams a run's records and live frames. Read-only, on the office socket and HQ's /api allowlist. */
 import fs from "node:fs"
 import path from "node:path"
 import {
@@ -11,10 +11,13 @@ import {
   RunEventPage,
   RunNodeDetail,
   RunNodePage,
+  type RunLoading,
+  RunNodeView,
   RunPage,
 } from "@opencorp/protocol"
 import { type Index, lineEvent, logEvents, NotALog, UnreadableLog } from "../../runtime/runs/reader.ts"
-import { CallsTooLarge, CallUnreadable, NoLog, PAGE } from "../../runtime/runs/service.ts"
+import { ReplaysBusy } from "../../runtime/runs/replays.ts"
+import { LOADING, LogTooLarge, NoLog, PAGE, ReadFailed } from "../../runtime/runs/service.ts"
 import { NotFound } from "../../runtime/store/store.ts"
 import { PING } from "../../runtime/bus.ts"
 import { HttpError, type Params, RawReply, type Route } from "../http.ts"
@@ -117,8 +120,8 @@ async function runCall<T>(read: () => Promise<T>): Promise<T> {
     if (error instanceof NotFound) throw new HttpError(404, "not_found", error.message)
     // An unknown or retired schema, a line that isn't a record, seqs out of order.
     if (error instanceof UnreadableLog) throw new HttpError(409, "unsupported_schema", error.message)
-    if (error instanceof CallsTooLarge) throw new HttpError(409, "too_large", error.message)
-    if (error instanceof CallUnreadable) throw new HttpError(409, "not_supported", error.message)
+    if (error instanceof LogTooLarge) throw new HttpError(409, "too_large", error.message)
+    if (error instanceof ReadFailed) throw new HttpError(409, "not_supported", error.message)
     throw error
   }
 }
@@ -135,10 +138,41 @@ export function runNodes(ctx: RequestContext, params: Params): Promise<RunNodePa
   return runCall(() => ctx.office.runs.nodes(params.id!, { before, limit }))
 }
 
-/** One node attempt by its start record's seq: its row, model, record times, outputs, inputs and error. */
+/** One node attempt by its start record's seq, from its records: its row, model, record times, outputs and error. */
 export function runNodeDetail(ctx: RequestContext, params: Params): Promise<RunNodeDetail> {
   const seq = intParam(params.seq, "seq", 0, SEQ_MAX, 0)
   return runCall(() => ctx.office.runs.node(params.id!, seq))
+}
+
+/** How long a client waits before it asks again for a read that replays the log, in milliseconds. */
+export const RETRY_MS = 500
+/** How long a client waits before it asks again when the office has too many replays queued, in seconds. */
+export const BUSY_RETRY_S = 5
+
+/**
+ * A read that replays the log: its result; while the office is still reading it, a 202 RunLoading; when too many
+ * replays already wait their turn, a 503 `busy` with Retry-After.
+ */
+async function loaded<T>(read: () => Promise<T | typeof LOADING>): Promise<T | RawReply> {
+  let value: T | typeof LOADING
+  try {
+    value = await runCall(read)
+  } catch (error) {
+    if (!(error instanceof ReplaysBusy)) throw error
+    const busy = { error: "busy", message: "the office is reading too many run logs at once; try again in a moment" }
+    const headers = { "retry-after": String(BUSY_RETRY_S), "cache-control": "no-store" }
+    return new RawReply(503, headers, JSON.stringify(busy))
+  }
+  if (value !== LOADING) return value
+  const loading: RunLoading = { loading: true, retry_ms: RETRY_MS }
+  return new RawReply(202, { "cache-control": "no-store" }, JSON.stringify(loading))
+}
+
+/** `GET /runs/{id}/nodes/{seq}/view`: the attempt's inputs and outputs with their types, by yian's `nodeView` on the
+ *  viewer thread; a 202 while it is read. One still queued when the client stops asking is dropped. */
+export function runNodeView(ctx: RequestContext, params: Params): Promise<RunNodeView | RawReply> {
+  const seq = intParam(params.seq, "seq", 0, SEQ_MAX, 0)
+  return loaded(() => ctx.office.runs.view(params.id!, seq, ctx.signal))
 }
 
 /** A run's records after seq `after`: at most `limit` (500) or 256 KiB. */
@@ -148,10 +182,10 @@ export function runEvents(ctx: RequestContext, params: Params): Promise<RunEvent
   return runCall(() => ctx.office.runs.events(params.id!, { after, limit }))
 }
 
-/** One record of a run by seq. */
-export function runEvent(ctx: RequestContext, params: Params): Promise<RunEvent> {
+/** One record of a run by seq; a 202 while a derived commit's value is rebuilt on the viewer thread. */
+export function runEvent(ctx: RequestContext, params: Params): Promise<RunEvent | RawReply> {
   const seq = intParam(params.seq, "seq", 0, SEQ_MAX, 0)
-  return runCall(() => ctx.office.runs.event(params.id!, seq))
+  return loaded(() => ctx.office.runs.event(params.id!, seq, ctx.signal))
 }
 
 /** `GET /runs/{id}/calls?node=<node id>`: the model calls the node made, oldest first. */
@@ -161,11 +195,12 @@ export function runCalls(ctx: RequestContext, params: Params): Promise<RunCallLi
   return runCall(() => ctx.office.runs.calls(params.id!, node))
 }
 
-/** `GET /runs/{id}/calls/{node}/{n}`: one model call rebuilt, `n` the step of any of its attempts. The node id's
- *  segments are the path's (`chat%230/reply`); it is only compared with the log's ids, never joined into a path. */
-export function runModelCall(ctx: RequestContext, params: Params): Promise<RunCall> {
+/** `GET /runs/{id}/calls/{node}/{n}`: one model call rebuilt on the viewer thread, `n` the step of any of its
+ *  attempts; a 202 while it is read. The node id's segments are the path's (`chat%230/reply`); it is only compared
+ *  with the log's ids, never joined into a path. */
+export function runModelCall(ctx: RequestContext, params: Params): Promise<RunCall | RawReply> {
   const n = intParam(params.n, "n", 1, SEQ_MAX, 0)
-  return runCall(() => ctx.office.runs.call(params.id!, params.node!, n))
+  return loaded(() => ctx.office.runs.call(params.id!, params.node!, n, ctx.signal))
 }
 
 /** A run's whole log as stored, as a JSONL attachment no cache keeps. The log is opened before the reply, so a run
@@ -450,8 +485,9 @@ export function runRoutes(pingMs: number = PING_MS): Route<RequestContext>[] {
     { method: "GET", path: "/runs", reply: RunPage, handler: listRuns },
     { method: "GET", path: "/runs/:id", reply: RunDetail, handler: getRun },
     { method: "GET", path: "/runs/:id/nodes", reply: RunNodePage, handler: runNodes },
-    // No HEAD: this one may replay the log.
-    { method: "GET", path: "/runs/:id/nodes/:seq", head: false, reply: RunNodeDetail, handler: runNodeDetail },
+    { method: "GET", path: "/runs/:id/nodes/:seq", reply: RunNodeDetail, handler: runNodeDetail },
+    // No HEAD: this one replays the log.
+    { method: "GET", path: "/runs/:id/nodes/:seq/view", head: false, reply: RunNodeView, handler: runNodeView },
     { method: "GET", path: "/runs/:id/events", reply: RunEventPage, handler: runEvents },
     { method: "GET", path: "/runs/:id/events/:seq", reply: RunEvent, handler: runEvent },
     // No HEAD: a handler can't tell it from GET, and this one opens the log.

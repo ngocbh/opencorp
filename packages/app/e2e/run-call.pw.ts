@@ -22,10 +22,16 @@ test("a model call opens from node detail: its request, reply, tool calls with t
   const detail = await openReply(page)
   const calls = detail.getByRole("list", { name: "Model calls" })
   // Numbered 1, 2 within the node, though they are its steps 2 and 5; each finish in words, its raw value the tooltip.
-  await expect(calls.getByRole("button")).toHaveText([
+  await expect(calls.getByRole("button", { name: /^Call / })).toHaveText([
     "Call 1 · gpt-5 · asked for tools · 2 attempts",
     "Call 2 · gpt-5 · replied",
   ])
+  // Under call 1, the tools its reply asked for, in call order, each as it stands; call 2 asked for none.
+  await expect(calls.getByRole("list", { name: "Tool calls of call 1" }).getByRole("button")).toHaveText([
+    /^↳\s*workspace_save\s*·\s*ok$/,
+    /^↳\s*terminal_run\s*·\s*ok$/,
+  ])
+  await expect(calls.getByRole("list", { name: "Tool calls of call 2" })).toHaveCount(0)
   await expect(calls.getByText("asked for tools", { exact: true })).toHaveAttribute("title", "tool_calls")
   await expect(calls.getByText("replied", { exact: true })).toHaveAttribute("title", "stop")
   await calls.getByRole("button", { name: "Call 1 · gpt-5 · asked for tools · 2 attempts" }).click()
@@ -79,6 +85,22 @@ test("a model call opens from node detail: its request, reply, tool calls with t
   await expect(calls.getByRole("button", { name: /^Call 1/ })).toBeFocused()
 })
 
+test("a tool's row under its model call opens the call at that tool's result, and back returns to the row", async ({ page }) => {
+  const detail = await openReply(page)
+  const row = detail.getByRole("list", { name: "Tool calls of call 1" }).getByRole("button", { name: "terminal_run · ok" })
+  await row.click()
+  const call = page.getByRole("region", { name: "Model call 1" })
+  const tools = call.getByRole("region", { name: "Tool calls" })
+  // That tool's card opens on its result and takes focus; the other stays closed.
+  const opened = tools.getByRole("button", { name: /^terminal_run/ })
+  await expect(opened).toHaveAttribute("aria-expanded", "true")
+  await expect(opened).toBeFocused()
+  await expect(tools).toContainText("notes-00.md")
+  await expect(tools.getByRole("button", { name: /^workspace_save/ })).toHaveAttribute("aria-expanded", "false")
+  await call.getByRole("button", { name: "Back to the node" }).click()
+  await expect(row).toBeFocused()
+})
+
 test("Escape goes back from a call to its node, then closes the node", async ({ page }) => {
   const detail = await openReply(page)
   await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 2/ }).click()
@@ -121,6 +143,33 @@ test("an interrupted call says so", async ({ page }) => {
   // With no usage reported, it doesn't say what the reasoning cost.
   await expect(call.getByRole("region", { name: "Reply" })).toContainText("The provider didn't share its reasoning")
   await expect(call.getByRole("region", { name: "Reply" })).not.toContainText("Reasoned privately")
+})
+
+test("a call the office is still rebuilding says so, asks again, and shows the call once it is rebuilt", async ({ page, request }) => {
+  const path = `/api/runs/${rid(5)}/calls/chat%232/reply/5`
+  // The office answers "still loading" three times: the app asks again after 0.5, 1 and 2 s.
+  await request.post("/__fixture/set", { data: { loading: { [path]: 3 } } })
+  const detail = await openReply(page)
+  await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 2/ }).click()
+  const call = page.getByRole("region", { name: "Model call 2" })
+  await expect(call).toContainText("rebuilding the call from the log…")
+  await expect(call.getByRole("region", { name: "Reply" })).toHaveCount(0)
+  await expect(call.getByRole("region", { name: "Reply" })).toContainText("Done.", { timeout: 10_000 })
+  await expect(call).not.toContainText("rebuilding the call from the log…")
+  await expect(call.getByRole("alert")).toHaveCount(0)
+})
+
+test("an office with too many logs to read says it's busy, and the call can retry", async ({ page, request }) => {
+  const path = `/api/runs/${rid(5)}/calls/chat%232/reply/5`
+  const busy = "the office is reading too many run logs at once; try again in a moment"
+  await request.post("/__fixture/set", { data: { fail: { [path]: { status: 503, error: "busy", message: busy } } } })
+  const detail = await openReply(page)
+  await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 2/ }).click()
+  const call = page.getByRole("region", { name: "Model call 2" })
+  await expect(call.getByRole("alert")).toHaveText(busy)
+  await request.post("/__fixture/set", { data: { fail: {} } })
+  await call.getByRole("button", { name: "Retry" }).click()
+  await expect(call.getByRole("region", { name: "Reply" })).toContainText("Done.")
 })
 
 test("a call the office can't rebuild says why and can retry", async ({ page, request }) => {

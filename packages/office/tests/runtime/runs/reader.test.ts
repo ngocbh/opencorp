@@ -13,8 +13,10 @@ import {
   EVENT_BYTES,
   FIELD_CHARS,
   fitValues,
+  FOLD_BYTES,
   HUGE_LINE,
   type Index,
+  isDerived,
   LINE_CAP,
   lineEvent,
   logEvents,
@@ -26,6 +28,7 @@ import {
   PAGE_SCAN,
   readEvent,
   readEvents,
+  rebuiltEvent,
   type ReadOn,
   readOn,
   refresh,
@@ -34,6 +37,7 @@ import {
   SCOPE_ENDED,
   SPARSE_BYTES,
   SPARSE_EVERY,
+  TOO_LARGE,
   UnreadableLog,
   UnsupportedSchema,
 } from "../../../src/runtime/runs/reader.ts"
@@ -962,26 +966,27 @@ async function derivedOf(log: string, nodeId: string) {
 
 const NO_ENV = () => undefined
 
-test("a derived commit shows its value when opened", async () => {
+test("a derived commit shows its value when rebuilt", async () => {
   const { log, codeRoot } = await realRun(tempDir(), LOOP_FLOW)
   const { index, event } = await derivedOf(log, "l#0/__end__")
-  expect([event.payload!.key, event.payload!.value]).toEqual(["l#0/__end__", undefined])
-  const reader = new RunLogReader()
-  const opened = await reader.readEvent(log, index, event.seq, { fold: { env: NO_ENV, codeRoot } })
+  expect([event.payload!.key, event.payload!.value, isDerived(event)]).toEqual(["l#0/__end__", undefined, true])
+  const opened = await rebuiltEvent(log, event.seq, { env: NO_ENV, codeRoot }, FOLD_BYTES)
   expect(opened).toEqual({ ...event, payload: { ...event.payload, kind: "object", value: { n: 1 } } })
-  expect(await reader.readEvent(log, index, event.seq)).toEqual(event)
   expect(readEvent(log, index, event.seq)).toEqual(event)
   // The loop's end commits under the loop's own key.
   const end = await derivedOf(log, "l~2")
-  const loopEnd = await reader.readEvent(log, end.index, end.event.seq, { fold: { env: NO_ENV, codeRoot } })
+  const loopEnd = await rebuiltEvent(log, end.event.seq, { env: NO_ENV, codeRoot }, FOLD_BYTES)
   expect([loopEnd!.payload!.key, loopEnd!.payload!.value]).toEqual(["l", { n: 2 }])
+  // A record that holds its value is as written; one past the log is none.
+  const started = readEvent(log, index, 1)!
+  expect([isDerived(started), await rebuiltEvent(log, 1, { env: NO_ENV, codeRoot }, FOLD_BYTES)]).toEqual([false, started])
+  expect(await rebuiltEvent(log, 10_000, { env: NO_ENV, codeRoot }, FOLD_BYTES)).toBeNull()
 })
 
-test("a log over the fold cap shows no derived value", async () => {
+test("a log over the cap shows no derived value", async () => {
   const { log, codeRoot } = await realRun(tempDir(), LOOP_FLOW)
-  const { index, event } = await derivedOf(log, "l#0/__end__")
-  const reader = new RunLogReader({ foldBytes: 1 })
-  expect(await reader.readEvent(log, index, event.seq, { fold: { env: NO_ENV, codeRoot } })).toEqual(event)
+  const { event } = await derivedOf(log, "l#0/__end__")
+  expect(await rebuiltEvent(log, event.seq, { env: NO_ENV, codeRoot }, 1)).toEqual(event)
 })
 
 test("a code reference outside the code root shows no derived value and no kinds", async () => {
@@ -989,10 +994,10 @@ test("a code reference outside the code root shows no derived value and no kinds
   const { index, event } = await derivedOf(log, "l#0/__end__")
   const reader = new RunLogReader()
   const outside = { env: NO_ENV, codeRoot: tempDir() }
-  expect(await reader.readEvent(log, index, event.seq, { fold: outside })).toEqual(event)
+  expect(await rebuiltEvent(log, event.seq, outside, FOLD_BYTES)).toEqual(event)
   expect(await recordedKinds(log, outside)).toBeNull()
   const inside = { env: NO_ENV, codeRoot }
-  expect((await reader.readEvent(log, index, event.seq, { fold: inside }))!.payload!.value).toEqual({ n: 1 })
+  expect((await rebuiltEvent(log, event.seq, inside, FOLD_BYTES))!.payload!.value).toEqual({ n: 1 })
   expect(kindOf(await reader.kinds(log, index, inside), "l#0/prep")).toBe("code")
 })
 
@@ -1011,7 +1016,7 @@ test("values over one detail's bytes are cut, then the largest replaced by their
   const values = [row("a", list(200_000)), row("b", list(240_000)), row("c", list(160_000)), row("d", "small")]
   const fitted = fitValues(values)
   expect(fitted.map((v) => [v.name, v.missing ?? null])).toEqual([
-    ["a", "too_large"], ["b", "too_large"], ["c", null], ["d", null],
+    ["a", TOO_LARGE], ["b", TOO_LARGE], ["c", null], ["d", null],
   ])
   expect(fitted[1]!.size).toBe(Buffer.byteLength(JSON.stringify(list(240_000))))
   expect(Buffer.byteLength(JSON.stringify(fitted))).toBeLessThanOrEqual(EVENT_BYTES)

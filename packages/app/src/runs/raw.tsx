@@ -3,6 +3,7 @@
 import type { RunEvent } from "@opencorp/protocol"
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { useOffice } from "../data/office"
+import { untilLoaded } from "./loaded"
 import { pretty, ReadError, tooLarge } from "./node"
 import { readQueue } from "./queue"
 
@@ -29,13 +30,20 @@ export function Raw(props: { runId: string; api?: (api: RawApi) => void }) {
   const [failure, setFailure] = createSignal<{ error: unknown; retry: () => void }>()
   /** The records opened whole, by seq: one still partial after that is too large to show whole. */
   const [opened, setOpened] = createSignal<ReadonlySet<number>>(new Set())
+  /** The records being read whole, by seq. */
+  const [opening, setOpening] = createSignal<ReadonlySet<number>>(new Set())
   const [kind, setKind] = createSignal("")
   const [node, setNode] = createSignal("")
 
   // Reads run one at a time, so a live read and "Load more records" never add the same page twice.
   const queue = readQueue()
   let disposed = false
-  onCleanup(() => (disposed = true))
+  // Stops the records being read whole from asking again.
+  const leaving = new AbortController()
+  onCleanup(() => {
+    disposed = true
+    leaving.abort()
+  })
   const lastSeq = () => records()[records().length - 1]?.seq
 
   /** Reads the page after the last record shown and appends it. */
@@ -58,16 +66,24 @@ export function Raw(props: { runId: string; api?: (api: RawApi) => void }) {
     attempt()
   }
 
-  /** Reads record `seq` whole and shows it in place of its page's copy. */
+  /** Reads record `seq` whole and shows it in place of its page's copy, asking again while the office rebuilds a
+   *  derived value for it; it says so meanwhile. */
   function open(seq: number) {
-    office.client.runs.event(props.runId, seq).then(
+    setOpening(new Set([...opening(), seq]))
+    const done = () => setOpening(new Set([...opening()].filter((s) => s !== seq)))
+    untilLoaded(() => office.client.runs.event(props.runId, seq, { signal: leaving.signal }), leaving.signal).then(
       (whole) => {
         if (disposed) return
+        done()
         setFailure(undefined)
         setRecords(records().map((e) => (e.seq === seq ? whole : e)))
         setOpened(new Set([...opened(), seq]))
       },
-      (e) => !disposed && setFailure({ error: e, retry: () => open(seq) }),
+      (e) => {
+        if (disposed) return
+        done()
+        setFailure({ error: e, retry: () => open(seq) })
+      },
     )
   }
 
@@ -120,9 +136,14 @@ export function Raw(props: { runId: string; api?: (api: RawApi) => void }) {
                   when={!opened().has(e.seq)}
                   fallback={<p class={MUTED}>too large to show whole; download the log</p>}
                 >
-                  <button type="button" class={`text-xs ${LINK}`} onClick={() => open(e.seq)}>
-                    Open the whole record
-                  </button>
+                  <Show
+                    when={!opening().has(e.seq)}
+                    fallback={<p class={`text-xs ${MUTED}`}>reading the whole record…</p>}
+                  >
+                    <button type="button" class={`text-xs ${LINK}`} onClick={() => open(e.seq)}>
+                      Open the whole record
+                    </button>
+                  </Show>
                 </Show>
               </Show>
             </li>

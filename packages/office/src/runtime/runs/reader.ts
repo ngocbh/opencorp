@@ -5,7 +5,8 @@
  * Record pages and one opened record read raw lines and parse each with yian's codec (`parseJson`), as
  * `iterRunRecords` can neither skip nor cap a line and yian has no record-to-wire encoder. Values are shown in a
  * display form any client reads as plain JSON. A derived commit's value is rebuilt only when one record is opened,
- * by replaying the whole log through yian's `foldRunLog`; node kinds come from the flow the log recorded.
+ * by replaying the whole log through yian's `foldRunLog` (`rebuiltEvent`, which the office runs on the viewer
+ * thread); node kinds come from the flow the log recorded.
  */
 import crypto from "node:crypto"
 import fs from "node:fs"
@@ -699,6 +700,18 @@ function shown(value: unknown, pointer: string, cuts: Cuts, depth: number, cutti
   )
 }
 
+/** A yian value in its display form, whole but for containers DEPTH_CAP deep, with the JSON pointers of what was cut;
+ *  null when the cuts would name more than CUT_CHARS. */
+export function displayed(value: unknown): { value: unknown; cut: string[] } | null {
+  const cuts = new Cuts()
+  try {
+    return { value: shown(value, "", cuts, 0, false), cut: cuts.pointers }
+  } catch (error) {
+    if (!(error instanceof TooManyCuts)) throw error
+    return null
+  }
+}
+
 /** The payload of a record of kind `kind` in its display form; a commit's value is decoded from its typed-value wire
  *  first, and shown as parsed when that wire doesn't decode. A derived commit's rebuilt value `derived` is shown with
  *  its kind beside what the record holds. */
@@ -1001,10 +1014,14 @@ export function recordTime(path: string, index: Index, seq: number): string | nu
   }
 }
 
+/** What a node value too large to show says it is missing for; its size says how large. */
+export const TOO_LARGE = "too large to show; download the log"
+
 /**
  * `values` fitted to `budget` bytes of JSON, as one opened record is: as they are when they fit; else with each string
  * cut at FIELD_CHARS code points, its pointer (into its value) added to the value's `cut`; else with the largest
- * values, then the next largest, replaced by their size until the rest fit. Each value is measured once.
+ * values, then the next largest, replaced by their size (missing as TOO_LARGE) until the rest fit. Each value is
+ * measured once.
  */
 export function fitValues(values: RunNodeValue[], budget: number = EVENT_BYTES): RunNodeValue[] {
   const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v))
@@ -1014,7 +1031,7 @@ export function fitValues(values: RunNodeValue[], budget: number = EVENT_BYTES):
   const sum = (a: number[]) => a.reduce((t, n) => t + n, 0)
   if (sum(rest) + sum(sizes) <= budget) return values
   const tooLarge = (v: RunNodeValue, size: number): RunNodeValue =>
-    ({ ...v, value: null, missing: "too_large", size, cut: [] })
+    ({ ...v, value: null, missing: TOO_LARGE, size, cut: [] })
   const fitted = values.map((v, i): RunNodeValue => {
     if (v.missing) return v
     try {
@@ -1106,100 +1123,66 @@ function stamp(st: Stat): string {
 }
 
 /**
+ * Whether `event` is a derived commit: one that names its value only by the commits it read (`from`, `take` or
+ * `steps`), so showing its value takes a replay (`rebuiltEvent`).
+ */
+export function isDerived(event: RunEvent | null): boolean {
+  const payload = event?.payload
+  return event?.kind === "pool_commit" && isRecord(payload) && (payload.value ?? null) === null
+    && ["from", "take", "steps"].some((form) => (payload[form] ?? null) !== null)
+}
+
+/**
+ * Record `seq` of the log `path` as `readEvent` reads it, a derived commit showing the value it accepted, rebuilt by
+ * replaying the log as it is now through `foldRunLog` under `fold`; as written when the log is over `maxBytes` or the
+ * replay fails (a CODE reference outside `fold.codeRoot`, other `YIAN_*` values, a log yian refuses). Null when there
+ * is no such record. It indexes the log itself, and replays it in memory: the office runs it on the viewer thread.
+ */
+export async function rebuiltEvent(
+  path: string,
+  seq: number,
+  fold: FoldOptions,
+  maxBytes: number,
+): Promise<RunEvent | null> {
+  const index = await refresh(path, null)
+  const event = readEvent(path, index, seq)
+  if (!isDerived(event) || index.offset > maxBytes) return event
+  let value: TypedValue | null
+  try {
+    value = (await foldRunLog(path, fold)).records[seq]?.value ?? null
+  } catch {
+    return event
+  }
+  return value === null ? event : eventAt(path, index, seq, value) ?? event
+}
+
+/**
  * The office's run-log indexes: built lazily per log on its first request, one build per log at a time; kept, node
  * table and all, in an LRU capped in bytes and logs, so a log is read whole once unless it is evicted. A log that
- * can't be read isn't read again until its file changes. Derived values are rebuilt one log replay at a time.
+ * can't be read isn't read again until its file changes.
  */
 export class RunLogReader {
   private readonly budget: number
   private readonly logs: number
   private readonly nodeCap: number
-  private readonly foldBytes: number
   private readonly build: typeof refresh
   private readonly lru = new Map<string, Index>()
   private readonly building = new Map<string, Promise<Index>>()
   private readonly failed = new Map<string, { stamp: string; error: UnreadableLog }>()
-  private folding: Promise<void> = Promise.resolve()
 
   /** `refresh` builds each index; tests pass their own to act around a build. */
   constructor(
-    { budget = LRU_BYTES, logs = LRU_LOGS, nodeCap = NODE_CAP, foldBytes = FOLD_BYTES, refresh: build = refresh }: {
+    { budget = LRU_BYTES, logs = LRU_LOGS, nodeCap = NODE_CAP, refresh: build = refresh }: {
       budget?: number
       logs?: number
       nodeCap?: number
-      foldBytes?: number
       refresh?: typeof refresh
     } = {},
   ) {
     this.budget = budget
     this.logs = logs
     this.nodeCap = nodeCap
-    this.foldBytes = foldBytes
     this.build = build
-  }
-
-  /**
-   * The record with `seq`, as the module's `readEvent` reads it (null when `seq` isn't a non-negative safe integer).
-   * With `fold`, a derived commit (one that names its value by `from`, `take` or `steps`) of a log no longer than
-   * `foldBytes` when indexed and when its replay starts shows the value it accepted, rebuilt by replaying the log as it
-   * is now through `foldRunLog`, one replay at a time; it stays as written when the replay fails (a CODE reference
-   * outside `fold.codeRoot`, other `YIAN_*` values, a log yian refuses). Each opened derived commit queues one replay,
-   * and the routes' request limits bound the queue.
-   */
-  async readEvent(
-    path: string,
-    index: Index,
-    seq: number,
-    { fold }: { fold?: FoldOptions } = {},
-  ): Promise<RunEvent | null> {
-    return (await this.readEvents(path, index, [seq], { fold }))[0] ?? null
-  }
-
-  /** The records with `seqs`, each as `readEvent` reads it, the derived commits among them rebuilt by one replay. */
-  readEvents(
-    path: string,
-    index: Index,
-    seqs: readonly number[],
-    { fold }: { fold?: FoldOptions } = {},
-  ): Promise<(RunEvent | null)[]> {
-    return this.rebuilt(path, index, seqs, seqs.map((seq) => readEvent(path, index, seq)), { fold })
-  }
-
-  /** `events`, the records with `seqs` as the module's `readEvent` read them, the derived commits among them rebuilt
-   *  by one replay, as `readEvent` rebuilds one. */
-  async rebuilt(
-    path: string,
-    index: Index,
-    seqs: readonly number[],
-    events: readonly (RunEvent | null)[],
-    { fold }: { fold?: FoldOptions } = {},
-  ): Promise<(RunEvent | null)[]> {
-    const derived = events.map((event) => {
-      const payload = event?.payload
-      return event?.kind === "pool_commit" && isRecord(payload) && (payload.value ?? null) === null
-        && ["from", "take", "steps"].some((form) => (payload[form] ?? null) !== null)
-    })
-    if (fold === undefined || !derived.includes(true) || index.offset > this.foldBytes) return [...events]
-    // Replays queue behind each other and each reads the log as it is on its turn, so the size is checked again then.
-    const replay = this.replay(async () => (fs.statSync(path).size > this.foldBytes ? null : foldRunLog(path, fold)))
-    let records: readonly ({ value: TypedValue | null } | undefined)[]
-    try {
-      records = (await replay)?.records ?? []
-    } catch {
-      return [...events]
-    }
-    return events.map((event, i) => {
-      const value = derived[i] ? (records[seqs[i]!]?.value ?? null) : null
-      return value === null ? event : eventAt(path, index, seqs[i]!, value) ?? event
-    })
-  }
-
-  /** Runs `work`, which replays a whole log, once the replays queued before it have settled: one replay at a time. */
-  replay<T>(work: () => Promise<T>): Promise<T> {
-    const turn = this.folding.then(work)
-    // The chain keeps neither the replayed log nor its error.
-    this.folding = turn.then(() => {}, () => {})
-    return turn
   }
 
   /**
