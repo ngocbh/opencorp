@@ -48,6 +48,12 @@ Handle, Title and Manager (you, by default). The first Enter shows the change to
 the second hires. `office`, `opencorp` and `yian` can't be anyone's handle: OpenCorp and Yian speak as
 them.
 
+No two people's names or handles may read alike, as Yian tells the people in a chat apart: whatever
+their case, and by Unicode's lookalike letters, so `Kirn` reads as `Kim` and a Cyrillic `А` as a
+Latin `A`. A name with an invisible character, such as the joiner inside some emoji, is refused
+too. The preview names the person a name reads as, and `opencorp init` and doctor check names the
+same way.
+
 ## What your employee works with
 
 Your employee runs their commands in a sandboxed shell, and hands work to Codex or Claude Code when `tools` in their
