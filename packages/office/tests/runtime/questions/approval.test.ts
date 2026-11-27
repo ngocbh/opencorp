@@ -92,7 +92,7 @@ test("holding a call stores one card for its call id, asked by the agent, and re
   ])
   expect(card.approval).toEqual({
     kind: "command", tool: "terminal_run", action: "ls -la", args: {}, why: "", reason: "Ask mode", rules: RULES,
-    partial: false, into: null,
+    partial: false, into: null, target: null,
   })
   expect(card.question).toBe("ls -la")
   expect(hold(CARD, call()).id).toBe(card.id)

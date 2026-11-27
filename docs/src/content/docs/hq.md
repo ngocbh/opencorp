@@ -16,8 +16,9 @@ every run log.
 
 ### Model calls
 
-Click an agent node in the Timeline: its detail lists the node's model calls. Click one to see it rebuilt from
-the run log:
+Click an agent node in the Timeline: its detail lists the node's model calls, numbered from 1, each with its
+model and how it finished (replied, asked for tools, cut off at the token limit, refused by the provider,
+interrupted or failed; hover for the finish reason Yian recorded). Click one to see it rebuilt from the run log:
 
 - **Request**: the system prompt, the messages the model read (the history, your messages and tool results,
   each with who said it), the tools it could call, and the model and its settings. The settings show the

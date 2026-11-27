@@ -6,13 +6,46 @@ import type { RunCall, RunCallEntry, RunCallToolResult, RunCallUsage } from "@op
 export const FOLD_LINES = 12
 export const FOLD_CHARS = 1_000
 
-/** A listed call's line: "Call 4 · gpt-5 · stop", then its purpose when it isn't chat and its attempts past one. */
-export function callLine(call: RunCallEntry): string {
-  const parts = [`Call ${call.n}`, call.model, call.finish ?? "failed"]
-  if (call.purpose !== "chat") parts.push(call.purpose)
-  if ((call.attempts ?? 1) > 1) parts.push(`${call.attempts} attempts`)
-  return parts.join(" · ")
+/** Yian's finish reasons in words. */
+const FINISHES: Record<string, string> = {
+  stop: "replied",
+  tool_calls: "asked for tools",
+  length: "cut off at the token limit",
+  content_filter: "refused by the provider",
+  interrupted: "interrupted",
 }
+
+/** How a call finished, in words: "replied", "asked for tools"…; "failed" for none; any other provider text as is. */
+export function finishText(finish: string | null | undefined): string {
+  if (finish == null) return "failed"
+  return Object.hasOwn(FINISHES, finish) ? FINISHES[finish]! : finish
+}
+
+/** A part of a listed call's line, and its tooltip. */
+export type CallPart = { text: string; title?: string }
+
+/**
+ * A listed call's line in parts: "Call 2", its model, how it finished in words (its raw value the tooltip), then its
+ * purpose when it isn't chat and its attempts past one. `ordinal` is its place among the node's calls, from 1: the
+ * call's `n` is its step in the node, which tool results and retried attempts take too, so it only opens the call.
+ */
+export function callParts(call: RunCallEntry, ordinal: number): CallPart[] {
+  const finish = call.finish ?? null
+  const parts: CallPart[] = [
+    { text: `Call ${ordinal}` },
+    { text: call.model },
+    finish === null ? { text: finishText(finish) } : { text: finishText(finish), title: finish },
+  ]
+  if (call.purpose !== "chat") parts.push({ text: call.purpose })
+  if ((call.attempts ?? 1) > 1) parts.push({ text: `${call.attempts} attempts` })
+  return parts
+}
+
+/** A listed call's line as text: "Call 2 · gpt-5 · replied". */
+export const callLine = (call: RunCallEntry, ordinal: number) =>
+  callParts(call, ordinal)
+    .map((part) => part.text)
+    .join(" · ")
 
 /** The head `text` shows folded: its first FOLD_LINES lines, cut to FOLD_CHARS; null when it shows whole. */
 export function foldedHead(text: string): string | null {

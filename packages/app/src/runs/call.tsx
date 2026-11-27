@@ -27,7 +27,9 @@ import {
   type JSX,
 } from "solid-js"
 import { useOffice } from "../data/office"
-import { argsLine, callLine, cutAt, foldedHead, gateLines, pointer, seconds, toolState, usageText } from "./calls"
+import {
+  argsLine, callParts, cutAt, finishText, foldedHead, gateLines, pointer, seconds, toolState, usageText,
+} from "./calls"
 import { pretty, ReadError } from "./node"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
@@ -41,11 +43,17 @@ const RECENT = 8
 /** A time with seconds, in the browser's locale. */
 const clock = (t: string) => new Date(t).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })
 
-/** The node's model calls, oldest first, each a button that opens it; re-read when the node moves on. */
+/** A model call opened from its node's list: the entry that opens it (by its `n`), and its place in the list. */
+export type OpenedCall = { entry: RunCallEntry; ordinal: number }
+
+/**
+ * The node's model calls, oldest first, numbered from 1, each a button that opens it; re-read when the node moves on.
+ * Each call is an item of its own, so the rows of its tool calls can nest under it.
+ */
 export function CallList(props: {
   runId: string
   node: RunNode
-  onOpen: (call: RunCallEntry, button: HTMLElement) => void
+  onOpen: (call: OpenedCall, button: HTMLElement) => void
 }) {
   const office = useOffice()
   const [calls, setCalls] = createSignal<RunCallEntry[]>()
@@ -73,16 +81,23 @@ export function CallList(props: {
           <Show when={list().length} fallback={<p class={MUTED}>No model call yet.</p>}>
             <ul aria-label="Model calls" class="space-y-0.5">
               <For each={list()}>
-                {(call) => (
+                {(call, i) => (
                   <li>
                     <button
                       type="button"
                       class={`w-full rounded px-1 py-0.5 text-left hover:bg-neutral-100 dark:hover:bg-neutral-900 ${RING} ${
                         call.finish === "interrupted" || call.finish == null ? "text-amber-700 dark:text-amber-400" : ""
                       }`}
-                      onClick={(e) => props.onOpen(call, e.currentTarget)}
+                      onClick={(e) => props.onOpen({ entry: call, ordinal: i() + 1 }, e.currentTarget)}
                     >
-                      {callLine(call)}
+                      <For each={callParts(call, i() + 1)}>
+                        {(part, j) => (
+                          <>
+                            {j() > 0 && " · "}
+                            <span title={part.title}>{part.text}</span>
+                          </>
+                        )}
+                      </For>
                     </button>
                   </li>
                 )}
@@ -95,8 +110,9 @@ export function CallList(props: {
   )
 }
 
-/** One model call, read from the office, with a way back to its node. */
-export function CallView(props: { runId: string; entry: RunCallEntry; onBack: () => void }) {
+/** One model call, read from the office by its `n`, headed by its place in the node's list, with a way back. */
+export function CallView(props: { runId: string; opened: OpenedCall; onBack: () => void }) {
+  const entry = () => props.opened.entry
   const office = useOffice()
   const headingId = createUniqueId()
   let heading!: HTMLHeadingElement
@@ -107,7 +123,7 @@ export function CallView(props: { runId: string; entry: RunCallEntry; onBack: ()
   function load() {
     const mine = ++reading
     setError(undefined)
-    office.client.runs.call(props.runId, props.entry.node_id, props.entry.n).then(
+    office.client.runs.call(props.runId, entry().node_id, entry().n).then(
       (r) => mine === reading && setCall(r),
       (e) => mine === reading && setError(e),
     )
@@ -129,14 +145,14 @@ export function CallView(props: { runId: string; entry: RunCallEntry; onBack: ()
           <ArrowLeft size={16} class="h-4 w-4" />
         </button>
         <h3 id={headingId} ref={heading} tabindex={-1} class={`rounded text-sm font-semibold ${RING}`}>
-          Model call {props.entry.n}
+          Model call {props.opened.ordinal}
         </h3>
       </div>
       <Show when={error()}>{(e) => <ReadError error={e()} onRetry={load} />}</Show>
       <Show when={!call() && !error()}>
         <p class={MUTED}>rebuilding the call from the log…</p>
       </Show>
-      <Show when={call()}>{(c) => <CallBody call={c()} model={props.entry.model} />}</Show>
+      <Show when={call()}>{(c) => <CallBody call={c()} model={entry().model} />}</Show>
     </section>
   )
 }
@@ -167,7 +183,9 @@ function CallBody(props: { call: RunCall; model: string }) {
         <dt class={MUTED}>Model</dt>
         <dd class="font-mono">{request()?.model ?? props.model}</dd>
         <dt class={MUTED}>Finish</dt>
-        <dd>{props.call.finish ?? "failed"}</dd>
+        <dd>
+          <span title={props.call.finish ?? undefined}>{finishText(props.call.finish)}</span>
+        </dd>
         <Show when={props.call.purpose !== "chat"}>
           <dt class={MUTED}>Purpose</dt>
           <dd>{props.call.purpose}</dd>
@@ -221,10 +239,11 @@ function CallBody(props: { call: RunCall; model: string }) {
       <Section title="Attempts">
         <ol aria-label="Attempts" class="space-y-1">
           <For each={props.call.attempts}>
-            {(attempt) => (
+            {(attempt, i) => (
               <li class="space-y-0.5">
                 <div>
-                  <span class="font-medium">Attempt {attempt.n}</span>{" "}
+                  {/* Numbered within the call: an attempt's `n` is its step in the node. */}
+                  <span class="font-medium">Attempt {i() + 1}</span>{" "}
                   <span class={MUTED}>
                     {clock(attempt.started_at)} → {clock(attempt.finished_at)}
                   </span>

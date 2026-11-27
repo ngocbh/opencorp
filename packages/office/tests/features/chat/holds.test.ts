@@ -96,10 +96,15 @@ async function gated(
   const runId = actor.runId!
   const { worker, handlers, deliveries } = workers[0]!
   const callId = (n: number) => `${runId}/chat#0/reply/1/${n}`
-  const gate = (source: ToolSource, n = 0, args: GatedCall["arguments"] = { title: "Fix" }, attempt = 1) => {
+  const gate = (
+    source: ToolSource,
+    n = 0,
+    args: GatedCall["arguments"] = { title: "Fix" },
+    attempt = 1,
+    target: GatedCall["target"] = null,
+  ) => {
     const call: GatedCall = {
-      callId: callId(n), node: "chat#0/reply", tool: `tool_${n}`, source, arguments: args, target: null, scopes: [],
-      attempt,
+      callId: callId(n), node: "chat#0/reply", tool: `tool_${n}`, source, arguments: args, target, scopes: [], attempt,
     }
     return handlers.gateCall(worker, call)
   }
@@ -156,6 +161,18 @@ test("a held call gets its card only once yian holds it, and Yes releases it, no
   g.handlers.deliverReply(g.worker, { type: "deliver_reply", id: release.id, seq: 7 })
   await waitFor(() => g.card()?.status === "consumed", { what: "the card consumed" })
   expect(g.deliveries.filter((d) => d.op === "complete")).toEqual([])
+})
+
+test("a held call's card holds what the call acts on, as its tool's gate target says; one with none holds null", async () => {
+  const g = await gated("default")
+  const target = { run: "r1", call: "r1/agent/3/0", tool: "terminal_run" }
+  expect(isPending(await g.gate(MCP, 0, { title: "Fix" }, 1, target))).toBe(true)
+  expect(isPending(await g.gate(MCP, 1))).toBe(true)
+  g.held(0)
+  g.held(1)
+  const card = await waitFor(() => g.card(0), { what: "the card" })
+  expect(card.approval).toMatchObject({ kind: "tool", action: 'tool_0 {"title":"Fix"}', target })
+  expect((await waitFor(() => g.card(1), { what: "the second card" })).approval?.target).toBeNull()
 })
 
 test("a call yian holds just as its job ends still gets its card", async () => {

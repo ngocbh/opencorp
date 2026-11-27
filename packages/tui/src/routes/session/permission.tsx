@@ -24,33 +24,46 @@ import { QUESTION_MODE } from "../chat/question-view"
 type PermissionStage = "permission" | "always" | "reject"
 
 type Tone = "text" | "muted" | "warning"
-/** A line of the prompt, before it is wrapped: its colour, and a leading mark of `len` characters (an icon) drawn in
- *  a colour of its own. */
-type Line = { text: string; tone: Tone; mark?: { len: number; tone: Tone } }
+/** A line of the prompt, before it is wrapped: its colour, a leading mark of `len` characters (an icon) drawn in a
+ *  colour of its own, the spaces before each of its rows (a value under its label), and the spaces more before each
+ *  row after its first (a field's later lines and wrapped rows, under its label). */
+type Line = { text: string; tone: Tone; mark?: { len: number; tone: Tone }; indent?: number; hang?: number }
 /** A line wrapped to the prompt's width: what one row on screen draws. */
 type Row = Line
 
 /** Shown in place of the choices until the card's last row has been on screen. */
 const READ_ON = "Read to the end (PageDown, Space, arrows) to see the choices"
+/** Said under a target too long to show whole, after how many characters it leaves out. */
+const CUT = "more characters not shown, so this card can't approve the call"
 
 /** `lines` wrapped to `width`, one row each as the screen draws it: a line break starts a row, and a line wider than
- *  the box wraps whole, never cut. */
+ *  the box wraps whole, never cut. An indented line's every row starts with its indent, and a hanging one's every row
+ *  after its first with more, so no text of a value or a field reads as a label. */
 function wrapLines(lines: readonly Line[], width: number): Row[] {
-  return lines.flatMap((line) =>
-    line.text.split("\n").flatMap((part, p) =>
-      wrap(part.replace(/\t/g, "  "), width).map((text, i) => ({
-        text,
-        tone: line.tone,
-        ...(line.mark && p === 0 && i === 0 && { mark: line.mark }),
-      })),
-    ),
-  )
+  return lines.flatMap((line) => {
+    const pad = " ".repeat(Math.min(line.indent ?? 0, width - 1))
+    const hang = pad + " ".repeat(Math.min(line.hang ?? 0, width - 1 - pad.length))
+    const rows: string[] = []
+    line.text.split("\n").forEach((part, p) => {
+      let text = part.replace(/\t/g, "  ")
+      if (p === 0) {
+        const first = wrap(text, width - pad.length)[0]!
+        rows.push(pad + first)
+        text = text.slice(first.length)
+        if (text === "") return
+      }
+      for (const row of wrap(text, width - hang.length)) rows.push(hang + row)
+    })
+    return rows.map((text, i) => ({ text, tone: line.tone, ...(line.mark && i === 0 && { mark: line.mark }) }))
+  })
 }
 
 /**
- * The open approval card `question`: what the agent wants to run, why, and why policy asks, then Yes, "don't ask
+ * The open approval card `question`: what the call acts on, when its tool says (its gate target, shown first, as
+ * `yian chat`'s held-call card shows it), what the agent wants to run, why, and why policy asks, then Yes, "don't ask
  * again this session" and "always" when the card offers them, and No with what to do instead. Its choices appear only
- * once the card's last row has been on screen; the selection starts on No, a digit only selects, and Enter confirms.
+ * once the card's last row has been on screen, and a card that can't show its target whole offers only No: nothing
+ * is approved from a card not shown whole. The selection starts on No, a digit only selects, and Enter confirms.
  * "Don't ask again" and "always" show the exact rules on a page of their own first. Esc asks to stop the agent, and
  * Ctrl+C leaves as on any card. The options page stays mounted, hidden, while those pages show, so the owner comes
  * back to it as they left it: read, scrolled, and full screen or not.
@@ -72,9 +85,11 @@ export function PermissionPrompt(props: { question: Question | undefined }) {
   // copy for the moment the question goes before the prompt does.
   const question = createMemo<Question>((prev) => props.question ?? prev, props.question!)
   const asker = createMemo(() => personLabel(office.state.people, question().asker))
-  const choices = createMemo(() => permissionOptions(question().options ?? [], question().approval?.rules ?? []))
   const presentation = createMemo(() =>
     permissionPresentation(question().approval ?? { tool: "?" }, display(question().question)),
+  )
+  const choices = createMemo(() =>
+    presentation().target?.more ? {} : permissionOptions(question().options ?? [], question().approval?.rules ?? []),
   )
   // Its place among the session's open approval cards, oldest first.
   const count = createMemo(() => {
@@ -105,11 +120,27 @@ export function PermissionPrompt(props: { question: Question | undefined }) {
     const why = display(approval?.why ?? "").trim()
     const reason = display(approval?.reason ?? "").trim()
     const notes: Line[] = [
-      ...(why ? [{ text: `Why: ${why}`, tone: "muted" as const }] : []),
-      ...(reason ? [{ text: `Asking because: ${reason}`, tone: "muted" as const }] : []),
+      // Several lines (Auto's check's reason may hold some) hang under the label, so none reads as one of the card's.
+      ...(why ? [{ text: `Why: ${why}`, tone: "muted" as const, hang: 2 }] : []),
+      ...(reason ? [{ text: `Asking because: ${reason}`, tone: "muted" as const, hang: 2 }] : []),
     ]
+    const target = presentation().target
+    const call = presentation().lines.map((text): Line => ({ text, tone: "text", ...(target && { indent: 2 }) }))
+    const more: Line[] = []
+    if (target?.more) {
+      more.push({ text: `… ${target.more.toLocaleString("en-US")} ${CUT}`, tone: "warning", indent: 2 })
+    }
     return [
-      ...presentation().lines.map((text): Line => ({ text, tone: "text" })),
+      ...(target
+        ? [
+            { text: "Acts on:", tone: "muted" as const },
+            { text: target.text, tone: "text" as const, indent: 2 },
+            ...more,
+            { text: "", tone: "text" as const },
+            { text: "Call:", tone: "muted" as const },
+          ]
+        : []),
+      ...call,
       ...(notes.length > 0 ? [{ text: "", tone: "text" as const }, ...notes] : []),
     ]
   })

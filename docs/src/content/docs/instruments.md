@@ -49,12 +49,14 @@ Every tool call your employee's model makes goes through the chat's mode and rul
 - **Auto's check** is a model call on the office's connection. It reads the command, or the tool and its arguments,
   never your employee's reason, with your secrets taken out. What it says run runs; the rest asks you, and `dontAsk`
   refuses it. A command over 1000 bytes asks without it.
-- **Cards.** A card shows the call and why it asks. Yes runs it once; "Don't ask again" and "Always allow" also add a
-  rule for its exact words; No tells your employee what you wrote. While a card is open, the reply's later calls wait,
-  and a No refuses those that would ask too. Esc closes the card and stops your employee, the call not run. Switching
-  to `dontAsk` refuses the open cards. An open card survives an office restart, and is decided again by the rules then.
-  A call a restart or crash cut off before you approved it isn't run when the work resumes; one cut off after your Yes
-  doesn't run again, and your employee reads that its outcome is unknown.
+- **Cards.** A card shows the call and why it asks. When the call's tool says what the call acts on (derived from
+  the validated call, not taken from your employee's reply text, though it may repeat the call's arguments), the card
+  shows that first; a card that can't show it whole offers only No. Yes runs it once; "Don't ask again" and "Always
+  allow" also add a rule for its exact words; No tells your employee what you wrote. While a card is open, the
+  reply's later calls wait, and a No refuses those that would ask too. Esc closes the card and stops your employee,
+  the call not run. Switching to `dontAsk` refuses the open cards. An open card survives an office restart, and is
+  decided again by the rules then. A call a restart or crash cut off before you approved it isn't run when the work
+  resumes; one cut off after your Yes doesn't run again, and your employee reads that its outcome is unknown.
 - **Granted flows.** A flow you grant your employee runs with no card or check: granting it approves what its own
   steps do. Your rules still cover the tool modules those steps call (`call:`, `map`, `loop` or a `call(...)` in a
   binding, in the flow and the flows it calls): a deny rule on one refuses the flow in every mode, while an ask rule

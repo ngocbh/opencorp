@@ -20,10 +20,17 @@ async function openReply(page: Page) {
 test("a model call opens from node detail: its request, reply, tool calls with the gate's notes, and attempts", async ({ page }) => {
   const detail = await openReply(page)
   const calls = detail.getByRole("list", { name: "Model calls" })
-  await expect(calls.getByRole("button")).toHaveCount(2)
-  await calls.getByRole("button", { name: "Call 2 · gpt-5 · tool_calls · 2 attempts" }).click()
-  const call = page.getByRole("region", { name: "Model call 2" })
+  // Numbered 1, 2 within the node, though they are its steps 2 and 5; each finish in words, its raw value the tooltip.
+  await expect(calls.getByRole("button")).toHaveText([
+    "Call 1 · gpt-5 · asked for tools · 2 attempts",
+    "Call 2 · gpt-5 · replied",
+  ])
+  await expect(calls.getByText("asked for tools", { exact: true })).toHaveAttribute("title", "tool_calls")
+  await expect(calls.getByText("replied", { exact: true })).toHaveAttribute("title", "stop")
+  await calls.getByRole("button", { name: "Call 1 · gpt-5 · asked for tools · 2 attempts" }).click()
+  const call = page.getByRole("region", { name: "Model call 1" })
   await expect(call).toContainText("1,200 in · 80 out · 800 cached · 40 reasoning")
+  await expect(call.getByText("asked for tools", { exact: true })).toHaveAttribute("title", "tool_calls")
 
   // The request: the system prompt, the conversation with who said each message, the tools and the settings.
   const request = call.getByRole("region", { name: "Request" })
@@ -68,16 +75,21 @@ test("a model call opens from node detail: its request, reply, tool calls with t
   // Back to the node, focus on the call it came from.
   await call.getByRole("button", { name: "Back to the node" }).click()
   await expect(call).toHaveCount(0)
-  await expect(calls.getByRole("button", { name: /^Call 2/ })).toBeFocused()
+  await expect(calls.getByRole("button", { name: /^Call 1/ })).toBeFocused()
 })
 
 test("Escape goes back from a call to its node, then closes the node", async ({ page }) => {
   const detail = await openReply(page)
-  await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 5/ }).click()
-  const call = page.getByRole("region", { name: "Model call 5" })
+  await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 2/ }).click()
+  const call = page.getByRole("region", { name: "Model call 2" })
   await expect(call.getByRole("region", { name: "Reply" })).toContainText("Done.")
   // A text the office cut says where.
   await expect(call.getByRole("region", { name: "Request" })).toContainText("Cut at 64K characters here")
+  // Its one attempt, the node's step 5, is numbered within the call.
+  const attempts = call.getByRole("list", { name: "Attempts" })
+  await expect(attempts.getByRole("listitem")).toHaveCount(1)
+  await expect(attempts.getByRole("listitem")).toContainText("Attempt 1")
+  await expect(attempts).not.toContainText("Attempt 5")
   await page.keyboard.press("Escape")
   await expect(call).toHaveCount(0)
   await expect(detail).toBeVisible()
@@ -87,8 +99,8 @@ test("Escape goes back from a call to its node, then closes the node", async ({ 
 
 test("HTML in a reply shows as text and never runs", async ({ page }) => {
   const detail = await openReply(page)
-  await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 5/ }).click()
-  const reply = page.getByRole("region", { name: "Model call 5" }).getByRole("region", { name: "Reply" })
+  await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 2/ }).click()
+  const reply = page.getByRole("region", { name: "Model call 2" }).getByRole("region", { name: "Reply" })
   await expect(reply).toContainText(HTML)
   await expect(reply.locator("img")).toHaveCount(0)
   expect(await page.evaluate(() => (window as { __pwned?: number }).__pwned)).toBeUndefined()
@@ -108,8 +120,9 @@ test("a call the office can't rebuild says why and can retry", async ({ page, re
   await request.post("/__fixture/set", { data: { fail: { [path]: { status: 409, error: "not_supported",
     message: "this office can't rebuild this model call (DefaultsMismatchError)" } } } })
   const detail = await openReply(page)
-  await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 5/ }).click()
-  const call = page.getByRole("region", { name: "Model call 5" })
+  // Call 2 is opened by its step, 5.
+  await detail.getByRole("list", { name: "Model calls" }).getByRole("button", { name: /^Call 2/ }).click()
+  const call = page.getByRole("region", { name: "Model call 2" })
   await expect(call.getByRole("alert")).toHaveText("this office can't rebuild this model call (DefaultsMismatchError)")
   await request.post("/__fixture/set", { data: { fail: {} } })
   await call.getByRole("button", { name: "Retry" }).click()

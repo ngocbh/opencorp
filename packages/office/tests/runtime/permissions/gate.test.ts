@@ -271,7 +271,17 @@ test("a tool card shows the call as the model made it, why it asks, and the exac
     rules: ["mcp github create_issue"],
     partial: false,
     into: null,
+    target: null,
   })
+})
+
+test("a tool card holds what the call acts on, as its tool's gate target says, a big integer as its digits", () => {
+  const target = { run: "r1", call: "r1/agent/3/0", n: 2n ** 60n }
+  const card = toolCard({ ...call(MCP), target }, { reason: "Ask mode", rules: [] })
+  expect(card.target).toEqual({ run: "r1", call: "r1/agent/3/0", n: "1152921504606846976" })
+  // The action is the call as the model made it, whatever the target says.
+  expect(card.action).toBe('the_tool {"title":"Fix"}')
+  expect(toolCard({ ...call(MCP), target: null }, { reason: "Ask mode", rules: [] }).target).toBeNull()
 })
 
 test("each verdict of Auto's check that names its run cites it: a run's note, an ask's card and a refusal", () => {
