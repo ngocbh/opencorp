@@ -295,6 +295,22 @@ export const RunUpdated = z.strictObject({
 })
 export type RunUpdated = z.input<typeof RunUpdated>
 
+/** One tool call of a listed model call's reply, as yian's `agentCalls` lists it: how it stands, and its result's step. */
+export const RunCallToolCall = z.strictObject({
+  name: z.string(),
+  call_id: z.string(),
+  /** ok, error, held or pending. Yian may add more: a client shows one it doesn't know as it is. */
+  outcome: z.string().min(1),
+  /** skipped, refused, crashed, interrupted, timed_out or failed for a result yian wrote in place of running the call
+   *  (an error); null otherwise. */
+  closed: z.string().nullable().default(null),
+  /** The step of its result in the node; null without a result. */
+  result_n: z.int().min(1).nullable().default(null),
+  /** When its result was recorded; null without one. */
+  result_at: z.string().nullable().default(null),
+})
+export type RunCallToolCall = z.input<typeof RunCallToolCall>
+
 /** One AGENT model call of a run, as GET /runs/{id}/calls lists it (yian's `agentCalls`). */
 export const RunCallEntry = z.strictObject({
   /** The agent node that made it. */
@@ -311,6 +327,8 @@ export const RunCallEntry = z.strictObject({
   attempts: z.int().min(1),
   /** The last attempt's finish reason (`interrupted` for a reply an interrupt cut); null when it failed. */
   finish: z.string().nullable().default(null),
+  /** The tool calls its reply asked for, in call order; none for a structured call or a failed one. */
+  tool_calls: z.array(RunCallToolCall).default(() => []),
 })
 export type RunCallEntry = z.input<typeof RunCallEntry>
 

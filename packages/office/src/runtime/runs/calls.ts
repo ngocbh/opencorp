@@ -1,6 +1,6 @@
 /**
- * A run's AGENT model calls for Run Logs, read with yian's reader: `agentCalls` lists them and `agentCall` rebuilds one
- * (its request, attempts, reply and tool results). Yian's view becomes the protocol's shape here: ints as JSON numbers,
+ * A run's AGENT model calls for Run Logs, read with yian's reader: `agentCalls` lists them, each with how its reply's
+ * tool calls stand, and `agentCall` rebuilds one (its request, attempts, reply and tool results). Yian's view becomes the protocol's shape here: ints as JSON numbers,
  * the provider data beside a message left out, a media part named by its type, and each string longer than
  * CALL_TEXT_CHARS cut with "…" and named in `cut`. Nothing is scrubbed: the view holds what the run log records, and
  * yian leaves the key, headers and connection out of the model config.
@@ -54,6 +54,14 @@ export function entryWire(call: AgentCallEntry): RunCallEntry {
     started_at: call.startedAt,
     attempts: call.attempts,
     finish: call.finish,
+    tool_calls: call.toolCalls.map((tool) => ({
+      name: tool.name,
+      call_id: tool.callId,
+      outcome: tool.outcome,
+      closed: tool.closed,
+      result_n: tool.resultN,
+      result_at: tool.resultAt,
+    })),
   }
 }
 

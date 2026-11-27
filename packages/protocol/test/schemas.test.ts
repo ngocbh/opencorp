@@ -23,7 +23,7 @@ const NAMES = [
   "DeliveryReply", "RepoIssue", "CompanyView", "CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile", "RunSummary",
   "RunPage", "RunUsage", "RunDetail", "RunNode", "RunDivider", "RunNodePage", "RunNodeValue", "RunNodeFailure",
   "RunNodeDetail", "RunEvent", "RunEventPage", "RunLiveRecord", "RunLiveCall", "RunLiveStart", "RunLiveChunk",
-  "RunLiveEnd", "RunUpdated", "RunCallEntry",
+  "RunLiveEnd", "RunUpdated", "RunCallToolCall", "RunCallEntry",
   "RunCallList", "RunCallUsage", "RunCallAttempt", "RunCallPart", "RunCallMessage", "RunCallTool", "RunCallRequest",
   "RunCallToolResult", "RunCall", "PersonCost",
   "CostReport", "ApiVersion", "AppBuild", "Health", "HqTcp", "HqStatus",

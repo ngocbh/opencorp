@@ -4,7 +4,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { RunCall } from "@opencorp/protocol"
+import { RunCall, RunCallList } from "@opencorp/protocol"
 import type { Office } from "../../../src/server/office.ts"
 import { RunLogReader } from "../../../src/runtime/runs/reader.ts"
 import { RunLogs } from "../../../src/runtime/runs/service.ts"
@@ -66,8 +66,14 @@ test("a node's calls, and one call rebuilt with its request, reply, results and 
   const runId = place(office, gated)
   const list = await get(sock, `/runs/${runId}/calls?node=writer`)
   expect(list.status).toBe(200)
-  expect((body(list).calls as { n: number; attempts: number }[]).map(({ n, attempts }) => [n, attempts]))
-    .toEqual([[1, 1], [8, 2]])
+  const listed = RunCallList.parse(list.json()).calls
+  expect(listed.map(({ n, attempts }) => [n, attempts])).toEqual([[1, 1], [8, 2]])
+  // Each call's tool calls, by how they stand: the refused one is an error that yian closed.
+  expect(listed.map((c) => c.tool_calls.map(({ name, outcome, closed }) => [name, outcome, closed]))).toEqual([
+    [["lookup", "ok", null], ["save", "ok", null], ["wipe", "error", "refused"]],
+    [],
+  ])
+  expect(listed[0]!.tool_calls.every((t) => t.result_n !== null && t.result_at !== null)).toBe(true)
   const r = await get(sock, `/runs/${runId}/calls/writer/1`)
   expect(r.status).toBe(200)
   const call = RunCall.parse(r.json())

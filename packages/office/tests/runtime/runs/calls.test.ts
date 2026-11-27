@@ -5,8 +5,8 @@ import os from "node:os"
 import path from "node:path"
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import type { AgentCallView } from "@ngocbh/yian/run"
-import { RunCall } from "@opencorp/protocol"
-import { CALL_TEXT_CHARS, callWire, hasCall, nodeCalls, readCall } from "../../../src/runtime/runs/calls.ts"
+import { RunCall, type RunCallToolCall } from "@opencorp/protocol"
+import { CALL_TEXT_CHARS, callWire, entryWire, hasCall, nodeCalls, readCall } from "../../../src/runtime/runs/calls.ts"
 import { FakeLLM } from "../../../src/testing/fake_llm.ts"
 import { failedRun, gatedRun, interruptedRun, RUN_HEADER, RUN_KEY, RUN_ORG } from "./helpers.ts"
 
@@ -33,7 +33,7 @@ beforeAll(async () => {
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }))
 
 test("a node's calls are listed oldest first, a retried call once with its attempts", () => {
-  const call = (n: number, attempts: number, finish: string) => ({
+  const call = (n: number, attempts: number, finish: string, tool_calls: RunCallToolCall[] = []) => ({
     node_id: "writer",
     n,
     purpose: "chat",
@@ -41,11 +41,37 @@ test("a node's calls are listed oldest first, a retried call once with its attem
     started_at: expect.any(String),
     attempts,
     finish,
+    tool_calls,
   })
-  expect(nodeCalls(gated, "writer")).toEqual([call(1, 1, "tool_calls"), call(8, 2, "stop")])
+  // Each tool call its reply asked for, in call order: how it stands, and the step and time of its result.
+  const tool = (name: string, call_id: string, outcome: string, closed: string | null): RunCallToolCall =>
+    ({ name, call_id, outcome, closed, result_n: expect.any(Number), result_at: expect.stringMatching(/Z$/) })
+  expect(nodeCalls(gated, "writer")).toEqual([
+    call(1, 1, "tool_calls", [
+      tool("lookup", "c1", "ok", null),
+      tool("save", "c2", "ok", null),
+      tool("wipe", "c3", "error", "refused"),
+    ]),
+    call(8, 2, "stop"),
+  ])
   expect(nodeCalls(gated, "reply")).toEqual([])
   // Either attempt names the retried call; a step between calls names none.
   expect([7, 8, 1, 2, 6, 9].map((n) => hasCall(gated, "writer", n))).toEqual([true, true, true, false, false, false])
+})
+
+test("a listed tool call held or without a result has no result step, and an outcome yian adds later passes as it is", () => {
+  const listed = (name: string, callId: string, outcome: string) =>
+    ({ name, callId, outcome: outcome as "ok", closed: null, resultN: null, resultAt: null })
+  const entry = {
+    nodeId: "writer", n: 3, purpose: "chat", model: "stub", startedAt: "2026-10-20T10:00:00.000Z", attempts: 1,
+    finish: "tool_calls", toolCalls: [listed("save", "c1", "held"), listed("lookup", "c2", "pending"),
+                                      listed("wipe", "c3", "deferred")],
+  }
+  expect(entryWire(entry).tool_calls).toEqual([
+    { name: "save", call_id: "c1", outcome: "held", closed: null, result_n: null, result_at: null },
+    { name: "lookup", call_id: "c2", outcome: "pending", closed: null, result_n: null, result_at: null },
+    { name: "wipe", call_id: "c3", outcome: "deferred", closed: null, result_n: null, result_at: null },
+  ])
 })
 
 test("a rebuilt call holds the request, the reply and each tool call's result with the gate's notes", async () => {
