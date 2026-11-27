@@ -16,6 +16,7 @@ import instrumentOf from "./migrations/0010_session_instrument_of.sql" with { ty
 import usageSubscription from "./migrations/0011_usage_subscription.sql" with { type: "file" }
 import harnessYian from "./migrations/0012_session_harness_yian.sql" with { type: "file" }
 import dropAudit from "./migrations/0013_drop_audit.sql" with { type: "file" }
+import modelBy from "./migrations/0014_session_model_by.sql" with { type: "file" }
 
 const NAME = /^(\d{4})_[a-z0-9_]+\.sql$/
 
@@ -45,6 +46,7 @@ export const MIGRATIONS: MigrationFile[] = [
   { name: "0011_usage_subscription.sql", sql: embedded(usageSubscription).toString("utf8") },
   { name: "0012_session_harness_yian.sql", sql: embedded(harnessYian).toString("utf8") },
   { name: "0013_drop_audit.sql", sql: embedded(dropAudit).toString("utf8") },
+  { name: "0014_session_model_by.sql", sql: embedded(modelBy).toString("utf8") },
 ]
 
 /** The database's `PRAGMA user_version`: the last migration applied. */

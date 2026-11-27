@@ -10,9 +10,10 @@ setDefaultTimeout(30_000)
 
 const ROOT = fileURLToPath(new URL("../../../src/company/template/", import.meta.url))
 const SIDE_CHAT = path.join(ROOT, "shared", "flows", "side_chat.yaml")
+const CHAT = path.join(ROOT, "shared", "flows", "chat.yaml")
 
-function read(): Record<string, any> {
-  return readFlow(fs.readFileSync(SIDE_CHAT, "utf8")) as Record<string, any>
+function read(file = SIDE_CHAT): Record<string, any> {
+  return readFlow(fs.readFileSync(file, "utf8")) as Record<string, any>
 }
 
 test("side chat template loads and has the chat shape", async () => {
@@ -25,7 +26,13 @@ test("side chat template loads and has the chat shape", async () => {
     "take",
     ["${input.messages}", "${input.queued}"],
   ])
-  expect(turn.route.cases).toEqual([{ when: "${heard.output.events != [] and not heard.output.closed}", then: "context" }])
+  // A person's actions are sorted from what the turn answers, as the main chat sorts them.
+  expect(turn.route.cases).toEqual([{ when: "${sorted.output.said != [] and not heard.output.closed}", then: "context" }])
+  const main = read(CHAT).defs.turn.nodes
+  expect(turn.sorted).toEqual(main.sorted)
+  expect(turn.route).toEqual(main.route)
+  expect(turn.reply.llm_config).toEqual(main.reply.llm_config)
+  expect(read().typedefs.Heard).toEqual(read(CHAT).typedefs.Heard)
   const reply = turn.reply
   expect([reply.steer_inbox, reply.output, reply.input.profile]).toEqual([
     "${input.messages}",

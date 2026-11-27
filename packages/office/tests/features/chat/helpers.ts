@@ -69,8 +69,7 @@ export const UNQUEUED_CHAT_FLOW = [
     "          from:\n            - ${input.messages}\n            - ${input.queued}\n",
     "          from: ${input.messages}\n",
   ],
-  ["said: ${[e.event for e in heard.output.events]}", "said: ${heard.output.events}"],
-  ["[[e.event for e in heard.output.events] + (reply", "[heard.output.events + (reply"],
+  ["events: ${[e.event for e in heard.output.events]}", "events: ${heard.output.events}"],
   ["      queued: ${input.queued}\n", ""],
 ].reduce((flow, [from, to]) => {
   if (flow.split(from!).length !== 2) throw new Error(`the chat flow no longer holds ${JSON.stringify(from)} once`)

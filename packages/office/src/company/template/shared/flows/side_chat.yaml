@@ -5,6 +5,11 @@
 # in its system prompt. Older turns fold into `summary` through compact_history, which
 # counts all the history's text, the seed included; the seed isn't folded only because the
 # office passes the seed's cap plus 32,000 as `history_budget`.
+#
+# A message of `action` parts only is something a person did themselves, as in chat.yaml: a turn
+# notes it without answering it, the next answered turn reads it first, and a `/model` action a
+# person signed chooses the model of the replies and folds after it. `model` is the choice the chat
+# starts with (null for the connection's own).
 id: side_chat
 name: side_chat
 description: Talk through a question with the person who asked it.
@@ -19,6 +24,9 @@ typedefs:
     title: str
     company: str
     reports_to: str  # "You report to <Name> (@<handle>)." or ""
+  Model: {provider: str, model: str}  # a /model choice: the connection's provider, and the model
+  # What a turn heard: what it answers, the actions noted since the last answered turn, and the model.
+  Heard: {said: list(Message), noted: list(Message), model: Optional(Model)}
 input:
   messages: !Inbox(Message)  # what people send now: each turn's take reads it, and a working reply as steers
   queued: !Inbox(Message)  # what people send for the next turn: only each turn's take reads it
@@ -32,6 +40,7 @@ input:
   # Characters of message text before compacting, the seed included; the office passes the seed's
   # cap plus 32,000.
   history_budget: !int 32000
+  model: !Optional(Model) null  # the replies' model; null for the connection's own. The office passes it
 
 defs:
   # The history so far, compacted, plus its kept turns as one list: a prompt splice must be a lone
@@ -41,6 +50,7 @@ defs:
       summary: !str
       history: !list(list(Message))
       history_budget: !int
+      model: !Optional(Model)
     nodes:
       compacted:
         kind: call
@@ -49,6 +59,7 @@ defs:
           summary: ${input.summary}
           history: ${input.history}
           budget: ${input.history_budget}
+          model: ${input.model}
     output:
       summary: ${compacted.output.summary}
       history: ${compacted.output.history}
@@ -61,11 +72,13 @@ defs:
       talking_to: !str
       summary: !str
       history: !list(list(Message))
+      noted: !list(Message)
       closed: !bool
       turns: !int
       max_turns: !int
       profile: !FileMemory
       history_budget: !int
+      model: !Optional(Model)
     nodes:
       # The turn: everything sent to either inbox since the last one. Messages read along with the last
       # close aren't answered.
@@ -77,10 +90,39 @@ defs:
             - ${input.messages}
             - ${input.queued}
           take: all
+      # A person's actions apart from what the turn answers: an action-only message is noted, never
+      # answered, and a /model action a person signed chooses the model.
+      sorted:
+        kind: code
+        input:
+          events: ${[e.event for e in heard.output.events]}
+          noted: ${input.noted}
+          model: ${input.model}
+        output: !Heard
+        code: |
+          const acted = (message) =>
+            message.parts.length > 0 && message.parts.every((part) => part.type === "action");
+          const choice = (message) => {
+            const signed = typeof message.author === "string" && message.author !== "";
+            const part = signed && message.parts.length === 1 ? message.parts[0] : null;
+            const { provider, model } = part?.tool === "/model" ? (part.arguments ?? {}) : {};
+            return typeof provider === "string" && typeof model === "string" ? { provider, model } : null;
+          };
+          let model = inputs.model;
+          const noted = [...inputs.noted];
+          const said = [];
+          for (const message of inputs.events) {
+            if (!acted(message)) said.push(message);
+            else {
+              noted.push(message);
+              model = choice(message) ?? model;
+            }
+          }
+          return { said, noted, model };
       route:
         kind: case
         cases:
-          - when: ${heard.output.events != [] and not heard.output.closed}
+          - when: ${sorted.output.said != [] and not heard.output.closed}
             then: context
       # The fold sits after the take, so it runs only inside a person's turn: a finished turn rests
       # idle, and an Esc or End during the fold stops that turn.
@@ -91,8 +133,12 @@ defs:
           summary: ${input.summary}
           history: ${input.history}
           history_budget: ${input.history_budget}
+          model: ${sorted.output.model}
       reply:
         kind: agent
+        llm_config:
+          provider: ${sorted.output.model?.provider}
+          model: ${sorted.output.model?.model}
         steer_inbox: ${input.messages}
         env:
           max_tool_iterations: 50
@@ -100,7 +146,7 @@ defs:
         input:
           summary: ${context.output.summary}
           history: ${context.output.messages}
-          said: ${[e.event for e in heard.output.events]}
+          said: ${sorted.output.noted + sorted.output.said}  # actions first, as they came first
           person: ${input.person}
           talking_to: ${input.talking_to}
           profile: ${input.profile}
@@ -112,6 +158,8 @@ defs:
           learned about your work and the people you work with: follow it.
           This is a side conversation about a question you asked: help the person you asked understand it
           and decide. Here you can only look things up; you can't change files or run anything.
+          A message that holds only actions is something a person did themselves, such as choosing your model
+          with /model: never answer it or repeat it.
           A summary of this conversation's older turns (empty while it is short): ${summary}
 
           <memory name="profile">
@@ -122,15 +170,17 @@ defs:
           - ${said}
     # A LOOP body maps its carried record to the next one, so the person, who they talk with and the
     # budget ride along unchanged; the loop carries the inboxes itself, so the output leaves
-    # them out. A close with nothing queued appends an empty turn; the run ends right after.
+    # them out. A take of only actions adds no turn; a close ends the run right after.
     output:
       person: ${input.person}
       talking_to: ${input.talking_to}
       summary: ${context.output?.summary :- input.summary}
-      history: ${(context.output?.history :- input.history) + [[e.event for e in heard.output.events] + (reply.new_messages :- [])]}
+      history: ${(context.output?.history :- input.history) + ([sorted.output.noted + sorted.output.said + (reply.new_messages :- [])] if sorted.output.said != [] else [])}
+      noted: ${[] if sorted.output.said != [] else sorted.output.noted}  # an answered turn read them
       closed: ${heard.output.closed}
-      turns: ${input.turns + 1}
+      turns: ${input.turns + (1 if sorted.output.said != [] else 0)}
       max_turns: ${input.max_turns}
+      model: ${sorted.output.model}
       history_budget: ${input.history_budget}
 
 nodes:
@@ -144,11 +194,13 @@ nodes:
       talking_to: ${input.talking_to}
       summary: ${input.summary}
       history: ${input.history}
+      noted: !list(Message) []
       closed: false
       turns: ${input.turns}
       max_turns: ${input.max_turns}
       profile: ${input.profile}
       history_budget: ${input.history_budget}
+      model: ${input.model}
     while: not closed and turns < max_turns
 output:
   summary: ${chat.output.summary}

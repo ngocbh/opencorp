@@ -18,7 +18,7 @@ import { Handle, type Message, type Part, type ToolPart } from "@opencorp/protoc
 import { INTERRUPTED_TEXT } from "../../tools/codex/translate.ts"
 import { CHUNK, HUGE_LINE } from "../../runtime/runs/reader.ts"
 import { errorName } from "../../runtime/worker/rpc.ts"
-import { MAIN_CHAT } from "../../company/chat_flow.ts"
+import { actionOnly, MAIN_CHAT } from "../../company/chat_flow.ts"
 
 export { INTERRUPTED_TEXT }
 
@@ -942,6 +942,8 @@ function fold(state: Fold, seq: number, at: string, kind: string, nodeId: string
         if (!(error instanceof RangeError)) throw error
         return
       }
+      // A person's action, such as a /model choice, is something they did: it never shows as a message.
+      if (actionOnly(message)) return
       // Its last text part is all that shows: earlier ones are the turn's context.
       const text = message.parts.findLast((part) => part.type === "text") as { text: string } | undefined
       const shown = { author: message.author, parts: text === undefined ? [] : [{ type: "text", text: text.text }] }

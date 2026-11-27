@@ -23,6 +23,11 @@ can't show it, and its session starts over at its next message, without that his
 migration. To start clean, run `opencorp offboard`, then `opencorp init`, or
 `opencorp onboard --from URL` for a company you pushed.
 
+Your company repo keeps its own copy of the flows its chats run, in `shared/flows/`, as `opencorp init` wrote them; an
+update doesn't change them. To take an update's flows, start clean as above, or copy
+`packages/office/src/company/template/shared/flows/` from OpenCorp's repo into your company repo and commit them. A chat
+on flows that take no model of their own moves to a fresh run whenever `/model` picks another model.
+
 OpenCorp needs Codex 0.167.0 or later. For an older one doctor fails and says to update Codex:
 `npm install -g @openai/codex@latest` (or `brew upgrade codex`), then `opencorp doctor`. With Codex
 signed in, doctor also starts a thread under an employee's permission, checks that Codex can use

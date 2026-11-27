@@ -544,14 +544,21 @@ export class ChatHarness implements SessionHarness {
   }
 
   /**
-   * Switches the session to `connection`/`model`; its next turn runs on them in a fresh run, and a reply already
-   * running finishes where it is. A model equal to the connection's own is stored as null, and the note is cleared.
+   * Switches the session to `connection`/`model` as `by` (the opener when null); its next turn runs on them, and a
+   * reply already running finishes where it is. Another model of the run's connection keeps the run, which `by`'s
+   * `/model` action tells; another connection is a fresh run (`SessionActor.setModel`). A model equal to the
+   * connection's own is stored as null, and the note is cleared.
    * A live chat switches through its actor (`SessionActor.setModel`); one `starting` that no start of this harness's
    * holds has the store written, which its start reads. A Codex session's model is Codex's own.
    * 409 `not_live` or `ending` for a session that ended or is ending; 422 `unknown_connection` for a connection not
    * on this office; 409 `connection_unusable` for one that can't be used now.
    */
-  async setModel(sessionId: string, connection: string, model: string): Promise<SessionRecord> {
+  async setModel(
+    sessionId: string,
+    connection: string,
+    model: string,
+    { by = null }: { by?: string | null } = {},
+  ): Promise<SessionRecord> {
     const claude = this.#claudeFor(sessionId)
     if (claude) return claude.notSupported(sessionId)
     const codex = this.#codexFor(sessionId, notSupported)
@@ -576,9 +583,9 @@ export class ChatHarness implements SessionHarness {
     // Read again: the session may have started, ended or begun ending during the awaits.
     const current = this.store.getSession(sessionId)
     if (current?.status === "starting" && !this.#actors.has(sessionId)) {
-      return this.store.updateSession(sessionId, { connection, model: picked, model_note: null })
+      return this.store.updateSession(sessionId, { connection, model: picked, model_note: null, model_by: by })
     }
-    return this.#actor(sessionId).setModel(connection, picked)
+    return this.#actor(sessionId).setModel(connection, picked, { by })
   }
 
   /**

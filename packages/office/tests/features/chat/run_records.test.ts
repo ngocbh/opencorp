@@ -330,7 +330,7 @@ test("the key change on the same name restarts on the next turn", async () => {
   expect(after.configSha256).toBe((await recordNow(o, "second", null)).configSha256)
 })
 
-test("restore after a model change starts a fresh run on it", async () => {
+test("restore after a model change goes on in the same run, on the new model", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
   const { actor: first, sid } = await startActor(o)
@@ -338,19 +338,28 @@ test("restore after a model change starts a fresh run on it", async () => {
   const second = await reopen(o, first)
   const before = o.jobs.length
   await wake(o, fake, second, sid)
-  expect(seen(o.jobs.slice(before), "model")).toEqual([["chat", "stub-3"]])
-  expect(session(o, sid).model_note).toBe(WOKEN)
+  // The run keeps the connection's own config, and takes the model as the owner's action.
+  expect(seen(o.jobs.slice(before), "model")).toEqual([["advance", "stub"]])
+  expect(fake.requests().at(-1)!.model).toBe("stub-3")
+  const stored = session(o, sid)
+  expect([stored.run_ids.length, stored.model_note, recordOf(o, sid).model]).toEqual([1, null, "stub-3"])
 })
 
-test("a crash resume after a model change starts a fresh run on it", async () => {
+test("a crash resume after a model change resumes the reply on its model, and the next turn runs on the new one", async () => {
   const fake = await fakeLlm()
   const o = await chatOffice(fake)
   const { actor, sid } = await startActor(o)
   const worker = await holding(o, fake, actor, "a")
   on(o, sid, OFFICE, "stub-3")
+  // The resumed reply calls the model again, on the model it started on.
+  fake.script({ content: "after" })
   const jobs = await kill(o, actor, sid, worker)
-  expect(seen(jobs, "model")).toEqual([["chat", "stub-3"]])
-  expect(session(o, sid).model_note).toBe(FRESH)
+  expect(seen(jobs, "model")).toEqual([["advance", "stub"]])
+  expect(fake.requests().at(-1)!.model).toBe("stub")
+  fake.script({ content: "on three" })
+  expect(await say(o, actor, sid, "b")).toBe("on three")
+  expect(fake.requests().at(-1)!.model).toBe("stub-3")
+  expect([session(o, sid).run_ids.length, session(o, sid).model_note]).toEqual([1, null])
 })
 
 test("a resume runs on what its check passed even if the choice changes meanwhile", async () => {

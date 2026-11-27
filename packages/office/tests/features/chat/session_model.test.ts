@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
+import { OFFICE } from "@opencorp/protocol"
 import { AUTH_FILE_ENV, ConnectionFile } from "../../../src/models/connections.ts"
 import { DEFAULT_PRICE } from "../../../src/models/cost.ts"
 import { ProviderError } from "../../../src/models/provider.ts"
@@ -12,17 +13,20 @@ import { HarnessError } from "../../../src/runtime/sessions/state.ts"
 import { loadRepo } from "../../../src/company/loader.ts"
 import { NEW_MODEL } from "../../../src/runtime/runs/outcomes.ts"
 import type { SessionRecord } from "../../../src/runtime/store/store.ts"
+import type { Delivery } from "../../../src/runtime/worker/job.ts"
 import { writePrivate } from "../../../src/util/private_files.ts"
 import { person } from "../../company/helpers.ts"
 import { waitFor } from "../../helpers.ts"
 import {
   ACCESS,
   ASK_USER,
+  CHAT_FLOW,
   type ChatOffice,
   card,
   chatOffice,
   errors,
   fakeLlm,
+  LAN,
   makeActor,
   makeHarness,
   newSession,
@@ -40,6 +44,27 @@ import {
 
 setDefaultTimeout(60_000)
 afterAll(noWorkersLeft)
+
+/** The template's chat flow as a company's copy of an older template has it: it takes no `model` input. */
+const MODELLESS_CHAT_FLOW = [
+  ["  model: !Optional(Model) null  # the replies' model; null for the connection's own. The office passes it\n", ""],
+  ["      model: ${input.model}\n    while", "      model: !Optional(Model) null\n    while"],
+].reduce((flow, [from, to]) => {
+  if (flow.split(from!).length !== 2) throw new Error(`the chat flow no longer holds ${JSON.stringify(from)} once`)
+  return flow.replace(from!, to!)
+}, CHAT_FLOW)
+
+/** The `/model` actions run `runId`'s log holds, in send order: each one's key and the model it chose. */
+function modelActions(h: { office: { paths: { runs: string } } }, runId: string): [string, string][] {
+  return fs
+    .readFileSync(path.join(h.office.paths.runs, runId, "log.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line.includes('"kind":"pool_commit"') && line.includes('"send_key":"') && line.includes('"/model"'))
+    .map((line) => {
+      const { send_key: key } = JSON.parse(line).payload as { send_key: string }
+      return [key.split(":")[0]!, line.match(/"model":"([^"]+)"/)![1]!]
+    })
+}
 
 /** Records the env of each spawn through `o`'s registry; returns them, in order. */
 function recordEnvs(o: ChatOffice): Record<string, string>[] {
@@ -411,7 +436,163 @@ test("a new chat on a second connection records it", async () => {
   expect(recordOf(h, s.id)).toEqual(["second", "stub-5"])
 })
 
-test("set model takes effect on the next turn with a fresh run", async () => {
+test("a switch to another model of the chat's connection keeps its run, and the next turn runs on it", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script({ content: "on one" }, { content: "on two" })
+  const s = await start(h)
+  const runs = h.store.getSession(s.id)!.run_ids
+  await tell(h, s.id, "first-turn-text")
+  const pid = await parkedPid(h, s.id)
+  expect(picked(await h.harness.setModel(s.id, OFFICE, "stub-2", { by: "ngocbh" }))).toEqual([OFFICE, "stub-2", null])
+  // Nothing runs for the switch alone, and the parked worker stays for the next turn.
+  expect(status(h, s.id)).toBe("idle")
+  expect(h.registry.get(s.id)?.pid).toBe(pid)
+  expect(await tell(h, s.id, "b")).toBe("on two")
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub", "stub-2"])
+  expect(h.registry.get(s.id)?.pid).toBe(pid)
+  expect(h.store.getSession(s.id)!.run_ids).toEqual(runs)
+  expect(recordOf(h, s.id)).toEqual([OFFICE, "stub-2"])
+  // The model reads the switch as ngocbh's own action, before the message, with the turns before it.
+  const [first, action, said] = userTexts(fake.requests()[1]!)
+  expect(first).toContain("first-turn-text")
+  expect(action).toContain('<authored_message author="ngocbh">')
+  expect(action).toContain('"tool":"/model"')
+  expect(said).toContain("b")
+  // It shows as no message.
+  expect(texts(h, s.id, "user")).toEqual(["first-turn-text", "b"])
+  expect(h.store.getSession(s.id)!.model_note).toBeNull()
+})
+
+test("a switch of model during a reply lets it finish on the old model; the next turn runs on the new one", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script({ content: "Done on one.", hold: 30 }, { content: "on two" })
+  const s = await start(h)
+  await h.harness.prompt(s.id, "a")
+  await fake.waitForRequests(1)
+  await replyRunning(h)
+  await h.harness.setModel(s.id, OFFICE, "stub-2")
+  fake.release()
+  await waitFor(() => texts(h, s.id).at(-1) === "Done on one." && status(h, s.id) === "idle", { what: "the reply" })
+  expect(await tell(h, s.id, "b")).toBe("on two")
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub", "stub-2"])
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(1)
+  expect(recordOf(h, s.id)).toEqual([OFFICE, "stub-2"])
+  expect(texts(h, s.id, "user")).toEqual(["a", "b"])
+})
+
+test("a switch back to the connection's own model is told to the run too", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script({ content: "on two" }, { content: "on one" })
+  const s = await start(h)
+  await h.harness.setModel(s.id, OFFICE, "stub-2")
+  expect(await tell(h, s.id, "a")).toBe("on two")
+  expect(picked(await h.harness.setModel(s.id, OFFICE, "stub"))).toEqual([OFFICE, null, null])
+  expect(await tell(h, s.id, "b")).toBe("on one")
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub-2", "stub"])
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(1)
+  expect(recordOf(h, s.id)).toEqual([OFFICE, null])
+})
+
+test("a new actor after a switch of model goes on in the same run, on the new model, with no note", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "on two" })
+  const h = await makeHarness(fake)
+  const s = await start(h)
+  const runs = h.store.getSession(s.id)!.run_ids
+  await h.harness.setModel(s.id, OFFICE, "stub-2")
+  await h.reopen()
+  expect(await tell(h, s.id, "b")).toBe("on two")
+  expect(fake.requests().at(-1)!.model).toBe("stub-2")
+  const stored = h.store.getSession(s.id)!
+  expect([stored.run_ids, stored.model_note]).toEqual([runs, null])
+})
+
+test("a switch of model while ask user waits keeps the question open, and the turn after the answer runs on it", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  fake.script(ASK_USER, { content: "answered on one" }, { content: "on two" })
+  const { s, q } = await asking(h)
+  await h.harness.setModel(s.id, OFFICE, "stub-2")
+  expect(h.store.getQuestion(q.id)?.status).toBe("open")
+  expect(status(h, s.id)).toBe("waiting")
+  await h.harness.answer(q.id, "A", "option")
+  await waitFor(() => texts(h, s.id).at(-1) === "answered on one" && status(h, s.id) === "idle", { what: "the answer" })
+  expect(await tell(h, s.id, "b")).toBe("on two")
+  // The asking reply goes on on the model it started on.
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub", "stub", "stub-2"])
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(1)
+})
+
+test("a chat on a flow that takes no model moves to a fresh run when its model changes", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { files: { "shared/flows/chat.yaml": MODELLESS_CHAT_FLOW } })
+  fake.script({ content: "on one" }, { content: "on two" })
+  const s = await start(h)
+  await tell(h, s.id, "first-turn-text")
+  await h.harness.setModel(s.id, OFFICE, "stub-2")
+  expect(await tell(h, s.id, "b")).toBe("on two")
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub", "stub-2"])
+  const runs = h.store.getSession(s.id)!.run_ids
+  expect(runs).toHaveLength(2)
+  expect(recordOf(h, s.id)).toEqual([OFFICE, "stub-2"])
+  expect(JSON.stringify(fake.requests()[1]!.messages)).toContain("first-turn-text")
+  expect(runs.flatMap((runId) => modelActions(h, runId))).toEqual([])
+})
+
+test("a chat on a connection that names no provider moves to a fresh run when its model changes", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake)
+  // Yian's default provider is the fake's.
+  const office = { llm_config: { model: "stub" }, env: { ...fake.env(), YIAN_DEFAULT_PROVIDER: "vllm" }, prices: {} }
+  await writePrivate(path.join(h.office.connections.dir, "office.json"), JSON.stringify(office))
+  fake.script({ content: "on one" }, { content: "on two" })
+  const s = await start(h)
+  await tell(h, s.id, "a")
+  await h.harness.setModel(s.id, OFFICE, "stub-2")
+  expect(await tell(h, s.id, "b")).toBe("on two")
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub", "stub-2"])
+  const runs = h.store.getSession(s.id)!.run_ids
+  expect(runs).toHaveLength(2)
+  expect(runs.flatMap((runId) => modelActions(h, runId))).toEqual([])
+})
+
+test("the person who switched signs the run's /model action, even after a restart", async () => {
+  const fake = await fakeLlm()
+  const h = await makeHarness(fake, { files: LAN })
+  fake.script({ content: "on two" })
+  const s = await start(h)
+  expect((await h.harness.setModel(s.id, OFFICE, "stub-2", { by: "lan" })).model_by).toBe("lan")
+  await h.reopen()
+  expect(await tell(h, s.id, "b")).toBe("on two")
+  expect(userTexts(fake.requests()[0]!).at(-2)).toContain('<authored_message author="lan">')
+})
+
+test("the cost cap counts each turn at its own model's price", async () => {
+  const fake = await fakeLlm()
+  // stub is free; stub-2 costs $1 an input token, so its turn's 10 tokens pass the company's $5 cap.
+  const prices = { stub: { input: 0, output: 0 }, "stub-2": { input: 1_000_000, output: 0 } }
+  const h = await makeHarness(fake, { prices })
+  fake.script({ content: "free" }, { content: "pricey" })
+  const s = await start(h)
+  await tell(h, s.id, "a")
+  expect(h.store.getSession(s.id)!.cost).toBe(0)
+  await h.harness.setModel(s.id, OFFICE, "stub-2")
+  await h.harness.prompt(s.id, "b")
+  await waitFor(() => h.store.listUsage(s.id).length === 2 && h.store.getSession(s.id)!.capped, {
+    what: "the second turn's charge",
+  })
+  expect(h.store.listUsage(s.id).map((usage) => [usage.model, usage.usd])).toEqual([
+    ["stub", 0],
+    ["stub-2", 10],
+  ])
+  expect(h.store.getSession(s.id)!.cost).toBe(10)
+  expect(h.store.getSession(s.id)!.run_ids).toHaveLength(1)
+})
+
+test("a switch to another connection takes effect on the next turn with a fresh run", async () => {
   const fake = await fakeLlm()
   const h = await makeHarness(fake, { connections: { second: "stub-2" } })
   fake.script({ content: "on one" }, { content: "on five" })
@@ -666,6 +847,29 @@ test("a reply that finishes after a switch doesnt park its worker", async () => 
   await waitFor(() => h.registry.get(s.id) === undefined, { what: "the worker to exit" })
 })
 
+test("a switch while the run hasn't answered the last one tells it the newest model, the connection's own included", async () => {
+  const o = await chatOffice(await fakeLlm())
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const worker = workers[0]!
+  await actor.setModel(OFFICE, "stub-2")
+  await actor.setModel(OFFICE, "stub-3")
+  await actor.setModel(OFFICE, null)
+  const sent = actor.prompt("hi")
+  await drained(actor)
+  const told = (d: Delivery) => (d.op === "send" ? JSON.stringify(d.event).match(/"model":"([^"]+)"/)?.[1] : d.op)
+  expect(worker.deliveries.map(told)).toEqual(["stub-2", "stub-3", "stub", undefined])
+  expect(worker.deliveries.map((d) => (d.op === "send" ? d.inbox : d.op))).toEqual(["queued", "queued", "queued", "messages"])
+  worker.deliveries.forEach((d, i) => {
+    worker.handlers.deliverReply(worker.worker, { type: "deliver_reply", id: d.id, seq: 2 + i })
+  })
+  await sent
+  // Each answered in order: the run holds the connection's own model, the last one told.
+  expect(o.office.store.getRun(actor.runId!)?.model).toBeNull()
+})
+
 test("a message after a switch waits for the fresh run", async () => {
   const o = await chatOffice(await fakeLlm(), { connections: { second: "stub-2" } })
   const workers = scriptedWorker(o)
@@ -684,7 +888,8 @@ test("a message after a switch waits for the fresh run", async () => {
   await waitFor(() => workers.length === 2, { what: "the fresh run's worker" })
   const fresh = workers[1]!
   expect(fresh.job.kind).toBe("chat")
-  expect(fresh.job.llm_config?.model).toBe("stub-5")
+  // On second's own config, starting on stub-5.
+  expect([fresh.job.llm_config?.model, fresh.job.inputs.model]).toEqual(["stub-2", { provider: "vllm", model: "stub-5" }])
   expect(fresh.job.deliver.map((d) => d.op)).toEqual(["send"])
   fresh.handlers.deliverReply(fresh.worker, { type: "deliver_reply", id: fresh.job.deliver[0]!.id, seq: 3 })
   expect(await sent).toBe("queued")

@@ -9,7 +9,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { stringify } from "yaml"
-import { isInstrumentNote } from "@opencorp/protocol"
+import { isInstrumentNote, OFFICE } from "@opencorp/protocol"
 import { loadRepo } from "../../../src/company/loader.ts"
 import { YES } from "../../../src/runtime/questions/approval.ts"
 import { EmployeeCodex } from "../../../src/features/chat/codex.ts"
@@ -88,6 +88,19 @@ function loggedNotes(o: ChatOffice, runId: string): string[] {
     .readFileSync(path.join(o.office.paths.runs, runId, "log.jsonl"), "utf8")
     .split("\n")
     .filter((line) => line.includes('"kind":"pool_commit"') && line.includes('"send_key":"terminal:'))
+}
+
+/** The `/model` actions run `runId` of `o`'s log holds, in send order: each one's key's first part and the model it
+ *  chose. */
+function modelActions(o: ChatOffice, runId: string): [string, string][] {
+  return fs
+    .readFileSync(path.join(o.office.paths.runs, runId, "log.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line.includes('"kind":"pool_commit"') && line.includes('"send_key":"') && line.includes('"/model"'))
+    .map((line) => {
+      const { send_key: key } = JSON.parse(line).payload as { send_key: string }
+      return [key.split(":")[0]!, line.match(/"model":"([^"]+)"/)![1]!]
+    })
 }
 
 /** Whether the model's request `n` (from 1) holds `text`. */
@@ -631,6 +644,23 @@ test("a worker that dies between applying Esc's withdraw and answering it loses 
   expect(JSON.stringify(fake.requests().at(-1)!.messages)).toContain(heading("shell 1", "make all", 0))
 })
 
+test("a command runs on through a switch to another model of the connection, and its note wakes the same run on it", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all"), { content: "Started." }, { match: heading("shell 1", "make all", 0), content: "Built on two." })
+  const { o, end } = await notesOffice(fake)
+  const { actor, sid } = await started(o)
+  const runs = session(o, sid).run_ids
+  await actor.setModel(OFFICE, "stub-2", { by: "ngocbh" })
+  // Still running: only a running command can end.
+  end("make all", 0)
+  await waitFor(() => texts(o, sid).includes("Built on two.") && status(o, sid) === "idle", { what: "the woken reply" })
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub", "stub", "stub-2"])
+  expect(session(o, sid).run_ids).toEqual(runs)
+  expect(loggedNotes(o, runs[0]!)).toHaveLength(1)
+  expect(asked(fake, 3, 'author="shell 1"')).toBe(true)
+  expect(notes(o, sid).map((note) => note.split("\n")[0])).toEqual([heading("shell 1", "make all", 0)])
+})
+
 test("a delivered note is owed no more: after a model switch and a restart, it isn't sent again", async () => {
   const fake = await fakeLlm()
   fake.script(run("make all"), { content: "Started." }, { content: "It built." }, { content: "On two." }, { content: "Again." })
@@ -713,6 +743,36 @@ test("after Esc, a model switch moves none of what Esc took back: each message a
   ])
   expect(texts(o, sid, "user").filter((text) => text.startsWith("msg-"))).toEqual(["msg-one", "msg-two"])
   expect(notes(o, sid)).toHaveLength(1)
+})
+
+test("Esc takes back a /model action no turn read with the note, and the run hears the latest model, never the old one", async () => {
+  const fake = await fakeLlm()
+  fake.script(run("make all"), { content: "never shown", hold: true }, { content: "On three." })
+  const { o, end } = await notesOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("build it")
+  await fake.waitForRequests(2, 30_000)
+  const runId = actor.runId!
+  // While the model answers: the owner's switch waits in the queue, and the command's note in the inbox.
+  await actor.setModel(OFFICE, "stub-2", { by: "ngocbh" })
+  end("make all", 0)
+  await waitFor(() => loggedNotes(o, runId).length === 1 && modelActions(o, runId).length === 1, {
+    what: "the note and the switch in the run",
+  })
+  await actor.interrupt()
+  fake.release()
+  await waitFor(() => status(o, sid) === "idle" && !actor.hasWorker, { what: "the stopped reply" })
+  await actor.setModel(OFFICE, "stub-3", { by: "ngocbh" })
+  await actor.prompt("and now?")
+  await waitFor(() => texts(o, sid).includes("On three.") && status(o, sid) === "idle", { what: "the next reply" })
+  expect(fake.requests().at(-1)!.model).toBe("stub-3")
+  expect(asked(fake, 3, heading("shell 1", "make all", 0))).toBe(true)
+  // The switch Esc took back is never sent again as it was: only the newer one follows it.
+  expect(modelActions(o, runId)).toEqual([
+    ["model", "stub-2"],
+    ["model", "stub-3"],
+  ])
+  expect(session(o, sid).run_ids).toEqual([runId])
 })
 
 /** Codex as a chat's instrument opens it, scripted in this process: each message starts a turn, or joins the one under
@@ -841,6 +901,26 @@ test("a Codex turn that ends while the agent rests wakes it once with the turn's
   expect(notes(o, sid).map((note) => note.split("\n")[0])).toEqual([CODEX_DONE])
   expect(notes(o, sid)[0]).toContain("Fixed: the test passes.")
   expectSessionPages(o, sid)
+})
+
+test("a Codex turn goes on through a switch to another model of the connection, and its note wakes the same run on it", async () => {
+  const fake = await fakeLlm()
+  fake.script(startCodex("Fix the build.", 0), { content: "Codex is on it." }, { match: CODEX_DONE, content: "Done on two." })
+  const { o, codex } = await codexOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("hand the build to Codex")
+  await waitFor(() => texts(o, sid).includes("Codex is on it.") && status(o, sid) === "idle" && !actor.hasWorker, {
+    what: "the first reply",
+  })
+  const runs = session(o, sid).run_ids
+  await actor.setModel(OFFICE, "stub-2", { by: "ngocbh" })
+  expect(codex.busy()).toBe(true)
+  codex.answer("Fixed: the test passes.")
+  await waitFor(() => texts(o, sid).includes("Done on two.") && status(o, sid) === "idle", { what: "the woken reply" })
+  expect(fake.requests().map((request) => request.model)).toEqual(["stub", "stub", "stub-2"])
+  expect(session(o, sid).run_ids).toEqual(runs)
+  expect(loggedCodexNotes(o, runs[0]!)).toHaveLength(1)
+  expect(asked(fake, 3, 'author="codex 1"')).toBe(true)
 })
 
 test("no note when the agent waited on the turn and its reply carried the end", async () => {
