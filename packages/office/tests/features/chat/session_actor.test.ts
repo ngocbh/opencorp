@@ -55,6 +55,7 @@ import {
   expectSessionPages,
   fakeLlm,
   free,
+  interrupts,
   livingWorkers,
   makeActor,
   message,
@@ -64,6 +65,7 @@ import {
   PRICEY,
   reopen,
   replyRunning,
+  runLog,
   say,
   type ScriptedWorker,
   scriptedWorker,
@@ -1234,6 +1236,34 @@ test("Esc doesn't answer a Codex call early: the call hears the interrupt and it
   expect(log).toContain("Codex stopped: half done [interrupted]")
   expect(log).not.toContain(INTERRUPTED_CALL)
   expect(fake.requests()).toHaveLength(1)
+})
+
+test("Esc while the turn runs a tool cuts only that turn: the interrupt leaves no Stop, and the next turn answers", async () => {
+  const fake = await fakeLlm()
+  fake.script({ tool_calls: [{ name: "codex_send", arguments: {} }] }, { content: "On it." })
+  let entered!: () => void
+  const called = new Promise<void>((resolve) => (entered = resolve))
+  const send: OfficeTool = {
+    description: "Waits for the interrupt, then replies.",
+    parameters: EMPTY,
+    call: (_args, options) => {
+      entered()
+      return new Promise((resolve) =>
+        options!.interrupted!.addEventListener("abort", () => resolve("stopped [interrupted]"), { once: true }),
+      )
+    },
+  }
+  const o = await chatOffice(fake, { groups: { codex: { send } } })
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("hand it to Codex")
+  await called
+  await actor.interrupt()
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "the turn's end" })
+  // Only the reply reading the inbox as Esc landed was cut, and no Stop stands for a turn after it.
+  expect(interrupts(runLog(o, sid))).toEqual([{ inbox: "messages", nodes: ["chat#0/reply"], standing: false }])
+  expect(fake.requests()).toHaveLength(1)
+  await actor.prompt("and now?")
+  await waitFor(() => texts(o, sid).includes("On it.") && status(o, sid) === "idle", { what: "the next turn" })
 })
 
 test("end answers an office call in flight and interrupts the workspace", async () => {

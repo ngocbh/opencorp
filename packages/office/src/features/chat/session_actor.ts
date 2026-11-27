@@ -1038,9 +1038,10 @@ export class SessionActor implements LiveCalls {
 
   /**
    * Esc: interrupts the workspace and the terminal (a command the agent waits on stops), answers the office tool
-   * calls in flight `INTERRUPTED_CALL`, and interrupts the run: through its worker while one runs it (over the cost
-   * cap, unless ending, only while a reply node runs), else, while the agent waits on a model question, through a
-   * worker spawned for it; else nothing runs to stop. Notes that come after it wait for the next person's message.
+   * calls in flight `INTERRUPTED_CALL`, and interrupts the agents reading the chat's inbox now: through its worker
+   * while one runs the run (over the cost cap, unless ending, only while a reply node runs), else, while the agent
+   * waits on a model question, through a worker spawned for it; else nothing runs to stop. A turn that starts after
+   * it runs in full. Notes that come after it wait for the next person's message.
    * Resolves once the interrupt's reply is handled (the calls it closed are answered) or it was dropped. A card's stop
    * names its `question`, which must still be open with no other interrupt unanswered. Refused with `404 not_found`,
    * `409 not_live`, `409 not_open` and `409 ending` (with a `question`), `503 stopping` or `503 cant_wake`.
@@ -1087,7 +1088,9 @@ export class SessionActor implements LiveCalls {
         withdrawal.answer.catch(() => this.#post("a withdraw's end", () => this.#withdrawEnded(withdrawal)))
         for (const p of withdraws) await this.#give(p)
       }
-      const p = new Pending({ id: newId(), op: "interrupt", inbox: spec.chat.inbox })
+      // Not standing: Esc stops the work in progress now. A turn that starts after it, as one reading a message sent
+      // as the reply ended, runs in full, so no one's message is used up unanswered.
+      const p = new Pending({ id: newId(), op: "interrupt", inbox: spec.chat.inbox, standing: false })
       this.#interrupt = p
       await this.#deliver(p)
       return p
@@ -1623,7 +1626,8 @@ export class SessionActor implements LiveCalls {
     const inboxes = [chat.inbox, chat.queue]
     this.#endClosed = { runId: this.#runId!, inboxes: new Set(inboxes) }
     const ops: Delivery[] = inboxes.map((name) => ({ id: newId(), op: "close", inbox: name }))
-    if (replying || this.#agentWaits()) ops.unshift({ id: newId(), op: "interrupt", inbox })
+    // Standing: the session ends, so a turn that starts before the close lands is stopped before its model call.
+    if (replying || this.#agentWaits()) ops.unshift({ id: newId(), op: "interrupt", inbox, standing: true })
     let spawn = false
     for (const op of ops) spawn = (await this.#give(new Pending(op))) || spawn
     // A reply running over the cap stops; its exit ends the session, as a stopped reply's does.

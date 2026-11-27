@@ -544,7 +544,8 @@ export class LocalHost {
   async interrupt(): Promise<void> {
     this.#live()
     this.#stopCalls()
-    await this.#deliver({ id: newId(), op: "interrupt", inbox: MAIN_CHAT.inbox }, (frame) => {
+    // Not standing, as the office's Esc: only the work in progress now stops, and a turn that starts after it runs.
+    await this.#deliver({ id: newId(), op: "interrupt", inbox: MAIN_CHAT.inbox, standing: false }, (frame) => {
       if (!Array.isArray(frame.closed)) return
       for (const callId of frame.closed) {
         this.#closedCall(String(callId), "interrupted")
@@ -566,7 +567,8 @@ export class LocalHost {
     // A worker that never ends is asked to stop, then killed, so End always ends.
     this.#endTimer = setTimeout(() => void this.#workers.close(this.id, STOP_MS).catch(() => {}), END_STOP_MS)
     this.#endTimer.unref?.()
-    if (busy) await this.#deliver({ id: newId(), op: "interrupt", inbox: MAIN_CHAT.inbox })
+    // Standing: the session ends, so a turn that starts before the close lands is stopped before its model call.
+    if (busy) await this.#deliver({ id: newId(), op: "interrupt", inbox: MAIN_CHAT.inbox, standing: true })
     await this.#deliver({ id: newId(), op: "close", inbox: MAIN_CHAT.inbox })
   }
 

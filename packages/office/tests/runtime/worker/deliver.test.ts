@@ -135,7 +135,7 @@ test("an interrupt returns the text so far", async () => {
   fake.script(...TOOL_THEN_DONE)
   const job = makeJob(base(), "flows/cuttable.yaml", { groups: specGroups() })
   const env = fake.env()
-  const rec = await run(job, new DuringShout((w) => w.deliver({ id: "i1", op: "interrupt", inbox: "steers" })), {
+  const rec = await run(job, new DuringShout((w) => w.deliver({ id: "i1", op: "interrupt", inbox: "steers", standing: false })), {
     env,
   })
   expect([rec.outcome?.status, rec.outcome?.output]).toEqual(["succeeded", null])
@@ -145,7 +145,7 @@ test("an interrupt returns the text so far", async () => {
     .map((f) => f.data as Record<string, unknown>)
   expect(ended.length).toBe(1)
   expect(ended[0]!.interrupted).toBe(true)
-  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "i1", seq: null, closed: [] }])
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "i1", seq: expect.any(Number), closed: [] }])
   const folded = await foldRunLog(job.log, { env: (name) => env[name], codeRoot: job.pin })
   const newMessages = folded.records.find(
     ({ entry, value }) =>
@@ -531,7 +531,7 @@ test("an interrupt for a crashed run takes effect after RunResumed", async () =>
   const chat = await crashedRun(fake)
   fake.script({ content: "late", hold: true })
   const rec = new ResumeOrder()
-  const job = advanceJob(chat, { deliver: [{ id: "i1", op: "interrupt", inbox: "steers" }] })
+  const job = advanceJob(chat, { deliver: [{ id: "i1", op: "interrupt", inbox: "steers", standing: false }] })
   const worker = await inProcessWorker(job, rec, { env: fake.env() })
   expect(await worker.wait()).toBe(EXIT_OK)
   expect(rec.seen).toEqual(["RunResumed", "i1"])
@@ -550,7 +550,7 @@ test("an interrupt frame for a crashed run waits for RunResumed", async () => {
   const job = advanceJob(chat, { deliver: [{ id: "s1", op: "send", inbox: "steers", event: "x" }] })
   const worker = await inProcessWorker(job, rec, {
     env: fake.env(),
-    early: [{ id: "i1", op: "interrupt", inbox: "steers" }],
+    early: [{ id: "i1", op: "interrupt", inbox: "steers", standing: false }],
   })
   expect(await worker.wait()).toBe(EXIT_OK)
   expect(rec.seen).toEqual(["s1", "RunResumed", "i1"])
@@ -596,7 +596,7 @@ test("an advance that throws before its gate opens refuses the held deliveries",
   const a = await inProcessWorker(chat, first, { env: fake.env() })
   await fake.waitForRequests(1, 30_000)
   const rec = new Recorder()
-  const job = advanceJob(chat, { deliver: [{ id: "i1", op: "interrupt", inbox: "steers" }] })
+  const job = advanceJob(chat, { deliver: [{ id: "i1", op: "interrupt", inbox: "steers", standing: false }] })
   const b = await inProcessWorker(job, rec, { env: fake.env() })
   expect(await b.wait()).toBe(EXIT_FAILED)
   expect(rec.replies).toEqual([{ type: "deliver_reply", id: "i1", refused: "not_started" }])
@@ -645,7 +645,7 @@ test.each([
   { id: "d1", op: "send", inbox: "messages", event: "hi" },
   { id: "d1", op: "complete", call_id: "c1", result: { output: "done" } },
   { id: "d1", op: "close", inbox: "messages" },
-  { id: "d1", op: "interrupt", inbox: "messages" },
+  { id: "d1", op: "interrupt", inbox: "messages", standing: false },
   { id: "d1", op: "cancel" },
 ] as const)("every delivery from a pin other than the recorded code root is refused [$op]", async (delivery) => {
   const chat = makeJob(base(), "flows/coded.yaml", { inputs: {} })
@@ -745,9 +745,11 @@ test("an offline interrupt reply lists the closed calls", async () => {
   expect(asking.asked.map((request) => request.question)).toEqual(["Which city?"])
   const waits = waitsOf(asking)
   expect(waits).toEqual([expect.objectContaining({ node: "reply", tool: "ask_user", settled: false })])
-  const job = advanceJob(chat, { deliver: [{ id: "i1", op: "interrupt", inbox: "steers" }] })
+  const job = advanceJob(chat, { deliver: [{ id: "i1", op: "interrupt", inbox: "steers", standing: false }] })
   const rec = await run(job, new Recorder(), { env: fake.env() })
-  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "i1", seq: null, closed: [waits[0]!.call_id] }])
+  expect(rec.replies).toEqual([
+    { type: "deliver_reply", id: "i1", seq: expect.any(Number), closed: [waits[0]!.call_id] },
+  ])
   expect([rec.outcome?.status, rec.outcome?.output], String(rec.outcome?.message)).toEqual(["succeeded", null])
   expect(fake.requests()).toHaveLength(1)
 })

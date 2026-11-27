@@ -87,7 +87,7 @@ test("a message during the reply steers it, and Esc interrupts it", async () => 
     { content: "Long", hold: 30, hold_after: 1, match: AGENT },
   )
   onTestFinished(() => fake.release())
-  const { host } = await startHost(fake)
+  const { host, folder } = await startHost(fake)
   await until(host, "idle")
   await host.prompt("hi", OWNER)
   await fake.waitForRequests(1)
@@ -110,6 +110,10 @@ test("a message during the reply steers it, and Esc interrupts it", async () => 
   expect(users).toEqual(["hi", "Also say two.", "go on"])
   // The interrupted reply asked nothing more of the model.
   expect(fake.requests()).toHaveLength(3)
+  // Esc cut only the reply reading the inbox then: no Stop stands for a turn after it.
+  const [run] = fs.readdirSync(path.join(folder, "runs"))
+  const cuts = [...iterRunRecords(path.join(folder, "runs", run!, "log.jsonl"), { kinds: ["interrupted"] })]
+  expect(cuts.map(({ envelope }) => (envelope.record as unknown as { standing: boolean }).standing)).toEqual([false])
 })
 
 test("a terminal command the mode asks about holds on an approval card; Yes runs it once and completes the call; No completes it with the owner's words and settles the reply's later calls", async () => {

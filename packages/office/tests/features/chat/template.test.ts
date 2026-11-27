@@ -16,6 +16,7 @@ import {
   CLOSE_QUEUE,
   fakeLlm,
   interruptMidReply,
+  interrupts,
   queue,
   TemplateOffice as Office,
   ROOT,
@@ -393,16 +394,16 @@ test("an interrupted reply with no text adds no empty assistant message to the n
   expect(assistants.filter((m) => !m.content && !m.tool_calls)).toEqual([])
 })
 
-test("an interrupt after a send and before its reply starts stops that reply and the next message is answered", async () => {
+test("a standing interrupt after a send and before its reply starts stops that reply and the next message is answered", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "Answering both." })
   const job = await waitingChat(fake)
-  const stop = { id: "cut", op: "interrupt", inbox: "messages" } as const
+  const stop = { id: "cut", op: "interrupt", inbox: "messages", standing: true } as const
   const stopped = await advance(job, fake, [send("s1", "one"), stop])
   expect(stopped.replies.find((reply) => reply.id === "cut")).toEqual({
     type: "deliver_reply",
     id: "cut",
-    seq: null,
+    seq: expect.any(Number),
     closed: [],
   })
   expect(fake.requests()).toEqual([])
@@ -417,6 +418,36 @@ test("an interrupt after a send and before its reply starts stops that reply and
   ])
   expect(waitingAt(rec)).toEqual(["chat#2/heard"])
 })
+
+test.each([
+  ["a steer", send],
+  ["a queued message", queue],
+] as const)(
+  "Esc's interrupt landing after the turn took %s and before its reply starts appends nothing, and the turn runs in full",
+  async (_, message) => {
+    const fake = await fakeLlm()
+    fake.script({ content: "Booked." })
+    const job = await waitingChat(fake)
+    const before = interrupts(job.log)
+    // As when the reply ended just before Esc reached the run: the next turn's take has the message, its reply not
+    // yet started, and no agent reads the inbox.
+    const esc = { id: "cut", op: "interrupt", inbox: "messages", standing: false } as const
+    const rec = await advance(job, fake, [message("m1", "Then book the hotel."), esc])
+    expect(rec.replies.find((reply) => reply.id === "cut")).toEqual({
+      type: "deliver_reply",
+      id: "cut",
+      seq: null,
+      closed: [],
+    })
+    expect(interrupts(job.log)).toEqual(before)
+    expect(fake.requests()).toHaveLength(1)
+    expect(requestMessages(fake, 0).at(-1)).toEqual({ role: "user", content: "Then book the hotel." })
+    expect(succeeded(rec, "chat#0/reply").map((reply) => [reply.interrupted, reply.output])).toEqual([
+      [false, "Booked."],
+    ])
+    expect(waitingAt(rec)).toEqual(["chat#1/heard"])
+  },
+)
 
 test("the author of a message reaches the request", async () => {
   const fake = await fakeLlm()
@@ -508,7 +539,7 @@ test("an interrupt sent with a message over budget folds once and stops that tur
   const fake = await fakeLlm()
   fake.script({ content: "SUMMARY-OF-TURN-0" }, { content: "SUMMARY-OF-TURN-1" }, { content: "Hello." })
   const job = await waitingChat(fake, "chat", { history: LONG })
-  const stop = { id: "cut", op: "interrupt", inbox: "messages" } as const
+  const stop = { id: "cut", op: "interrupt", inbox: "messages", standing: true } as const
   const stopped = await advance(job, fake, [send("s1", "next"), stop])
   expect(fake.requests().length).toBe(1)
   expect(summarizes(fake, 0)).toBe(true)

@@ -347,7 +347,7 @@ test.each(["codex", "claude"] as const)(
       what: `the ${kind} turn`,
     })
     // An interrupt of the run, as the office sends one: the driver's call learns of it while it waits on the turn.
-    await worker.deliver({ id: "i1", op: "interrupt", inbox: "messages" })
+    await worker.deliver({ id: "i1", op: "interrupt", inbox: "messages", standing: false })
     expect(await worker.wait()).not.toBeNull()
     expect(r.interrupts()).toBe(1)
     expect(rec.outcome).toMatchObject({ status: "succeeded", output: null })

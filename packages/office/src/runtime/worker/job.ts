@@ -47,6 +47,8 @@ export function byPerson(handle: string | null | undefined): { by?: DeliveryBy }
  *  with `events`, it also lists those already read (`already_read`) and those an earlier withdraw took back
  *  (`already_withdrawn`), and a seq that is no send of `by`'s to the inbox is refused `unknown_send`. A `release` runs a
  *  call the office's gate held, once, with `note` kept in the run log; a second release of it appends nothing
+ *  (`seq: null`). An `interrupt` cuts the agents reading `inbox` now; with `standing`, its Stop also stands for one
+ *  that opens the inbox before the run next picks up from it, and without, it appends nothing when none reads it
  *  (`seq: null`). */
 export const Delivery = z.discriminatedUnion("op", [
   z.strictObject({
@@ -79,7 +81,7 @@ export const Delivery = z.discriminatedUnion("op", [
     events: z.array(z.number().int().positive()).min(1).readonly().optional(),
     by: DeliveryBy.optional(),
   }),
-  z.strictObject({ id: deliveryId, op: z.literal("interrupt"), inbox: z.string() }),
+  z.strictObject({ id: deliveryId, op: z.literal("interrupt"), inbox: z.string(), standing: z.boolean() }),
   z.strictObject({ id: deliveryId, op: z.literal("cancel") }),
 ])
 export type Delivery = z.output<typeof Delivery>
