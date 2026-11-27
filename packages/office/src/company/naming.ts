@@ -1,5 +1,6 @@
-/** Naming rules: person handles, the names of the MCP servers a person may use, and the names the model sees for host
- *  tools. */
+/** Naming rules: person handles, people's names and handles as Yian reads them, the names of the MCP servers a person
+ *  may use, and the names the model sees for host tools. */
+import { labelClashes, type LabelForm, labelRefusal } from "@ngocbh/yian/run"
 import { Handle, OFFICE } from "@opencorp/protocol"
 
 /** The names the office and Yian speak as, which no person may take, or their messages could pass for the office's:
@@ -29,6 +30,55 @@ export function handleProblem(handle: string): string | null {
   const issue = result.error.issues[0]
   if (issue?.code === "invalid_format" && issue.pattern) return `should match pattern ${issue.pattern}`
   return "isn't a valid handle"
+}
+
+/** How two labels Yian finds alike read alike (`LabelForm`), in words. */
+const ALIKE: Readonly<Record<LabelForm, string>> = {
+  folded: "ignoring case and width",
+  skeleton: "by Unicode's confusables",
+  folded_skeleton: "by Unicode's confusables, ignoring case",
+  upper_skeleton: "by Unicode's confusables, ignoring case",
+}
+
+/** A problem Yian's label checks find with the name or handle of the person at `index`: one Yian refuses alone
+ *  (`refused`), or one that reads as an earlier person's (`clash`). `message` names both people and Yian's reason. */
+export interface LabelProblem {
+  readonly index: number
+  readonly field: "name" | "handle"
+  readonly kind: "refused" | "clash"
+  readonly message: string
+}
+
+/**
+ * Each problem Yian's label checks find with `people`'s names and handles, by person, a name's before a handle's: a
+ * name or handle Yian refuses alone (`labelRefusal`), or one that reads as an earlier person's (`labelClashes`), names
+ * against names and handles against handles. Yian tells the people who speak in a run apart by these checks, so a
+ * person is refused where they are added, never in a chat later. A handle that isn't one or is reserved
+ * (`handleProblem`), and a handle taken twice, are left to the checks that say so.
+ */
+export function labelProblems(people: readonly { readonly handle: string; readonly name: string }[]): LabelProblem[] {
+  const found = people.map((): LabelProblem[] => [])
+  for (const field of ["name", "handle"] as const) {
+    // The person at `i`'s label as a message names it: a name with whose it is, a handle as itself.
+    const named = (i: number) => {
+      const { handle, name } = people[i]!
+      return field === "name" ? `@${handle}'s name ${JSON.stringify(name)}` : `@${handle}`
+    }
+    const checked: number[] = []
+    people.forEach((person, i) => {
+      if (field === "handle" && handleProblem(person.handle) !== null) return
+      const refusal = labelRefusal(person[field])
+      if (refusal === null) checked.push(i)
+      else found[i]!.push({ index: i, field, kind: "refused", message: `@${person.handle}'s ${field} ${refusal.reason}` })
+    })
+    for (const clash of labelClashes(checked.map((i) => people[i]![field]))) {
+      const [i, earlier] = [checked[clash.index]!, checked[clash.readsAs]!]
+      if (field === "handle" && people[i]!.handle === people[earlier]!.handle) continue
+      const message = `${named(i)} reads as ${named(earlier)} ${ALIKE[clash.form]}: Yian can't tell them apart`
+      found[i]!.push({ index: i, field, kind: "clash", message })
+    }
+  }
+  return found.flat()
 }
 
 /** A name a person's `harness_policy.mcp_servers` allows a server by: letters, digits, `-` and `_`, the names Claude

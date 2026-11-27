@@ -256,6 +256,14 @@ const STEPS: Step[] = [
     schema: HireResponse,
     pick: (r) => r.issues.map((i: { code: string; severity: string }) => [i.code, i.severity]),
   },
+  {
+    name: "preview a hire whose handle reads as a person's",
+    method: "POST",
+    path: () => "/people",
+    body: () => ({ name: "Rninh Tran", handle: "rninh", title: "QA", manager: "ngocbh", confirm: false }),
+    schema: HireResponse,
+    pick: (r) => r.issues.map((i: { path: string; code: string; message: string }) => [i.path, i.code, i.message]),
+  },
   { name: "connections", method: "GET", path: () => "/connections", schema: ConnectionList },
   { name: "the models of the office connection", method: "GET", path: () => "/connections/office/models", schema: ModelList },
   {

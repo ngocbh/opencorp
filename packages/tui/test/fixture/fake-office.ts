@@ -758,9 +758,18 @@ export function createFakeOffice(
     check(HANDLE.test(body.handle), "handle must be lowercase letters, digits and dashes")
     const file = `people/${body.handle}/person.yaml`
     const taken = state.people.some((p) => p.handle === body.handle)
+    // Scripted: the office's own check is Yian's, by Unicode's confusables; here only rn read as m.
+    const alike = taken ? undefined : state.people.find((p) => p.handle === body.handle.replaceAll("rn", "m"))
     const issues: RepoIssue[] = [
       ...(taken
         ? [{ path: file, code: "person.duplicate_handle", message: `@${body.handle} is already taken` }]
+        : []),
+      ...(alike
+        ? [{
+            path: file,
+            code: "person.handle_clash",
+            message: `@${body.handle} reads as @${alike.handle} by Unicode's confusables: Yian can't tell them apart`,
+          }]
         : []),
       ...(state.people.some((p) => p.handle === body.manager)
         ? []

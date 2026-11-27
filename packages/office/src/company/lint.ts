@@ -9,7 +9,7 @@ import { MAIN_CHAT } from "./chat_flow.ts"
 import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath, type UsedModule } from "./flows.ts"
 import { type RepoIssue, repoIssue } from "./issues.ts"
 import { type CompanyRepo, profilePath } from "./loader.ts"
-import { MCP_SERVER_NAME, shownAssetToolName, TOOL_NAME } from "./naming.ts"
+import { labelProblems, MCP_SERVER_NAME, shownAssetToolName, TOOL_NAME } from "./naming.ts"
 import { COMPANY_RULES, inTree, loadRules, rulesPath } from "./rules.ts"
 
 /** One lint check: the issues it finds in a repo. */
@@ -98,6 +98,14 @@ function* checkIdCase(repo: CompanyRepo): Iterable<RepoIssue> {
         first.set(key, id)
       }
     }
+  }
+}
+
+/** No person's name or handle is one Yian refuses, or reads as an earlier person's by handle (`labelProblems`). */
+function* checkLabels(repo: CompanyRepo): Iterable<RepoIssue> {
+  const people = sorted(repo.people).map(([, person]) => person)
+  for (const { index, field, kind, message } of labelProblems(people)) {
+    yield repoIssue(personPath(people[index]!.handle), `person.${field}_${kind}`, message)
   }
 }
 
@@ -736,5 +744,5 @@ function* checkRules(repo: CompanyRepo): Iterable<RepoIssue> {
   }
 }
 
-const CHECKS: Check[] = [checkIdCase, checkManagers, checkCeo, checkGroups, checkPersonGroups, checkAssets,
+const CHECKS: Check[] = [checkIdCase, checkLabels, checkManagers, checkCeo, checkGroups, checkPersonGroups, checkAssets,
   checkFlows, checkSkills, checkProfiles, checkDevices, checkFolders, checkMcpServers, checkRules]
