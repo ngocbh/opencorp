@@ -149,14 +149,28 @@ export type NodeDetails = Record<string, Record<number, RunNodeDetail>>
 export const valueRow = (name: string, value: unknown, over: Partial<RunNodeValue> = {}): RunNodeValue =>
   ({ name, seq: 1, type: null, value, missing: null, size: null, cut: [], ...over })
 
+/** What expanded `node` (a flow call or a loop) came to, from the attempts after it, as the office says it: open while
+ * one in it is, succeeded once its END (a loop's last driver) did, failed once one in it did. */
+function cameTo(nodes: RunNode[], node: RunNode): RunNodeDetail["outcome"] {
+  const id = node.node_id
+  const driver = (x: string) => x.startsWith(`${id}~`) && /^[0-9]+$/.test(x.slice(id.length + 1))
+  const inside = nodes.filter((n) => n.seq > node.seq &&
+    (n.node_id.startsWith(`${id}/`) || n.node_id.startsWith(`${id}#`) || driver(n.node_id)))
+  const ender = inside.find((n) => n.node_id === `${id}/__end__` || (driver(n.node_id) && n.status !== "expanded"))
+  if (inside.some((n) => n.status === "open")) return "open"
+  if (ender?.status === "succeeded") return "succeeded"
+  return inside.some((n) => n.status === "failed") ? "failed" : null
+}
+
 /** Node `node`'s detail in run `page` as the office sends it when its log says no more than its row: its model by
  * static path, no record times, values or failure but its row's error. */
 export function detailOf(page: RunFixturePage, node: RunNode, over: Partial<RunNodeDetail> = {}): RunNodeDetail {
   const path = node.node_id.split("/").map((s) => s.replace(/[#~]\d+$/, "")).join("/")
   const models = page.detail.models ?? {}
   return {
-    node, model: Object.hasOwn(models, path) ? models[path]! : null, started_at: null, ended_at: null, outputs: [],
-    inputs: [], failure: node.error ? { message: node.error, traceback: null, cut: [], size: null } : null, ...over,
+    node, model: Object.hasOwn(models, path) ? models[path]! : null, started_at: null, ended_at: null,
+    outcome: node.status === "expanded" ? cameTo(page.nodes, node) : null, outputs: [], inputs: [], inputs_more: 0,
+    failure: node.error ? { message: node.error, traceback: null, cut: [], size: null } : null, ...over,
   }
 }
 

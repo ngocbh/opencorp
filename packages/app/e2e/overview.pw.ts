@@ -49,7 +49,10 @@ test("Overview is the default: no starts, ends or expansions, a turn's status fo
   // ▸ opens a flow call's nodes, by the same rules; clicking the row itself opens its node.
   const context = overview(page).getByRole("treeitem", { name: "chat#0/context succeeded" })
   await expect(context).toHaveAttribute("aria-expanded", "false")
-  await context.getByText("▸").click()
+  const show = context.getByRole("button", { name: "Show the nodes of context" })
+  // A tap target like the other row controls.
+  expect((await show.boundingBox())!.width).toBeGreaterThanOrEqual(24)
+  await show.click()
   await expect(context).toHaveAttribute("aria-expanded", "true")
   const compacted = overview(page).getByRole("treeitem", { name: "chat#0/context/compacted succeeded" })
   await expect(compacted).toContainText("compacted")
@@ -88,7 +91,7 @@ test("Overview's keys move over the rows on show, open and fold a flow call, and
   await page.keyboard.press("Escape")
   await expect(item("chat#0/context/compacted succeeded")).toBeFocused()
   // Folding a call over the row in focus moves focus to the call.
-  await item("chat#0/context succeeded").locator("[data-fold]").first().click()
+  await item("chat#0/context succeeded").getByRole("button", { name: "Hide the nodes of context" }).click()
   await expect(item("chat#0/context succeeded")).toBeFocused()
   await expect(item("chat#0/context succeeded")).toHaveAttribute("aria-expanded", "false")
 })
@@ -121,4 +124,55 @@ test("the node shown is in the address; a link to one opens it, in the Timeline 
   await page.keyboard.press("Escape")
   await expect(nodeDetail(page, "plan/__end__")).toHaveCount(0)
   await expect(timeline(page).getByRole("treeitem").first()).toBeFocused()
+})
+
+test("Overview follows a live run: nodes that land show where they belong, a call's fold and focus kept", async ({ page, request }) => {
+  // @lead's turn while its context call runs: compacted's route is open.
+  const over = node(17, "chat#0/context/compacted/over", { kind: "case", status: "open", end_seq: null })
+  await request.post("/__fixture/run", { data: { id: rid(3), add: [
+    over, node(16, "chat#0/context/compacted/__start__"), node(15, "chat#0/context/compacted", { status: "expanded" }),
+    node(14, "chat#0/context/__start__"), node(13, "chat#0/context", { kind: "call", status: "expanded" }),
+    node(11, "chat#0/route", { status: "routed", handle: "context" }), node(9, "chat#0/heard"),
+    node(7, "chat~0", { status: "expanded" }),
+  ] } })
+  await page.goto(`/runs/${rid(3)}`)
+  const item = (name: string) => overview(page).getByRole("treeitem", { name })
+  await expect(item("iteration chat#0 open")).toBeVisible()
+  await item("chat#0/context open").getByRole("button", { name: "Show the nodes of context" }).click()
+  await item("chat#0/context/compacted open").focus()
+  // The route ends, the calls return, the reply runs and the turn ends.
+  await request.post("/__fixture/run", { data: { id: rid(3), update: [{ ...over, status: "routed", handle: "done",
+    end_seq: 18 }], add: [
+    node(24, "chat#0/__end__"), node(22, "chat#0/reply", { kind: "agent" }), node(20, "chat#0/context/__end__"),
+    node(19, "chat#0/context/compacted/__end__"),
+  ] } })
+  await request.post("/__fixture/emit", { data: { event: { type: "run.updated", data: {
+    run_id: rid(3), session_id: "S3", status: "idle", current_nodes: [] } } } })
+  await expect(item("iteration chat#0 succeeded")).toBeVisible()
+  await expect(item("chat#0/reply succeeded")).toBeVisible()
+  await expect(item("chat#0/context succeeded")).toHaveAttribute("aria-expanded", "true")
+  await expect(item("chat#0/context/compacted succeeded")).toBeFocused()
+  for (const hidden of [/__end__/, /__start__/, /^chat~0/])
+    await expect(overview(page).getByRole("treeitem", { name: hidden })).toHaveCount(0)
+})
+
+test("a link to a node on an older page reads the pages before until it comes, and opens it", async ({ page, request }) => {
+  // Run 5's oldest node, `chat` (seq 1), is on its last node page.
+  await page.goto(`/runs/${rid(5)}?node=1`)
+  await expect(nodeDetail(page, "chat")).toBeVisible()
+  await expect(page.getByRole("tab", { name: "Timeline" })).toHaveAttribute("aria-selected", "true")
+  await expect(page.getByRole("button", { name: "Older nodes" })).toHaveCount(0)
+})
+
+test("closing a node opened in another view returns focus to its row in the view shown", async ({ page }) => {
+  await page.goto(`/runs/${rid(5)}`)
+  const ask = overview(page).getByRole("treeitem", { name: /^chat#3\/ask/ })
+  await ask.click()
+  await expect(nodeDetail(page, "chat#3/ask")).toBeVisible()
+  // The row that opened it is in Overview, now hidden; focus is in the node view as it closes.
+  await page.getByRole("tab", { name: "Timeline" }).click()
+  await nodeDetail(page, "chat#3/ask").getByRole("heading", { name: "Node chat#3/ask" }).click()
+  await page.keyboard.press("Escape")
+  await expect(nodeDetail(page, "chat#3/ask")).toHaveCount(0)
+  await expect(timeline(page).getByRole("treeitem", { name: /^chat#3\/ask/ })).toBeFocused()
 })

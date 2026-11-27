@@ -29,12 +29,13 @@ Click a node in Overview or the Timeline to see what happened in it. The page's 
 these sections:
 
 - **Metadata**: its kind (agent, code, case, loop, call, start, end, …), its status, an agent's model, and when it
-  started and how long it took.
+  started and how long it took. A flow call or a loop shows what it came to, as its row in Overview does.
 - **Inputs**: what a node that only gathers values read, each by the name its flow reads it as, such as `input`
-  or `prep.output`. A flow's end shows what it gathered. The log doesn't record other nodes' inputs.
+  or `prep.output`. A flow's end shows what it gathered, up to 100 rows. The log doesn't record other nodes'
+  inputs.
 - **Model calls** for an agent, or **Route** for a case: the case it took.
 - **Outputs**: what the node produced, a row each: an agent's `output` and `new_messages`, or, for a flow's start
-  and end, each field it received or returned. A row shows the value's name, its type and a preview; **›** opens
+  and end, each field it received or returned. A flow call's or a loop's are what its end returned. A row shows the value's name, its type and a preview; **›** opens
   the whole value.
 - **Error**: a failed node's error, with its traceback folded.
 

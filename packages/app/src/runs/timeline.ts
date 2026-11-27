@@ -121,12 +121,21 @@ function nameUnder(id: string, parent: string | null): string {
   return flow && id.startsWith(flow) ? id.slice(flow.length) : id
 }
 
+/** The loop `id` drives (`l` for `chat#5/l~2`), when it's a driver inside a flow; null otherwise. A top-level
+ *  driver joins its iteration instead. */
+function loopOf(id: string): string | null {
+  const driver = /^(.+\/[^/]+)~[0-9]+$/.exec(id)
+  return driver ? driver[1]! : null
+}
+
 /**
- * The node whose flow call `id` runs in, among `ids`: the longest of its prefixes that is a node's id, a prefix's
- * occurrence (`l#0`) read as its loop or map (`l`); none for a node of a top-level iteration's own flow, which the
- * iteration holds.
+ * The node whose flow call `id` runs in, among `ids`: a driver's loop; else the longest of its prefixes that is a
+ * node's id, a prefix's occurrence (`l#0`) read as its loop or map (`l`); none for a node of a top-level iteration's
+ * own flow, which the iteration holds.
  */
 function callOf(id: string, ids: ReadonlySet<string>): string | null {
+  const loop = loopOf(id)
+  if (loop !== null && ids.has(loop)) return loop
   const segments = id.split("/")
   for (let k = segments.length - 1; k >= 1; k--) {
     const last = segments[k - 1]!
@@ -137,11 +146,15 @@ function callOf(id: string, ids: ReadonlySet<string>): string | null {
   return null
 }
 
-/** The status `nodes` (an iteration's or a flow call's, every attempt) fold into: open while any is, succeeded once its
- *  END (`end`) did, failed once any did, else `otherwise`'s. */
-function folded(nodes: RunNode[], end: string, otherwise: Pick<RunNode, "status" | "handle">) {
+/**
+ * The status `nodes` (an iteration's or a flow call's, every attempt, newest first) fold into, as the office's node
+ * detail says what a call came to: open while any is, succeeded once what returns its value did (its END, `<id>/__end__`,
+ * or a loop's last turn's driver, the newest that did more than expand), failed once any did, else `otherwise`'s.
+ */
+function folded(nodes: RunNode[], id: string, otherwise: Pick<RunNode, "status" | "handle">) {
+  const ender = nodes.find((n) => n.node_id === `${id}/__end__` || (loopOf(n.node_id) === id && n.status !== "expanded"))
   if (nodes.some((n) => n.status === "open")) return { status: "open" as const, handle: null }
-  if (nodes.find((n) => n.node_id === end)?.status === "succeeded") return { status: "succeeded" as const, handle: null }
+  if (ender?.status === "succeeded") return { status: "succeeded" as const, handle: null }
   if (nodes.some((n) => n.status === "failed")) return { status: "failed" as const, handle: null }
   return otherwise
 }
@@ -176,7 +189,7 @@ export function overview(nodes: RunNode[], dividers: RunDivider[]): TreeRow[] {
     const below = latest.get(n.node_id) === n.seq ? (under.get(n.node_id) ?? []) : []
     if (below.length) {
       const children = below.flatMap((c) => item(c, n.node_id) ?? [])
-      const status = n.status === "expanded" ? folded(within(n.node_id), `${n.node_id}/__end__`, n) : n
+      const status = n.status === "expanded" ? folded(within(n.node_id), n.node_id, n) : n
       return { ...leaf(n, name), kind: "call", status, children }
     }
     return isBoundary(n.node_id) || n.status === "expanded" ? null : leaf(n, name)
@@ -191,7 +204,7 @@ export function overview(nodes: RunNode[], dividers: RunDivider[]): TreeRow[] {
     const seen = new Set<string>()
     const all = group.nodes.flatMap((n) => [n, ...within(n.node_id, seen)])
     return [{ type: "item", item: { key: groupKey(group), kind: "group", node: null, name: group.key,
-      status: folded(all, `${group.key}/__end__`, group.nodes[0]!), children: group.nodes.flatMap((n) => item(n, group.key) ?? []),
+      status: folded(all, group.key, group.nodes[0]!), children: group.nodes.flatMap((n) => item(n, group.key) ?? []),
       seqs: group.nodes.map((n) => n.seq), noun: "node" } }]
   })
 }

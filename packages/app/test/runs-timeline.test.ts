@@ -177,3 +177,20 @@ test("a link to a node opens Overview, unless Overview hides it: a turn's END op
   expect(linkedView(nodes, [], 19)).toBe("overview") // in a folded flow call, which opens
   expect(linkedView(nodes, [], 25)).toBe("overview")
 })
+
+test("a loop inside a turn is one row, its turns' nodes and drivers under it, and it came to its last driver's", () => {
+  const nodes = [
+    n(30, "chat#5/__end__"), n(28, "chat#5/l~2"), n(26, "chat#5/l#1/a"), n(24, "chat#5/l~1", { status: "expanded" }),
+    n(22, "chat#5/l#0/a"), n(20, "chat#5/l", { status: "expanded" }), n(10, "chat~5", { status: "expanded" }),
+  ]
+  expect(outline(overview(nodes, []))).toEqual([
+    "chat#5 succeeded (1 nodes)",
+    "  l succeeded (3 steps)",
+    "    l~2 succeeded",
+    "    l#1/a succeeded",
+    "    l#0/a succeeded",
+  ])
+  // Still on its first turn: open.
+  const running = [n(22, "chat#5/l#0/a", { status: "open" }), n(20, "chat#5/l", { status: "expanded" })]
+  expect(outline(overview(running, []))[1]).toBe("  l open (1 steps)")
+})

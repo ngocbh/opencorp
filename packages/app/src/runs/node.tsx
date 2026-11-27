@@ -193,8 +193,8 @@ export function NodeDetail(props: {
   /** Whether it's a sheet over everything (a phone), so a modal dialog. */
   modal: boolean
   onClose: () => void
-  /** Where focus goes back to when it closes. */
-  returnTo: () => HTMLElement | undefined
+  /** Where focus goes back to when it closes, given its node's seq. */
+  returnTo: (seq: number) => HTMLElement | undefined
   /** Whether it has the Timeline's width too (a desktop only). */
   expanded?: boolean
   /** Expands it over the Timeline, or puts it back beside it. */
@@ -250,12 +250,15 @@ export function NodeDetail(props: {
     else props.onClose()
   }
   onMount(() => document.addEventListener("keydown", onKey))
+  // Kept as it changes: once the node has gone, reading it is a stale read.
+  let seq = props.node.seq
+  createEffect(() => (seq = props.node.seq))
   onCleanup(() => {
     document.removeEventListener("keydown", onKey)
     // After this update: on a phone the page is inert until the sheet has gone. Focus elsewhere on the page stays.
     queueMicrotask(() => {
       const at = document.activeElement
-      if (!at || at === document.body || root.contains(at)) props.returnTo()?.focus()
+      if (!at || at === document.body || root.contains(at)) props.returnTo(seq)?.focus()
     })
   })
 
@@ -326,7 +329,8 @@ export function NodeDetail(props: {
         <Section title="Metadata">
           <dl class={ROWS}>
             <Show when={props.node.kind}>{(kind) => <Row label="Kind">{kind()}</Row>}</Show>
-            <Row label="Status">{props.node.status}</Row>
+            {/* A flow call or a loop by what it came to, as its row in Overview says it. */}
+            <Row label="Status">{detail()?.outcome ?? props.node.status}</Row>
             <Show when={model()}>
               {(m) => (
                 <Row label="Model">
@@ -353,6 +357,9 @@ export function NodeDetail(props: {
         <Show when={detail()?.inputs?.length}>
           <Section title="Inputs">
             <Values values={detail()!.inputs!} onOpen={(value, button) => open({ value: { value, input: true } }, button)} />
+            <Show when={detail()?.inputs_more}>
+              {(more) => <p class={MUTED}>{`${more()} more, not shown here: download the log`}</p>}
+            </Show>
           </Section>
         </Show>
         <Dynamic

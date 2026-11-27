@@ -107,7 +107,18 @@ export function RunPage(props: { id: string }) {
   }
   /** The row that opened node detail, where focus goes back when it closes. */
   let opener: HTMLElement | undefined
-  const returnTo = () => (opener?.isConnected ? opener : currentItem())
+  /** Where focus goes when node `seq`'s detail closes: the row that opened it while it shows (not in a tab since
+   *  hidden), else that node's row in the view shown, else that view's current row, else its tab. */
+  const returnTo = (seq: number) => {
+    if (opener?.isConnected && !opener.closest("[hidden]")) return opener
+    const panel = '[role="tabpanel"]:not([hidden])'
+    return (
+      document.querySelector<HTMLElement>(`${panel} [role="treeitem"][data-key="n:${seq}"]`) ??
+      currentItem() ??
+      document.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ??
+      undefined
+    )
+  }
   // The node shown is in the address, so a link opens it.
   const [params, setParams] = useSearchParams<{ node?: string }>()
   const showIn = (seq: number | undefined) =>
@@ -301,6 +312,8 @@ export function RunPage(props: { id: string }) {
   const tabsId = createUniqueId()
 
   // A link to a node opens it once the page has read it: in the view shown, or in the Timeline when Overview hides it.
+  /** The older page last read for a link, so each is read once. */
+  let pagedFor: number | null = null
   createEffect(
     on(
       // Again as older pages come in: the node may be on one.
@@ -308,7 +321,14 @@ export function RunPage(props: { id: string }) {
       ([loaded, wanted]) => {
         if (!loaded || !wanted || !/^[0-9]+$/.test(wanted) || selected() === Number(wanted)) return
         const seq = Number(wanted)
-        if (!log.nodes.some((n) => n.seq === seq)) return
+        if (!log.nodes.some((n) => n.seq === seq)) {
+          // On an older page: read the pages before the ones read until it comes, or there are none.
+          if (log.next != null && seq < log.next && pagedFor !== log.next) {
+            pagedFor = log.next
+            older()
+          }
+          return
+        }
         if (tab() === "overview" && linkedView(unwrap(log.nodes), unwrap(log.dividers), seq) === "timeline")
           chooseTab("timeline")
         apis[tab()]?.reveal(seq)
@@ -924,9 +944,19 @@ function NodeTree(props: {
             <Show when={!isOpen(key)}>
               <span class={`text-xs ${MUTED}`}>· {count()}</span>
             </Show>
-            <span data-fold aria-hidden="true" class={`w-3 text-xs select-none ${MUTED}`}>
-              {isOpen(key) ? "▾" : "▸"}
-            </span>
+            {/* Out of the tab order, and a click leaves focus where it was: the treeitem's Right and Left keys open
+                and fold it. */}
+            <button
+              type="button"
+              data-fold
+              tabindex={-1}
+              onMouseDown={(e) => e.preventDefault()}
+              aria-label={`${isOpen(key) ? "Hide" : "Show"} the nodes of ${p.item.name}`}
+              title={isOpen(key) ? "Hide its nodes" : "Show its nodes"}
+              class={`-my-1 grid h-6 w-6 shrink-0 place-items-center rounded text-xs hover:bg-neutral-200 dark:hover:bg-neutral-800 ${MUTED}`}
+            >
+              <span aria-hidden="true">{isOpen(key) ? "▾" : "▸"}</span>
+            </button>
           </div>
         </Show>
         <Show when={failed()}>

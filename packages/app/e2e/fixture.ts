@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs"
 import path from "node:path"
 import { HEADERS } from "@opencorp/office/server/hq/guard"
-import type { BrowserSession, RunDetail, RunEvent, RunSummary } from "@opencorp/protocol"
+import type { BrowserSession, RunDetail, RunEvent, RunNode, RunSummary } from "@opencorp/protocol"
 import { acme, source, type Data, type Source } from "./company"
 import {
   detailOf, nodeDetails, runCalls, runLogs, runPages, summaryOf, wholeEvents, type NodeDetails, type RunCalls, type RunPages,
@@ -456,15 +456,17 @@ async function control(req: Request, url: URL): Promise<Response> {
       return json({ ok: true })
     case "/__fixture/run": {
       // Changes one run's page: `detail` merges into its header (`detail.run` into its summary); `add` puts newer
-      // node attempts before its others; `addEvents` puts newer records after its others; `details` (by seq) are its
-      // nodes' details where they say more than a row; `fail` is an error code its record and node detail reads answer
-      // with (null for none). A run with no page gets one from its summary.
+      // node attempts before its others; `update` replaces attempts by seq (one that ended since); `addEvents` puts
+      // newer records after its others; `details` (by seq) are its nodes' details where they say more than a row;
+      // `fail` is an error code its record and node detail reads answer with (null for none). A run with no page gets
+      // one from its summary.
       const summary = summaryOf(state.runs, body.id)!
       const page = (state.runPages[body.id] ??= { nodes: [], dividers: [], events: [], detail: { run: summary,
         parent: null, repo_commit: "a".repeat(40), usage: null, models: {}, log_state: "ok" } as RunDetail })
       const { run, ...rest } = body.detail ?? {}
       page.detail = { ...page.detail, ...rest, run: { ...page.detail.run, ...run } }
       if (body.add) page.nodes = [...body.add, ...page.nodes]
+      if (body.update) page.nodes = page.nodes.map((n) => body.update.find((u: RunNode) => u.seq === n.seq) ?? n)
       if ("fail" in body) page.fail = body.fail
       if (body.addEvents) page.events = [...page.events, ...body.addEvents]
       if (body.details) state.nodeDetails[body.id] = { ...state.nodeDetails[body.id], ...body.details }

@@ -114,3 +114,41 @@ test("a value too large to show, or not rebuilt, says why and has nothing to ope
   await expect(nodeDetail(page, "big").getByRole("region", { name: "Output note" })).toContainText(
     "Part of this value is too large to show whole; download the log.")
 })
+
+/** Whether CSS color `color` is dark: an rgb(), lab() or oklch() lightness under half. */
+function isDark(color: string): boolean {
+  const lightness = /^(?:ok)?lab\(([0-9.]+)(%?)|^oklch\(([0-9.]+)(%?)/.exec(color)
+  if (lightness) {
+    const [value, percent] = lightness[1] !== undefined ? [lightness[1], lightness[2]] : [lightness[3], lightness[4]]
+    return Number(value) / (percent ? 100 : color.startsWith("lab") ? 100 : 1) < 0.5
+  }
+  const rgb = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(color)
+  return !!rgb && (Number(rgb[1]) + Number(rgb[2]) + Number(rgb[3])) / 3 < 128
+}
+
+test("on a phone in the dark theme the node view is a dark sheet whose rows fit, a value opening in it", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.emulateMedia({ colorScheme: "dark" })
+  await page.goto(`/runs/${rid(5)}`)
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark")
+  await overview(page).getByRole("treeitem", { name: /^iteration chat#2/ }).first().click()
+  await overview(page).getByRole("treeitem", { name: /chat#2\/reply.*succeeded/ }).click()
+  const sheet = page.getByRole("dialog", { name: "Node chat#2/reply" })
+  const outputs = sheet.getByRole("region", { name: "Outputs" })
+  await expect(outputs).toContainText("3 messages")
+  const fits = (el: Element) => el.scrollWidth <= el.clientWidth
+  expect(await sheet.evaluate(fits)).toBe(true)
+  expect(await outputs.evaluate(fits)).toBe(true)
+  expect(isDark(await sheet.evaluate((el) => getComputedStyle(el).backgroundColor))).toBe(true)
+  expect(isDark(await outputs.getByText("new_messages").evaluate((el) => getComputedStyle(el).color))).toBe(false)
+  // A tap target like the other row controls.
+  const open = outputs.getByRole("button", { name: "Open new_messages" })
+  expect((await open.boundingBox())!.width).toBeGreaterThanOrEqual(24)
+  await open.click()
+  const value = sheet.getByRole("region", { name: "Output new_messages" })
+  await expect(value).toContainText("Saving the notes, then listing the folder.")
+  expect(await sheet.evaluate(fits)).toBe(true)
+  expect(isDark(await value.locator("pre").evaluate((el) => getComputedStyle(el).backgroundColor))).toBe(true)
+  await sheet.getByRole("button", { name: "Back to the node" }).click()
+  await expect(open).toBeFocused()
+})
