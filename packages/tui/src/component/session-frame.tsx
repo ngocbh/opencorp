@@ -537,6 +537,7 @@ export function SessionFrame(props: { sessionID: string }) {
                         focused={activePane() === "right"}
                         color={driver()!.color}
                         onFocus={focusRightPane}
+                        onClose={closePanel}
                         onTarget={(node) => {
                           panelNode = node
                           if (node && activePane() === "right") focusRightPane()
