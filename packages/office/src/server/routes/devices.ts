@@ -11,6 +11,7 @@ import {
 import { VERSION } from "@opencorp/protocol/version"
 import type { z } from "zod"
 import { DeviceRefused, addDevice, login, mayChangePerson, removeDevice, setPassword } from "../../runtime/auth/devices.ts"
+import { BUILT_FROM } from "../../util/checkout.ts"
 import { actingPerson } from "../auth.ts"
 import { HttpError, type Route } from "../http.ts"
 import type { RequestContext } from "../office.ts"
@@ -57,7 +58,8 @@ function mayChange(what: "devices" | "password"): NonNullable<Route<RequestConte
 export const ROUTES: readonly Route<RequestContext>[] = [
   // `{"ok": true}`, exactly: the office is answering. Served without a token.
   { method: "GET", path: "/health", handler: () => ({ ok: true }) },
-  // The office's pid, home, start time, version, pinned tools and workspace guards, behind the token check. Served
+  // The office's pid, home, start time, version, pinned tools, workspace guards and the source its binary was built
+  // from (the build's stamp, which doctor compares with its checkout's source), behind the token check. Served
   // on `office.sock` only, never on HQ's allowlist; `/health` stays `{"ok": true}` because the home path must not
   // be on an unauthenticated route. `doctor` can't recompute the tools and guards from its own env, so they are
   // sent; the guards' `home` (the user's home dir) is not.
@@ -78,6 +80,7 @@ export const ROUTES: readonly Route<RequestContext>[] = [
         version: VERSION,
         tools,
         guards: { install: [...(g.install ?? [])], tools: [...(g.tools ?? [])], path: [...(g.path ?? [])] },
+        built_from: BUILT_FROM,
       }
     },
   },

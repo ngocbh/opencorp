@@ -8,6 +8,7 @@ import path from "node:path"
 import type { Readable } from "node:stream"
 import { fileURLToPath } from "node:url"
 import { startOffice } from "@opencorp/office/testing/office"
+import { newestSource } from "@opencorp/office/util/checkout"
 import { noticeFiles } from "../script/notices"
 
 setDefaultTimeout(30_000)
@@ -1156,7 +1157,9 @@ describe("the built binary", () => {
 
   test("a binary built in a checkout runs the office from there: init, HQ's app, doctor's version line and restart", async () => {
     // A checkout as install.sh leaves it: the binary at packages/cli/dist/npm/<platform>/bin/opencorp beside its
-    // assets, HQ's app built in packages/app/dist, and the office's source, last changed before the office starts.
+    // assets, HQ's app built in packages/app/dist, and the office's source, last changed before the binary was built.
+    // The build stamped the binary with this checkout's newest source, where it was built.
+    const stamp = newestSource(CHECKOUT)
     const checkout = fs.realpathSync(fs.mkdtempSync(path.join(built, "checkout-")))
     const pkgDir = path.join(checkout, "packages/cli/dist/npm", PLATFORM)
     const binary = path.join(pkgDir, "bin/opencorp")
@@ -1169,7 +1172,7 @@ describe("the built binary", () => {
     const source = path.join(checkout, "packages/office/src/main.ts")
     fs.mkdirSync(path.dirname(source), { recursive: true })
     fs.writeFileSync(source, "")
-    const past = Date.now() / 1000 - 3600
+    const past = stamp / 1000 - 3600
     fs.utimesSync(source, past, past)
 
     // init starts the office in the background, and its init run in a worker.
@@ -1228,10 +1231,14 @@ describe("the built binary", () => {
     const second = await restart()
     expect(second).not.toBe(first.pid)
     expect(await version()).toMatch(stale)
-    // A build of that source (here, the binary's new date), as install.sh's next run makes: a restart starts it.
+    // A touch or a copy of that build dates its file anew, but not the source it was built from: a restart starts it,
+    // and it is still to be built again.
     fs.utimesSync(binary, new Date(), new Date())
     expect(await version()).toMatch(/^⚠ version +the office started before its code last changed; restart it/)
     const third = await restart()
+    expect(await version()).toMatch(stale)
+    // The source as the binary was built from it, as install.sh's next run would leave it: the binary is current.
+    fs.utimesSync(source, past, past)
     expect(await version()).toMatch(new RegExp(`^✓ version +pid ${third} runs the current code$`))
   }, 300_000)
 

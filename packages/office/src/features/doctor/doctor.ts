@@ -1,6 +1,7 @@
 /** `opencorp doctor`: check the office home (there and private), company repo, provider and connections, the run and
  *  session folders (writable) and the run logs (of a schema this office reads), service, daemon, HQ, sandbox and its
- *  terminals, worked folders, Codex and Claude Code, and the MCP servers employees may use. */
+ *  terminals, whether a program can read its shell's memory (Linux's ptrace scope), worked folders, Codex and Claude
+ *  Code, and the MCP servers employees may use. */
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -55,7 +56,7 @@ import { fsHelper, run, startOnTerminal } from "../../runtime/sandbox/run.ts"
 import { latestVersion, newerStore, userVersion } from "../../runtime/store/migrate.ts"
 import { storeProblem } from "../../runtime/store/problem.ts"
 import { LIVE, StoreError } from "../../runtime/store/store.ts"
-import { CHECKOUT, binaryCheckout } from "../../util/checkout.ts"
+import { CHECKOUT, binaryCheckout, newestSource } from "../../util/checkout.ts"
 import { type Env, which } from "../../util/env.ts"
 import { strerror } from "../../util/errors.ts"
 import { OfficePaths } from "../../util/home.ts"
@@ -480,10 +481,11 @@ function writableFolderCheck(name: string, folder: string, home: string): Check 
 }
 
 /**
- * A warning for the run logs in `runs` that yian refuses as older than the run-log schema this office reads
- * (`SCHEMA`), as an update leaves them: how many, and how to start clean, since there's no migration. Null when there
- * are none, or no runs folder (the runs line says why one can't be read). Only each regular file's first record is
- * read; a log that can't be read for any other reason is no concern of this check.
+ * A warning for the run logs in `runs` that yian refuses as of another run-log schema than the one this office reads
+ * (`SCHEMA`): older ones, as an update leaves them, and how to start clean, since there's no migration; and newer ones,
+ * as a downgrade leaves them, and to update OpenCorp, which reads them. How many of each. Null when there are none, or
+ * no runs folder (the runs line says why one can't be read). Only each regular file's first record is read; a log
+ * that can't be read for any other reason is no concern of this check.
  */
 export function runLogsCheck(runs: string): Check | null {
   let ids: string[]
@@ -492,8 +494,8 @@ export function runLogsCheck(runs: string): Check | null {
   } catch {
     return null
   }
-  const schemas = new Set<number>()
-  let old = 0
+  const older = new Map<number, number>()
+  const newer = new Map<number, number>()
   for (const id of ids) {
     const log = path.join(runs, id, "log.jsonl")
     try {
@@ -501,24 +503,74 @@ export function runLogsCheck(runs: string): Check | null {
       if (!fs.lstatSync(log).isFile()) continue
       for (const _ of iterRunRecords(log, { maxLineBytes: LOG_LINE_CAP })) break
     } catch (error) {
-      if (!(error instanceof RunLogSchemaError) || error.schema === null || error.schema >= SCHEMA) continue
-      schemas.add(error.schema)
-      old += 1
+      if (!(error instanceof RunLogSchemaError) || error.schema === null || error.schema === SCHEMA) continue
+      const counts = error.schema < SCHEMA ? older : newer
+      counts.set(error.schema, (counts.get(error.schema) ?? 0) + 1)
     }
   }
-  if (old === 0) return null
-  const named = [...schemas].sort((a, b) => a - b).join(" or ")
-  const logs = old === 1 ? `1 run log in ${runs} uses` : `${old} run logs in ${runs} use`
-  const them = old === 1 ? "it and its session starts" : "them and their sessions start"
-  return {
-    name: "run logs",
-    status: "warn",
-    detail:
-      `${logs} run-log schema ${named}, older than the ${SCHEMA} this office reads, so Run Logs can't show ${them}` +
-      " over without that history. There's no migration while OpenCorp isn't deployed: to start clean," +
-      " re-initialise the office (`opencorp offboard`, then `opencorp init`, or `opencorp onboard --from URL` for a" +
-      " company you pushed)",
+  /** How many logs `counts` holds, and of which schemas, as the start of a sentence; with its pronouns. */
+  const which = (counts: Map<number, number>) => {
+    const n = [...counts.values()].reduce((sum, count) => sum + count, 0)
+    const named = [...counts.keys()].sort((a, b) => a - b).join(" or ")
+    const logs = n === 1 ? `1 run log in ${runs} uses` : `${n} run logs in ${runs} use`
+    const its = n === 1 ? "its session starts" : "their sessions start"
+    return { logs: `${logs} run-log schema ${named}`, it: n === 1 ? "it" : "them", its }
   }
+  const parts: string[] = []
+  if (older.size) {
+    const { logs, it, its } = which(older)
+    parts.push(
+      `${logs}, older than the ${SCHEMA} this office reads, so Run Logs can't show ${it} and ${its} over without` +
+        " that history. There's no migration while OpenCorp isn't deployed: to start clean, re-initialise the office" +
+        " (`opencorp offboard`, then `opencorp init`, or `opencorp onboard --from URL` for a company you pushed)",
+    )
+  }
+  if (newer.size) {
+    const { logs, it, its } = which(newer)
+    parts.push(
+      `${logs}, newer than the ${SCHEMA} this office reads, as a later OpenCorp writes them, so Run Logs can't show` +
+        ` ${it} and ${its} over without that history. To read ${it}, update OpenCorp: run install.sh again, then` +
+        " `opencorp restart`",
+    )
+  }
+  if (!parts.length) return null
+  return { name: "run logs", status: "warn", detail: parts.join(". ") }
+}
+
+/** Where Linux's Yama says which processes a program may trace, and so read the memory of. */
+const PTRACE_SCOPE = "/proc/sys/kernel/yama/ptrace_scope"
+
+/** `PTRACE_SCOPE`'s value, or null when there is no such file (a kernel without Yama) or it can't be read. */
+function readPtraceScope(): string | null {
+  try {
+    return fs.readFileSync(PTRACE_SCOPE, "utf8")
+  } catch {
+    return null
+  }
+}
+
+/**
+ * On Linux, whether a program a shell's command starts can read that shell's memory, by Yama's `scope`
+ * (`PTRACE_SCOPE`'s text, null without Yama): at 0, or without Yama, a process may trace any of its user's, its
+ * parent included, and so read the nonces the shell's markers carry. Null elsewhere: macOS lets no program read
+ * another's memory without the system's leave.
+ */
+export function ptraceCheck(platform: NodeJS.Platform, scope: string | null): Check | null {
+  if (platform !== "linux") return null
+  const value = scope?.trim()
+  if (value !== undefined && value !== "" && value !== "0") {
+    const detail = `kernel.yama.ptrace_scope is ${value}: no program can read the memory of the shell that runs it`
+    return { name: "ptrace", status: "ok", detail }
+  }
+  const reads =
+    "a program your employee's command starts can read its shell's memory, and with it the nonces that say where " +
+    "a command ends and that the prompt is back, so it can fake them"
+  const detail =
+    value === undefined
+      ? `this kernel has no Yama (no ${PTRACE_SCOPE}): ${reads}; a kernel with Yama, at ptrace_scope 1, stops it`
+      : `kernel.yama.ptrace_scope is 0: ${reads}; set it to 1 (\`sudo sysctl kernel.yama.ptrace_scope=1\`, and ` +
+        "`kernel.yama.ptrace_scope = 1` in a file in /etc/sysctl.d to keep it)"
+  return { name: "ptrace", status: "warn", detail }
 }
 
 /** Whether systemd keeps this user's services running after logout; null if `loginctl` can't say. */
@@ -1053,67 +1105,33 @@ export const VERSION_UNREAD: Record<service.Unread, string> = {
     "run `opencorp restart`",
 }
 
-/** The newest modification time (ms) of the regular files under `dir`, at any depth; 0 when there are none. What
- *  can't be read is skipped. */
-function newestUnder(dir: string): number {
-  let entries: fs.Dirent[]
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true })
-  } catch {
-    return 0
-  }
-  let newest = 0
-  for (const entry of entries) {
-    const file = path.join(dir, entry.name)
-    if (entry.isDirectory()) newest = Math.max(newest, newestUnder(file))
-    else if (entry.isFile()) {
-      try {
-        newest = Math.max(newest, fs.statSync(file).mtimeMs)
-      } catch {
-        // removed while this ran, or unreadable
-      }
-    }
-  }
-  return newest
-}
-
-/** The source folders of the code the office runs from `checkout`: the office, protocol, CLI and Yian sources. */
-export function sourceRoots(checkout: string): string[] {
-  return ["office", "protocol", "cli", "yian"].map((pkg) => path.join(checkout, "packages", pkg, "src"))
-}
-
-/** The newest modification time (ms) of the source the office runs from `checkout`: the files under its
- *  `sourceRoots`. 0 when nothing is found, as for an npm install, which holds no source. */
-export function newestSource(checkout: string): number {
-  return Math.max(0, ...sourceRoots(checkout).map(newestUnder))
-}
-
-/** A binary built in a checkout (`binaryCheckout`) that a daemon runs: whether it is gone, and the newest of that
- *  checkout's source (ms), which it may be older than. */
+/** A binary built in a checkout (`binaryCheckout`) that a daemon runs: whether it is gone, the newest of that
+ *  checkout's source (ms), and the newest source it was built from, as its build stamped it (null without a stamp). */
 export interface Built {
   binary: string
   checkout: string
   gone: boolean
   source: number
+  from: number | null
 }
 
 /**
  * What the daemon behind `info` runs, judged by its own program, the last of the programs it pinned
  * (`guards.tools`): a binary built in a checkout is dated by its own file (0 once gone), beside that checkout's
- * newest source (`built`); a daemon on Bun runs the source of the checkout `here`, dated by its newest file. An npm
- * binary's install holds no source, so 0: its files are all dated 1985, and VERSION catches its upgrade.
+ * newest source and the source the daemon says its build was stamped with (`built`); a daemon on Bun runs the source
+ * of the checkout `here`, dated by its newest file. An npm binary's install holds no source, so 0: its files are all
+ * dated 1985, and VERSION catches its upgrade.
  */
 export function daemonCode(info: OfficeInfo, here: string): { newest: number; built?: Built } {
   const program = info.guards.tools.at(-1)
   const checkout = program === undefined ? null : binaryCheckout(program)
   if (program === undefined || checkout === null) return { newest: newestSource(here) }
-  let newest = 0
+  const built = { binary: program, checkout, source: newestSource(checkout), from: info.built_from ?? null }
   try {
-    newest = fs.statSync(program).mtimeMs
+    return { newest: fs.statSync(program).mtimeMs, built: { ...built, gone: false } }
   } catch {
-    return { newest, built: { binary: program, checkout, gone: true, source: newestSource(checkout) } }
+    return { newest: 0, built: { ...built, gone: true } }
   }
-  return { newest, built: { binary: program, checkout, gone: false, source: newestSource(checkout) } }
 }
 
 /** How to make an office running under the recorded service `mode` run this install's code. */
@@ -1125,10 +1143,10 @@ function restartHere(mode: string | null): string {
 
 /**
  * Whether `info` is this office's daemon (`launch`'s home), runs from this install (`here`, the first of its
- * `installPaths`), runs this install's version, runs a binary built from its checkout's current source (`built`,
- * when it runs one; `daemonCode`), and started after its code last changed (`newest`, ms). `mode` is the office's
- * recorded service mode, which decides how it picks up this install. An office from an install or a binary that's
- * gone fails: it starts each session's worker from there.
+ * `installPaths`), runs this install's version, started after its code last changed (`newest`, ms), and runs a binary
+ * built from its checkout's current source (`built`, when it runs one; `daemonCode`), as the binary's stamp says,
+ * whatever its file's date. `mode` is the office's recorded service mode, which decides how it picks up this install.
+ * An office from an install or a binary that's gone fails: it starts each session's worker from there.
  */
 export function versionCheck(
   launch: Launch,
@@ -1164,19 +1182,20 @@ export function versionCheck(
     const detail = `the office runs ${built.binary}, which is gone, so sessions can't start; run install.sh again, then \`opencorp restart\``
     return { name: "version", status: "fail", detail }
   }
-  // A restart would only start the same binary again, as a launchd or systemd service does.
-  if (built && newest < built.source) {
-    const detail =
-      `the office runs ${built.binary}, built before the source in ${built.checkout} last changed; run install.sh ` +
-      `again (or \`bun run build\` in ${built.checkout}/packages/cli), then \`opencorp restart\``
-    return { name: "version", status: "warn", detail }
-  }
+  // A binary whose file changed since the office started is another build than it runs: a restart starts it.
   if (Date.parse(info.started_at) < newest) {
     return {
       name: "version",
       status: "warn",
       detail: "the office started before its code last changed; restart it to run the new code",
     }
+  }
+  // A restart would only start the same binary again, as a launchd or systemd service does.
+  if (built && (built.from === null || built.from < built.source)) {
+    const detail =
+      `the office runs ${built.binary}, built before the source in ${built.checkout} last changed; run install.sh ` +
+      `again (or \`bun run build\` in ${built.checkout}/packages/cli), then \`opencorp restart\``
+    return { name: "version", status: "warn", detail }
   }
   return { name: "version", status: "ok", detail: `pid ${info.pid} runs the current code` }
 }
@@ -1433,6 +1452,9 @@ export interface CheckOptions {
   loadIdentity?: (file: string) => Promise<Identity | undefined>
   /** The binary's TUI assets folder, or null in a checkout (default `tuiAssetRoot()`). */
   assets?: string | null
+  /** Linux's Yama ptrace scope, as `/proc/sys/kernel/yama/ptrace_scope` holds it, or null without Yama (default reads
+   *  that file). */
+  ptraceScope?: () => string | null
 }
 
 /** Whether another process holds the office's lock (`host.locked`, else yian's `isLocked`); false when it can't be
@@ -1571,6 +1593,8 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
       ? { name: "terminal", status: "fail", detail: `${onTerminal}; ${SANDBOX_FIX}` }
       : { name: "terminal", status: "ok", detail: "sandboxed programs run on a terminal" },
   )
+  const ptrace = ptraceCheck(host.platform, (options.ptraceScope ?? readPtraceScope)())
+  if (ptrace !== null) found.push(ptrace)
   // A store that failed its own check has no worked folders to read.
   const folders =
     store?.status === "fail"

@@ -108,7 +108,11 @@ while a command runs), and a missing `.mcp.json` can still be created.
   Only the chat's approver may close its shells. The shell's record says you closed it, and your employee is told in
   a note from the shell, ``↳ shell 2: closed by @you.``: while they work, they read it before their next step; while
   they rest, it never wakes them, and goes with their next turn (your message or answer, or a note that wakes them).
-  ctrl+d leaves an ended shell alone: it is the record of what ran.
+  ctrl+d leaves an ended shell alone: it is the record of what ran. A prompt that isn't the shell's own (a
+  sub-shell's, or one after `exec`) never ends a command, so the shell shows running. After a few seconds the pane
+  says so: type `exit` until the shell's own prompt is back (after `exec`, that ends the shell), or have your
+  employee close it, as they are told to. When even the shell's own prompts can't be told from forged ones (in `sh`,
+  `set -a` does that), it says to close the shell.
 - **Waits.** A command's reply waits 5 seconds unless your employee asks for longer (at most two minutes): a quick
   command replies with its output, and a longer one runs on while your employee does other work or ends their reply.
   A message for your employee, yours or a note, ends the wait at once, even one sent while their model was still
@@ -365,6 +369,11 @@ a harness they use doesn't. Its lint warns about each allowed server.
 - **Claude Code still loads** managed settings (an administrator's), `~/.claude.json` and its built-in mods, so what
   they turn on applies to your employees' sessions too.
 - **Allowed MCP servers** run as you, outside the fence ([MCP servers](#mcp-servers)).
+- **What your employee leaves in their shell.** OpenCorp tells when a command in your employee's shell ends, and
+  when its prompt is back, from marks the shell prints with a secret each time. A program can't fake them, but shell
+  code a command leaves behind runs inside the shell and can: a function named `builtin` or `/usr/bin/od`, or a trap.
+  Such code can make OpenCorp take a command as ended while it still runs, or a shell as ready for your employee
+  while it isn't. The sandbox still holds every command to your employee's permission.
 - **Unix sockets.** Claude Code's commands can't see `/tmp`, `/run` or `/dev/shm` (nor `/var/folders` on macOS),
   where the sockets of your tmux, ssh-agent and desktop session live. Whether its Linux sandbox also blocks
   connecting to a socket elsewhere is unchecked.

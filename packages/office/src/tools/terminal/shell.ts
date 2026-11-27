@@ -11,14 +11,21 @@
  *  <nonce> $?`, with a fresh start token and nonce for each command. `__oc_b` prints a start marker with the start
  *  token: the shell has read the line. `__oc_s` sets `__oc_n` to the nonce and keeps the command's exit code; the
  *  `PROMPT_COMMAND` the shell's set-up line installs then puts the terminal's line settings back as they were at the
- *  start, prints a marker (an OSC holding `__oc_n`, the exit code and whether it drained the terminal) and clears
- *  `__oc_n`. Only a marker with the command's nonce ends it.
+ *  start, prints a marker (an OSC holding `__oc_n`, the exit code, whether it drained the terminal and the next
+ *  prompt's nonce) and clears `__oc_n`. Only a marker with the command's nonce ends it.
  *  - The nonce is in no variable, `PS1` or environment while the command runs, or between commands: it reaches the
  *    shell in the typed line's last call, which runs once the command has. The shell reads the whole line before it
  *    runs any of it, so nothing of it is left for the command to read as input.
- *  - `__oc_s`, the prompt's function and `PROMPT_COMMAND` are read-only, and they run `stty`, `printf` and `sh` by
- *    path and no builtin, so a command can't redefine, unset or shadow them.
+ *  - `__oc_s`, the prompt's function and `PROMPT_COMMAND` are read-only, so a command can't redefine or unset them.
+ *    They print each marker with the builtin printf, so no program's arguments hold a nonce, and run `stty`, `pwd`,
+ *    `od` and `sh` at the paths the set-up found, each without the loader's variables a command exports (`CLEAN`).
+ *    That stops a function named `printf` or `stty`, but not one named `builtin`, or by a program's path, which bash
+ *    looks for before the program: shell code a command leaves, which changes how the shell runs (below).
  *  - The line settings come back before each marker, so a command's `stty eof ';'` can't split the next typed line.
+ *  - No history keeps a line the office types, which names `__oc_` (`HISTIGNORE`, read-only). The shell can't turn
+ *    verbose or xtrace off before it reads a line (bash puts back what its prompt changes), so while either writes
+ *    to anything but its terminal (a command's `exec 2>file`), the agent's lines wait, as that file would get the
+ *    line's nonce; xtrace that a line turns on writes that line's own end there, the limit below.
  *  - `eval` takes a command whatever its syntax: one that doesn't parse fails and still ends.
  *  - A nonce or start token the shell prints (with `set -x`, say) is neutralised in the views, even split across
  *    reads.
@@ -27,14 +34,51 @@
  *    Ctrl-C stopped, the folder is unknown until the agent's next command ends. A command that can forge its end
  *    (below) can forge that marker's folder too.
  *
- *  Without `PROMPT_COMMAND` (another sh), the typed line puts the settings back and prints the marker itself, and `PS1`
- *  is a marker with no nonce. A marker with no nonce is the shell back at its prompt: the end of the owner's command,
- *  and of the agent's once a Ctrl-C has reached it (a Ctrl-C stops the rest of the line).
+ *  Without `PROMPT_COMMAND` (another sh), the typed line puts the settings back and prints the marker itself with sh's
+ *  builtin printf (`SH_END`, which `eval` runs once `set --` has put the nonce in `$1`), and `PS1`
+ *  is a prompt's marker. A prompt's marker is the shell back at its prompt: the end of the owner's command, and of the
+ *  agent's once a Ctrl-C has reached it (a Ctrl-C stops the rest of the line).
+ *
+ *  **A prompt's nonce.** A prompt's marker has no command's nonce, so it carries the prompt's own: each marker names
+ *  the nonce the shell's next prompt will carry, 8 bytes from `/dev/urandom` (`od`, at a pinned path) that the shell
+ *  keeps (`__oc_q`), and the office takes a prompt's marker only with the nonce the marker it last took named. A shell
+ *  whose first prompt names none (no `od`) fails to start, as no command of the owner's could end. The shell prints
+ *  the nonce only in its markers: the prompt's trace goes nowhere, none can go to another file (`BASH_XTRACEFD` is
+ *  read-only), and a command that prints it shows `[nonce]`, even split across reads. No program's arguments hold it,
+ *  and no loader's variables a command exports reach the `od` that reads it. It never reaches a program's
+ *  environment: bash keeps it in an array's element, which bash never exports, whatever `set -a`, `export` or a
+ *  nameref says; sh has no arrays, so its prompt names no nonce (0) while allexport is on or the nonce is found in the
+ *  environment, and the agent's line unsets it before it makes the next, so an `export` doesn't last. A sh left with
+ *  `set -a` on takes no prompt until it's off. So no program the shell runs, the agent's or the owner's, can know it,
+ *  unless it can read the shell's memory: on Linux with `kernel.yama.ptrace_scope` 0, or no Yama, any program of
+ *  the user's can, and doctor warns. Code the shell runs itself can read it: the agent's command, which can use it
+ *  only to forge the prompt after a Ctrl-C has reached it, as the office takes no other prompt while that command
+ *  runs and its end names a fresh nonce; the owner's command; and a function or trap a command leaves, which changes
+ *  how the shell runs and so can forge any marker, as a DEBUG trap can a command's end. A marker the office can't
+ *  take changes nothing: the owner's command still runs, their line stays held, the drain still waits, and the agent
+ *  waits with them. A prompt makes its next nonce its own only once its marker is out, so one a Ctrl-C starts over
+ *  carries the nonce the office expects, or the one it just took, which the office takes again once a Ctrl-C has
+ *  reached the terminal, but not after one reached the agent's command, whose nonce the command could read.
+ *
+ *  **A prompt that isn't the shell's own.** bash's `PS1` is a marker that a prompt shows, which a shell that takes
+ *  `PS1` from the environment (a sub-shell, or one `exec` put in the shell's place) shows too; sh's prompt is its
+ *  marker, which such a shell prints with no nonce. A prompt the office can't verify never ends the command that
+ *  started it. Once one has shown for 3 s while the office waits for the shell's own (the owner's command's end, or
+ *  the end of the agent's command a Ctrl-C reached), the owner's view and the model's say how to leave it (`exit`)
+ *  or close the shell, and the agent's refusals say to close it; it fails closed, but visibly. When the shell's own
+ *  prompts name no nonce any more (sh's with `set -a` on, or `od` stopped), leaving can't help: they say to close the
+ *  shell (the employee's close, or ctrl+d once it's idle).
  *
  *  The marker keeps the record's boundaries and exit codes, and the gate's folder, honest; it isn't a wall. The shell
  *  holds the typed line, nonce and all, while it runs it, so a command that changes how the shell runs it can still
  *  forge its end and its folder (a DEBUG trap sees the line, in `BASH_COMMAND`) or hide it (a command that hides it
- *  leaves the shell running until it is closed). The sandbox is the security boundary. The owner's own command can end early by printing a marker with no nonce.
+ *  leaves the shell running until it is closed), and a command that outlives a Ctrl-C can forge the prompt after it
+ *  with the nonce it read. A program that can read the shell's memory (above) can read both nonces. Shell code a
+ *  command leaves behind (a function named `builtin`, `printf` in sh, or a pinned program's path, which the shell looks
+ *  for before the builtin or the program, or a trap) runs inside the shell and can subvert any marker: until the office
+ *  tells a command's end from the terminal itself (which process group holds its foreground), the markers are only as
+ *  good as the shell code that prints them. The sandbox is the security boundary. The owner's own command can end
+ *  early by printing its prompt's marker.
  *
  *  **An unfinished line** the agent leaves when its command ends is killed (Ctrl-U), so neither the next command nor
  *  the owner's next line takes it on; a line the owner typed after it on the same line goes with it.
@@ -43,7 +87,10 @@
  *  says the shell has read the command's line: a Ctrl-C before that would make the terminal throw the unread line away,
  *  so whether the command ran at all would depend on timing. A Ctrl-C that comes as the command starts can still be
  *  dropped (bash ignores one that comes while it waits on a child that exits normally), so it goes again, up to three
- *  times, while the command runs on. The owner's keys go straight to the terminal.
+ *  times, while the command runs on. One that comes as the shell starts a program can stop the line and leave that
+ *  program running: so the prompt after a line a Ctrl-C stopped sends SIGINT to the shell's children (`pkill -P`, at
+ *  its pinned path), which ends a program left so; an asynchronous one ignores it, as with job control off it ignores
+ *  the terminal's. The owner's keys go straight to the terminal.
  *
  *  **The owner's line.** A line the owner is part-way through holds the shell for them: the agent's commands, keys and
  *  interrupt are refused until Enter runs it or Ctrl-C gives it back. Ctrl-D gives back only an empty line: part-way
@@ -63,8 +110,8 @@
  *  everything the terminal holds, before the shell reads a line, and its marker says it drained. The agent's next
  *  command waits for a marker that says so; without one in 2 s the shell stays the owner's until one does. A flag that
  *  is gone proves nothing, as a command or a process it left can remove it: the prompt then drains nothing, its marker
- *  says so, and the office makes the flag again. Like the end of the owner's command, a plain prompt's marker can be
- *  forged; the agent's (with its nonce) can't. The owner's type-ahead on the idle line is never dropped. Neither the
+ *  says so, and the office makes the flag again. Only a prompt's marker the office takes (its nonce) can say it
+ *  drained. The owner's type-ahead on the idle line is never dropped. Neither the
  *  kill nor the drain goes into a running program. The shell's state says when the owner holds it (`ownerTyping`).
  *
  *  **Secret prompts.** While a command runs, the shell checks `ownerPrompt` after each output chunk and every 200 ms.
@@ -153,6 +200,34 @@ const OWNER_SECRET = "the shell is waiting for the owner at a prompt for a secre
 /** What the owner's live view and the model's say when a secret prompt ends under the owner's answer. */
 const DROPPED_NOTE =
   "\r\n[the prompt ended while you were typing: the rest of that line is dropped until you press Enter]\r\n"
+/** What the owner's live view and the model's say once the shell has shown, for `STUCK_MS`, a prompt the office can't
+ *  verify while it waits for one: when it isn't the shell's own, how to leave it; when the shell's own prompts name no
+ *  nonce any more (sh's with `set -a` on), which leaving can't help, to close the shell. */
+const STUCK_NOTE =
+  "\r\n[OpenCorp can't verify this prompt (a sub-shell's, or after exec), so it can't tell when the command ends: " +
+  "type exit until the shell's own prompt is back (after exec, that ends the shell), or have your employee close " +
+  "the shell]\r\n"
+const LOST_NOTE =
+  "\r\n[OpenCorp can't verify this shell's prompts any more (in sh, set -a does that), so it can't tell when a " +
+  "command ends: have your employee close the shell, or press ctrl+d on it once it's idle]\r\n"
+/** What a refusal adds then, for the agent. */
+const STUCK =
+  "this shell's prompt isn't its own (a sub-shell's, or after exec), so OpenCorp can't tell when the command ends; " +
+  "if it doesn't end, close this shell and run in a new one"
+const LOST =
+  "this shell's prompts can't be verified any more (in sh, `set -a` does that), so OpenCorp can't tell when a " +
+  "command ends; close this shell and run in a new one"
+/** What the owner's view shows, muted, the first time the agent's command waits for that: why. */
+const WRITES_NOTE =
+  "\r\n\x1b[2m[your employee's commands wait: this shell writes what it reads or runs (set -v, set -x) somewhere " +
+  "other than its terminal; turn that off (set +vx), or send stderr back (exec 2>/dev/tty)]\x1b[22m\r\n"
+/** Why the agent's command waits while the shell writes what it reads or runs elsewhere (`OTHER_STDERR`). */
+const WRITES =
+  "this shell writes what it reads or runs (`set -v`, `set -x`) somewhere other than its terminal, where a program " +
+  "could read the nonce of the line OpenCorp would type; ask the owner to turn that off at its prompt (`set +vx`, or " +
+  "`exec 2>/dev/tty`), or close this shell and run in a new one"
+/** How long a prompt the office can't verify shows, while it waits for one, before the views say to close the shell. */
+const STUCK_MS = 3_000
 /** What a kill (Ctrl-U) echoes, whatever the line settings: erasures, or `^U` and a line end. */
 const KILL_ECHO = "\b ^U\r\n"
 /** The owner's keys that end their line (Enter, Ctrl-C; Ctrl-D only an empty one), kill it (Ctrl-U), and take a byte
@@ -162,17 +237,67 @@ const EOF = "\x04"
 const KILL = "\x15"
 const ERASE = "\x7f"
 
-/** A marker: the OSC the shell prints at its prompt, with the nonce (empty at a plain prompt), the exit code, `1` when
- *  the prompt drained the terminal (`drain`) and, but for sh's prompt, the folder. */
+/** A marker: the OSC the shell prints at its prompt, with the agent's command's nonce (the prompt's own at any other
+ *  prompt), the exit code, `1` when the prompt drained the terminal (`drain`) and where the shell writes what it reads
+ *  (`OTHER_STDERR`), the next prompt's nonce (`NEXT_BASH`) and, but for sh's prompt, the folder. */
 const MARK = "\x1b]633;opencorp-mark;"
-const MARKER = /\x1b\]633;opencorp-mark;([^;\x07\x1b]*);([^;\x07\x1b]*)(?:;([^;\x07\x1b]*)(?:;([^\x07\x1b]*))?)?\x07/g
+const MARKER =
+  /\x1b\]633;opencorp-mark;([^;\x07\x1b]*);([^;\x07\x1b]*)(?:;([^;\x07\x1b]*)(?:;([^;\x07\x1b]*)(?:;([^\x07\x1b]*))?)?)?\x07/g
 /** The first marker, which says the shell is ready. */
 const READY = new RegExp(MARKER.source)
 /** The longest folder a marker reports, in bytes: Linux's `PATH_MAX`. A longer one is unknown. */
 const FOLDER_MAX = 4096
-/** How far past `MARK` a marker runs: a 16-hex nonce, a `;`, an exit code, a `;`, whether the prompt drained, a `;` and
- *  the folder. */
-const MARK_TAIL = 40 + FOLDER_MAX
+/** How far past `MARK` a marker runs: a nonce, a `;`, an exit code, a `;`, whether the prompt drained, a `;`, the next
+ *  prompt's nonce, a `;` and the folder. */
+const MARK_TAIL = 64 + FOLDER_MAX
+/** What goes before each program a `kind` shell's prompt runs, at its pinned path: the loader's variables, emptied
+ *  for it, so libraries a command exports (`LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, and macOS's, where only bash
+ *  runs) can't change what it does: the nonce's read, the drain, the line settings. A command that makes one of them
+ *  read-only stops that program, and its prompt names no nonce. */
+const CLEAN = {
+  bash: "LD_PRELOAD= LD_AUDIT= LD_LIBRARY_PATH= DYLD_INSERT_LIBRARIES= DYLD_LIBRARY_PATH= ",
+  sh: "LD_PRELOAD= LD_AUDIT= LD_LIBRARY_PATH= ",
+}
+/** 8 bytes of `/dev/urandom` as a signed decimal, which make a prompt's nonce: read by `od` at the path the set-up
+ *  pinned (`CLEAN`), into a pipe, its trace going nowhere. A read that fails makes nothing. */
+const random = (kind: "bash" | "sh"): string =>
+  `$({ ${CLEAN[kind]}"$__oc_o" -An -N8 -td8 /dev/urandom; } 2>/dev/null)`
+/** bash: makes the next prompt's nonce and prints it, into `__oc_z[0]`, which the prompt makes its own (`__oc_q[0]`)
+ *  only once its marker is out: a Ctrl-C that stops the prompt before then starts it over with the nonce the office
+ *  expects, and one after, with the one it just took (which the office takes again). Each is an array's element,
+ *  which bash never puts in a program's environment, whatever `set -a`, `export` or a nameref says, and arithmetic
+ *  expansion assigns it. A read that fails makes 0, which names no prompt. */
+const NEXT_BASH = `$((__oc_z[0] = ${random("bash")} + 0))`
+/** `ok` unless allexport (`set -a`) is on, which would export the nonce sh's prompt assigns. */
+const shSafe = (ok: string): string => `case $- in (*a*) ;; (*) ${ok};; esac`
+/** Whether sh's next nonce stays out of programs' environments, as `1` or nothing: sh has no arrays, and assigning,
+ *  all its prompt can do, exports under `set -a`. Not with allexport on, nor once a nonce (`__oc_m`, the prompt's, or
+ *  `__oc_q`, the next) is in a program's environment (`env`, at its pinned path, finds it, or can't run). It goes in
+ *  `PS1`'s single quotes, so it has none, and in `PS1`, which the environment holds, so the names it looks for are
+ *  split by quotes. */
+const SAFE_SH =
+  `$({ ${shSafe(`case $(${CLEAN.sh}"$__oc_e" && ${CLEAN.sh}"$__oc_f" "\\n__oc_ok") in (*__oc_""[mqz]=*) ;; ` +
+  `(*__oc_ok) ${CLEAN.sh}"$__oc_f" 1;; esac`)}; } 2>/dev/null)`
+/** sh's prompt, which a sh writes to its stderr, wherever a command sends that. So what it prints holds no nonce: a
+ *  `shown` marker, inside which the zeros of the arithmetic that keeps its values in the shell show (`$?` in
+ *  `__oc_r`; the next nonce in `__oc_q`, as `NEXT_BASH` makes it, but 0, which names no prompt, while it wouldn't be
+ *  safe: `SAFE_SH`; then the prompt's own, `__oc_m`, made the next). Its marker goes to the terminal from a subshell
+ *  (`SH_MARK`), after the drain, printed with sh's builtin printf. */
+const NEXT_SH = `$((0 * (__oc_q = (${random("sh")} + 0) * (${SAFE_SH} + 0))))`
+/** The end of the agent's line in sh: makes the nonce of the prompt that follows, as `NEXT_SH` does, into `__oc_z`,
+ *  after the line has unset it, which no environment holds then, so only allexport is checked; the line makes it the
+ *  prompt's (`__oc_m`) once its marker is out. */
+const NEXT_SH_LINE = `$((__oc_z = (${random("sh")} + 0) * ($(${shSafe(`${CLEAN.sh}"$__oc_f" 1`)}) + 0)))`
+/** A prompt's nonce, as `NEXT_BASH` and `NEXT_SH` print it; 0 is a read that failed, or a nonce that wouldn't be
+ *  safe. */
+const PROMPT_NONCE = /^-?[1-9]\d{0,19}$/
+/** The shell's start, when its first prompt names no nonce. */
+const NO_NONCE = {
+  bash: "the shell can't make its prompts' nonces: it reads /dev/urandom with /usr/bin/od or /bin/od",
+  sh:
+    "the shell can't make its prompts' nonces: it reads /dev/urandom with /usr/bin/od or /bin/od, and checks " +
+    "programs' environments with /usr/bin/env or /bin/env",
+}
 /** What a command's output shows in place of the nonce. */
 const NONCE_SHOWN = "[nonce]"
 
@@ -183,10 +308,46 @@ const shQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`
  *  holds, whole lines or not, and prints `1` for the marker; nothing when there was no flag to remove. `around` keeps
  *  the line settings it finds, for a prompt that doesn't put its own back. It runs in the marker's own command
  *  substitution, so nothing a command sets can make it say it drained. */
-const drain = (around = false): string =>
-  `"$__oc_u" "$__oc_d" 2>/dev/null && { ${around ? '__oc_g=$("$__oc_y" -g </dev/tty); ' : ""}` +
-  `"$__oc_y" -icanon min 0 time 0 </dev/tty 2>/dev/null; "$__oc_c" </dev/tty >/dev/null 2>&1; ` +
-  `${around ? '"$__oc_y" "$__oc_g" </dev/tty 2>/dev/null; ' : ""}"$__oc_f" 1; }`
+const drain = (kind: "bash" | "sh", around = false): string => {
+  const c = CLEAN[kind]
+  return (
+    `${c}"$__oc_u" "$__oc_d" 2>/dev/null && { ${around ? `__oc_g=$(${c}"$__oc_y" -g </dev/tty); ` : ""}` +
+    `${c}"$__oc_y" -icanon min 0 time 0 </dev/tty 2>/dev/null; ${c}"$__oc_c" </dev/tty >/dev/null 2>&1; ` +
+    `${around ? `${c}"$__oc_y" "$__oc_g" </dev/tty 2>/dev/null; ` : ""}${c}"$__oc_f" 1; }`
+  )
+}
+
+/** What the marker's third field adds after the drain's `1`: a comma, the shell's options (`$-`, read in the shell
+ *  itself, as bash drops `v` from a subshell's), a comma, and `o` when its stderr isn't the terminal it reads (nor
+ *  `/dev/tty`). With
+ *  verbose or xtrace on (`set -v`, `set -x`), the shell writes what it reads or runs there, where a program could read
+ *  the nonce of the next line the office types: the office types none until that's off (`WRITES`). bash's
+ *  come in from its `PROMPT_COMMAND`, as `$2`, since the prompt's function sends its own stderr nowhere. */
+const OTHER_STDERR = '$([ /dev/fd/2 -ef /dev/fd/0 ] || [ /dev/fd/2 -ef /dev/tty ] || "$__oc_f" o)'
+
+/** The subshell that writes sh's prompt's marker to the terminal: the nonce the prompt carries, its exit code, the
+ *  drain and where the shell writes what it reads (`OTHER_STDERR`; `$-` in a subshell has no `v`, so sh's office
+ *  takes any stderr but the terminal as writing there, which it checks before its own goes nowhere), and the next
+ *  nonce. It prints nothing itself. */
+const SH_MARK =
+  `$(__oc_s=${OTHER_STDERR}; { printf "\\033]633;opencorp-mark;%s;%s;%s,%s,%s;%s\\007" "\${__oc_m-}" "$__oc_r" ` +
+  `"$(${drain("sh", true)})" "$-" "$__oc_s" "$__oc_q" >/dev/tty; } 2>/dev/null)`
+
+/** sh's prompt after a line a Ctrl-C stopped (its `__oc_a` still set): SIGINT to what the line left running, the
+ *  shell's children, from a subshell that `exec` makes `pkill` itself (without the loader's variables), so it spares
+ *  itself. It prints nothing. */
+const SH_ABORTED = `$(case \${__oc_a-} in (1) ${CLEAN.sh}exec "$__oc_k" -INT -P $$ >/dev/null 2>&1;; esac)`
+
+/** sh's end of the agent's command, which its typed line runs with `eval` (a special builtin, which sh finds before
+ *  any function) once `set --` has put the command's nonce and exit code in `$1` and `$2`, which no program's
+ *  environment holds: as bash's prompt does, it unsets `__oc_q` (so an `export` of it doesn't last), puts the line
+ *  settings back after the drain, and prints the marker with sh's builtin `printf`, with the next prompt's nonce, its
+ *  trace going nowhere; then it clears `$1` and `$2`. It goes in the set-up line's single quotes, so it has none. */
+const SH_END =
+  `unset __oc_q __oc_z __oc_a; set -- "$1" "$2" "$-,${OTHER_STDERR}"; ` +
+  `{ printf "\\033]633;opencorp-mark;%s;%d;%s;%s;%s\\007" "$1" "$2" ` +
+  `"$(${drain("sh")}; ${CLEAN.sh}"$__oc_y" "$__oc_t" </dev/tty 2>/dev/null),$3" "${NEXT_SH_LINE}" ` +
+  `"$(${CLEAN.sh}"$__oc_w" -P 2>/dev/null)" >/dev/tty; unset __oc_m; __oc_m=$__oc_z; } 2>/dev/null; set --`
 
 /** The set-up line a `kind` shell types first, its echo cut with everything else before the first marker. `flag` is
  *  the drain flag: while it exists, the next prompt (`drain`) removes it and first empties the terminal of the keys it
@@ -194,41 +355,64 @@ const drain = (around = false): string =>
 function setupLine(kind: "bash" | "sh", flag: string): string {
   const flagged = `__oc_d=${shQuote(flag)}; `
   if (kind === "bash") {
-    // The prompt's work runs in read-only functions that call programs by path and no builtin (a command can shadow
-    // `return`, `builtin` or `printf` with a function); the start's line settings are saved for each prompt to
-    // restore, after its drain.
+    // The prompt's work runs in read-only functions, which print each marker with the builtin printf, so no
+    // program's arguments hold a nonce, and the command's nonce waits in an array's element, which no program's
+    // environment holds; the programs they run go by the paths found here, without the loader's variables
+    // (`CLEAN`). A function a command leaves can still stand in for any of them, even one named by a path, as bash
+    // looks for a function first, or for `builtin`: shell code that changes how the shell runs, the module's limit.
+    // The start's line settings are saved for each prompt to restore, after its drain. No history keeps a line the
+    // office types, which names `__oc_` (`HISTIGNORE`); the prompt can't turn verbose or xtrace off for the next
+    // line (bash puts back what `PROMPT_COMMAND` changes), so `PROMPT_COMMAND` passes the options and where stderr
+    // goes, from outside the function (`OTHER_STDERR`). After a line a Ctrl-C stopped (`__oc_b` without its
+    // `__oc_s`), it sends SIGINT to what the line left running. It prints the nonce it carries before it makes the
+    // next its own, and its trace (a command's `set -x`) goes nowhere, as it holds both; no trace can go to another
+    // file (`BASH_XTRACEFD`). `PS1` is a marker that says a prompt shows, which a shell that takes it from the
+    // environment (a sub-shell, or after `exec`) shows too.
     return (
-      "set +B +m +o history; shopt -u expand_aliases; unalias -a; set +o emacs +o vi; PS1=; PS2=; " +
+      "set +B +m +o history; shopt -u expand_aliases; unalias -a; set +o emacs +o vi; " +
+      "PS1=$'\\033]633;opencorp-mark;;shown\\007'; PS2=; readonly BASH_XTRACEFD; HISTIGNORE='*__oc_*'; " +
+      "readonly HISTIGNORE; " +
       `__oc_y=$(type -P stty); __oc_f=$(type -P printf); __oc_w=$(type -P pwd); __oc_t=$("$__oc_y" -g </dev/tty); ` +
-      `__oc_u=$(type -P rm); __oc_c=$(type -P cat); ${flagged}` +
-      "readonly __oc_y __oc_f __oc_w __oc_t __oc_u __oc_c __oc_d; " +
-      `__oc_b() { "$__oc_f" "\\033]633;opencorp-mark;%s;start\\007" "$1" >/dev/tty; }; ` +
-      `__oc_s() { __oc_n=$1; /bin/sh -c 'exit "$1"' sh "$2"; }; ` +
-      `__oc_p() { "$__oc_f" "\\033]633;opencorp-mark;%s;%d;%s;%s\\007" "$__oc_n" "$1" ` +
-      `"$(${drain()}; "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null)" "$("$__oc_w" -P 2>/dev/null)" >/dev/tty; ` +
-      "__oc_n=; }; " +
-      `readonly -f __oc_b __oc_s __oc_p; PROMPT_COMMAND='__oc_p "$?"'; readonly PROMPT_COMMAND\n`
+      `__oc_u=$(type -P rm); __oc_c=$(type -P cat); __oc_o=/usr/bin/od; [ -x $__oc_o ] || __oc_o=/bin/od; ` +
+      `__oc_k=/usr/bin/pkill; [ -x $__oc_k ] || __oc_k=/bin/pkill; ` +
+      `${flagged}readonly __oc_y __oc_f __oc_w __oc_t __oc_u __oc_c __oc_o __oc_k __oc_d; ` +
+      `__oc_b() { __oc_a[0]=1; builtin printf "\\033]633;opencorp-mark;%s;start\\007" "$1" >/dev/tty; }; ` +
+      `__oc_s() { __oc_a[0]=; __oc_n[0]=$1; ${CLEAN.bash}/bin/sh -c 'exit "$1"' sh "$2"; }; ` +
+      `__oc_p() { case \${__oc_a[0]-} in (1) ${CLEAN.bash}"$__oc_k" -INT -P $$ >/dev/null 2>&1;; esac; ` +
+      `__oc_a[0]=; builtin printf "\\033]633;opencorp-mark;%s;%d;%s;%s;%s\\007" "\${__oc_n[0]:-\${__oc_q[0]-}}" "$1" ` +
+      `"$(${drain("bash")}; ${CLEAN.bash}"$__oc_y" "$__oc_t" </dev/tty 2>/dev/null),$2" "${NEXT_BASH}" ` +
+      `"$(${CLEAN.bash}"$__oc_w" -P 2>/dev/null)" >/dev/tty; __oc_q[0]=\${__oc_z[0]}; __oc_n[0]=; } 2>/dev/null; ` +
+      `readonly -f __oc_b __oc_s __oc_p; ` +
+      "PROMPT_COMMAND='__oc_p \"$?\" \"$-,$([[ /dev/fd/2 -ef /dev/fd/0 || /dev/fd/2 -ef /dev/tty ]] || " +
+      "builtin printf o)\"'; " +
+      "readonly PROMPT_COMMAND\n"
     )
   }
   // sh's set may not know some of these options, and a special builtin's error would end the line, so each goes
-  // last, alone and through `command`. A sh that is bash edits lines unless told not to. The marker's printf and pwd
-  // run by path where they are found, so a command's function can't stand in for them. The prompt expands its drain
-  // each time, after the exit code it reports and before it shows.
+  // last, alone and through `command`. A sh that is bash edits lines unless told not to. The prompt prints itself,
+  // and the agent's line its markers with sh's builtin printf (`SH_END`), so no program's arguments hold a nonce; the
+  // programs they run go by the paths found here, without the loader's variables (`CLEAN`). A function a command
+  // leaves can stand in for printf, or for a program by its path: the module's limit. The prompt expands its nonce,
+  // then its drain, each time, after the exit code it reports and before it shows, and then makes the next; what it
+  // runs leaves no trace (a command's `set -x`), and a sh that is bash sends none to another file (`BASH_XTRACEFD`).
   return (
-    `PS1="$(printf '\\033]633;opencorp-mark;;')\\$?;"'$(${drain(true)})'"$(printf '\\007')"; PS2=; set +m; ` +
-    "unalias -a; " +
+    `PS1="$(printf '\\033]633;opencorp-mark;;shown;')"'$((0 * (__oc_r = $?)))${SH_ABORTED}${NEXT_SH}${SH_MARK}` +
+    `$((0 * (__oc_m = __oc_q)))'"$(printf '\\007')"; ` +
+    "PS2=; set +m; unalias -a; readonly BASH_XTRACEFD; HISTIGNORE='*__oc_*'; readonly HISTIGNORE; " +
     `__oc_y=$(command -v stty); __oc_t=$("$__oc_y" -g </dev/tty); ` +
     `__oc_u=$(command -v rm); __oc_c=$(command -v cat); ${flagged}` +
     "__oc_f=/usr/bin/printf; [ -x $__oc_f ] || __oc_f=printf; " +
     "__oc_w=/bin/pwd; [ -x $__oc_w ] || __oc_w=/usr/bin/pwd; " +
-    "readonly __oc_y __oc_t __oc_f __oc_w __oc_u __oc_c __oc_d; " +
+    "__oc_o=/usr/bin/od; [ -x $__oc_o ] || __oc_o=/bin/od; __oc_e=/usr/bin/env; [ -x $__oc_e ] || __oc_e=/bin/env; " +
+    "__oc_k=/usr/bin/pkill; [ -x $__oc_k ] || __oc_k=/bin/pkill; " +
+    `__oc_x='${SH_END}'; readonly __oc_y __oc_t __oc_f __oc_w __oc_u __oc_c __oc_o __oc_e __oc_k __oc_d __oc_x; ` +
     "for o in '+o emacs' '+o vi' +B '+o history'; do command set $o 2>/dev/null; done; " +
     "command shopt -u expand_aliases 2>/dev/null\n"
   )
 }
 const ARGV = { bash: ["/bin/bash", "--noprofile", "--norc", "--noediting", "-i"], sh: ["/bin/sh", "-i"] }
 /** Variables the shell never takes from its host: they would run code at its start or turn options back on. */
-const DROPPED = new Set(["ENV", "BASH_ENV", "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS"])
+const DROPPED = new Set(["ENV", "BASH_ENV", "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS", "BASH_XTRACEFD"])
 
 /** How often a running command's screen is checked for a secret prompt, beside after each chunk of its output. */
 const GUARD_MS = 200
@@ -257,14 +441,14 @@ export function shellKind(choice?: "bash" | "sh"): "bash" | "sh" {
   return choice ?? (fs.existsSync("/bin/bash") ? "bash" : "sh")
 }
 
-/** The line the host types for the agent's `command` in a `kind` shell, with `start` and `nonce`. */
+/** The line the host types for the agent's `command` in a `kind` shell, with `start` and `nonce`; sh's ends with
+ *  `SH_END`. It names `__oc_`, so no history keeps it (`HISTIGNORE`, read-only). */
 function typedLine(command: string, start: string, nonce: string, kind: "bash" | "sh"): string {
   const quoted = `'${command.replaceAll("'", "'\\''")}'`
   return kind === "bash"
     ? `\\__oc_b ${start}; eval ${quoted}; \\__oc_s ${nonce} $?\n`
-    : `"$__oc_f" '\\033]633;opencorp-mark;%s;start\\007' ${start} >/dev/tty; eval ${quoted}; __oc_r=$?; ` +
-        `"$__oc_f" '\\033]633;opencorp-mark;%s;%d;%s;%s\\007' ${nonce} "$__oc_r" ` +
-        `"$(${drain()}; "$__oc_y" "$__oc_t" </dev/tty 2>/dev/null)" "$("$__oc_w" -P 2>/dev/null)" >/dev/tty\n`
+    : `printf '\\033]633;opencorp-mark;%s;start\\007' ${start} >/dev/tty; __oc_a=1; eval ${quoted}; ` +
+        `set -- ${nonce} $?; eval "$__oc_x"\n`
 }
 
 /** `env` for the shell: its prompts empty, no history file, and nothing that runs code or sets options at its start. */
@@ -293,6 +477,11 @@ function folderOf(raw: string | undefined): string | null {
   return folder.startsWith("/") && !/[\x00-\x1f\x7f-\x9f\ufffd]/.test(folder) ? folder : null
 }
 
+/** The next prompt's nonce a marker names; null when it names none (a read that failed, or an older form). */
+function promptNonce(raw: string | undefined): string | null {
+  return raw !== undefined && PROMPT_NONCE.test(raw) ? raw : null
+}
+
 /** `view`'s text from `from` to its end, at most its last `max` characters, where that text starts, and `cursor`. */
 export function peekView(
   view: ModelView,
@@ -318,6 +507,24 @@ export class PtyShell {
   }
   /** The agent's running command's nonce. */
   private nonce: string | null = null
+  /** The nonce the shell's next prompt carries, as the last marker the office took named it; null when none did. */
+  private nextNonce: string | null = null
+  /** The nonce of the last marker the office took, which a prompt a Ctrl-C started over carries again; null when it
+   *  was the prompt after the agent's command a Ctrl-C stopped, whose nonce the command could read. */
+  private lastNonce: string | null = null
+  /** A Ctrl-C reached the terminal since the office last took a marker. */
+  private ctrlCSince = false
+  /** The office took a marker since bash's prompt last showed (`PS1`'s marker): the prompt that shows is its own. */
+  private taken = false
+  /** A prompt the office can't verify showed while it waited for one, and how long ago (`STUCK_MS`), since the last
+   *  marker it took; once that's long enough, the views have said to close the shell. */
+  private unverified: ReturnType<typeof setTimeout> | undefined
+  /** What the views said then: that the prompt isn't the shell's own, or that its prompts name no nonce any more. */
+  private stuck: "foreign" | "lost" | null = null
+  /** The last marker the office took said the shell writes what it reads or runs elsewhere (`OTHER_STDERR`), and
+   *  whether the owner's view has said why the agent's commands wait for it (`WRITES_NOTE`). */
+  private writes = false
+  private writesSaid = false
   /** Its start token, and whether its start marker has come: the shell has read its line. */
   private startToken: string | null = null
   private begun = false
@@ -416,7 +623,7 @@ export class PtyShell {
   /** The folder the shell is in: where its first prompt (bash's) or the agent's last command said it was, as the
    *  kernel has it. Null when that can't be known: sh's first prompt says nothing; a folder whose name holds a control
    *  character, isn't UTF-8 or is over 4096 bytes isn't reported; and a command that ended without the agent's nonce
-   *  (the owner's, or one a Ctrl-C stopped) may have moved it, and its marker may be forged. A command that changes
+   *  (the owner's, or one a Ctrl-C stopped) may have moved it. A command that changes
    *  how the shell runs it (a DEBUG trap reads the nonce in `BASH_COMMAND`) can forge the folder as it can its end. */
   cwd(): string | null {
     return this.folder
@@ -665,7 +872,7 @@ export class PtyShell {
     for (const match of text.matchAll(MARKER)) {
       this.emit(this.neutral(text.slice(at, match.index)))
       at = match.index + match[0].length
-      this.marker(match[1]!, match[2]!, match[3] === "1", match[4])
+      this.marker(match[1]!, match[2]!, match[3] ?? "", match[4], match[5])
     }
     let rest = text.slice(at)
     const hold = this.holdFrom(rest)
@@ -681,23 +888,38 @@ export class PtyShell {
    *  running command's nonce or start token; -1 when it isn't. */
   private holdFrom(text: string): number {
     const marker = heldFrom(text)
-    if (marker >= 0 || this.nonce === null) return marker
-    for (const secret of [this.nonce, this.startToken ?? ""]) {
+    if (marker >= 0) return marker
+    // The next prompt's nonce too, but only while a command runs, which can print it: the guard's timed check lets
+    // what is held go then, which nothing would at the idle prompt.
+    const busy = this.current.status === "running" || this.current.status === "waiting"
+    // From the earliest place any of them may start: a short match of one mustn't let a longer one of another go.
+    let from = -1
+    for (const secret of [this.nonce ?? "", this.startToken ?? "", busy ? (this.nextNonce ?? "") : ""]) {
       for (let n = Math.min(secret.length - 1, text.length); n > 0; n--) {
-        if (secret.startsWith(text.slice(-n))) return text.length - n
+        if (!secret.startsWith(text.slice(-n))) continue
+        if (from < 0 || text.length - n < from) from = text.length - n
+        break
       }
     }
-    return -1
+    return from
   }
 
   /** Takes start-up output until the first marker: then the shell is ready, if its line editing is off (echo and
-   *  whole lines on), and what followed the marker is returned. Null until then, or when the start failed. */
+   *  whole lines on), and what followed the marker is returned. Null until then, or when the start failed. Nothing
+   *  but the shell runs before it, so it names the first prompt's nonce. */
   private started(text: string): string | null {
     this.startup = (this.startup + text).slice(-64 * 1024)
     const found = READY.exec(this.startup)
     if (found === null) return null
     const rest = this.startup.slice(found.index + found[0].length)
-    this.folder = folderOf(found[4])
+    this.folder = folderOf(found[5])
+    this.nextNonce = promptNonce(found[4])
+    this.taken = true
+    if (this.nextNonce === null) {
+      // No prompt after this one could be taken: the owner's first command would never end.
+      this.fail(NO_NONCE[this.kind])
+      return null
+    }
     this.startup = ""
     const modes = this.pty!.modes()
     if (!modes.echo || !modes.canonical) {
@@ -714,57 +936,135 @@ export class PtyShell {
    *  screen, its nonce neutralised. */
   private cutEcho(text: string): string {
     if (this.echo === null) return text
-    let start = 0
-    if (this.echoAt === 0 && this.killSent) while (start < text.length && KILL_ECHO.includes(text[start]!)) start += 1
-    let at = start
-    while (at < text.length && this.echoAt < this.echo.length && text[at] === this.echo[this.echoAt]) {
+    let kept = ""
+    let at = 0
+    if (this.echoAt === 0 && this.killSent) while (at < text.length && KILL_ECHO.includes(text[at]!)) kept += text[at++]
+    // A marker isn't on the screen (bash's prompt shows one as it reads the line): it stays, and the cut goes on
+    // after it; one cut short waits, held, for the next chunk.
+    let short = false
+    while (at < text.length && this.echoAt < this.echo.length) {
+      if (text[at] === "\x1b") {
+        const end = text.startsWith(MARK, at) ? text.indexOf("\x07", at) : -1
+        if (end >= 0 && !text.slice(at + 1, end).includes("\x1b")) {
+          kept += text.slice(at, end + 1)
+          at = end + 1
+          continue
+        }
+        short = heldFrom(text.slice(at)) === 0
+        if (short) break
+      }
+      if (text[at] !== this.echo[this.echoAt]) break
       at += 1
       this.echoAt += 1
     }
     if (this.echoAt > 0) this.killSent = false
-    if (this.echoAt === this.echo.length || at < text.length) this.echo = null
-    return text.slice(0, start) + text.slice(at)
+    if (this.echoAt === this.echo.length || (at < text.length && !short)) this.echo = null
+    return kept + text.slice(at)
   }
 
-  /** `text` with the agent's command's nonce and start token neutralised. */
+  /** `text` with the agent's command's nonce and start token, and the next prompt's nonce, neutralised. */
   private neutral(text: string): string {
-    for (const secret of [this.nonce, this.startToken]) {
+    for (const secret of [this.nonce, this.startToken, this.nextNonce]) {
       if (secret !== null && text.includes(secret)) text = text.replaceAll(secret, NONCE_SHOWN)
     }
     return text
   }
 
-  /** A marker with `nonce`, `exitText` and the folder: the end of the agent's command when it holds its nonce (or
-   *  none, after a Ctrl-C), or of the owner's when it holds none; with `start` for `exitText`, the start of the
-   *  agent's command when it holds its start token. Any other is ignored. Only a marker with the nonce sets the
-   *  folder. */
-  private marker(nonce: string, exitText: string, drained: boolean, folder: string | undefined): void {
+  /** A marker with `nonce`, `exitText`, whether it drained, the next prompt's nonce and the folder. With `start` for
+   *  `exitText`, the start of the agent's command when it holds its start token. Else the end of the agent's command
+   *  when it holds that command's nonce, or a prompt when it holds the prompt's (`nextNonce`): the end of the owner's
+   *  command, or of the agent's once a Ctrl-C has reached it. A prompt while the agent's command runs is the
+   *  command's own, before that: its nonce is one the command can read. Any other is ignored, its drain and next
+   *  nonce with it. Only the agent's command's end sets the folder. */
+  private marker(
+    nonce: string,
+    exitText: string,
+    flags: string,
+    next: string | undefined,
+    folder: string | undefined,
+  ): void {
+    const [drain = "", options = "", stderr = ""] = flags.split(",")
+    const drained = drain === "1"
     if (exitText === "start") return this.begin(nonce)
+    if (exitText === "shown") return this.shown()
+    const ending = this.nonce !== null && nonce === this.nonce
+    // A prompt a Ctrl-C started over once its marker was out names the nonce of the marker the office last took: taken
+    // only once a Ctrl-C has reached the terminal since.
+    const again = this.ctrlCSince && this.lastNonce !== null && nonce === this.lastNonce
+    const prompt = !ending && ((this.nextNonce !== null && nonce === this.nextNonce) || again)
+    // sh's prompt after the agent's line may come once the agent's next line is typed, but always before it runs.
+    if (!ending && !(prompt && (this.promptAfter || this.nonce === null || this.interrupted))) return this.doubt()
+    this.took()
+    this.writes = stderr === "o" && (this.kind === "sh" || /[vx]/.test(options))
+    if (!this.writes) this.writesSaid = false
+    // Not after a Ctrl-C, whose prompt's nonce is one the command could read; nor while the shell writes what it reads
+    // or runs elsewhere, as xtrace a line turns on writes that line's end, which a program could then read.
+    this.lastNonce = !this.writes && (ending || this.nonce === null || this.promptAfter) ? nonce : null
+    this.nextNonce = promptNonce(next)
     const exit = /^-?\d+$/.test(exitText) ? Number(exitText) : null
-    if (nonce === "" && this.promptAfter) {
-      // sh's prompt after the agent's line, which already ended it: never the end of a command started since.
+    this.prompted(drained)
+    if (prompt && this.promptAfter) {
+      // sh's prompt after the agent's line, which already ended it: never the end of a command started since. The
+      // owner's Ctrl-C while sh makes it starts it over, and the one prompt that comes then has a Ctrl-C's exit.
       this.promptAfter = false
-      return this.prompted(drained)
+      if (!(this.promptDue && exit === 130)) return
     }
     // A fresh prompt: the shell has dropped what it read of a line a Ctrl-C stopped.
-    if (nonce === "" && this.promptDue) {
+    if (prompt && this.promptDue) {
       this.promptDue = false
-      this.prompted(drained)
       this.set({})
     }
     if (this.nonce !== null) {
-      if (nonce !== this.nonce && !(nonce === "" && this.interrupted)) return
-      this.promptAfter = this.kind === "sh" && nonce !== ""
+      this.promptAfter = this.kind === "sh" && ending
       try {
         this.host.record.exit(exit)
       } catch {
         // meta.json can't be written now; the record keeps the exit for its next write.
       }
-    } else if (!(nonce === "" && this.ownerRunning)) return
-    this.prompted(drained)
-    this.folder = nonce === "" ? null : folderOf(folder)
+    } else if (!this.ownerRunning) return
+    this.folder = ending ? folderOf(folder) : null
     this.settle()
     this.set({ status: "idle", waiting: null, command: null, exit })
+  }
+
+  /** bash's prompt shows (`PS1`'s marker): its own when the office took a marker since it last showed, else a prompt
+   *  the office can't verify (`doubt`). */
+  private shown(): void {
+    if (this.taken) this.taken = false
+    else this.doubt()
+  }
+
+  /** Whether the office waits for a prompt: the end of the owner's command, the prompt their Ctrl-C brings, or the end
+   *  of the agent's command once a Ctrl-C has reached it. */
+  private waitsForPrompt(): boolean {
+    return this.ownerRunning || this.promptDue || (this.nonce !== null && this.interrupted)
+  }
+
+  /** A prompt showed that the office can't verify. While it waits for one, the owner's live view and the model's say
+   *  to close the shell once no marker it can take has come for `STUCK_MS`, and refusals say so too (`STUCK`). */
+  private doubt(): void {
+    if (!this.waitsForPrompt() || this.stuck !== null || this.unverified !== undefined) return
+    this.unverified = setTimeout(() => {
+      this.unverified = undefined
+      const { status } = this.current
+      if (!this.waitsForPrompt() || status === "ended" || status === "failed") return
+      this.stuck = this.nextNonce === null ? "lost" : "foreign"
+      this.emit(bytesOf(this.stuck === "lost" ? LOST_NOTE : STUCK_NOTE))
+    }, STUCK_MS)
+  }
+
+  /** What a refusal says of a stuck shell, or null when it isn't. */
+  private stuckWhy(): string | null {
+    return this.stuck === null ? null : this.stuck === "lost" ? LOST : STUCK
+  }
+
+  /** The office took a marker: the shell is at its own prompt, or its command ended. */
+  private took(): void {
+    this.taken = true
+    this.ctrlCSince = false
+    clearTimeout(this.unverified)
+    this.unverified = undefined
+    this.stuck = null
   }
 
   /** The shell has read the agent's command's line, if `token` is its start token: a Ctrl-C that waited goes now. */
@@ -824,6 +1124,7 @@ export class PtyShell {
   }
 
   private write(data: string): void {
+    if (data.includes("\x03")) this.ctrlCSince = true
     try {
       this.pty?.write(data)
     } catch {
@@ -969,11 +1270,17 @@ export class PtyShell {
     if (status === "ended") return "the shell has ended; start a new one"
     if (status === "starting") return "the shell is still starting"
     if (status === "waiting") return SECRET
-    if (status === "running" && this.ownerRunning) return "the owner's command is running; call read to follow it"
+    if (status === "running" && this.ownerRunning) {
+      return `the owner's command is running; ${this.stuckWhy() ?? "call read to follow it"}`
+    }
     if (status === "running") {
-      return "a command is still running in this shell; call read to follow it, type to answer it, or interrupt it"
+      const what = this.stuckWhy() ?? "call read to follow it, type to answer it, or interrupt it"
+      return `a command is still running in this shell; ${what}`
     }
     if (this.ownerHolds()) return OWNER_TYPING
+    if (this.writes) return WRITES
+    // Its end couldn't be told from a forged one.
+    if (this.nextNonce === null) return LOST
     return PtyShell.commandProblem(command, this.kind)
   }
 
@@ -1015,8 +1322,13 @@ export class PtyShell {
     return reply
   }
 
-  /** A reply saying why nothing was done, with the shell's state, from where the agent last read. */
+  /** A reply saying why nothing was done, with the shell's state, from where the agent last read. The first refusal
+   *  while the shell writes what it reads elsewhere says why in the owner's view too. */
   refusal(why: string): Reply {
+    if (why === WRITES && !this.writesSaid) {
+      this.writesSaid = true
+      this.emit(bytesOf(WRITES_NOTE))
+    }
     const { status, exit, waiting } = this.current
     return { shell: this.id, status, exit, waiting, output: "", next: this.cursor, more: false, refused: why }
   }
@@ -1041,6 +1353,7 @@ export class PtyShell {
     }
     this.settle()
     this.unflag()
+    clearTimeout(this.unverified)
     this.set({ status: "ended", waiting: null, command: null, exit: code })
     try {
       this.host.record.end("ended")

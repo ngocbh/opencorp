@@ -420,8 +420,11 @@ test("get office answers pid home started at and version", async () => {
     version: VERSION,
     tools: {},
     guards: { install: [], tools: [], path: [] },
+    // The office runs its source here, not a build stamped with the source it was built from.
+    built_from: null,
   })
-  expect(OfficeInfo.parse(r.json())).toEqual(r.json() as OfficeInfo)
+  // The reply holds every field: parsing it adds no default.
+  expect(OfficeInfo.parse(r.json()) as OfficeInfo).toEqual(r.json() as OfficeInfo)
 })
 
 test("get office names the tools and guards the office pinned", async () => {
@@ -437,7 +440,7 @@ test("get office names the tools and guards the office pinned", async () => {
   // The user's home dir is one of the guards but never part of the reply.
   expect(info.guards).toEqual({ install: ["/opt/x"], tools: ["/usr/bin/git"], path: ["/usr/bin"] })
   expect(r.text).not.toContain("/Users/x")
-  expect(OfficeInfo.parse(info)).toEqual(info)
+  expect(OfficeInfo.parse(info) as OfficeInfo).toEqual(info)
 })
 
 test("get office needs a token once tokens are needed", async () => {

@@ -111,6 +111,7 @@ function runChecks(
     command = COMMAND,
     environ = {},
     assets,
+    ptraceScope,
   }: {
     runner?: Runner
     answers?: boolean
@@ -122,6 +123,7 @@ function runChecks(
     command?: readonly [string, ...string[]]
     environ?: Record<string, string>
     assets?: string | null
+    ptraceScope?: () => string | null
   } = {},
 ): Promise<Check[]> {
   const host = makeHost(dir, runner, { answers: async () => answers, locked, platform })
@@ -139,6 +141,7 @@ function runChecks(
     office: async () => "unreachable",
     ...(lstat ? { lstat } : {}),
     ...(assets !== undefined ? { assets } : {}),
+    ...(ptraceScope ? { ptraceScope } : {}),
   })
 }
 
@@ -747,6 +750,40 @@ test("run logs of an older schema warn, saying how many and how to start clean; 
   expect(doctor.exitCode(found)).toBe(0)
 })
 
+test("run logs of a later schema than this office reads warn, saying how many and to update OpenCorp", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  /** Run `id`'s log, its first record of run-log schema `schema`. */
+  const log = (id: string, schema: number) => {
+    fs.mkdirSync(path.join(paths.runs, id), { recursive: true })
+    const first = runStarted(0).toString().replace(`"schema":${SCHEMA},`, `"schema":${schema},`)
+    fs.writeFileSync(path.join(paths.runs, id, "log.jsonl"), first)
+  }
+  log("r1", SCHEMA)
+  // A downgrade leaves the logs a later OpenCorp wrote.
+  log("r2", SCHEMA + 1)
+  const newer =
+    `1 run log in ${paths.runs} uses run-log schema ${SCHEMA + 1}, newer than the ${SCHEMA} this office reads, as a` +
+    " later OpenCorp writes them, so Run Logs can't show it and its session starts over without that history. To" +
+    " read it, update OpenCorp: run install.sh again, then `opencorp restart`"
+  expect(byName(await runChecks(dir, paths))["run logs"]).toEqual({ name: "run logs", status: "warn", detail: newer })
+  log("r3", SCHEMA + 2)
+  expect(byName(await runChecks(dir, paths))["run logs"]!.detail).toStartWith(
+    `2 run logs in ${paths.runs} use run-log schema ${SCHEMA + 1} or ${SCHEMA + 2}, newer than the ${SCHEMA} this` +
+      " office reads, as a later OpenCorp writes them, so Run Logs can't show them and their sessions start over" +
+      " without that history. To read them, update OpenCorp",
+  )
+  // Older logs too: one line says both, the older first.
+  log("r4", SCHEMA - 1)
+  const both = byName(await runChecks(dir, paths))["run logs"]!
+  expect(both.status).toBe("warn")
+  expect(both.detail).toStartWith(`1 run log in ${paths.runs} uses run-log schema ${SCHEMA - 1}, older than`)
+  expect(both.detail).toContain(
+    `opencorp onboard --from URL\` for a company you pushed). 2 run logs in ${paths.runs} use run-log schema`,
+  )
+  expect(both.detail).toEndWith("update OpenCorp: run install.sh again, then `opencorp restart`")
+})
+
 test("a fresh machine has no runs or sessions row", async () => {
   const dir = tempDir()
   const got = byName(await runChecks(dir, new OfficePaths(path.join(dir, "home"))))
@@ -1264,6 +1301,47 @@ test("doctor's terminal line says a sandboxed program runs on a terminal", async
   // Beside the sandbox line.
   const names = found.map((c) => c.name)
   expect(names[names.indexOf("sandbox") + 1]).toBe("terminal")
+})
+
+test("on Linux, doctor warns when a program can read the memory of the shell that runs it (ptrace_scope 0, or no Yama)", () => {
+  const reads =
+    "a program your employee's command starts can read its shell's memory, and with it the nonces that say where " +
+    "a command ends and that the prompt is back, so it can fake them"
+  expect(doctor.ptraceCheck("linux", "0\n")).toEqual({
+    name: "ptrace",
+    status: "warn",
+    detail:
+      `kernel.yama.ptrace_scope is 0: ${reads}; set it to 1 (\`sudo sysctl kernel.yama.ptrace_scope=1\`, and ` +
+      "`kernel.yama.ptrace_scope = 1` in a file in /etc/sysctl.d to keep it)",
+  })
+  // A kernel without Yama limits ptrace no more than 0 does.
+  expect(doctor.ptraceCheck("linux", null)).toEqual({
+    name: "ptrace",
+    status: "warn",
+    detail:
+      `this kernel has no Yama (no /proc/sys/kernel/yama/ptrace_scope): ${reads}; a kernel with Yama, at ` +
+      "ptrace_scope 1, stops it",
+  })
+  for (const scope of ["1\n", "2\n", "3\n"]) {
+    expect(doctor.ptraceCheck("linux", scope)).toEqual({
+      name: "ptrace",
+      status: "ok",
+      detail: `kernel.yama.ptrace_scope is ${scope.trim()}: no program can read the memory of the shell that runs it`,
+    })
+  }
+  // macOS lets no program read another's memory without the system's leave.
+  expect(doctor.ptraceCheck("darwin", "0")).toBeNull()
+})
+
+test("doctor's ptrace line follows the terminal's, on Linux only", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir)
+  const linux = await runChecks(dir, paths, { platform: "linux", ptraceScope: () => "0\n" })
+  const names = linux.map((c) => c.name)
+  expect(names[names.indexOf("terminal") + 1]).toBe("ptrace")
+  expect(byName(linux).ptrace!.status).toBe("warn")
+  expect(doctor.exitCode(linux.filter((c) => c.name === "ptrace"))).toBe(0)
+  expect(byName(await runChecks(dir, paths, { ptraceScope: () => "0\n" })).ptrace).toBeUndefined()
 })
 
 test("doctor's terminal line fails with the fix when a sandboxed program can't run on a terminal", async () => {
@@ -2398,29 +2476,7 @@ test("a running office from another install warns on the version line", async ()
   expect(got.detail).toContain("`opencorp onboard`") // onboarded() records launchd
 })
 
-test("the newest source covers the office protocol cli and yian", () => {
-  const checkout = path.join(tempDir(), "checkout")
-  const entry = path.join(checkout, "packages/cli/src/main.ts")
-  const files: [string, number][] = [
-    [entry, 100],
-    [path.join(checkout, "packages/office/src/daemon/x.ts"), 200],
-    [path.join(checkout, "packages/protocol/src/y.ts"), 300],
-    [path.join(checkout, "packages/yian/src/deep/er/z.ts"), 400],
-    [path.join(checkout, "packages/app/src/later.ts"), 900], // not code the office runs
-    [path.join(checkout, "packages/cli/dist/npm/opencorp-linux-x64/bin/opencorp"), 950], // a build, not source
-  ]
-  for (const [file, when] of files) {
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, "")
-    fs.utimesSync(file, when, when)
-  }
-  expect(doctor.newestSource(checkout)).toBe(400_000)
-  fs.utimesSync(entry, 500, 500)
-  expect(doctor.newestSource(checkout)).toBe(500_000)
-  expect(doctor.newestSource(path.join(tempDir(), "no-checkout"))).toBe(0)
-})
-
-test("the daemon's code is the binary it runs when that was built in a checkout, dated by its own file, else the source here", () => {
+test("the daemon's code is the binary it runs when that was built in a checkout, dated by its file and stamped with its source, else the source here", () => {
   const checkout = fs.realpathSync(tempDir())
   const source = path.join(checkout, "packages/office/src/x.ts")
   const binary = path.join(checkout, "packages/cli/dist/npm/opencorp-linux-x64/bin/opencorp")
@@ -2429,14 +2485,16 @@ test("the daemon's code is the binary it runs when that was built in a checkout,
     fs.writeFileSync(file, "")
     fs.utimesSync(file, when, when)
   }
-  // The daemon's own program is the last of the programs it pinned.
-  const running = (program: string) => info("/h", { guards: { install: [checkout], tools: ["/usr/bin/git", program], path: [] } })
+  // The daemon's own program is the last of the programs it pinned; it says what source its build was stamped with.
+  const running = (program: string, from: number | null = 450_000) =>
+    info("/h", { guards: { install: [checkout], tools: ["/usr/bin/git", program], path: [] }, built_from: from })
   expect(doctor.daemonCode(running(binary), checkout)).toEqual({
     newest: 800_000,
-    built: { binary, checkout, gone: false, source: 500_000 },
+    built: { binary, checkout, gone: false, source: 500_000, from: 450_000 },
   })
+  expect(doctor.daemonCode(running(binary, null), checkout).built!.from).toBeNull()
   // Bun on the checkout's source.
-  expect(doctor.daemonCode(running("/usr/local/bin/bun"), checkout)).toEqual({ newest: 500_000 })
+  expect(doctor.daemonCode(running("/usr/local/bin/bun", null), checkout)).toEqual({ newest: 500_000 })
   expect(doctor.daemonCode(info("/h"), checkout)).toEqual({ newest: 500_000 })
   // An npm binary's install holds no source; its files are all dated 1985.
   const npm = "/usr/lib/node_modules/opencorp-linux-x64/bin/opencorp"
@@ -2444,50 +2502,51 @@ test("the daemon's code is the binary it runs when that was built in a checkout,
   fs.rmSync(binary)
   expect(doctor.daemonCode(running(binary), checkout)).toEqual({
     newest: 0,
-    built: { binary, checkout, gone: true, source: 500_000 },
+    built: { binary, checkout, gone: true, source: 500_000, from: 450_000 },
   })
 })
 
-test("an office running a binary older than its checkout's source is told to build it again, and one whose binary is gone fails", () => {
+test("an office running a binary built from older source than its checkout's is told to build it again, whatever its file's date, and one whose binary is gone fails", () => {
   const dir = tempDir()
   const run = launchFor(dir, new OfficePaths(path.join(dir, "home")))
   const office = info(run.home)
   const started = Date.parse(office.started_at)
   const here = installPaths(COMMAND)[0]!
   const binary = "/co/packages/cli/dist/npm/opencorp-linux-x64/bin/opencorp"
-  const built = (source: number, gone = false) => ({ binary, checkout: "/co", gone, source })
-  // Restarting can't help: it starts the same binary again.
-  const stale = doctor.versionCheck(run, office, started - 60_000, here, "systemd", built(started - 30_000))
-  expect(stale).toEqual({
+  /** The binary in /co: its checkout's newest source, the source its build was stamped with, and whether it's gone. */
+  const built = (source: number, from: number | null, gone = false) => ({ binary, checkout: "/co", gone, source, from })
+  const stale: Check = {
     name: "version",
     status: "warn",
     detail:
       `the office runs ${binary}, built before the source in /co last changed; run install.sh again (or ` +
       "`bun run build` in /co/packages/cli), then `opencorp restart`",
-  })
-  const gone = doctor.versionCheck(run, office, 0, here, "systemd", built(0, true))
+  }
+  const ok: Check = { name: "version", status: "ok", detail: "pid 42 runs the current code" }
+  // Restarting can't help: it starts the same binary again.
+  expect(doctor.versionCheck(run, office, started - 60_000, here, "systemd", built(started - 30_000, started - 90_000)))
+    .toEqual(stale)
+  // An old build copied or touched into place has a newer file than the source, but its stamp is still old; a build
+  // with no stamp can't say what it was built from.
+  expect(doctor.versionCheck(run, office, started - 10_000, here, "systemd", built(started - 30_000, started - 90_000)))
+    .toEqual(stale)
+  expect(doctor.versionCheck(run, office, started - 10_000, here, "systemd", built(started - 30_000, null)))
+    .toEqual(stale)
+  // A current build copied with its old date (`cp -p`) is current.
+  expect(doctor.versionCheck(run, office, started - 60_000, here, "systemd", built(started - 30_000, started - 30_000)))
+    .toEqual(ok)
+  const gone = doctor.versionCheck(run, office, 0, here, "systemd", built(0, 0, true))
   expect(gone).toEqual({
     name: "version",
     status: "fail",
     detail: `the office runs ${binary}, which is gone, so sessions can't start; run install.sh again, then \`opencorp restart\``,
   })
-  // A binary built since the office started: a restart runs it.
-  expect(doctor.versionCheck(run, office, started + 60_000, here, "systemd", built(started)).detail).toBe(
+  // A binary built since the office started, which the office doesn't run yet: a restart runs it.
+  expect(doctor.versionCheck(run, office, started + 60_000, here, "systemd", built(started, started - 90_000)).detail).toBe(
     "the office started before its code last changed; restart it to run the new code",
   )
-  expect(doctor.versionCheck(run, office, started - 60_000, here, "systemd", built(started - 60_000))).toEqual({
-    name: "version",
-    status: "ok",
-    detail: "pid 42 runs the current code",
-  })
-})
-
-test("every source root the doctor watches exists in this checkout", () => {
-  const checkout = fs.realpathSync(fileURLToPath(new URL("../../../../..", import.meta.url)))
-  const missing = doctor
-    .sourceRoots(checkout)
-    .filter((root) => !fs.statSync(root, { throwIfNoEntry: false })?.isDirectory())
-  expect(missing).toEqual([])
+  expect(doctor.versionCheck(run, office, started - 60_000, here, "systemd", built(started - 60_000, started - 60_000)))
+    .toEqual(ok)
 })
 
 test("an office that cant say what it runs warns on the version line", async () => {
