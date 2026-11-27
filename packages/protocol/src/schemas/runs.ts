@@ -185,15 +185,24 @@ export const RunNodeDetail = z.strictObject({
   model: z.string().nullable().default(null),
   /** When its start record was written. */
   started_at: Timestamp.nullable().default(null),
-  /** When the record that ended it was written; null while open and once restarted. */
+  /** When the record that ended it was written; for a flow call or a loop, the one that ended its END (its last
+   *  turn's driver). Null while open, once restarted, and while a flow call or loop hasn't returned. */
   ended_at: Timestamp.nullable().default(null),
-  /** The values its success accepted, one row each; none until it succeeds. */
+  /**
+   * What an expanded flow call or loop came to: succeeded once its END (a loop's last turn) did, failed once that or
+   * a node in it failed, open while its nodes run; null for any other node, and while it's no more than expanded.
+   */
+  outcome: z.enum(["open", "succeeded", "failed"]).nullable().default(null),
+  /** The values its success accepted, one row each (a flow call's are its END's); none until it succeeds. */
   outputs: z.array(RunNodeValue).default(() => []),
   /**
    * The values a derived node's binding read (an END's gathered values, a loop's or a call's result), one row each:
    * the log names them only for those. A START's are its outputs.
    */
   inputs: z.array(RunNodeValue).default(() => []),
+  /** How many more inputs its binding read than `inputs` shows: at most 100 rows show, and no more than one detail
+   *  holds. */
+  inputs_more: z.int().min(0).default(0),
   failure: RunNodeFailure.nullable().default(null),
 })
 export type RunNodeDetail = z.input<typeof RunNodeDetail>

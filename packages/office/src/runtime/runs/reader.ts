@@ -1004,14 +1004,18 @@ export function recordTime(path: string, index: Index, seq: number): string | nu
 /**
  * `values` fitted to `budget` bytes of JSON, as one opened record is: as they are when they fit; else with each string
  * cut at FIELD_CHARS code points, its pointer (into its value) added to the value's `cut`; else with the largest
- * values, then the next largest, replaced by their size until the rest fit.
+ * values, then the next largest, replaced by their size until the rest fit. Each value is measured once.
  */
 export function fitValues(values: RunNodeValue[], budget: number = EVENT_BYTES): RunNodeValue[] {
   const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v))
-  if (bytes(values) <= budget) return values
-  const tooLarge = (v: RunNodeValue): RunNodeValue =>
-    ({ ...v, value: null, missing: "too_large", size: bytes(v.value ?? null), cut: [] })
-  const fitted = values.map((v): RunNodeValue => {
+  // A row's JSON is its value's and the rest of the row's: the rest is small, so it's measured without the value.
+  const rest = values.map((v) => bytes({ ...v, value: null }))
+  const sizes = values.map((v) => bytes(v.value ?? null))
+  const sum = (a: number[]) => a.reduce((t, n) => t + n, 0)
+  if (sum(rest) + sum(sizes) <= budget) return values
+  const tooLarge = (v: RunNodeValue, size: number): RunNodeValue =>
+    ({ ...v, value: null, missing: "too_large", size, cut: [] })
+  const fitted = values.map((v, i): RunNodeValue => {
     if (v.missing) return v
     try {
       const cuts = new Cuts()
@@ -1019,17 +1023,17 @@ export function fitValues(values: RunNodeValue[], budget: number = EVENT_BYTES):
       return { ...v, value, cut: [...new Set([...(v.cut ?? []), ...cuts.pointers])] }
     } catch (error) {
       if (!(error instanceof TooManyCuts)) throw error
-      return tooLarge(v)
+      return tooLarge(v, sizes[i]!)
     }
   })
-  const sizes = values.map((v) => bytes(v.value ?? null))
-  while (bytes(fitted) > budget) {
-    let largest = -1
-    fitted.forEach((v, i) => {
-      if (!v.missing && (largest < 0 || sizes[i]! > sizes[largest]!)) largest = i
-    })
-    if (largest < 0) break
-    fitted[largest] = tooLarge(values[largest]!)
+  const now = fitted.map((v, i) => (v.missing ? 0 : bytes(v.value ?? null)) + rest[i]!)
+  let total = sum(now)
+  // Largest first, by what each holds before it was cut.
+  const order = fitted.map((_, i) => i).filter((i) => !fitted[i]!.missing).sort((a, b) => sizes[b]! - sizes[a]!)
+  for (const i of order) {
+    if (total <= budget) break
+    fitted[i] = tooLarge(values[i]!, sizes[i]!)
+    total -= now[i]! - bytes({ ...fitted[i], value: null })
   }
   return fitted
 }
@@ -1152,26 +1156,37 @@ export class RunLogReader {
   }
 
   /** The records with `seqs`, each as `readEvent` reads it, the derived commits among them rebuilt by one replay. */
-  async readEvents(
+  readEvents(
     path: string,
     index: Index,
     seqs: readonly number[],
     { fold }: { fold?: FoldOptions } = {},
   ): Promise<(RunEvent | null)[]> {
-    const events = seqs.map((seq) => readEvent(path, index, seq))
+    return this.rebuilt(path, index, seqs, seqs.map((seq) => readEvent(path, index, seq)), { fold })
+  }
+
+  /** `events`, the records with `seqs` as the module's `readEvent` read them, the derived commits among them rebuilt
+   *  by one replay, as `readEvent` rebuilds one. */
+  async rebuilt(
+    path: string,
+    index: Index,
+    seqs: readonly number[],
+    events: readonly (RunEvent | null)[],
+    { fold }: { fold?: FoldOptions } = {},
+  ): Promise<(RunEvent | null)[]> {
     const derived = events.map((event) => {
       const payload = event?.payload
       return event?.kind === "pool_commit" && isRecord(payload) && (payload.value ?? null) === null
         && ["from", "take", "steps"].some((form) => (payload[form] ?? null) !== null)
     })
-    if (fold === undefined || !derived.includes(true) || index.offset > this.foldBytes) return events
+    if (fold === undefined || !derived.includes(true) || index.offset > this.foldBytes) return [...events]
     // Replays queue behind each other and each reads the log as it is on its turn, so the size is checked again then.
     const replay = this.replay(async () => (fs.statSync(path).size > this.foldBytes ? null : foldRunLog(path, fold)))
     let records: readonly ({ value: TypedValue | null } | undefined)[]
     try {
       records = (await replay)?.records ?? []
     } catch {
-      return events
+      return [...events]
     }
     return events.map((event, i) => {
       const value = derived[i] ? (records[seqs[i]!]?.value ?? null) : null

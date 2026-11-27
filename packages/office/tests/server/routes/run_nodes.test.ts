@@ -16,6 +16,7 @@ import {
   CODED_LOOP_HELPERS,
   chatLog,
   committed,
+  expanded,
   failed,
   line,
   realRun,
@@ -134,9 +135,14 @@ test("a code node, and the run's START and END, each a row per field of the reco
   // The run's END holds its value, so the log names nothing it read.
   const end = await detail(sock, runId, "__end__")
   expect([end.node.kind, rows(end.outputs), end.inputs]).toEqual(["end", [["said", null, "owls!", null]], []])
-  // A call expands: its child flow's nodes hold its work.
+  // A call expands; what it came to is its END's: its outcome, what it returned, and when it ended.
   const call = await detail(sock, runId, "c")
-  expect([call.node.kind, call.node.status, call.outputs, call.inputs]).toEqual(["call", "expanded", [], []])
+  expect([call.node.kind, call.node.status, call.outcome, rows(call.outputs), call.inputs]).toEqual([
+    "call", "expanded", "succeeded", [["loud", null, "owls!", null], ["ready", null, "ready", null]], [],
+  ])
+  const callEnd = await detail(sock, runId, "c/__end__")
+  expect(call.ended_at).toBe(callEnd.ended_at)
+  expect([prep.outcome, start.outcome]).toEqual([null, null])
 })
 
 test("a child flow's START and END are rebuilt from the log, the END with what it gathered", async () => {
@@ -178,6 +184,11 @@ test("a loop turn's START and END, and the loop's last turn with the END it read
     "end", [["n", null, 1, null]], [["input", "object", { n: 0 }, null]],
   ])
   // The driver of the last turn commits the loop's output, read from that turn's END, a pool name of another flow.
+  // The loop came to what its last turn's driver committed; a driver that expanded came to nothing of its own.
+  const loop = await detail(sock, runId, "l")
+  expect([loop.node.status, loop.outcome, rows(loop.outputs)]).toEqual(["expanded", "succeeded", [["n", null, 2, null]]])
+  const driver = await detail(sock, runId, "l~1")
+  expect([driver.node.status, driver.outcome, driver.outputs]).toEqual(["expanded", null, []])
   const last = await detail(sock, runId, "l~2")
   expect([last.node.kind, rows(last.outputs), rows(last.inputs)]).toEqual([
     "loop", [["output", "object", { n: 2 }, null]], [["l#1/__end__", "object", { n: 2 }, null]],
@@ -250,4 +261,40 @@ test("a seq that starts no attempt is a 404, a bad one a 422 that doesn't echo i
   expect(await status(`/runs/${newId()}/nodes/1`)).toEqual([404, "not_found", false])
   expect(await status(`/runs/${runId}/nodes/x9`)).toEqual([422, "invalid_body", false])
   expect((await request(sock, "HEAD", `/runs/${runId}/nodes/1`)).status).toBe(405)
+})
+
+test("a flow call that failed inside, or still runs, came to that, with nothing returned", async () => {
+  const { office, sock } = await servedNodes()
+  const head = [runStarted(0), startCommitted(1), started(2, "c"), expanded(3, "c"), started(4, "c/x")]
+  const broke = await detail(sock, place(office, Buffer.concat([...head, failed(5, "c/x", "boom")])), "c")
+  expect([broke.node.status, broke.outcome, broke.outputs, broke.ended_at]).toEqual(["expanded", "failed", [], null])
+  const running = await detail(sock, place(office, Buffer.concat(head)), "c")
+  expect([running.outcome, running.outputs]).toEqual(["open", []])
+})
+
+test("a wide fan-in shows its first 100 inputs and how many more, and stops reading at what one detail shows", async () => {
+  const { office, sock } = await servedNodes()
+  /** A log whose `f/__end__` gathers `n` commits, each of `size` characters. */
+  const fanIn = (n: number, size: number) => {
+    const out = [runStarted(0), startCommitted(1)]
+    const from: Record<string, bigint> = {}
+    let seq = 2
+    for (let i = 0; i < n; i++) {
+      const id = `f/x${String(i).padStart(3, "0")}`
+      out.push(started(seq, id), committed(seq + 1, id, "v".repeat(size), "str"), succeeded(seq + 2, id, seq + 1))
+      from[id] = BigInt(seq + 1)
+      seq += 3
+    }
+    out.push(started(seq, "f/__end__"), line(seq + 1, "pool_commit", { node_id: "f/__end__", key: "f", from }),
+             succeeded(seq + 2, "f/__end__", seq + 1))
+    return Buffer.concat(out)
+  }
+  const wide = await detail(sock, place(office, fanIn(150, 10)), "f/__end__")
+  expect([wide.inputs!.length, wide.inputs_more]).toEqual([100, 50])
+  expect([wide.inputs![0]!.name, wide.inputs![99]!.name]).toEqual(["x000.output", "x099.output"])
+  // 30 values of 200,000 characters: reading stops once one detail's worth is read, and what was read is cut.
+  const heavy = await detail(sock, place(office, fanIn(30, 200_000)), "f/__end__")
+  expect(heavy.inputs!.length).toBeLessThan(30)
+  expect(heavy.inputs!.length + heavy.inputs_more!).toBe(30)
+  expect(heavy.inputs!.every((v) => (v.value as string).length === 4097 && v.cut!.length === 1)).toBe(true)
 })

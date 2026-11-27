@@ -10,6 +10,7 @@ import { kindOf } from "./nodes.ts"
 import {
   type Attempt,
   ERROR_CHARS,
+  EVENT_BYTES,
   fitValues,
   type FoldOptions,
   type Index,
@@ -106,10 +107,60 @@ function failureOf(a: Attempt, end: RunEvent | null): RunNodeFailure | null {
   return { message: cutReason(a.error, ERROR_CHARS), traceback: null, cut: [], size: end?.size ?? null }
 }
 
+/** The most input rows one detail shows. */
+export const INPUT_ROWS = 100
+
+/** The index of the first attempt in `index.nodes` that starts at or after seq `seq`. */
+function from(index: Index, seq: number): number {
+  let low = 0
+  let high = index.nodes.length
+  while (low < high) {
+    const mid = (low + high) >> 1
+    if (index.nodes[mid]!.seq < seq) low = mid + 1
+    else high = mid
+  }
+  return low
+}
+
+/** Whether `id` is one of loop `loop`'s drivers (`<loop>~<k>`). */
+const isDriver = (id: string, loop: string) => id.startsWith(`${loop}~`) && /^[0-9]+$/.test(id.slice(loop.length + 1))
+
+/** Whether `id` runs in spawner `spawner`'s flow: its child flow's nodes (`<spawner>/…`), its iterations'
+ *  (`<spawner>#<k>/…`) and its drivers. */
+const isInside = (id: string, spawner: string) =>
+  id.startsWith(`${spawner}/`) || id.startsWith(`${spawner}#`) || isDriver(id, spawner)
+
+/**
+ * What expanded attempt `a` (a flow call, loop or map) came to, read from the attempts after it up to its next
+ * attempt: the attempt that returns its value (its END, or a loop's last turn's driver, the latest that did more than
+ * expand), and its outcome: open while a node in it is, succeeded once that attempt did, failed once a node in it did.
+ */
+function cameTo(index: Index, a: Attempt): { ender: Attempt | null; outcome: RunNodeDetail["outcome"] } {
+  const end = `${a.nodeId}/__end__`
+  let ender: Attempt | null = null
+  let open = false
+  let failed = false
+  for (let i = from(index, a.seq + 1); i < index.nodes.length; i++) {
+    const n = index.nodes[i]!
+    if (n.nodeId === a.nodeId) break
+    if (!isInside(n.nodeId, a.nodeId)) continue
+    if (n.nodeId === end || (isDriver(n.nodeId, a.nodeId) && n.status !== "expanded")) ender = n
+    open ||= n.status === "open" || n.status === "waiting"
+    failed ||= n.status === "failed"
+  }
+  const outcome = open ? "open" : ender?.status === "succeeded" ? "succeeded" : failed ? "failed" : null
+  return { ender: ender && { ...ender }, outcome }
+}
+
+/** What reading `event` adds to a detail, for its budget. */
+const weight = (event: RunEvent | null) => (event === null ? 0 : Buffer.byteLength(JSON.stringify(event)))
+
 /**
  * Attempt `a`'s detail from the log `path` that `index` indexes: its row, model and record times; for a success, the
  * values its commits hold (rebuilt under `fold`) and, for a derived node other than a START, the values its binding
- * read; its route's handle whole; its failure. The values are fitted as one opened record is.
+ * read, at most INPUT_ROWS of them and no more than one detail holds; for a flow call or a loop, what it came to and
+ * the values its END (its last turn) returned; its route's handle whole; its failure. The values are fitted as one
+ * opened record is.
  */
 export async function nodeDetail(
   reader: RunLogReader,
@@ -122,32 +173,51 @@ export async function nodeDetail(
   const end = a.endSeq === null ? null : readEvent(path, index, a.endSeq)
   const handle = text(end?.payload?.handle)
   if (end?.kind === "node_routed" && handle !== null) node.handle = handle
+  const { ender, outcome } = a.status === "expanded" ? cameTo(index, a) : { ender: null, outcome: null }
+  // The success whose values show: the node's own, or what returns a flow call's or a loop's.
+  const success = a.status === "succeeded" ? end
+    : ender?.status === "succeeded" && ender.endSeq !== null ? readEvent(path, index, ender.endSeq) : null
   let outputs: RunNodeValue[] = []
   let inputs: RunNodeValue[] = []
-  if (a.status === "succeeded" && end?.kind === "node_succeeded") {
-    const commit = end.payload?.commit
-    const messages = end.payload?.messages
-    if (typeof commit === "number") {
-      // A derived commit names what its binding read, each by its commit's seq.
-      const from = isStart(a.nodeId) ? [] : Object.entries(asRecord(readEvent(path, index, commit)?.payload?.from) ?? {})
-      const read = from.filter((entry): entry is [string, number] => typeof entry[1] === "number")
-      const seqs = [commit, ...(typeof messages === "number" ? [messages] : []), ...read.map(([, seq]) => seq)]
-      const events = await reader.readEvents(path, index, seqs, { fold })
-      const own = valueOf("output", commit, events[0]!)
-      outputs = isBoundary(a.nodeId) ? fields(own) : [own]
-      if (typeof messages === "number") outputs.push(valueOf(NEW_MESSAGES, messages, events[1]!))
-      const first = seqs.length - read.length
-      inputs = read.map(([key, seq], i) => valueOf(inputName(key, a.nodeId), seq, events[first + i]!))
+  let more = 0
+  const commit = success?.kind === "node_succeeded" ? success.payload?.commit : undefined
+  if (typeof commit === "number") {
+    const messages = typeof success!.payload?.messages === "number" ? (success!.payload.messages as number) : null
+    const own = readEvent(path, index, commit)
+    const messageRead = messages === null ? [] : [readEvent(path, index, messages)]
+    // A derived commit names what its binding read, each by its commit's seq: read in name order until the rows or
+    // the bytes one detail shows.
+    const named = a.status === "succeeded" && !isStart(a.nodeId) ? Object.entries(asRecord(own?.payload?.from) ?? {}) : []
+    const sources = named.filter((entry): entry is [string, number] => typeof entry[1] === "number")
+    let used = weight(own) + weight(messageRead[0] ?? null)
+    const read: [string, number, RunEvent | null][] = []
+    for (const [key, seq] of sources) {
+      if (read.length >= INPUT_ROWS || used > EVENT_BYTES) break
+      const event = readEvent(path, index, seq)
+      used += weight(event)
+      read.push([key, seq, event])
     }
+    more = sources.length - read.length
+    const seqs = [commit, ...(messages === null ? [] : [messages]), ...read.map(([, seq]) => seq)]
+    const events = await reader.rebuilt(path, index, seqs, [own, ...messageRead, ...read.map(([, , e]) => e)], { fold })
+    const value = valueOf("output", commit, events[0]!)
+    outputs = isBoundary(a.nodeId) || ender !== null ? fields(value) : [value]
+    if (messages !== null) outputs.push(valueOf(NEW_MESSAGES, messages, events[1]!))
+    const first = seqs.length - read.length
+    inputs = read.map(([key, seq], i) => valueOf(inputName(key, a.nodeId), seq, events[first + i]!))
   }
   const fitted = fitValues([...outputs, ...inputs])
+  // An expansion ends its attempt at once: a flow call or a loop ends when what returns its value does.
+  const endedSeq = a.status === "expanded" ? (ender?.endSeq ?? null) : a.endSeq
   return {
     node,
     model: Object.hasOwn(index.models, staticPathOf(a.nodeId)) ? index.models[staticPathOf(a.nodeId)]! : null,
     started_at: recordTime(path, index, a.seq),
-    ended_at: a.endSeq === null ? null : recordTime(path, index, a.endSeq),
+    ended_at: endedSeq === null ? null : recordTime(path, index, endedSeq),
+    outcome,
     outputs: fitted.slice(0, outputs.length),
     inputs: fitted.slice(outputs.length),
+    inputs_more: more,
     failure: failureOf(a, end),
   }
 }
