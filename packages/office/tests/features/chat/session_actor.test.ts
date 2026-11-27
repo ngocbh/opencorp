@@ -5,17 +5,19 @@ import { fileURLToPath } from "node:url"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { stringify } from "yaml"
 import { AuthStore, OAuthCredentials } from "@ngocbh/yian/llm_clients"
-import { inspectRun, iterRunRecords, type Message as RunMessage } from "@ngocbh/yian/run"
+import { inspectRun, iterRunRecords, type Message as RunMessage, type RunLogEntry } from "@ngocbh/yian/run"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent, Message } from "@opencorp/protocol"
 import {
   type ActorContext,
   CHECK_MS,
+  escStands,
   INDEX_WAIT_MS,
   INTERRUPTED_CALL,
   type SessionActor,
   type Wait,
 } from "../../../src/features/chat/session_actor.ts"
+import { MAIN_CHAT } from "../../../src/company/chat_flow.ts"
 import { HarnessError } from "../../../src/runtime/sessions/state.ts"
 import { PING } from "../../../src/runtime/bus.ts"
 import { ASK_MANAGER_CALL } from "../../../src/runtime/questions/ask.ts"
@@ -41,6 +43,7 @@ import { advanceJob, run as runJob } from "../../runtime/worker/helpers.ts"
 import { fold } from "../codex/helpers.ts"
 import { tempDir, waitFor } from "../../helpers.ts"
 import {
+  advance as advanceChat,
   ASK_USER,
   ASKED,
   asleep,
@@ -57,6 +60,7 @@ import {
   free,
   interrupts,
   livingWorkers,
+  logPrefix,
   makeActor,
   message,
   newSession,
@@ -69,6 +73,7 @@ import {
   say,
   type ScriptedWorker,
   scriptedWorker,
+  send as sendDelivery,
   session,
   startActor,
   state,
@@ -1264,6 +1269,36 @@ test("Esc while the turn runs a tool cuts only that turn: the interrupt leaves n
   expect(fake.requests()).toHaveLength(1)
   await actor.prompt("and now?")
   await waitFor(() => texts(o, sid).includes("On it.") && status(o, sid) === "idle", { what: "the next turn" })
+})
+
+test("Esc's interrupt stands before the turn's reply starts, and not once the reply has started or ended", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Hello." })
+  const job = await waitingChat(fake)
+  // At the first take: no reply has started.
+  expect(escStands(job.log, MAIN_CHAT)).toBe(true)
+  await advanceChat(job, fake, [sendDelivery("s1", "hi")])
+  const runs = tempDir()
+  /** The log cut just after the first record `at` matches. */
+  let cuts = 0
+  const cut = (at: (entry: RunLogEntry) => boolean) => {
+    let past = false
+    const log = logPrefix(job.log, (entry) => !past && ((past = at(entry)), true), path.join(runs, String(++cuts)))
+    expect(past).toBe(true)
+    return log
+  }
+  const started = (node: string) => (entry: RunLogEntry) => entry.kind === "node_started" && entry.nodeId === node
+  // The take has the message and the context runs (a fold would run here): the reply is still ahead.
+  expect(escStands(cut(started("chat#0/context")), MAIN_CHAT)).toBe(true)
+  // The reply has started.
+  expect(escStands(cut(started("chat#0/reply")), MAIN_CHAT)).toBe(false)
+  // The reply has ended and the next turn's take hasn't started: a Stop now would swallow that turn.
+  const ended = (entry: RunLogEntry) => entry.kind === "node_succeeded" && entry.nodeId === "chat#0/reply"
+  expect(escStands(cut(ended), MAIN_CHAT)).toBe(false)
+  // The run waits at the next turn's take.
+  expect(escStands(job.log, MAIN_CHAT)).toBe(true)
+  // A log that can't be read says nothing.
+  expect(escStands(path.join(runs, "missing", "log.jsonl"), MAIN_CHAT)).toBeNull()
 })
 
 test("end answers an office call in flight and interrupts the workspace", async () => {

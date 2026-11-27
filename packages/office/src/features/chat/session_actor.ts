@@ -5,6 +5,7 @@ import path from "node:path"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import {
   inspectRun,
+  iterRunRecordsBackwards,
   type LiveViewCall,
   pendingCalls,
   type RunInspection,
@@ -1038,10 +1039,10 @@ export class SessionActor implements LiveCalls {
 
   /**
    * Esc: interrupts the workspace and the terminal (a command the agent waits on stops), answers the office tool
-   * calls in flight `INTERRUPTED_CALL`, and interrupts the agents reading the chat's inbox now: through its worker
-   * while one runs the run (over the cost cap, unless ending, only while a reply node runs), else, while the agent
-   * waits on a model question, through a worker spawned for it; else nothing runs to stop. A turn that starts after
-   * it runs in full. Notes that come after it wait for the next person's message.
+   * calls in flight `INTERRUPTED_CALL`, and interrupts the turn at work (`escStands`): through its worker while one
+   * runs the run (over the cost cap, unless ending, only while a reply node runs), else, while the agent waits on a
+   * model question, through a worker spawned for it; else nothing runs to stop. Notes that come after it wait for the
+   * next person's message.
    * Resolves once the interrupt's reply is handled (the calls it closed are answered) or it was dropped. A card's stop
    * names its `question`, which must still be open with no other interrupt unanswered. Refused with `404 not_found`,
    * `409 not_live`, `409 not_open` and `409 ending` (with a `question`), `503 stopping` or `503 cant_wake`.
@@ -1088,9 +1089,12 @@ export class SessionActor implements LiveCalls {
         withdrawal.answer.catch(() => this.#post("a withdraw's end", () => this.#withdrawEnded(withdrawal)))
         for (const p of withdraws) await this.#give(p)
       }
-      // Not standing: Esc stops the work in progress now. A turn that starts after it, as one reading a message sent
-      // as the reply ended, runs in full, so no one's message is used up unanswered.
-      const p = new Pending({ id: newId(), op: "interrupt", inbox: spec.chat.inbox, standing: false })
+      const p = new Pending({
+        id: newId(),
+        op: "interrupt",
+        inbox: spec.chat.inbox,
+        standing: escStands(this.#logOf(this.#runId!), spec.chat) ?? !(this.#replying() || this.#agentWaits()),
+      })
       this.#interrupt = p
       await this.#deliver(p)
       return p
@@ -4337,6 +4341,37 @@ function nodePath(id: unknown, provider: Provider | null): string {
 function failedAt(outcome: Frame, provider: Provider | null): string {
   const failure = failureOf(outcome)
   return `failed at ${nodePath(failure.node_id, provider)}: ${typeName(redactKey(failure.cause_type, provider))}`
+}
+
+/** How far back from its end `escStands` reads a run's log for its turn's phase. */
+const PHASE_BYTES = 16 << 20
+
+/**
+ * Whether Esc's interrupt of the chat run at `log` stands, by the phase of its latest turn as the log's newest start
+ * of one of the turn's nodes says; null when the log can't say within `PHASE_BYTES` or can't be read.
+ *
+ * Before the turn's reply has started (its take, route and context, the fold's own model call among them), it stands:
+ * none of those reads the inbox, so an interrupt that didn't stand would cut nothing and the turn would run on. The
+ * Stop cuts the reply as it opens, before its model call, and the fold's result is kept. Once the reply has started,
+ * or has ended, it doesn't stand: it cuts the reply at work, and a turn that ended can't leave a Stop that swallows
+ * the next turn, one a message sent meanwhile starts. The phase is the log's as Esc reads it, so one race is left: a
+ * reply that starts and ends between this read and the interrupt landing leaves the Stop for the next turn's reply.
+ * A stop scoped to one turn would close it (yian#1853).
+ */
+export function escStands(log: string, chat: ChatFlow): boolean | null {
+  try {
+    let end: number | null = null
+    for (const entry of iterRunRecordsBackwards(log, { kinds: ["node_started"], payloads: false, maxLineBytes: LINE_CAP })) {
+      end ??= entry.end
+      if (end - entry.offset > PHASE_BYTES) return null
+      if (chat.isReply(entry.nodeId)) return false
+      if (chat.isTurn(entry.nodeId) || chat.inContext(entry.nodeId)) return true
+    }
+    // No turn has started yet: the first one's reply is ahead.
+    return true
+  } catch {
+    return null
+  }
 }
 
 /** `frame` with its `refused` reason kept only when it reads as one (else `refused`) and its `failed` only when it

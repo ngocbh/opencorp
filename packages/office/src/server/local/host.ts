@@ -23,6 +23,7 @@ import {
 import { MAIN_CHAT } from "../../company/chat_flow.ts"
 import { CallGate, releasedIn } from "../../features/chat/gate.ts"
 import { LiveRelay } from "../../features/chat/live.ts"
+import { escStands } from "../../features/chat/session_actor.ts"
 import { sentUnread, Transcript, userMessage } from "../../features/chat/transcript.ts"
 import { runSecrets } from "../../models/connections.ts"
 import { Bus } from "../../runtime/bus.ts"
@@ -544,8 +545,10 @@ export class LocalHost {
   async interrupt(): Promise<void> {
     this.#live()
     this.#stopCalls()
-    // Not standing, as the office's Esc: only the work in progress now stops, and a turn that starts after it runs.
-    await this.#deliver({ id: newId(), op: "interrupt", inbox: MAIN_CHAT.inbox, standing: false }, (frame) => {
+    // As the office's Esc, standing only before the turn's reply has started (`escStands`).
+    const log = path.join(this.#spec.folder, "runs", this.#runId, "log.jsonl")
+    const standing = escStands(log, MAIN_CHAT) ?? false
+    await this.#deliver({ id: newId(), op: "interrupt", inbox: MAIN_CHAT.inbox, standing }, (frame) => {
       if (!Array.isArray(frame.closed)) return
       for (const callId of frame.closed) {
         this.#closedCall(String(callId), "interrupted")
