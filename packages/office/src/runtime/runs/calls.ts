@@ -27,10 +27,10 @@ export function nodeCalls(log: string, node: string): RunCallEntry[] {
     .map(entryWire)
 }
 
-/** Whether node `node` made a model call one of whose attempts is step `n`: a call's attempts are its last `attempts`
- *  steps up to its `n`, with nothing between them. */
-export function hasCall(log: string, node: string, n: number): boolean {
-  return agentCalls(log).some((call) => call.nodeId === node && n <= call.n && n > call.n - call.attempts)
+/** The listed call of `calls` one of whose attempts is step `n`: a call's attempts are its last `attempts` steps up to
+ *  its `n`, with nothing between them. */
+export function callAt(calls: readonly RunCallEntry[], n: number): RunCallEntry | undefined {
+  return calls.find((call) => n <= call.n && n > call.n - call.attempts)
 }
 
 /** Model call `n` (any of its attempts) of node `node` in the log at `log`, rebuilt under `fold` (the run's

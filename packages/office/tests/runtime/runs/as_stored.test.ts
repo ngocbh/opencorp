@@ -4,6 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import type { Readable } from "node:stream"
 import { expect, test } from "bun:test"
+import type { RunEvent } from "@opencorp/protocol"
 import { RunLogs } from "../../../src/runtime/runs/service.ts"
 import { newId, type Store } from "../../../src/runtime/store/store.ts"
 import { tempDir } from "../../helpers.ts"
@@ -69,7 +70,7 @@ test("records come back as stored", async () => {
   const stored = JSON.parse(log.toString().split("\n")[2]!).payload
   const page = await runs.events(runId, { after: null, limit: 10 })
   expect(page.events[2]!.payload).toEqual(stored)
-  expect((await runs.event(runId, 2)).payload).toEqual(stored)
+  expect(((await runs.event(runId, 2)) as RunEvent).payload).toEqual(stored)
   expect(page.events.every((e) => (e.withheld ?? null) === null)).toBe(true)
 })
 

@@ -6,7 +6,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { FileMemory } from "@ngocbh/yian"
-import { RunNodeDetail, type RunNodeValue, RunNodeView } from "@opencorp/protocol"
+import { type RunEvent, RunNodeDetail, type RunNodeValue, RunNodeView } from "@opencorp/protocol"
 import type { Office } from "../../../src/server/office.ts"
 import { RunLogs } from "../../../src/runtime/runs/service.ts"
 import { newId } from "../../../src/runtime/store/store.ts"
@@ -30,7 +30,7 @@ import {
   succeeded,
 } from "../../runtime/runs/helpers.ts"
 import { session } from "../../runtime/store/helpers.ts"
-import { CEO, makeOffice, type Reply, request, served } from "../helpers.ts"
+import { CEO, makeOffice, type Reply, replayed, request, served } from "../helpers.ts"
 
 let fake: FakeLLM
 beforeAll(async () => {
@@ -95,9 +95,9 @@ async function detail(sock: string, runId: string, nodeId: string): Promise<RunN
   return RunNodeDetail.parse(r.json())
 }
 
-/** Node `nodeId`'s view, checked against the protocol. */
+/** Node `nodeId`'s view, asked for until it is read, checked against the protocol. */
 async function view(sock: string, runId: string, nodeId: string): Promise<RunNodeView> {
-  const r = await get(sock, `/runs/${runId}/nodes/${await seqOf(sock, runId, nodeId)}/view`)
+  const r = await replayed(sock, `/runs/${runId}/nodes/${await seqOf(sock, runId, nodeId)}/view`)
   expect([r.status, r.status === 200 ? null : r.text]).toEqual([200, null])
   return RunNodeView.parse(r.json())
 }
@@ -249,6 +249,26 @@ test("a run whose flow no longer loads: its view says why, with what its records
   expect(rows((await detail(sock, runId, "c/prep")).outputs)).toEqual([["output", "str", "ready", null]])
 })
 
+test("a derived record opens with the value it accepted, rebuilt on the viewer thread; as written with no pin", async () => {
+  const dir = tempDir()
+  const { log, codeRoot } = await realRun(dir, CODED_LOOP_FLOW, { "helpers.ts": CODED_LOOP_HELPERS })
+  const { office, sock } = await servedNodes(codeRoot)
+  const runId = place(office, log)
+  const page = (await get(sock, `/runs/${runId}/events?limit=500`)).json() as { events: RunEvent[] }
+  const derived = page.events.find((e) => e.kind === "pool_commit" && e.node_id === "l#0/__end__" && e.payload?.from)!
+  const target = `/runs/${runId}/events/${derived.seq}`
+  const r = await replayed(sock, target)
+  expect([r.status, (r.json() as RunEvent).payload?.value]).toEqual([200, { n: 1 }])
+  // Kept: the next open answers at once.
+  expect((await get(sock, target)).status).toBe(200)
+  // A record that holds its value answers at once, as written.
+  expect((await get(sock, `/runs/${runId}/events/1`)).status).toBe(200)
+  const bare = await servedNodes()
+  const again = place(bare.office, log)
+  const written = await get(bare.sock, `/runs/${again}/events/${derived.seq}`)
+  expect([written.status, (written.json() as RunEvent).payload?.value ?? null]).toEqual([200, null])
+})
+
 test("a view's long values are cut as an opened record's are, across the whole view", async () => {
   const dir = tempDir()
   const big = "a".repeat(1_500_000)
@@ -267,7 +287,7 @@ test("a view the office can't read, or of a log over the limit, is a 409 that na
   // A synthetic log's flow was built in code: yian can't replay it.
   const { office, sock } = await servedNodes()
   const runId = place(office, Buffer.concat([runStarted(0), startCommitted(1), started(2, "x"), failed(3, "x", "boom")]))
-  const r = await get(sock, `/runs/${runId}/nodes/2/view`)
+  const r = await replayed(sock, `/runs/${runId}/nodes/2/view`)
   expect([r.status, (r.json() as { error: string }).error]).toEqual([409, "not_supported"])
   expect((r.json() as { message: string }).message).toBe("this office can't read this node's values (RangeError)")
   expect(r.text).not.toContain(office.runs.logPath(runId))

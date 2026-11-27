@@ -5,7 +5,8 @@
  * Record pages and one opened record read raw lines and parse each with yian's codec (`parseJson`), as
  * `iterRunRecords` can neither skip nor cap a line and yian has no record-to-wire encoder. Values are shown in a
  * display form any client reads as plain JSON. A derived commit's value is rebuilt only when one record is opened,
- * by replaying the whole log through yian's `foldRunLog`; node kinds come from the flow the log recorded.
+ * by replaying the whole log through yian's `foldRunLog` (`rebuiltEvent`, which the office runs on the viewer
+ * thread); node kinds come from the flow the log recorded.
  */
 import crypto from "node:crypto"
 import fs from "node:fs"
@@ -1122,75 +1123,66 @@ function stamp(st: Stat): string {
 }
 
 /**
+ * Whether `event` is a derived commit: one that names its value only by the commits it read (`from`, `take` or
+ * `steps`), so showing its value takes a replay (`rebuiltEvent`).
+ */
+export function isDerived(event: RunEvent | null): boolean {
+  const payload = event?.payload
+  return event?.kind === "pool_commit" && isRecord(payload) && (payload.value ?? null) === null
+    && ["from", "take", "steps"].some((form) => (payload[form] ?? null) !== null)
+}
+
+/**
+ * Record `seq` of the log `path` as `readEvent` reads it, a derived commit showing the value it accepted, rebuilt by
+ * replaying the log as it is now through `foldRunLog` under `fold`; as written when the log is over `maxBytes` or the
+ * replay fails (a CODE reference outside `fold.codeRoot`, other `YIAN_*` values, a log yian refuses). Null when there
+ * is no such record. It indexes the log itself, and replays it in memory: the office runs it on the viewer thread.
+ */
+export async function rebuiltEvent(
+  path: string,
+  seq: number,
+  fold: FoldOptions,
+  maxBytes: number,
+): Promise<RunEvent | null> {
+  const index = await refresh(path, null)
+  const event = readEvent(path, index, seq)
+  if (!isDerived(event) || index.offset > maxBytes) return event
+  let value: TypedValue | null
+  try {
+    value = (await foldRunLog(path, fold)).records[seq]?.value ?? null
+  } catch {
+    return event
+  }
+  return value === null ? event : eventAt(path, index, seq, value) ?? event
+}
+
+/**
  * The office's run-log indexes: built lazily per log on its first request, one build per log at a time; kept, node
  * table and all, in an LRU capped in bytes and logs, so a log is read whole once unless it is evicted. A log that
- * can't be read isn't read again until its file changes. An opened record's derived value is rebuilt one log replay at
- * a time.
+ * can't be read isn't read again until its file changes.
  */
 export class RunLogReader {
   private readonly budget: number
   private readonly logs: number
   private readonly nodeCap: number
-  private readonly foldBytes: number
   private readonly build: typeof refresh
   private readonly lru = new Map<string, Index>()
   private readonly building = new Map<string, Promise<Index>>()
   private readonly failed = new Map<string, { stamp: string; error: UnreadableLog }>()
-  private folding: Promise<void> = Promise.resolve()
 
   /** `refresh` builds each index; tests pass their own to act around a build. */
   constructor(
-    { budget = LRU_BYTES, logs = LRU_LOGS, nodeCap = NODE_CAP, foldBytes = FOLD_BYTES, refresh: build = refresh }: {
+    { budget = LRU_BYTES, logs = LRU_LOGS, nodeCap = NODE_CAP, refresh: build = refresh }: {
       budget?: number
       logs?: number
       nodeCap?: number
-      foldBytes?: number
       refresh?: typeof refresh
     } = {},
   ) {
     this.budget = budget
     this.logs = logs
     this.nodeCap = nodeCap
-    this.foldBytes = foldBytes
     this.build = build
-  }
-
-  /**
-   * The record with `seq`, as the module's `readEvent` reads it (null when `seq` isn't a non-negative safe integer).
-   * With `fold`, a derived commit (one that names its value by `from`, `take` or `steps`) of a log no longer than
-   * `foldBytes` when indexed and when its replay starts shows the value it accepted, rebuilt by replaying the log as it
-   * is now through `foldRunLog`, one replay at a time; it stays as written when the replay fails (a CODE reference
-   * outside `fold.codeRoot`, other `YIAN_*` values, a log yian refuses). Each opened derived commit queues one replay,
-   * and the routes' request limits bound the queue.
-   */
-  async readEvent(
-    path: string,
-    index: Index,
-    seq: number,
-    { fold }: { fold?: FoldOptions } = {},
-  ): Promise<RunEvent | null> {
-    const event = readEvent(path, index, seq)
-    const payload = event?.payload
-    const derived = event?.kind === "pool_commit" && isRecord(payload) && (payload.value ?? null) === null
-      && ["from", "take", "steps"].some((form) => (payload[form] ?? null) !== null)
-    if (fold === undefined || !derived || index.offset > this.foldBytes) return event
-    // Replays queue behind each other and each reads the log as it is on its turn, so the size is checked again then.
-    const replay = this.replay(async () => (fs.statSync(path).size > this.foldBytes ? null : foldRunLog(path, fold)))
-    let value: TypedValue | null
-    try {
-      value = (await replay)?.records[seq]?.value ?? null
-    } catch {
-      return event
-    }
-    return value === null ? event : eventAt(path, index, seq, value) ?? event
-  }
-
-  /** Runs `work`, which replays a whole log, once the replays queued before it have settled: one replay at a time. */
-  replay<T>(work: () => Promise<T>): Promise<T> {
-    const turn = this.folding.then(work)
-    // The chain keeps neither the replayed log nor its error.
-    this.folding = turn.then(() => {}, () => {})
-    return turn
   }
 
   /**

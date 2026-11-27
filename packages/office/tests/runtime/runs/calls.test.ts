@@ -6,7 +6,7 @@ import path from "node:path"
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import type { AgentCallView } from "@ngocbh/yian/run"
 import { RunCall, type RunCallToolCall } from "@opencorp/protocol"
-import { CALL_TEXT_CHARS, callWire, entryWire, hasCall, nodeCalls, readCall } from "../../../src/runtime/runs/calls.ts"
+import { CALL_TEXT_CHARS, callAt, callWire, entryWire, nodeCalls, readCall } from "../../../src/runtime/runs/calls.ts"
 import { FakeLLM } from "../../../src/testing/fake_llm.ts"
 import { failedRun, gatedRun, interruptedRun, RUN_HEADER, RUN_KEY, RUN_ORG } from "./helpers.ts"
 
@@ -56,7 +56,8 @@ test("a node's calls are listed oldest first, a retried call once with its attem
   ])
   expect(nodeCalls(gated, "reply")).toEqual([])
   // Either attempt names the retried call; a step between calls names none.
-  expect([7, 8, 1, 2, 6, 9].map((n) => hasCall(gated, "writer", n))).toEqual([true, true, true, false, false, false])
+  const listed = nodeCalls(gated, "writer")
+  expect([7, 8, 1, 2, 6, 9].map((n) => callAt(listed, n)?.n ?? null)).toEqual([8, 8, 1, null, null, null])
 })
 
 test("a listed tool call held or without a result has no result step, and an outcome yian adds later passes as it is", () => {

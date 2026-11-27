@@ -199,10 +199,21 @@ export const RunNodeDetail = z.strictObject({
 export type RunNodeDetail = z.input<typeof RunNodeDetail>
 
 /**
+ * The 202 a read that replays the log answers while the office is still reading it (a node's view, a model call, a
+ * derived record): ask again after `retry_ms` for its result.
+ */
+export const RunLoading = z.strictObject({
+  loading: z.literal(true),
+  /** How long to wait before asking again, in milliseconds. */
+  retry_ms: z.int().min(1),
+})
+export type RunLoading = z.input<typeof RunLoading>
+
+/**
  * GET /runs/{id}/nodes/{seq}/view: one node attempt's inputs and outputs with their types, as yian's `nodeView` reads
- * them by replaying the log up to the attempt's end, which can take seconds on a long run: each input as the node bound
- * it at its start, and what its success accepted (a flow call's or a loop's, what its END or last turn returned),
- * derived values rebuilt.
+ * them by replaying the log up to the attempt's end, which can take seconds on a long run (a 202 RunLoading until
+ * then): each input as the node bound it at its start, and what its success accepted (a flow call's or a loop's, what
+ * its END or last turn returned), derived values rebuilt.
  */
 export const RunNodeView = z.strictObject({
   /** The node's kind, from the flow the log recorded; null when that flow doesn't load. */
@@ -461,9 +472,10 @@ export const RunCallToolResult = z.strictObject({
 export type RunCallToolResult = z.input<typeof RunCallToolResult>
 
 /**
- * GET /runs/{id}/calls/{node}/{n}: one AGENT model call, rebuilt from the run log by yian's `agentCall`: the request
- * it sent, its attempts, the reply and each tool call's result. Strings longer than 64K characters (UTF-16 code
- * units) are cut with "…", each named in `cut`; the log holds them whole.
+ * GET /runs/{id}/calls/{node}/{n}: one AGENT model call, rebuilt from the run log by yian's `agentCall` (a 202
+ * RunLoading while the office replays the log): the request it sent, its attempts, the reply and each tool call's
+ * result. Strings longer than 64K characters (UTF-16 code units) are cut with "…", each named in `cut`; the log holds
+ * them whole.
  */
 export const RunCall = z.strictObject({
   node_id: z.string().min(1),

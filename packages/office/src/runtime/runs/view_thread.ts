@@ -1,11 +1,11 @@
 /**
- * The views thread: it reads node views (`readView`, yian's `nodeView`) for the daemon, because a view replays the log
- * up to its attempt's end synchronously, which on a long run would hold the daemon's event loop for seconds. Each
- * request is `{id, job}`, and its reply `{id, view}` or `{id, error}`, the error only by its type's name: its message
- * may quote the log.
+ * The viewer thread: it reads what Run Logs replays a log for (`replay.ts`: a node view, a model call, a derived
+ * commit) for the daemon, because a replay runs synchronously and on a long run would hold the daemon's event loop for
+ * seconds. Each request is `{id, job}`, and its reply `{id, value}` or `{id, error}`, the error only by its type's
+ * name: its message may quote the log.
  */
 import { isMainThread, parentPort, workerData } from "node:worker_threads"
-import { readView, type ViewJob } from "./view.ts"
+import { replay, type ReplayJob } from "./replay.ts"
 
 // Local, as runtime/worker/rpc.ts's errorName would load yian's root, tools, zod and the protocol into this thread.
 const NAME = /^[A-Za-z_$][\w$]{0,63}$/
@@ -27,13 +27,13 @@ export interface Port {
   postMessage(reply: unknown): void
 }
 
-/** Answers each `{id, job}` on `port` with the job's view, or the name of the error reading it threw. */
+/** Answers each `{id, job}` on `port` with what the job replayed, or the name of the error it threw. */
 export function serve(port: Port): void {
   port.on("message", async (message) => {
-    const { id, job } = (message ?? {}) as { id?: unknown; job?: ViewJob }
+    const { id, job } = (message ?? {}) as { id?: unknown; job?: ReplayJob }
     if (typeof id !== "number" || job === undefined) return
     try {
-      port.postMessage({ id, view: await readView(job) })
+      port.postMessage({ id, value: await replay(job) })
     } catch (error) {
       port.postMessage({ id, error: errorName(error) })
     }

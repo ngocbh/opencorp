@@ -11,11 +11,12 @@ import {
   RunEventPage,
   RunNodeDetail,
   RunNodePage,
+  type RunLoading,
   RunNodeView,
   RunPage,
 } from "@opencorp/protocol"
 import { type Index, lineEvent, logEvents, NotALog, UnreadableLog } from "../../runtime/runs/reader.ts"
-import { LogTooLarge, NoLog, PAGE, ReadFailed } from "../../runtime/runs/service.ts"
+import { LOADING, LogTooLarge, NoLog, PAGE, ReadFailed } from "../../runtime/runs/service.ts"
 import { NotFound } from "../../runtime/store/store.ts"
 import { PING } from "../../runtime/bus.ts"
 import { HttpError, type Params, RawReply, type Route } from "../http.ts"
@@ -142,11 +143,22 @@ export function runNodeDetail(ctx: RequestContext, params: Params): Promise<RunN
   return runCall(() => ctx.office.runs.node(params.id!, seq))
 }
 
+/** How long a client waits before it asks again for a read that replays the log, in milliseconds. */
+export const RETRY_MS = 500
+
+/** A read that replays the log: its result, or, while the office is still reading it, a 202 RunLoading. */
+async function loaded<T>(read: () => Promise<T | typeof LOADING>): Promise<T | RawReply> {
+  const value = await runCall(read)
+  if (value !== LOADING) return value
+  const loading: RunLoading = { loading: true, retry_ms: RETRY_MS }
+  return new RawReply(202, { "cache-control": "no-store" }, JSON.stringify(loading))
+}
+
 /** `GET /runs/{id}/nodes/{seq}/view`: the attempt's inputs and outputs with their types, by yian's `nodeView` on the
- *  views thread; one still queued when the client leaves is dropped. */
-export function runNodeView(ctx: RequestContext, params: Params): Promise<RunNodeView> {
+ *  viewer thread; a 202 while it is read. One still queued when the client stops asking is dropped. */
+export function runNodeView(ctx: RequestContext, params: Params): Promise<RunNodeView | RawReply> {
   const seq = intParam(params.seq, "seq", 0, SEQ_MAX, 0)
-  return runCall(() => ctx.office.runs.view(params.id!, seq, ctx.signal))
+  return loaded(() => ctx.office.runs.view(params.id!, seq, ctx.signal))
 }
 
 /** A run's records after seq `after`: at most `limit` (500) or 256 KiB. */
@@ -156,10 +168,10 @@ export function runEvents(ctx: RequestContext, params: Params): Promise<RunEvent
   return runCall(() => ctx.office.runs.events(params.id!, { after, limit }))
 }
 
-/** One record of a run by seq. */
-export function runEvent(ctx: RequestContext, params: Params): Promise<RunEvent> {
+/** One record of a run by seq; a 202 while a derived commit's value is rebuilt on the viewer thread. */
+export function runEvent(ctx: RequestContext, params: Params): Promise<RunEvent | RawReply> {
   const seq = intParam(params.seq, "seq", 0, SEQ_MAX, 0)
-  return runCall(() => ctx.office.runs.event(params.id!, seq))
+  return loaded(() => ctx.office.runs.event(params.id!, seq, ctx.signal))
 }
 
 /** `GET /runs/{id}/calls?node=<node id>`: the model calls the node made, oldest first. */
@@ -169,11 +181,12 @@ export function runCalls(ctx: RequestContext, params: Params): Promise<RunCallLi
   return runCall(() => ctx.office.runs.calls(params.id!, node))
 }
 
-/** `GET /runs/{id}/calls/{node}/{n}`: one model call rebuilt, `n` the step of any of its attempts. The node id's
- *  segments are the path's (`chat%230/reply`); it is only compared with the log's ids, never joined into a path. */
-export function runModelCall(ctx: RequestContext, params: Params): Promise<RunCall> {
+/** `GET /runs/{id}/calls/{node}/{n}`: one model call rebuilt on the viewer thread, `n` the step of any of its
+ *  attempts; a 202 while it is read. The node id's segments are the path's (`chat%230/reply`); it is only compared
+ *  with the log's ids, never joined into a path. */
+export function runModelCall(ctx: RequestContext, params: Params): Promise<RunCall | RawReply> {
   const n = intParam(params.n, "n", 1, SEQ_MAX, 0)
-  return runCall(() => ctx.office.runs.call(params.id!, params.node!, n))
+  return loaded(() => ctx.office.runs.call(params.id!, params.node!, n, ctx.signal))
 }
 
 /** A run's whole log as stored, as a JSONL attachment no cache keeps. The log is opened before the reply, so a run

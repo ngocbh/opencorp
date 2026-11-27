@@ -340,6 +340,19 @@ export function request(
   })
 }
 
+/** GET `target` on `sock`, asked again while it answers 202 (the office still replaying the log for it); fails after
+ *  `timeoutMs`. */
+export async function replayed(sock: string, target: string, { timeoutMs = 20_000 } = {}): Promise<Reply> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const r = await request(sock, "GET", target)
+    if (r.status !== 202) return r
+    expect(r.json()).toEqual({ loading: true, retry_ms: expect.any(Number) })
+    if (Date.now() > deadline) throw new Error(`${target} was still loading after ${timeoutMs} ms`)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+}
+
 /** `[event, id, data]` per SSE frame, and `["comment", null, text]` per comment line. */
 export type Frame = [string, string | null, unknown]
 
