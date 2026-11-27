@@ -30,23 +30,30 @@ these sections:
 
 - **Metadata**: its kind (agent, code, case, loop, call, start, end, …), its status, an agent's model, and when it
   started and how long it took. A flow call or a loop shows what it came to, as its row in Overview does.
-- **Inputs**: what a node that only gathers values read, each by the name its flow reads it as, such as `input`
-  or `prep.output`. A flow's end shows what it gathered, up to 100 rows. The log doesn't record other nodes'
-  inputs.
+- **Inputs**: each input the node declares, as it was bound when the node started: a memory as the run recorded
+  it, and an optional input the run wasn't given as `not given`.
 - **Model calls** for an agent, or **Route** for a case: the case it took.
-- **Outputs**: what the node produced, a row each: an agent's `output` and `new_messages`, or, for a flow's start
-  and end, each field it received or returned. A flow call's or a loop's are what its end returned. A row shows the value's name, its type and a preview; **›** opens
-  the whole value.
+- **Outputs**: what the node produced: its `output`, and an agent's `new_messages`. A flow call's or a loop's
+  are what its end returned.
 - **Error**: a failed node's error, with its traceback folded.
 
-A value too large to show says so: download the log. The office rebuilds values the log names only by where they
-came from (an end's, a turn's start, an agent's new messages) for logs up to 16 MiB.
+A row shows the value's name, its type and a preview; **›** opens the whole value. A value that isn't shown
+says why, such as too large to show (download the log).
+
+Metadata, Outputs and Error show at once. Inputs, and the types and rebuilt values of Outputs, come from
+replaying the log up to the node, which can take half a minute late in a long chat: the node view says
+`reading the log…` until they come, and a node opened again shows them at once. When the run's flow no longer
+loads (its files are gone), Inputs says why, and Outputs show what the log holds. The office reads these for
+logs up to 16 MiB.
 
 ### Model calls
 
 Click an agent node: its detail lists the node's model calls, numbered from 1, each with its
 model and how it finished (replied, asked for tools, cut off at the token limit, refused by the provider,
-interrupted or failed; hover for the finish reason Yian recorded). Click one to see it rebuilt from the run log:
+interrupted or failed; hover for the finish reason Yian recorded). Under each call are the tools its reply
+asked for, each with how it stands: `ok`, `error`, `held` (waiting for approval), `pending` (no result yet),
+or why Yian closed it (`refused`, `skipped`, `interrupted`, `timed out`, `crashed`, `failed`). Click a call to
+see it rebuilt from the run log, or a tool to see the call open at that tool's result:
 
 - **Request**: the system prompt, the messages the model read (the history, your messages and tool results,
   each with who said it), the tools it could call, and the model and its settings. The settings show the
